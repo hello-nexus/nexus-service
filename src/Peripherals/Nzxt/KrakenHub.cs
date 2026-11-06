@@ -23,6 +23,16 @@ public sealed class KrakenHub : IDisposable
     private const int DirectReplyTimeoutMs = 150;
     private const int PollReadTimeoutMs = 250;
 
+    // 2023 Kraken while an LCD stream is open (KrakenModel.CamSessionInit): the vendor app
+    // sends no status polls, the cooler reports on its own, and a keepalive goes out
+    // periodically. A poll is the fallback once no report has been read for the fallback window.
+    private const long CamKeepAliveMs = 28_000;
+    private const long CamStatusFallbackMs = 3_000;
+    private const long CamStatusStaleMs = 10_000;
+    private const long CamFallbackLogMs = 60_000;
+    private const long CamDiagMs = 30_000;
+    private const int CamBacklightDelayMs = 70;
+
     // Bulk pixel data goes out in chunks; 64 KiB measured ~13 MB/s on the bench unit.
     private const int BulkChunkBytes = 64 * 1024;
     // Direct-path transfer size; divides a 640x640 BGR888 frame evenly.
@@ -69,6 +79,14 @@ public sealed class KrakenHub : IDisposable
     // a transfer into the bucket it is currently displaying (code 9), so a stream has
     // to write an idle one and switch to it.
     private bool _streamReady;
+    private long _lastStatusMs;
+    private long _lastKeepAliveMs;
+    private long _fallbackLoggedMs;
+    private long _diagAtMs;
+    private int _statusReads;
+    private int _framesWritten;
+    private int _framesSkipped;
+    private int _statusFallbacks;
     private int _streamActiveBucket = -1;
     private long _streamRetryAtMs;
     private int _streamFailures;
@@ -110,6 +128,32 @@ public sealed class KrakenHub : IDisposable
 
     /// <summary>Millisecond clock the fade and the Z3 stream retry read; tests replace it.</summary>
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>Pause between the dark step and the real backlight at session open; tests replace it.</summary>
+    internal Action<int> DelayMs { get; set; } = Thread.Sleep;
+
+    /// <summary>
+    /// True while this hub keeps the cooler quiet for an open LCD stream, so nothing else
+    /// may poll it: the hub's own status request is withheld and so are LibreHardwareMonitor's.
+    /// </summary>
+    public bool StreamQuiet => _isConnected && _modelRead.CamSessionInit && _streamReady;
+
+    /// <summary>
+    /// False once the last status report is too old to steer fans by. Always true off the
+    /// 2023 Kraken, whose per-second poll keeps the value fresh or fails the connection.
+    /// </summary>
+    public bool StatusFresh
+    {
+        get
+        {
+            if (!_modelRead.CamSessionInit)
+            {
+                return true;
+            }
+            var at = Volatile.Read(ref _lastStatusMs);
+            return at != 0 && Clock() - at < CamStatusStaleMs;
+        }
+    }
 
     internal LcdFadeRunner FadeRunner => _fadeRunner ??= new LcdFadeRunner(StepFade, onFault: FaultFade);
     private KrakenDisplayMode? _lockPendingMode;
@@ -703,6 +747,15 @@ public sealed class KrakenHub : IDisposable
             }
             DrainLocked();
             RetryRestoreLocked();
+            if (_model.CamSessionInit)
+            {
+                var now = Clock();
+                LogCamDiagLocked(now);
+                if (_streamReady && !PollQuietLocked(now))
+                {
+                    return true;
+                }
+            }
             if (!WriteLocked(KrakenProtocol.EncodeStatusRequest()))
             {
                 return false;
@@ -723,12 +776,71 @@ public sealed class KrakenHub : IDisposable
                 var reading = KrakenProtocol.DecodeStatus(buf[..n]);
                 if (reading.HasValue)
                 {
-                    _snapshot = _snapshot.WithReading(reading.Value);
+                    FoldStatusLocked(reading.Value);
                     return true;
                 }
             }
             return true;
         }
+    }
+
+    private void FoldStatusLocked(KrakenReading reading)
+    {
+        _snapshot = _snapshot.WithReading(reading);
+        Volatile.Write(ref _lastStatusMs, Clock());
+        Interlocked.Increment(ref _statusReads);
+    }
+
+    /// <summary>
+    /// The poll of an open 2023 Kraken stream: the keepalive when due, and no status request
+    /// while reports keep arriving. Returns true when the caller must still request one
+    /// because none has been read for the fallback window, false when this poll is done.
+    /// </summary>
+    private bool PollQuietLocked(long now)
+    {
+        if (now - _lastKeepAliveMs >= CamKeepAliveMs)
+        {
+            WriteLocked(CamKeepAlive);
+            _lastKeepAliveMs = now;
+        }
+        var at = Volatile.Read(ref _lastStatusMs);
+        if (now - at < CamStatusFallbackMs)
+        {
+            return false;
+        }
+        Interlocked.Increment(ref _statusFallbacks);
+        if (now - _fallbackLoggedMs >= CamFallbackLogMs)
+        {
+            _fallbackLoggedMs = now;
+            ServiceLog.Warn(
+                $"[nzxt-kraken] no status report for {(at == 0 ? "the whole session" : $"{now - at} ms")} while streaming; polling once");
+        }
+        return true;
+    }
+
+    private void LogCamDiagLocked(long now)
+    {
+        if (_diagAtMs == 0)
+        {
+            _diagAtMs = now;
+            return;
+        }
+        if (now - _diagAtMs < CamDiagMs)
+        {
+            return;
+        }
+        _diagAtMs = now;
+        var written = Interlocked.Exchange(ref _framesWritten, 0);
+        var skipped = Interlocked.Exchange(ref _framesSkipped, 0);
+        var reports = Interlocked.Exchange(ref _statusReads, 0);
+        var fallbacks = Interlocked.Exchange(ref _statusFallbacks, 0);
+        if (written + skipped + reports + fallbacks == 0)
+        {
+            return;
+        }
+        ServiceLog.Info(
+            $"[nzxt-kraken] 30 s: {written} frames written, {skipped} skipped as unchanged, " +
+            $"{reports} status reports read, {fallbacks} fallback polls, stream {(_streamReady ? "open" : "closed")}");
     }
 
     public bool SetPumpCurve(ReadOnlySpan<byte> duties) => SendCurve(pump: true, duties);
@@ -1293,6 +1405,8 @@ public sealed class KrakenHub : IDisposable
     private static readonly byte[] PlusBeginSession = KrakenProtocol.EncodeBeginLiveSession();
     private static readonly byte[] PlusStatusRequest = KrakenProtocol.EncodeStatusRequest();
     private static readonly byte[] PlusLcdInfoRequest = KrakenProtocol.EncodeLcdInfoRequest();
+    private static readonly byte[] CamKeepAlive = KrakenProtocol.EncodeSessionKeepAlive();
+    private static readonly byte[] CamBacklightOff = KrakenProtocol.EncodeSessionBacklightOff();
     private static readonly byte[] PlusCancel = KrakenProtocol.EncodeCancelTransfers();
     private static readonly byte[] PlusStart = KrakenProtocol.EncodeStartDirectTransfer(KrakenProtocol.BulkFormatRgb565);
     private static readonly byte[] PlusEnd = KrakenProtocol.EncodeEndTransfer();
@@ -1367,6 +1481,7 @@ public sealed class KrakenHub : IDisposable
                 || !bgra.SequenceEqual(_plusSource);
             if (!changed && _plusActive && now - Volatile.Read(ref _plusSentAtMs) < PlusIdleResendMs)
             {
+                Interlocked.Increment(ref _framesSkipped);
                 return true;
             }
             if (changed)
@@ -1519,14 +1634,13 @@ public sealed class KrakenHub : IDisposable
             {
                 if (_model.CamSessionInit)
                 {
-                    WriteLocked(PlusStatusRequest);
+                    OpenCamSessionLocked();
                 }
-                WriteLocked(PlusBeginSession);
-                if (_model.CamSessionInit)
+                else
                 {
-                    WriteLocked(PlusLcdInfoRequest);
+                    WriteLocked(PlusBeginSession);
+                    WriteLocked(PlusCancel);
                 }
-                WriteLocked(PlusCancel);
                 _streamReady = true;
             }
             var mode = still ? KrakenDisplayMode.Bucket : KrakenDisplayMode.Liquid;
@@ -1554,8 +1668,25 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
         }
+        Interlocked.Increment(ref _framesWritten);
         ArmPlusHold(gen, still, now);
         return true;
+    }
+
+    // The vendor app's order at stream start, then its real backlight a moment after the dark
+    // step. Caller holds _lock and _lcdTransferLock.
+    private void OpenCamSessionLocked()
+    {
+        WriteLocked(CamKeepAlive);
+        WriteLocked(KrakenProtocol.EncodeSetUpdateInterval(_model.TelemetryInterval));
+        WriteLocked(PlusStatusRequest);
+        WriteLocked(PlusBeginSession);
+        WriteLocked(PlusLcdInfoRequest);
+        WriteLocked(PlusCancel);
+        WriteLocked(CamBacklightOff);
+        DelayMs(CamBacklightDelayMs);
+        WriteLocked(BacklightReport(_snapshot.LcdBrightness, _snapshot.LcdOrientationQuarterTurns));
+        _lastKeepAliveMs = Clock();
     }
 
     // Caller holds _lcdTransferLock. Encodes the stored still at the current orientation
@@ -1861,7 +1992,7 @@ public sealed class KrakenHub : IDisposable
                 var reading = KrakenProtocol.DecodeStatus(span);
                 if (reading.HasValue)
                 {
-                    _snapshot = _snapshot.WithReading(reading.Value);
+                    FoldStatusLocked(reading.Value);
                 }
                 continue;
             }
@@ -1915,7 +2046,7 @@ public sealed class KrakenHub : IDisposable
                 var reading = KrakenProtocol.DecodeStatus(span);
                 if (reading.HasValue)
                 {
-                    _snapshot = _snapshot.WithReading(reading.Value);
+                    FoldStatusLocked(reading.Value);
                 }
             }
         }
@@ -1930,6 +2061,7 @@ public sealed class KrakenHub : IDisposable
             _snapshot = KrakenSnapshot.Empty;
             // A re-attached cooler may hold buckets from before; the next stream re-enters.
             _streamReady = false;
+            Volatile.Write(ref _lastStatusMs, 0);
             ClearPlusHold();
             _lastNakKey = 0;
             Volatile.Write(ref _streamRetryAtMs, 0);
