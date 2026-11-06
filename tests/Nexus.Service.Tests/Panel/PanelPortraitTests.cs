@@ -174,11 +174,13 @@ public class PanelPortraitTests : IDisposable
         Assert.Equal("weather", stored.PortraitLayout!.Pages.Single().Widgets.Single().Type);
     }
 
-    [Theory]
-    [InlineData(PanelSurfaces.LcdSquare, 480, 480, false)]
-    [InlineData(PanelSurfaces.Monitor, 1920, 480, true)]
-    public void Square_glass_and_the_strip_keep_one_layout(string surface, int width, int height, bool portraitMode)
+    [Fact]
+    public void Square_glass_keeps_one_layout()
     {
+        const string surface = PanelSurfaces.LcdSquare;
+        const int width = 480;
+        const int height = 480;
+        const bool portraitMode = false;
         var store = new InMemoryConfigStore();
         var registry = new PanelDeviceRegistry(store);
         var record = registry.Allocate("Glass", Caps(surface, null, width, height, portraitMode));
@@ -378,5 +380,26 @@ public class PanelPortraitTests : IDisposable
             Assert.False(PanelLayoutSlots.UsesPortraitSlot(clone));
             Assert.Null(store.Load().PanelDevices[record.Id].PortraitLayout);
         }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(180)]
+    public void The_strip_below_a_quarter_turn_keeps_its_geometry_and_layout(int rotation)
+    {
+        var landscape = Layout("clock");
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var record = registry.Allocate("Strip", Caps(PanelSurfaces.Monitor, UniversalScreen88Driver.Id, 1920, 480, portraitMode: true));
+        registry.Patch(record.Id, new PanelDevicePatch { Layout = landscape, WidgetSize = "small", GridSlots = 6, Rotation = rotation });
+
+        var clone = registry.Get(record.Id)!;
+
+        Assert.Equal((1920, 480), (clone.Capabilities!.CssWidth, clone.Capabilities.CssHeight));
+        Assert.Equal((1920, 480), (clone.RenderWidth, clone.RenderHeight));
+        Assert.Equal(Json(landscape), Json(clone.Layout));
+        Assert.Equal(("small", 6), (clone.WidgetSize, clone.GridSlots));
+        Assert.Equal(Json(landscape), Json(store.Load().PanelDevices[record.Id].Layout));
+        Assert.Null(store.Load().PanelDevices[record.Id].PortraitLayout);
     }
 }

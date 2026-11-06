@@ -111,6 +111,7 @@ public sealed class PanelDeviceRegistry
                 FirstSeenAt = now,
                 LastSeenAt = now,
                 Capabilities = capabilities,
+                LayoutSlots = capabilities?.SupportsPortrait == true ? true : null,
             };
             s.PanelDevices[record.Id] = record;
             result = Clone(record);
@@ -880,7 +881,14 @@ public sealed class PanelDeviceRegistry
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
             if (patch.Capabilities is not null && string.IsNullOrEmpty(record.DisplayId))
+            {
                 record.Capabilities = MergeCapabilities(record.Capabilities, patch.Capabilities);
+                // A record seen with a portrait mode after the schema 32 migration ran stores its layouts per orientation from the start.
+                if (record.Capabilities.SupportsPortrait == true)
+                {
+                    record.LayoutSlots ??= true;
+                }
+            }
 
             record.LastSeenAt = now;
             snapshot = Clone(record);

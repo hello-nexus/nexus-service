@@ -167,6 +167,11 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>The 90/270 slot's <see cref="GridSlots"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
     public int? PortraitGridSlots { get; set; }
     /// <summary>
+    /// Persisted only. Set on a record whose glass has its own portrait mode (the 8.8 inch strip) once its layout is
+    /// stored per orientation, so the schema 32 migration never moves a layout it has already placed.
+    /// </summary>
+    public bool? LayoutSlots { get; set; }
+    /// <summary>
     /// Response-only: the size in CSS pixels this panel renders at for its current rotation, on glass that takes
     /// quarter turns. A non-square pushed-frame panel swaps width and height at 90 and 270 while
     /// <see cref="PanelDeviceCapabilities.CssWidth"/> and CssHeight keep the glass's native size. Null where the

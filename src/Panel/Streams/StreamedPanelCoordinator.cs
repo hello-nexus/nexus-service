@@ -1246,7 +1246,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             return info;
         }
         var record = _registry.Get(stored.PanelDeviceId);
-        if (record is null || !PanelLayoutSlots.UsesPortraitSlot(record))
+        if (record is null || !PanelLayoutSlots.TurnsRender(record))
         {
             return info;
         }
