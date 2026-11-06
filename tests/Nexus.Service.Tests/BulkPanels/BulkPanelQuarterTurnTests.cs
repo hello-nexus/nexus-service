@@ -234,6 +234,27 @@ public class BulkPanelQuarterTurnTests
     }
 
     [Fact]
+    public void A_failing_orientation_source_on_a_turned_session_keeps_the_pinned_quarter()
+    {
+        var (hub, glass, _) = Attach();
+        using var _h = hub;
+        using var transport = new BulkPanelStreamTransport(hub, "serial", renderTurned: true);
+        var fail = false;
+        transport.BindOrientation(() => fail ? throw new InvalidOperationException("record gone") : (270, false));
+        var source = Source(RenderW, RenderH);
+
+        transport.Write(source);
+        fail = true;
+        Thread.Sleep(600);
+        transport.Write(source);
+
+        var frames = glass.Frames.ToArray();
+        Assert.Equal(2, frames.Length);
+        Assert.Equal(Expected(source, 270, false), frames[0]);
+        Assert.Equal(frames[0], frames[1]);
+    }
+
+    [Fact]
     public void Without_a_turned_render_a_quarter_on_rectangular_glass_stays_a_half_turn()
     {
         var (hub, glass, _) = Attach();

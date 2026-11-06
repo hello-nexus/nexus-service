@@ -194,9 +194,11 @@ public static class PanelProfileData
         var copy = new PanelPreset();
         PanelPresets.Copy(look, copy);
         var layout = copy.Layout;
+        var portrait = copy.PortraitLayout;
         copy.Layout = null;
+        copy.PortraitLayout = null;
         copy.LayoutSlots = null;
-        return Json(copy) + (layout is null ? "" : Shape(layout));
+        return Json(copy) + (layout is null ? "" : Shape(layout)) + "|" + (portrait is null ? "" : Shape(portrait));
     }
 
     private static bool IsDefaultCandidate(IPanelPersonalization look, PanelDeviceRecord on)
@@ -251,12 +253,20 @@ public static class PanelProfileData
         var copy = new PanelPreset();
         PanelPresets.Copy(record, copy);
         var layout = copy.Layout;
+        var portrait = copy.PortraitLayout;
         copy.Layout = null;
+        copy.PortraitLayout = null;
         copy.LayoutSlots = null;
         if (Json(copy) != Json(new PanelPreset()))
         {
             return false;
         }
+        return IsDefaultShape(layout, record) && IsDefaultShape(portrait, record);
+    }
+
+    // A slot that is unset, the strip seed, or the surface's install default.
+    private static bool IsDefaultShape(PanelLayoutDto? layout, PanelDeviceRecord record)
+    {
         if (layout is null)
         {
             return true;
@@ -353,7 +363,7 @@ public static class PanelProfileData
         };
         CopyLook(live, stripped);
         // Tells a later apply that this look stores its layout per orientation.
-        stripped.LayoutSlots = live.LayoutSlots;
+        PanelPresets.Stamp(live, stripped);
         return stripped;
     }
 

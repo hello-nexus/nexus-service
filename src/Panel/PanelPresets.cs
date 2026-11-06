@@ -22,7 +22,23 @@ public static class PanelPresets
     {
         var active = record.Presets?.Find(p => p.Id == record.ActivePresetId);
         if (active is not null)
+        {
             Copy(record, active);
+            Stamp(record, active);
+        }
+    }
+
+    /// <summary>
+    /// Marks a look this build wrote from <paramref name="live"/> as storing its layout per orientation, on glass
+    /// that has more than one. Only an unmarked look is one an older build saved, whose single layout must not
+    /// clear a slot it knows nothing about.
+    /// </summary>
+    public static void Stamp(PanelDeviceRecord live, IPanelPersonalization look)
+    {
+        if (PanelLayoutSlots.HasSlots(live.Capabilities))
+        {
+            look.LayoutSlots = true;
+        }
     }
 
     /// <summary>Deep-copies every personalization field, nulls included, so a
@@ -78,14 +94,11 @@ public static class PanelPresets
     }
 
     /// <summary>
-    /// A payload an older build saved holds one layout and says nothing about orientations. On the 8.8 inch
-    /// strip that is the slot payloads without the marker lack; on other glass a payload with nothing in the
-    /// quarter-turn slot is treated the same way, since those builds could not turn it.
+    /// A look an older build saved holds one layout and says nothing about orientations; this build marks every
+    /// look it writes for glass with more than one (<see cref="Stamp"/>), so an unmarked one is that.
     /// </summary>
     private static bool IsSingleLayout(IPanelPersonalization from, PanelDeviceRecord live) =>
-        live.Capabilities?.SupportsPortrait == true
-            ? from.LayoutSlots != true
-            : from.PortraitLayout is null && from.PortraitWidgetSize is null && from.PortraitGridSlots is null;
+        from.LayoutSlots != true && PanelLayoutSlots.HasSlots(live.Capabilities);
 
     // The single layout lands in the slot the record shows now on the strip, in the landscape slot elsewhere,
     // and the slot it does not touch keeps what it holds.

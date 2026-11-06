@@ -69,9 +69,10 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
         Assert.Equal("small", shown.WidgetSize);
         Assert.Equal(6, shown.GridSlots);
         Assert.True(stored.LayoutSlots);
-        Assert.Equal(portrait ? null : before, stored.Layout is null ? null : Json(stored.Layout));
+        // The landscape fields keep what the strip showed, so a downgraded build still finds it.
+        Assert.Equal(before, Json(stored.Layout));
         Assert.Equal(portrait ? before : null, stored.PortraitLayout is null ? null : Json(stored.PortraitLayout));
-        Assert.Equal(portrait ? null : "small", stored.WidgetSize);
+        Assert.Equal("small", stored.WidgetSize);
         Assert.Equal(portrait ? "small" : null, stored.PortraitWidgetSize);
         Assert.Equal(portrait ? 6 : null, stored.PortraitGridSlots);
         Assert.Equal(NexusSettings.CurrentSchemaVersion, store.Load().SchemaVersion);
@@ -90,7 +91,7 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
 
         Assert.True(PanelRotation.IsPortrait(shown.Rotation ?? 0));
         Assert.Equal(before, Json(shown.Layout));
-        Assert.Null(store.Load().PanelDevices["s"].Layout);
+        Assert.Equal(before, Json(store.Load().PanelDevices["s"].PortraitLayout));
     }
 
     [Fact]
@@ -134,13 +135,24 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
     [Fact]
     public void A_downgraded_build_that_dropped_the_slots_is_placed_again_on_a_current_document()
     {
-        var path = Write(NexusSettings.CurrentSchemaVersion, r => r.Rotation = 270);
+        // What an old build writes back: no portrait slot, no marker, and the layout it left in the one field it knows.
+        var path = Write(NexusSettings.CurrentSchemaVersion, r =>
+        {
+            r.Rotation = 270;
+            r.Layout = Layout();
+            r.Layout.Pages[0].Widgets[0].Type = "edited-by-old-build";
+            r.PortraitLayout = null;
+            r.LayoutSlots = null;
+        });
 
         using var store = new JsonConfigStore(path);
         var stored = store.Load().PanelDevices["s"];
+        var shown = new PanelDeviceRegistry(store).Get("s")!;
 
-        Assert.Null(stored.Layout);
-        Assert.Equal(Json(Layout()), Json(stored.PortraitLayout));
+        Assert.Equal("edited-by-old-build", stored.PortraitLayout!.Pages.Single().Widgets.Single().Type);
+        Assert.Equal("edited-by-old-build", shown.Layout!.Pages.Single().Widgets.Single().Type);
+        Assert.Equal("edited-by-old-build", stored.Layout!.Pages.Single().Widgets.Single().Type);
+        Assert.True(stored.LayoutSlots);
     }
 
     [Fact]
@@ -207,5 +219,49 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
         Assert.True(store.Load().PanelDevices[fresh.Id].LayoutSlots);
         Assert.True(store.Load().PanelDevices[bare.Id].LayoutSlots);
         Assert.Null(registry.Get(fresh.Id)!.LayoutSlots);
+    }
+
+    [Theory]
+    [InlineData(90, null)]
+    [InlineData(270, 180)]
+    [InlineData(180, 180)]
+    public void A_quarter_stored_on_glass_that_is_not_square_keeps_the_turn_it_displayed(int stored, int? expected)
+    {
+        var path = Write(31, r =>
+        {
+            r.Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide, Family = "thermalright-lcd", CssWidth = 854, CssHeight = 480 };
+            r.Rotation = stored;
+        });
+
+        using var store = new JsonConfigStore(path);
+
+        Assert.Equal(expected, store.Load().PanelDevices["s"].Rotation);
+    }
+
+    [Fact]
+    public void A_quarter_chosen_on_non_square_glass_after_the_upgrade_is_not_clamped_again()
+    {
+        var path = Write(31, r => r.Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide, Family = "thermalright-lcd", CssWidth = 854, CssHeight = 480 });
+        using (var store = new JsonConfigStore(path))
+        {
+            new PanelDeviceRegistry(store).Patch("s", new PanelDevicePatch { Rotation = 90 });
+            store.FlushNow();
+        }
+
+        using var again = new JsonConfigStore(path);
+
+        Assert.Equal(90, again.Load().PanelDevices["s"].Rotation);
+    }
+
+    [Fact]
+    public void A_quarter_on_square_glass_and_on_the_strip_is_left_alone()
+    {
+        var square = Write(31, r =>
+        {
+            r.Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdSquare, CssWidth = 480, CssHeight = 480 };
+            r.Rotation = 90;
+        });
+        using var store = new JsonConfigStore(square);
+        Assert.Equal(90, store.Load().PanelDevices["s"].Rotation);
     }
 }

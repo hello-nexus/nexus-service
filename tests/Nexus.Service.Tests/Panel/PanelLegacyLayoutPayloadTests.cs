@@ -86,7 +86,7 @@ public class PanelLegacyLayoutPayloadTests
         var saved = new PanelDeviceRecord
         {
             Id = "p", Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide },
-            Layout = Layout("new-landscape"), PortraitLayout = Layout("new-portrait"),
+            Layout = Layout("new-landscape"), PortraitLayout = Layout("new-portrait"), LayoutSlots = true,
         };
 
         Apply(live, saved);
@@ -164,5 +164,74 @@ public class PanelLegacyLayoutPayloadTests
 
         Assert.False(registry.IsCustomized(record.Id));
         Assert.True(PanelProfileData.IsDefaultLook(new PanelDeviceRecord { Id = "x", Capabilities = Strip(), LayoutSlots = true }));
+    }
+
+    // ── a look this build writes is always marked, so an empty quarter slot is never mistaken for an old payload ──
+
+    [Fact]
+    public void A_fresh_preset_on_non_square_glass_does_not_leak_the_portrait_layout_into_the_next()
+    {
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var record = registry.Allocate("Vision", Vision());
+        registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("a-landscape") });
+        registry.Patch(record.Id, new PanelDevicePatch { Rotation = 90, Layout = Layout("a-portrait") });
+        var a = registry.CreatePreset(record.Id, "A", out _)!.ActiveId!;
+        var b = registry.CreatePreset(record.Id, "B", out _, fresh: true)!.ActiveId!;
+        var stored = store.Load().PanelDevices[record.Id];
+        Assert.Null(stored.PortraitLayout);
+
+        registry.ActivatePreset(record.Id, a);
+        Assert.Equal("a-portrait", Type(stored.PortraitLayout));
+        registry.ActivatePreset(record.Id, b);
+
+        // B was captured empty and stamped, so it clears the slot instead of inheriting A's.
+        Assert.Null(stored.PortraitLayout);
+        Assert.True(stored.Presets!.Single(p => p.Id == b).LayoutSlots);
+        Assert.Equal("a-portrait", Type(stored.Presets!.Single(p => p.Id == a).PortraitLayout));
+    }
+
+    [Fact]
+    public void A_profile_written_for_non_square_glass_carries_the_marker_and_clears_an_empty_slot_on_apply()
+    {
+        var source = new NexusSettings();
+        var written = Live(Vision(), 0, strip: false);
+        written.PortraitLayout = null;
+        written.PortraitWidgetSize = null;
+        source.PanelDevices["p"] = written;
+        var file = new NexusSettings();
+        PanelProfileData.WriteTo(file, source);
+        Assert.True(file.PanelDevices["p"].LayoutSlots);
+
+        var live = Live(Vision(), 90, strip: false);
+        Apply(live, file.PanelDevices["p"]);
+
+        Assert.Null(live.PortraitLayout);
+    }
+
+    [Fact]
+    public void Glass_that_holds_one_layout_adds_no_marker_to_what_it_writes()
+    {
+        var source = new NexusSettings();
+        source.PanelDevices["p"] = new PanelDeviceRecord { Id = "p", Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdSquare, CssWidth = 480, CssHeight = 480 }, Layout = Layout("x") };
+        var file = new NexusSettings();
+
+        PanelProfileData.WriteTo(file, source);
+
+        Assert.Null(file.PanelDevices["p"].LayoutSlots);
+    }
+
+    // ── a default portrait slot is not a customization ──
+
+    [Fact]
+    public void An_uncustomized_strip_in_portrait_and_a_default_portrait_slot_are_default_looks()
+    {
+        var seed = PanelLayoutDefaults.ForStrip(PanelSurfaces.Monitor);
+        var strip = new PanelDeviceRecord { Id = "s", Capabilities = Strip(), Rotation = 90, LayoutSlots = true, Layout = seed, PortraitLayout = PanelPresets.CloneLayout(seed) };
+
+        Assert.True(PanelProfileData.IsDefaultLook(strip));
+
+        strip.PortraitLayout = Layout("custom");
+        Assert.False(PanelProfileData.IsDefaultLook(strip));
     }
 }

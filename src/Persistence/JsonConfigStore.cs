@@ -171,7 +171,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             }
             if (movesLayout)
             {
-                // The v32 move rewrites a layout in place; keep the file it was read from, once.
+                // The v32 pass rewrites layouts and rotations in place; keep the file it was read from, once.
                 try
                 {
                     var backup = SettingsPath + ".pre-v32";
@@ -465,6 +465,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
         if (doc.SchemaVersion < Nexus.Service.Panel.PanelLayoutSlotsMigration.SchemaVersion)
         {
+            Nexus.Service.Panel.PanelLayoutSlotsMigration.ClampRectangular(doc);
             Nexus.Service.Panel.PanelLayoutSlotsMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;

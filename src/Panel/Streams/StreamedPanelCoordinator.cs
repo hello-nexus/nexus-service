@@ -1336,11 +1336,21 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         {
             return info;
         }
-        if (!_store.Load().TryGetValue(info.Serial, out var stored) || string.IsNullOrEmpty(stored.PanelDeviceId))
+        // A live session already knows its record; the per-serial file is read only for a device with none yet.
+        string? panelId;
+        lock (_lock)
         {
-            return info;
+            panelId = _bySerial.TryGetValue(info.Serial, out var live) ? live.Session.PanelDeviceId : null;
         }
-        var record = _registry.Get(stored.PanelDeviceId);
+        if (panelId is null)
+        {
+            if (!_store.Load().TryGetValue(info.Serial, out var stored) || string.IsNullOrEmpty(stored.PanelDeviceId))
+            {
+                return info;
+            }
+            panelId = stored.PanelDeviceId;
+        }
+        var record = _registry.Get(panelId);
         if (record is null || !PanelLayoutSlots.TurnsRender(record))
         {
             return info;
