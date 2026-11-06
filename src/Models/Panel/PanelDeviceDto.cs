@@ -337,6 +337,8 @@ public interface IPanelPersonalization
     PanelLayoutDto? PortraitLayout { get; set; }
     string? PortraitWidgetSize { get; set; }
     int? PortraitGridSlots { get; set; }
+    /// <summary>The 8.8 inch strip's layout in this payload is stored per orientation; absent on one an older build saved.</summary>
+    bool? LayoutSlots { get; set; }
 }
 
 /// <summary>
@@ -386,6 +388,7 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public PanelLayoutDto? PortraitLayout { get; set; }
     public string? PortraitWidgetSize { get; set; }
     public int? PortraitGridSlots { get; set; }
+    public bool? LayoutSlots { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
