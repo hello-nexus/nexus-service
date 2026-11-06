@@ -99,7 +99,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
 
         if (!_gate.IsEnabled(Y70Handler.HandlerId))
         {
-            if (_hub.IsConnected) _hub.Disconnect();
+            if (_hub.IsConnected || _hub.HasBacklight) _hub.Disconnect();
             _wasDetected = false;
             _absentTicks = 0;
             return;

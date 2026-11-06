@@ -146,18 +146,25 @@ public static class Y70DisplayProtocol
 
     private const byte OpLighting = 0xEE;
 
-    /// <summary>Backlight grid dimensions: columns along X, rows along Y.</summary>
+    /// <summary>
+    /// Backlight grid dimensions: columns along X, rows along Y. The two left
+    /// columns carry an LED on every row; the three right columns on every
+    /// other row starting at the first.
+    /// </summary>
     public const int BacklightColumns = 5;
-    public const int BacklightRows = 7;
-    public const int BacklightLedCount = BacklightColumns * BacklightRows;
+    public const int BacklightRows = 13;
+    public const int BacklightFullColumns = 2;
+    public const int BacklightLedCount = 47;
 
     /// <summary>Streaming frame header, followed by one GRB triple per LED.</summary>
     public static readonly byte[] BacklightHeader = { Frame0, OpLighting, 0x01, 0x01, 0x00, 0x00, 0x00 };
 
     /// <summary>
-    /// Wire order of the backlight as (column, row) pairs: columns walked right
-    /// to left, even columns top to bottom and odd columns bottom to top
-    /// (serpentine). Index i of a streamed frame is this array's i-th cell.
+    /// Wire order of the backlight as (column, row) pairs. ASSUMPTION, not yet
+    /// confirmed on hardware: columns walked left to right, even columns top to
+    /// bottom and odd columns bottom to top (column-major serpentine). Index i
+    /// of a streamed frame is this array's i-th cell; correct the order here
+    /// only, every consumer reads this table.
     /// </summary>
     public static readonly (int Column, int Row)[] BacklightWireOrder = BuildBacklightWireOrder();
 
@@ -165,11 +172,14 @@ public static class Y70DisplayProtocol
     {
         var order = new (int, int)[BacklightLedCount];
         var n = 0;
-        for (var x = BacklightColumns - 1; x >= 0; x--)
+        for (var x = 0; x < BacklightColumns; x++)
         {
-            for (var y = 0; y < BacklightRows; y++)
+            var step = x < BacklightFullColumns ? 1 : 2;
+            var count = (BacklightRows - 1) / step + 1;
+            for (var k = 0; k < count; k++)
             {
-                order[n++] = (x, x % 2 == 0 ? y : BacklightRows - 1 - y);
+                var y = (x % 2 == 0 ? k : count - 1 - k) * step;
+                order[n++] = (x, y);
             }
         }
         return order;

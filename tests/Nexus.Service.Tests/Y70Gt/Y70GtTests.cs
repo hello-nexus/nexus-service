@@ -22,42 +22,46 @@ public class Y70GtTests
     }
 
     [Theory]
-    [InlineData(0, 4, 0)]
-    [InlineData(6, 4, 6)]
-    [InlineData(7, 3, 6)]
-    [InlineData(13, 3, 0)]
-    [InlineData(14, 2, 0)]
-    [InlineData(21, 1, 6)]
-    [InlineData(28, 0, 0)]
-    [InlineData(34, 0, 6)]
-    public void Backlight_wire_order_is_serpentine_from_the_right_column(int index, int column, int row)
+    [InlineData(0, 0, 0)]
+    [InlineData(12, 0, 12)]
+    [InlineData(13, 1, 12)]
+    [InlineData(25, 1, 0)]
+    [InlineData(26, 2, 0)]
+    [InlineData(32, 2, 12)]
+    [InlineData(33, 3, 12)]
+    [InlineData(39, 3, 0)]
+    [InlineData(40, 4, 0)]
+    [InlineData(46, 4, 12)]
+    public void Backlight_wire_order_is_column_major_serpentine_from_the_left_column(int index, int column, int row)
     {
         Assert.Equal((column, row), Y70DisplayProtocol.BacklightWireOrder[index]);
     }
 
     [Fact]
-    public void Backlight_wire_order_visits_every_cell_of_the_grid_once()
+    public void Backlight_geometry_has_47_unique_cells_with_13_rows_in_left_columns_and_even_rows_in_the_rest()
     {
         var order = Y70DisplayProtocol.BacklightWireOrder;
-        Assert.Equal(35, order.Length);
-        Assert.Equal(35, order.Distinct().Count());
-        Assert.All(order, c =>
+        Assert.Equal(47, Y70DisplayProtocol.BacklightLedCount);
+        Assert.Equal(47, order.Length);
+        Assert.Equal(47, order.Distinct().Count());
+        for (var col = 0; col < 5; col++)
         {
-            Assert.InRange(c.Column, 0, 4);
-            Assert.InRange(c.Row, 0, 6);
-        });
+            var rows = order.Where(c => c.Column == col).Select(c => c.Row).OrderBy(r => r).ToArray();
+            var expected = col < 2 ? Enumerable.Range(0, 13).ToArray() : new[] { 0, 2, 4, 6, 8, 10, 12 };
+            Assert.Equal(expected, rows);
+        }
     }
 
     [Fact]
     public void Backlight_stream_has_the_header_then_grb_triples()
     {
-        var rgb = new byte[35 * 3];
+        var rgb = new byte[47 * 3];
         rgb[0] = 0x11; rgb[1] = 0x22; rgb[2] = 0x33;
-        rgb[34 * 3] = 0xAA; rgb[34 * 3 + 1] = 0xBB; rgb[34 * 3 + 2] = 0xCC;
+        rgb[46 * 3] = 0xAA; rgb[46 * 3 + 1] = 0xBB; rgb[46 * 3 + 2] = 0xCC;
 
         var frame = Y70DisplayProtocol.BuildBacklightStream(rgb);
 
-        Assert.Equal(7 + 105, frame.Length);
+        Assert.Equal(7 + 141, frame.Length);
         Assert.Equal(new byte[] { 0xFF, 0xEE, 0x01, 0x01, 0x00, 0x00, 0x00 }, frame[..7]);
         Assert.Equal(new byte[] { 0x22, 0x11, 0x33 }, frame[7..10]);
         Assert.Equal(new byte[] { 0xBB, 0xAA, 0xCC }, frame[^3..]);
@@ -68,7 +72,7 @@ public class Y70GtTests
     {
         var frame = Y70DisplayProtocol.BuildBacklightStream(new byte[] { 1, 2, 3 });
 
-        Assert.Equal(7 + 105, frame.Length);
+        Assert.Equal(7 + 141, frame.Length);
         Assert.All(frame[10..], b => Assert.Equal(0, b));
     }
 
@@ -86,12 +90,12 @@ public class Y70GtTests
     {
         var gt = ConnectedHub(Y70DisplayProtocol.VariantGt, out var gtPort);
         Assert.True(gt.HasBacklight);
-        Assert.True(gt.WriteBacklight(new byte[105]));
-        Assert.Equal(112, Assert.Single(gtPort.Writes).Length);
+        Assert.True(gt.WriteBacklight(new byte[141]));
+        Assert.Equal(148, Assert.Single(gtPort.Writes).Length);
 
         var truly = ConnectedHub(Y70DisplayProtocol.VariantTruly, out var trulyPort);
         Assert.False(truly.HasBacklight);
-        Assert.False(truly.WriteBacklight(new byte[105]));
+        Assert.False(truly.WriteBacklight(new byte[141]));
         Assert.Empty(trulyPort.Writes);
     }
 
@@ -105,7 +109,7 @@ public class Y70GtTests
         Assert.True(hub.IsConnected);
         Assert.True(hub.HasBacklight);
         Assert.Equal("y70:GTSER", hub.BacklightDeviceId);
-        Assert.True(hub.WriteBacklight(new byte[105]));
+        Assert.True(hub.WriteBacklight(new byte[141]));
         Assert.Single(gt.Writes);
         Assert.Empty(touch.Writes);
     }
@@ -118,7 +122,7 @@ public class Y70GtTests
         Assert.True(hub.EnsureBacklightConnected());
         Assert.Equal(Y70DisplayProtocol.VariantGt, hub.Variant);
         Assert.Equal(hub.DeviceId, hub.BacklightDeviceId);
-        Assert.True(hub.WriteBacklight(new byte[105]));
+        Assert.True(hub.WriteBacklight(new byte[141]));
         Assert.Single(gt.Writes);
     }
 
@@ -131,8 +135,33 @@ public class Y70GtTests
         Assert.True(hub.IsConnected);
         Assert.False(hub.HasBacklight);
         Assert.Equal("", hub.BacklightDeviceId);
-        Assert.False(hub.WriteBacklight(new byte[105]));
+        Assert.False(hub.WriteBacklight(new byte[141]));
         Assert.Empty(touch.Writes);
+    }
+
+    [Fact]
+    public void Ensure_connected_skips_the_gt_port_already_held_beside_the_primary()
+    {
+        var opens = new List<string>();
+        var ports = new List<Y70DisplayPort>
+        {
+            new() { PortName = "COM3", Serial = "TOUCH", Variant = Y70DisplayProtocol.VariantTouch },
+            new() { PortName = "COM7", Serial = "GTSER", Variant = Y70DisplayProtocol.VariantGt },
+        };
+        var primary = new FakeTransport();
+        var hub = new Y70DisplayHub(new ListDiscovery(ports), p => { opens.Add(p.PortName); return p.PortName == "COM3" ? primary : new FakeTransport(); });
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        Assert.Equal(new[] { "COM3", "COM7" }, opens);
+
+        // Primary drops on its own; reconnect must not reopen the held GT port.
+        // Enumeration order can change between scans: the held GT port now comes first.
+        primary.Open = false;
+        ports.Reverse();
+        Assert.True(hub.EnsureConnected());
+        Assert.Equal(new[] { "COM3", "COM7", "COM3" }, opens);
+        Assert.Equal(Y70DisplayProtocol.VariantTouch, hub.Variant);
+        Assert.True(hub.HasBacklight);
     }
 
     private static Y70DisplayHub BothHub(bool touchPresent, bool gtPresent, out FakeTransport touch, out FakeTransport gt)
@@ -190,7 +219,7 @@ public class Y70GtTests
     }
 
     [Fact]
-    public void Card_is_a_35_led_matrix_named_for_the_backlight()
+    public void Card_is_a_47_led_matrix_named_for_the_backlight()
     {
         var hub = ConnectedHub(Y70DisplayProtocol.VariantGt, out _);
         var provider = new Y70GtLightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
@@ -199,7 +228,7 @@ public class Y70GtTests
 
         Assert.Equal("Y70 GT Backlight", card.Name);
         Assert.Equal(hub.DeviceId, card.Id);
-        Assert.Equal(35, card.LedCount);
+        Assert.Equal(47, card.LedCount);
         Assert.Equal("matrix", card.ZoneType);
         Assert.False(card.ZoneResizable);
         Assert.True(Y70GtLightingDeviceProvider.IsY70GtId(card.Id));
@@ -214,14 +243,14 @@ public class Y70GtTests
         var frame = Assert.Single(provider.BuildFrames(3));
 
         Assert.Equal(3, frame.Index);
-        Assert.Equal(35, frame.LedCount);
+        Assert.Equal(47, frame.LedCount);
         Assert.NotNull(frame.LedU);
         Assert.NotNull(frame.LedV);
-        // Index 0 is column 4, row 0; index 7 is column 3, row 6.
-        Assert.Equal(4.5f / 5f, frame.LedU![0], 4);
-        Assert.Equal(0.5f / 7f, frame.LedV![0], 4);
-        Assert.Equal(3.5f / 5f, frame.LedU[7], 4);
-        Assert.Equal(6.5f / 7f, frame.LedV[7], 4);
+        // Index 0 is column 0, row 0; index 13 is column 1, row 12.
+        Assert.Equal(0.5f / 5f, frame.LedU![0], 4);
+        Assert.Equal(0.5f / 13f, frame.LedV![0], 4);
+        Assert.Equal(1.5f / 5f, frame.LedU[13], 4);
+        Assert.Equal(12.5f / 13f, frame.LedV[13], 4);
     }
 
     [Fact]
@@ -246,10 +275,10 @@ public class Y70GtTests
         var segment = Assert.Single(structure.Segments);
 
         Assert.Equal(hub.DeviceId, structure.DeviceId);
-        Assert.Equal(35, segment.LedCount);
+        Assert.Equal(47, segment.LedCount);
         Assert.Equal("matrix", segment.ZoneType);
-        Assert.Equal(35, segment.DefaultU!.Length);
-        Assert.Equal(35, segment.DefaultV!.Length);
+        Assert.Equal(47, segment.DefaultU!.Length);
+        Assert.Equal(47, segment.DefaultV!.Length);
     }
 
     private sealed class FakeDiscovery : IY70DisplayPortDiscovery
@@ -265,7 +294,8 @@ public class Y70GtTests
     private sealed class FakeTransport : INp50Transport
     {
         public readonly List<byte[]> Writes = new();
-        public bool IsOpen => true;
+        public bool Open = true;
+        public bool IsOpen => Open;
         public string Serial => "GTTEST1";
         public void Write(ReadOnlySpan<byte> data) => Writes.Add(data.ToArray());
         public void DiscardInput() { }

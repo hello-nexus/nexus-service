@@ -22,6 +22,7 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
     // GT backlight port held beside a non-GT primary (touch enumerates first and wins _transport).
     private INp50Transport? _gtTransport;
     private string _gtSerial = "";
+    private string _gtPortName = "";
     private bool _disposed;
     // Starts at 0 (the silent default) so a device absent from boot never logs
     // "discovery returned 0"; only a real change (0->N found, or N->0 disconnect) logs.
@@ -96,6 +97,8 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
             }
             foreach (var port in ports)
             {
+                // The GT port held beside the primary is already open; reopening it fails on Windows.
+                if (_gtTransport is { IsOpen: true } && port.PortName == _gtPortName) continue;
                 try
                 {
                     var t = _transportFactory(new Np50PortInfo { PortName = port.PortName, Serial = port.Serial });
@@ -131,6 +134,7 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
                 {
                     _gtTransport = _transportFactory(new Np50PortInfo { PortName = port.PortName, Serial = port.Serial });
                     _gtSerial = port.Serial;
+                    _gtPortName = port.PortName;
                     ServiceLog.Info($"[y70-display] backlight connected to {port.PortName} (serial={port.Serial})");
                     return true;
                 }
