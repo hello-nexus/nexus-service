@@ -22,46 +22,42 @@ public class Y70GtTests
     }
 
     [Theory]
-    [InlineData(0, 0, 0)]
-    [InlineData(12, 0, 12)]
-    [InlineData(13, 1, 12)]
-    [InlineData(25, 1, 0)]
-    [InlineData(26, 2, 0)]
-    [InlineData(32, 2, 12)]
-    [InlineData(33, 3, 12)]
-    [InlineData(39, 3, 0)]
-    [InlineData(40, 4, 0)]
-    [InlineData(46, 4, 12)]
-    public void Backlight_wire_order_is_column_major_serpentine_from_the_left_column(int index, int column, int row)
+    [InlineData(0, 4, 0)]
+    [InlineData(6, 4, 6)]
+    [InlineData(7, 3, 6)]
+    [InlineData(13, 3, 0)]
+    [InlineData(14, 2, 0)]
+    [InlineData(20, 2, 6)]
+    [InlineData(21, 1, 6)]
+    [InlineData(27, 1, 0)]
+    [InlineData(28, 0, 0)]
+    [InlineData(34, 0, 6)]
+    public void Backlight_table_places_wire_indices_on_the_camera_verified_cells(int index, int column, int row)
     {
-        Assert.Equal((column, row), Y70DisplayProtocol.BacklightWireOrder[index]);
+        Assert.Equal(index, Y70DisplayProtocol.BacklightWireIndexByCell[column][row]);
+        Assert.Equal((column, row), Y70DisplayProtocol.BacklightCellByWireIndex[index]);
     }
 
     [Fact]
-    public void Backlight_geometry_has_47_unique_cells_with_13_rows_in_left_columns_and_even_rows_in_the_rest()
+    public void Backlight_table_is_five_columns_by_seven_rows_covering_each_index_once()
     {
-        var order = Y70DisplayProtocol.BacklightWireOrder;
-        Assert.Equal(47, Y70DisplayProtocol.BacklightLedCount);
-        Assert.Equal(47, order.Length);
-        Assert.Equal(47, order.Distinct().Count());
-        for (var col = 0; col < 5; col++)
-        {
-            var rows = order.Where(c => c.Column == col).Select(c => c.Row).OrderBy(r => r).ToArray();
-            var expected = col < 2 ? Enumerable.Range(0, 13).ToArray() : new[] { 0, 2, 4, 6, 8, 10, 12 };
-            Assert.Equal(expected, rows);
-        }
+        Assert.Equal(35, Y70DisplayProtocol.BacklightLedCount);
+        Assert.Equal(5, Y70DisplayProtocol.BacklightWireIndexByCell.Length);
+        Assert.All(Y70DisplayProtocol.BacklightWireIndexByCell, col => Assert.Equal(7, col.Length));
+        Assert.Equal(Enumerable.Range(0, 35), Y70DisplayProtocol.BacklightWireIndexByCell.SelectMany(c => c).OrderBy(i => i));
+        Assert.Equal(new[] { 28, 29, 30, 31, 32, 33, 34 }, Y70DisplayProtocol.BacklightWireIndexByCell[0]);
     }
 
     [Fact]
     public void Backlight_stream_has_the_header_then_grb_triples()
     {
-        var rgb = new byte[47 * 3];
+        var rgb = new byte[35 * 3];
         rgb[0] = 0x11; rgb[1] = 0x22; rgb[2] = 0x33;
-        rgb[46 * 3] = 0xAA; rgb[46 * 3 + 1] = 0xBB; rgb[46 * 3 + 2] = 0xCC;
+        rgb[34 * 3] = 0xAA; rgb[34 * 3 + 1] = 0xBB; rgb[34 * 3 + 2] = 0xCC;
 
         var frame = Y70DisplayProtocol.BuildBacklightStream(rgb);
 
-        Assert.Equal(7 + 141, frame.Length);
+        Assert.Equal(7 + 105, frame.Length);
         Assert.Equal(new byte[] { 0xFF, 0xEE, 0x01, 0x01, 0x00, 0x00, 0x00 }, frame[..7]);
         Assert.Equal(new byte[] { 0x22, 0x11, 0x33 }, frame[7..10]);
         Assert.Equal(new byte[] { 0xBB, 0xAA, 0xCC }, frame[^3..]);
@@ -72,7 +68,7 @@ public class Y70GtTests
     {
         var frame = Y70DisplayProtocol.BuildBacklightStream(new byte[] { 1, 2, 3 });
 
-        Assert.Equal(7 + 141, frame.Length);
+        Assert.Equal(7 + 105, frame.Length);
         Assert.All(frame[10..], b => Assert.Equal(0, b));
     }
 
@@ -90,12 +86,12 @@ public class Y70GtTests
     {
         var gt = ConnectedHub(Y70DisplayProtocol.VariantGt, out var gtPort);
         Assert.True(gt.HasBacklight);
-        Assert.True(gt.WriteBacklight(new byte[141]));
-        Assert.Equal(148, Assert.Single(gtPort.Writes).Length);
+        Assert.True(gt.WriteBacklight(new byte[105]));
+        Assert.Equal(112, Assert.Single(gtPort.Writes).Length);
 
         var truly = ConnectedHub(Y70DisplayProtocol.VariantTruly, out var trulyPort);
         Assert.False(truly.HasBacklight);
-        Assert.False(truly.WriteBacklight(new byte[141]));
+        Assert.False(truly.WriteBacklight(new byte[105]));
         Assert.Empty(trulyPort.Writes);
     }
 
@@ -109,7 +105,7 @@ public class Y70GtTests
         Assert.True(hub.IsConnected);
         Assert.True(hub.HasBacklight);
         Assert.Equal("y70:GTSER", hub.BacklightDeviceId);
-        Assert.True(hub.WriteBacklight(new byte[141]));
+        Assert.True(hub.WriteBacklight(new byte[105]));
         Assert.Single(gt.Writes);
         Assert.Empty(touch.Writes);
     }
@@ -122,7 +118,7 @@ public class Y70GtTests
         Assert.True(hub.EnsureBacklightConnected());
         Assert.Equal(Y70DisplayProtocol.VariantGt, hub.Variant);
         Assert.Equal(hub.DeviceId, hub.BacklightDeviceId);
-        Assert.True(hub.WriteBacklight(new byte[141]));
+        Assert.True(hub.WriteBacklight(new byte[105]));
         Assert.Single(gt.Writes);
     }
 
@@ -135,7 +131,7 @@ public class Y70GtTests
         Assert.True(hub.IsConnected);
         Assert.False(hub.HasBacklight);
         Assert.Equal("", hub.BacklightDeviceId);
-        Assert.False(hub.WriteBacklight(new byte[141]));
+        Assert.False(hub.WriteBacklight(new byte[105]));
         Assert.Empty(touch.Writes);
     }
 
@@ -219,7 +215,7 @@ public class Y70GtTests
     }
 
     [Fact]
-    public void Card_is_a_47_led_matrix_named_for_the_backlight()
+    public void Card_is_a_35_led_matrix_named_for_the_backlight()
     {
         var hub = ConnectedHub(Y70DisplayProtocol.VariantGt, out _);
         var provider = new Y70GtLightingDeviceProvider(hub, new InMemoryConfigStore(), new Np50IdentifyTracker());
@@ -228,7 +224,7 @@ public class Y70GtTests
 
         Assert.Equal("Y70 GT Backlight", card.Name);
         Assert.Equal(hub.DeviceId, card.Id);
-        Assert.Equal(47, card.LedCount);
+        Assert.Equal(35, card.LedCount);
         Assert.Equal("matrix", card.ZoneType);
         Assert.False(card.ZoneResizable);
         Assert.True(Y70GtLightingDeviceProvider.IsY70GtId(card.Id));
@@ -243,14 +239,15 @@ public class Y70GtTests
         var frame = Assert.Single(provider.BuildFrames(3));
 
         Assert.Equal(3, frame.Index);
-        Assert.Equal(47, frame.LedCount);
+        Assert.Equal(35, frame.LedCount);
         Assert.NotNull(frame.LedU);
         Assert.NotNull(frame.LedV);
-        // Index 0 is column 0, row 0; index 13 is column 1, row 12.
-        Assert.Equal(0.5f / 5f, frame.LedU![0], 4);
-        Assert.Equal(0.5f / 13f, frame.LedV![0], 4);
-        Assert.Equal(1.5f / 5f, frame.LedU[13], 4);
-        Assert.Equal(12.5f / 13f, frame.LedV[13], 4);
+        // Index 0 is the top of the right column; index 28 the top of the left column; index 34 its bottom.
+        Assert.Equal(4.5f / 5f, frame.LedU![0], 4);
+        Assert.Equal(0.5f / 7f, frame.LedV![0], 4);
+        Assert.Equal(0.5f / 5f, frame.LedU[28], 4);
+        Assert.Equal(0.5f / 7f, frame.LedV[28], 4);
+        Assert.Equal(6.5f / 7f, frame.LedV[34], 4);
     }
 
     [Fact]
@@ -275,10 +272,10 @@ public class Y70GtTests
         var segment = Assert.Single(structure.Segments);
 
         Assert.Equal(hub.DeviceId, structure.DeviceId);
-        Assert.Equal(47, segment.LedCount);
+        Assert.Equal(35, segment.LedCount);
         Assert.Equal("matrix", segment.ZoneType);
-        Assert.Equal(47, segment.DefaultU!.Length);
-        Assert.Equal(47, segment.DefaultV!.Length);
+        Assert.Equal(35, segment.DefaultU!.Length);
+        Assert.Equal(35, segment.DefaultV!.Length);
     }
 
     private sealed class FakeDiscovery : IY70DisplayPortDiscovery

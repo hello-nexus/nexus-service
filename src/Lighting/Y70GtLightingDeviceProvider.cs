@@ -205,7 +205,7 @@ public sealed class Y70GtLightingDeviceProvider :
     /// <summary>Per-LED canvas position for the card's wire order, so effects land on the physical cell of the grid rather than along a linear index.</summary>
     internal static (float[] u, float[] v) BuildLedUv()
     {
-        var order = Y70DisplayProtocol.BacklightWireOrder;
+        var order = Y70DisplayProtocol.BacklightCellByWireIndex;
         var u = new float[order.Length];
         var v = new float[order.Length];
         for (var i = 0; i < order.Length; i++)
