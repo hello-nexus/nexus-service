@@ -232,6 +232,39 @@ public class PanelRotationTests : IDisposable
     }
 
     [Fact]
+    public void The_corsair_link_lcd_takes_no_panel_rotation_because_it_turns_in_firmware()
+    {
+        var caps = Caps(PanelSurfaces.LcdRound);
+        caps.Family = Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd.DeviceId;
+
+        Assert.Equal(new[] { 0 }, PanelRotation.SupportedFor(caps));
+        Assert.False(PanelRotation.TryResolve(Record(caps), new PanelDevicePatch { Rotation = 180 }, out _));
+    }
+
+    [Theory]
+    [InlineData(0, 2)]
+    [InlineData(1, 3)]
+    [InlineData(2, 0)]
+    [InlineData(3, 1)]
+    public void A_stored_corsair_flip_moves_into_the_lcds_firmware_rotation(int firmware, int expected)
+    {
+        var settings = new NexusSettings();
+        settings.Devices.Corsair.LcdRotation = (byte)firmware;
+        var caps = Caps(PanelSurfaces.LcdRound);
+        caps.Family = Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd.DeviceId;
+        settings.PanelDevices["link"] = new PanelDeviceRecord { Id = "link", Capabilities = caps, Flip180 = true };
+
+        Assert.True(PanelRotationMigration.Apply(settings));
+        Assert.Equal(expected, settings.Devices.Corsair.LcdRotation);
+        Assert.Null(settings.PanelDevices["link"].Rotation);
+        Assert.Null(settings.PanelDevices["link"].Flip180);
+
+        // A second pass has nothing left to fold.
+        Assert.False(PanelRotationMigration.Apply(settings));
+        Assert.Equal(expected, settings.Devices.Corsair.LcdRotation);
+    }
+
+    [Fact]
     public void A_record_that_already_has_a_rotation_keeps_it()
     {
         var settings = new NexusSettings();

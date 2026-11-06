@@ -173,7 +173,6 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public IReadOnlyList<int>? SupportedRotations { get; set; }
     /// <summary>Read from settings written by a build that predates <see cref="Rotation"/>, then
     /// folded into it by PanelRotationMigration and written no more. Never present in a response.</summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? Flip180 { get; set; }
     /// <summary>Mirror the pushed frame horizontally before it is rotated. Null = off.</summary>
     public bool? Mirror { get; set; }
@@ -191,7 +190,6 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
     public bool? SecondaryMonitor { get; set; }
     /// <summary>Legacy, as <see cref="Flip180"/>: the strip's portrait mode is now <see cref="Rotation"/> of 90 or 270.</summary>
-    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? Portrait { get; set; }
     /// <summary>Frame rate cap for this device: a streamed display's session rate and secondary-monitor pacing, or how often a display-bound panel page draws. Null = the device's own rate.</summary>
     public int? FpsCap { get; set; }

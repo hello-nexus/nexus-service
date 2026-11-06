@@ -49,7 +49,7 @@ public sealed record StreamedPanelProfile
     /// <summary>The glass reports touch, which the transport hands back to the render host.</summary>
     public bool SupportsTouch { get; init; }
 
-    /// <summary>The panel renders tall when its record's Portrait is on.</summary>
+    /// <summary>The panel can render tall: its record's Rotation of 90 or 270 selects the portrait mode.</summary>
     public bool SupportsPortrait { get; init; }
 
     /// <summary>One device carries several screens on this surface, so each serial gets its own record instead of the surface's shared one.</summary>

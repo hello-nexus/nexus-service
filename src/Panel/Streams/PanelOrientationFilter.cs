@@ -54,13 +54,13 @@ public sealed class PanelOrientationFilter
                 ServiceLog.Info($"[panel-orientation] rotation={_current.Rotation} mirror={_current.Mirror}");
             }
         }
-        if (BgraOrientation.IsIdentity(_current.Rotation, _current.Mirror))
-        {
-            return frame;
-        }
         if (width <= 0 || height <= 0 || width * height * 4 != frame.Length)
         {
             // Geometry moved under us mid-frame; orienting against a stale size would tear.
+            return frame;
+        }
+        if (BgraOrientation.IsIdentity(BgraOrientation.Effective(_current.Rotation, width, height), _current.Mirror))
+        {
             return frame;
         }
         if (_oriented.Length != frame.Length)
