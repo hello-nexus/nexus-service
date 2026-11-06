@@ -38,6 +38,13 @@ public sealed class HydroShift2Aio : BackgroundService
     /// </summary>
     internal const int ConnectRewipeMs = 5000;
 
+    /// <summary>A unit that lost power in sleep reboots to its own screen behind an open pipe, so the wipe is sent again once it has settled.</summary>
+    internal const int ResumeRewipeMs = 12_000;
+
+    /// <summary>An unanswered scheduled wipe is retried this many times, this far apart.</summary>
+    internal const int RewipeRetries = 3;
+    internal const int RewipeRetryMs = 3000;
+
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
     private readonly Func<string?, bool> _wirelessOwns;
@@ -66,6 +73,8 @@ public sealed class HydroShift2Aio : BackgroundService
     private volatile bool _overlayClear;
     private bool _rewipeArmed = true;
     private long _rewipeAt;
+    private int _rewipeRetriesLeft;
+    private volatile bool _resumed;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
@@ -93,6 +102,9 @@ public sealed class HydroShift2Aio : BackgroundService
 
     /// <summary>Wipes what the firmware drew over the glass once the unit is read, unless it shows its own screen by then.</summary>
     public void ClearScreenOverlay() => _overlayClear = true;
+
+    /// <summary>Called on a system resume; the loop wipes the overlay again once the unit has settled.</summary>
+    public void OnSystemResumed() => _resumed = true;
 
     /// <summary>Connected over USB and not handed to the wireless link.</summary>
     public bool IsAvailable => _hub.IsConnected && !_wirelessOwns(Params?.Mac);
@@ -187,6 +199,8 @@ public sealed class HydroShift2Aio : BackgroundService
             _overlayClear = false;
             _rewipeArmed = true;
             _rewipeAt = 0;
+            _rewipeRetriesLeft = 0;
+            _resumed = false;
             _ownScreen = null;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
@@ -226,6 +240,14 @@ public sealed class HydroShift2Aio : BackgroundService
             {
                 _rewipeArmed = false;
                 _rewipeAt = now + ConnectRewipeMs;
+                _rewipeRetriesLeft = RewipeRetries;
+            }
+            if (_resumed)
+            {
+                _resumed = false;
+                _rewipeAt = now + ResumeRewipeMs;
+                _rewipeRetriesLeft = RewipeRetries;
+                ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] resumed; wiping the firmware overlay again once the display settles");
             }
             if (own != _ownScreen)
             {
@@ -249,6 +271,11 @@ public sealed class HydroShift2Aio : BackgroundService
                 if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
                 {
                     ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay wipe unanswered");
+                    if (rewipe && _rewipeRetriesLeft > 0)
+                    {
+                        _rewipeRetriesLeft--;
+                        _rewipeAt = now + RewipeRetryMs;
+                    }
                 }
             }
         }

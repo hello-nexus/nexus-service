@@ -583,6 +583,55 @@ public class HydroShift2Tests
     }
 
     [Fact]
+    public void A_resume_wipes_the_overlay_again_once_the_display_settles()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.Tick(1_000);
+        aio.Tick(30_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.OnSystemResumed();
+        aio.Tick(40_000);
+        aio.Tick(40_000 + HydroShift2Aio.ResumeRewipeMs - 1);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(40_000 + HydroShift2Aio.ResumeRewipeMs);
+        aio.Tick(100_000);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void An_unanswered_scheduled_wipe_is_retried_a_bounded_number_of_times()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.Tick(1_000);
+        pipe.Silent = true;
+        var t = 1_000 + HydroShift2Aio.ConnectRewipeMs;
+        for (var i = 0; i <= HydroShift2Aio.RewipeRetries + 2; i++)
+        {
+            aio.Tick(t);
+            t += HydroShift2Aio.RewipeRetryMs;
+        }
+
+        Assert.Equal(1 + HydroShift2Aio.RewipeRetries, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void A_retried_wipe_stops_once_it_is_answered()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.Tick(1_000);
+        pipe.Silent = true;
+        var t = 1_000 + HydroShift2Aio.ConnectRewipeMs;
+        aio.Tick(t);
+        pipe.Silent = false;
+        aio.Tick(t + HydroShift2Aio.RewipeRetryMs);
+        aio.Tick(t + 10 * HydroShift2Aio.RewipeRetryMs);
+
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
     public void The_cold_boot_wipe_is_skipped_while_the_unit_shows_its_own_screen()
     {
         var (aio, pipe) = Attached(_ => true, _ => false);
