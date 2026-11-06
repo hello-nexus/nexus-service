@@ -1,0 +1,211 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using Nexus.Service.Models.Panel;
+using Nexus.Service.Panel;
+using Nexus.Service.Persistence;
+using Nexus.Service.Serialization;
+using Xunit;
+
+namespace Nexus.Service.Tests.Panel;
+
+/// <summary>Schema 32: the 8.8 inch strip's one layout lands in the slot of the orientation it is mounted in.</summary>
+public class PanelLayoutSlotsMigrationTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "slots-mig-" + Guid.NewGuid().ToString("N")[..8]);
+
+    public PanelLayoutSlotsMigrationTests() => Directory.CreateDirectory(_dir);
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch { }
+    }
+
+    private static PanelDeviceCapabilities Strip() => new()
+    {
+        Surface = PanelSurfaces.Monitor,
+        Family = "lianli-screen88",
+        CssWidth = 1920,
+        CssHeight = 480,
+        SupportsPortrait = true,
+    };
+
+    private static PanelLayoutDto Layout() => new()
+    {
+        LayoutSchemaVersion = 2,
+        Surface = PanelSurfaces.Monitor,
+        Pages = { new PanelPageDto { Id = "p", Widgets = { new PanelWidgetDto { Id = "w", Type = "clock", Size = "4x4" } } } },
+    };
+
+    private static string Json(PanelLayoutDto? layout) => JsonSerializer.Serialize(layout, PersistenceJsonContext.Default.PanelLayoutDto);
+
+    private string Write(int schema, Action<PanelDeviceRecord> shape)
+    {
+        var settings = new NexusSettings { SchemaVersion = schema };
+        var record = new PanelDeviceRecord { Id = "s", Capabilities = Strip(), Layout = Layout(), WidgetSize = "small", GridSlots = 6 };
+        shape(record);
+        settings.PanelDevices["s"] = record;
+        var path = Path.Combine(_dir, Guid.NewGuid().ToString("N")[..6] + ".json");
+        File.WriteAllText(path, JsonSerializer.Serialize(settings, PersistenceJsonContext.Default.NexusSettings));
+        return path;
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(90, true)]
+    [InlineData(180, false)]
+    [InlineData(270, true)]
+    public void The_layout_the_user_sees_is_the_same_after_the_upgrade(int rotation, bool portrait)
+    {
+        var path = Write(31, r => r.Rotation = rotation == 0 ? null : rotation);
+        var before = Json(Layout());
+
+        using var store = new JsonConfigStore(path);
+        var stored = store.Load().PanelDevices["s"];
+        var shown = new PanelDeviceRegistry(store).Get("s")!;
+
+        Assert.Equal(before, Json(shown.Layout));
+        Assert.Equal("small", shown.WidgetSize);
+        Assert.Equal(6, shown.GridSlots);
+        Assert.True(stored.LayoutSlots);
+        Assert.Equal(portrait ? null : before, stored.Layout is null ? null : Json(stored.Layout));
+        Assert.Equal(portrait ? before : null, stored.PortraitLayout is null ? null : Json(stored.PortraitLayout));
+        Assert.Equal(portrait ? null : "small", stored.WidgetSize);
+        Assert.Equal(portrait ? "small" : null, stored.PortraitWidgetSize);
+        Assert.Equal(portrait ? 6 : null, stored.PortraitGridSlots);
+        Assert.Equal(NexusSettings.CurrentSchemaVersion, store.Load().SchemaVersion);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_pre_rotation_document_with_the_portrait_flag_lands_in_the_slot_it_showed(bool flip)
+    {
+        var path = Write(30, r => { r.Portrait = true; r.Flip180 = flip; });
+        var before = Json(Layout());
+
+        using var store = new JsonConfigStore(path);
+        var shown = new PanelDeviceRegistry(store).Get("s")!;
+
+        Assert.True(PanelRotation.IsPortrait(shown.Rotation ?? 0));
+        Assert.Equal(before, Json(shown.Layout));
+        Assert.Null(store.Load().PanelDevices["s"].Layout);
+    }
+
+    [Fact]
+    public void Running_it_again_changes_nothing_and_a_second_load_is_byte_stable()
+    {
+        var path = Write(31, r => r.Rotation = 90);
+        using (var first = new JsonConfigStore(path))
+        {
+            Assert.False(PanelLayoutSlotsMigration.Apply(first.Load()));
+        }
+        var afterFirst = File.ReadAllText(path);
+
+        using var second = new JsonConfigStore(path);
+        var loaded = second.Load();
+
+        Assert.False(PanelLayoutSlotsMigration.Apply(loaded));
+        Assert.Equal(afterFirst, File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void A_layout_saved_for_the_other_orientation_after_the_upgrade_is_not_moved_again()
+    {
+        var path = Write(31, r => r.Rotation = 90);
+        using (var store = new JsonConfigStore(path))
+        {
+            var registry = new PanelDeviceRegistry(store);
+            registry.Patch("s", new PanelDevicePatch { Rotation = 0 });
+            registry.Patch("s", new PanelDevicePatch { Layout = new PanelLayoutDto { LayoutSchemaVersion = 2, Surface = PanelSurfaces.Monitor } });
+            registry.Patch("s", new PanelDevicePatch { Rotation = 90 });
+            store.FlushNow();
+        }
+
+        using var again = new JsonConfigStore(path);
+        var stored = again.Load().PanelDevices["s"];
+
+        Assert.Equal(Json(Layout()), Json(stored.PortraitLayout));
+        Assert.NotNull(stored.Layout);
+        Assert.Empty(stored.Layout!.Pages);
+    }
+
+    [Fact]
+    public void A_downgraded_build_that_dropped_the_slots_is_placed_again_on_a_current_document()
+    {
+        var path = Write(NexusSettings.CurrentSchemaVersion, r => r.Rotation = 270);
+
+        using var store = new JsonConfigStore(path);
+        var stored = store.Load().PanelDevices["s"];
+
+        Assert.Null(stored.Layout);
+        Assert.Equal(Json(Layout()), Json(stored.PortraitLayout));
+    }
+
+    [Fact]
+    public void The_file_the_move_was_read_from_is_kept_once()
+    {
+        var path = Write(31, r => r.Rotation = 90);
+        var original = File.ReadAllText(path);
+
+        using (var store = new JsonConfigStore(path))
+        {
+            store.Load();
+        }
+
+        Assert.Equal(original, File.ReadAllText(path + ".pre-v32"));
+        File.WriteAllText(path + ".pre-v32", "kept");
+        File.WriteAllText(path, original);
+        using (var store = new JsonConfigStore(path))
+        {
+            store.Load();
+        }
+        Assert.Equal("kept", File.ReadAllText(path + ".pre-v32"));
+    }
+
+    [Fact]
+    public void Nothing_is_kept_when_nothing_moves()
+    {
+        var path = Write(31, r => r.Rotation = 180);
+
+        using var store = new JsonConfigStore(path);
+        store.Load();
+
+        Assert.False(File.Exists(path + ".pre-v32"));
+    }
+
+    [Fact]
+    public void Toggling_the_strip_between_classes_switches_slots()
+    {
+        var registry = new PanelDeviceRegistry(new InMemoryConfigStore());
+        var record = registry.Allocate("Strip", Strip());
+        registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout(), WidgetSize = "small" });
+
+        Assert.Null(registry.Patch(record.Id, new PanelDevicePatch { Rotation = 90 })!.Layout);
+        registry.Patch(record.Id, new PanelDevicePatch { Layout = new PanelLayoutDto { LayoutSchemaVersion = 2, Surface = PanelSurfaces.Monitor }, WidgetSize = "large" });
+        var back = registry.Patch(record.Id, new PanelDevicePatch { Rotation = 180 })!;
+
+        Assert.Equal(Json(Layout()), Json(back.Layout));
+        Assert.Equal("small", back.WidgetSize);
+        // The strip's capabilities are already the turned size; the render size does not swap again.
+        Assert.Equal((1920, 480), (back.RenderWidth, back.RenderHeight));
+        var turned = registry.Patch(record.Id, new PanelDevicePatch { Rotation = 90 })!;
+        Assert.Equal((1920, 480), (turned.RenderWidth, turned.RenderHeight));
+        Assert.Equal("large", turned.WidgetSize);
+    }
+
+    [Fact]
+    public void A_strip_record_made_after_the_migration_is_marked_and_stays_where_it_is_saved()
+    {
+        var store = new InMemoryConfigStore();
+        var registry = new PanelDeviceRegistry(store);
+        var fresh = registry.Allocate("Strip", Strip());
+        var bare = registry.Allocate("Bare", null);
+        registry.Patch(bare.Id, new PanelDevicePatch { Capabilities = Strip() });
+
+        Assert.True(store.Load().PanelDevices[fresh.Id].LayoutSlots);
+        Assert.True(store.Load().PanelDevices[bare.Id].LayoutSlots);
+        Assert.Null(registry.Get(fresh.Id)!.LayoutSlots);
+    }
+}

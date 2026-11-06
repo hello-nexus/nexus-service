@@ -6,7 +6,7 @@ namespace Nexus.Service.Panel;
 
 /// <summary>
 /// A glass whose render size swaps under a quarter turn keeps one layout per orientation class so
-/// turning it never rearranges the other one. <see cref="PanelDeviceRecord.Layout"/> and its
+/// turning it never rearranges the other one. The 8.8 inch strip is in this class too. <see cref="PanelDeviceRecord.Layout"/> and its
 /// WidgetSize and GridSlots are the half-turn class, exactly as earlier builds stored them;
 /// the Portrait-prefixed fields are the quarter class and stay empty until something is saved
 /// there, which reads like a layout nobody has saved yet.
@@ -15,6 +15,14 @@ public static class PanelLayoutSlots
 {
     /// <summary>The record's current rotation puts it in the quarter-turn class.</summary>
     public static bool UsesPortraitSlot(PanelDeviceRecord record) =>
+        PanelRotation.IsPortrait(PanelRotation.Effective(record))
+        && (PanelRotation.SwapsRenderSize(record.Capabilities) || record.Capabilities?.SupportsPortrait == true);
+
+    /// <summary>
+    /// The record's page renders at the glass's size with its sides swapped and the transport turns it back. The
+    /// 8.8 inch strip is not that: it renegotiates its geometry, so its capabilities already carry the turned size.
+    /// </summary>
+    public static bool TurnsRender(PanelDeviceRecord record) =>
         PanelRotation.IsPortrait(PanelRotation.Effective(record)) && PanelRotation.SwapsRenderSize(record.Capabilities);
 
     /// <summary>The layout the record shows now: the slot for its current rotation.</summary>
@@ -95,7 +103,7 @@ public static class PanelLayoutSlots
         {
             return null;
         }
-        return UsesPortraitSlot(record)
+        return TurnsRender(record)
             ? (caps.CssHeight!.Value, caps.CssWidth!.Value)
             : (caps.CssWidth!.Value, caps.CssHeight!.Value);
     }
