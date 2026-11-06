@@ -1228,6 +1228,7 @@ public static class NexusServiceCollectionExtensions
             wirelessHub.TxPortCycler = new Nexus.Service.Peripherals.LianLiWireless.WindowsSlv3TxPortCycler();
             wirelessHub.DisplayWatch = new Nexus.Service.Peripherals.LianLiWireless.WindowsDisplayStateWatch(wirelessHub.OnDisplayState);
 #endif
+            wirelessHub.ControlEnabled = () => sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>().IsEnabled("lianli-wireless");
             wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
             return wirelessHub;
         });

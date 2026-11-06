@@ -299,6 +299,9 @@ public sealed partial class Slv3Hub : IDisposable
     private int _portCycleInFlight;
     private long _powerQuietUntilMs;
 
+    /// <summary>False while the device control gate is off: no worker tick would service a restart.</summary>
+    internal Func<bool> ControlEnabled { get; set; } = () => true;
+
     /// <summary>Windows only; null leaves the TX reset to the RX alone.</summary>
     internal ISlv3TxPortCycler? TxPortCycler { get; set; }
 
@@ -905,6 +908,9 @@ public sealed partial class Slv3Hub : IDisposable
     internal const long ManualRestartWaitMs = 8_000;
     // A TX answer this soon after the reset may predate the restart and proves nothing.
     internal const long ManualRestartSettleMs = 2_000;
+    // A pending escalation no tick serviced this long after it was due (the control gate went
+    // off, or the passes kept failing) is dropped: cycling hours later would surprise.
+    internal const long ManualRestartExpiryMs = 30_000;
     private long _manualCooldownUntilMs;
     private long _manualResetSentMs;
     private long _manualEscalateAtMs;
@@ -913,12 +919,20 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>Restarts the TX from the device page. See <see cref="Slv3RestartResult"/>.</summary>
     public Slv3RestartResult RestartController()
     {
+        if (!ControlEnabled())
+        {
+            return Slv3RestartResult.Unavailable;
+        }
         lock (_lock)
         {
             var nowMs = _nowMs();
             if (_disposed)
             {
                 return Slv3RestartResult.Unavailable;
+            }
+            if (_manualEscalateAtMs != 0 && nowMs >= _manualEscalateAtMs + ManualRestartExpiryMs)
+            {
+                _manualEscalateAtMs = 0;
             }
             if (nowMs < _manualCooldownUntilMs || _manualEscalateAtMs != 0 || Volatile.Read(ref _portCycleInFlight) != 0)
             {
@@ -929,7 +943,7 @@ public sealed partial class Slv3Hub : IDisposable
                 ServiceLog.Info($"[lianli-wireless] controller restart held back: {hold}");
                 return Slv3RestartResult.HeldBack;
             }
-            var sent = _rx is { IsOpen: true } && _rx.RfSend(Slv3Protocol.BuildResetAnother());
+            var sent = SendManualTxResetLocked();
             if (!sent && TxPortCycler is null)
             {
                 return Slv3RestartResult.Unavailable;
@@ -937,14 +951,51 @@ public sealed partial class Slv3Hub : IDisposable
             _manualCooldownUntilMs = nowMs + ManualRestartCooldownMs;
             _manualResetSentMs = nowMs;
             _manualEscalateAtMs = nowMs + (sent ? ManualRestartWaitMs : 0);
+            if (sent)
+            {
+                // The TX is about to restart on purpose: the failures that follow are not a hang
+                // for the automatic path to reset again mid-boot. Its episode counters stay as they were.
+                _txFails = 0;
+                _nextTxRecoveryMs = nowMs + RecoveryBackoffMs;
+            }
             if (IsConnected)
             {
                 State.LinkStatus = Slv3LinkStatus.Recovering;
             }
             ServiceLog.Warn(sent
                 ? "[lianli-wireless] controller restart requested, resetting TX via RX"
-                : "[lianli-wireless] controller restart requested, the RX is not open so the TX port is cycled directly");
+                : "[lianli-wireless] controller restart requested, no RX could be opened so the TX port is cycled directly");
             return Slv3RestartResult.Started;
+        }
+    }
+
+    // UsbResetAnother on the RX handle. A link that failed to connect has no handle (the failed
+    // attempt tore it down), so a fresh one is opened for the one frame and released.
+    private bool SendManualTxResetLocked()
+    {
+        if (_rx is { IsOpen: true })
+        {
+            return _rx.RfSend(Slv3Protocol.BuildResetAnother());
+        }
+        var rxPort = FindPortLocked(Slv3DongleRole.Rx);
+        if (rxPort is null)
+        {
+            return false;
+        }
+        ISlv3Transport? fresh = null;
+        try
+        {
+            fresh = _transportFactory(rxPort);
+            return fresh.RfSend(Slv3Protocol.BuildResetAnother());
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] controller restart could not open the RX: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            try { fresh?.Dispose(); } catch { /* best effort */ }
         }
     }
 
@@ -956,7 +1007,13 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return;
         }
+        var overdueMs = nowMs - _manualEscalateAtMs;
         _manualEscalateAtMs = 0;
+        if (overdueMs >= ManualRestartExpiryMs)
+        {
+            ServiceLog.Info("[lianli-wireless] controller restart expired before the hub could check the TX");
+            return;
+        }
         if (_lastTxAnswerMs >= _manualResetSentMs + ManualRestartSettleMs)
         {
             ServiceLog.Info("[lianli-wireless] controller restart done, the TX answered after the reset");
@@ -1151,6 +1208,7 @@ public sealed partial class Slv3Hub : IDisposable
     // Caller holds _lock.
     private bool RunPassLocked(Func<bool> pass)
     {
+        ConsiderManualEscalationLocked(_nowMs());
         _pollSendsActive = true;
         _txStalledThisPoll = false;
         try
@@ -2081,7 +2139,6 @@ public sealed partial class Slv3Hub : IDisposable
     // path. Any reply proves the TX alive, even without a master MAC.
     private void RefreshMasterMacLocked()
     {
-        ConsiderManualEscalationLocked(_nowMs());
         if (_tx is not { IsOpen: true })
         {
             return;
