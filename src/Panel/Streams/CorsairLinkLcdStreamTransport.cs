@@ -58,7 +58,8 @@ public sealed class CorsairLinkLcdStreamTransport : IStreamedPanelTransport, IOr
 
     public string Serial { get; }
 
-    public void BindOrientation(Func<(int Rotation, bool Mirror)> source) => _orientation.Bind(source);
+    /// <summary>The turn is the LCD's firmware rotation (its own setting), so only the mirror is applied to the frame.</summary>
+    public void BindOrientation(Func<(int Rotation, bool Mirror)> source) => _orientation.Bind(() => (0, source().Mirror));
 
     public void Open()
     {

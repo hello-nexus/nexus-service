@@ -3011,25 +3011,16 @@ public static class NexusServiceCollectionExtensions
     {
         var registry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
         var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>();
-        var panelIds = new System.Collections.Concurrent.ConcurrentDictionary<string, (string Id, long ExpiresMs)>(StringComparer.OrdinalIgnoreCase);
+        var rotations = new Nexus.Service.Peripherals.FanLcd.FanLcdPanelRotationSource(
+            serial => streams.Load().TryGetValue(Nexus.Service.Panel.Streams.FanLcdPanelDiscovery.PanelSerial(screens, serial), out var rec)
+                ? rec.PanelDeviceId
+                : null,
+            panelId => registry.Get(panelId) is { } record ? record.Rotation ?? 0 : null);
         return new(screens,
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdSensorReader>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
             sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-            serial =>
-            {
-                // The store is a file read, so the record id is kept briefly; a session that re-mints its record is picked up when it lapses.
-                var now = Environment.TickCount64;
-                if (!panelIds.TryGetValue(serial, out var cached) || cached.ExpiresMs <= now)
-                {
-                    cached = streams.Load().TryGetValue(Nexus.Service.Panel.Streams.FanLcdPanelDiscovery.PanelSerial(screens, serial), out var rec)
-                        && !string.IsNullOrEmpty(rec.PanelDeviceId)
-                            ? (rec.PanelDeviceId, now + 5000)
-                            : ("", now + 5000);
-                    panelIds[serial] = cached;
-                }
-                return cached.Id.Length > 0 && registry.Get(cached.Id) is { } record ? record.Rotation ?? 0 : 0;
-            });
+            rotations.RotationOf);
     }
 }

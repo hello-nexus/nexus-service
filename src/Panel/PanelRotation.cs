@@ -35,6 +35,11 @@ public static class PanelRotation
         {
             return None;
         }
+        // The LINK LCD turns in firmware from its own setting, and its transport applies no panel rotation.
+        if (string.Equals(caps.Family, Peripherals.CorsairLink.CorsairLinkLcd.DeviceId, StringComparison.Ordinal))
+        {
+            return None;
+        }
         if (caps.Surface is not (PanelSurfaces.LcdRound or PanelSurfaces.LcdSquare or PanelSurfaces.LcdWide))
         {
             return None;

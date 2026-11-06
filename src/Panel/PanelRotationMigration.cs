@@ -22,6 +22,12 @@ public static class PanelRotationMigration
             {
                 continue;
             }
+            if (record.Flip180 == true && record.Capabilities?.Family == Peripherals.CorsairLink.CorsairLinkLcd.DeviceId)
+            {
+                // The software flip stacked on the LCD's firmware rotation; fold it into that setting so the glass looks the same.
+                doc.Devices.Corsair.LcdRotation = (byte)((doc.Devices.Corsair.LcdRotation + 2) & 3);
+                record.Flip180 = null;
+            }
             if (record.Rotation is null)
             {
                 var rotation = PanelRotation.FromLegacy(record.Flip180, record.Portrait, record.Capabilities);
