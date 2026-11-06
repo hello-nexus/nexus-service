@@ -291,12 +291,15 @@ public class PanelPortraitTests : IDisposable
         registry.Patch(id, new PanelDevicePatch { Layout = Layout("clock"), WidgetSize = "small" });
         registry.Patch(id, new PanelDevicePatch { Rotation = 90, Layout = Layout("weather"), WidgetSize = "large", GridSlots = 4 });
         var first = registry.CreatePreset(id, "A", out _)!.ActiveId!;
-        var second = registry.CreatePreset(id, "B", out _, fresh: true)!.ActiveId!;
+        var second = registry.CreatePreset(id, "B", out _)!.ActiveId!;
         Assert.NotEqual(first, second);
 
-        // The fresh preset starts both orientations over, and leaving A took A's two layouts with it.
-        var fresh = store.Load().PanelDevices[id];
-        Assert.Null(fresh.PortraitLayout);
+        // B takes other layouts in both orientations; leaving A took A's two layouts with it.
+        registry.Patch(id, new PanelDevicePatch { Layout = Layout("media") });
+        registry.Patch(id, new PanelDevicePatch { Rotation = 0, Layout = Layout("calendar") });
+        var changed = store.Load().PanelDevices[id];
+        Assert.Equal("calendar", changed.Layout!.Pages.Single().Widgets.Single().Type);
+        Assert.Equal("media", changed.PortraitLayout!.Pages.Single().Widgets.Single().Type);
 
         registry.ActivatePreset(id, first);
 

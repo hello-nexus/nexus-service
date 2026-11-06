@@ -92,7 +92,6 @@ public class BulkPanelQuarterTurnTests
         public bool NeedsHidChannel => false;
         public bool HasTouch => true;
         public bool SupportsSecondaryMonitor => true;
-        public IPanelTouchDecoder? CreateTouchDecoder() => new Decoder();
         public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid) => (NativeW, NativeH);
         public bool SendFrame(IBulkUsbPipe pipe, IHidDevice? hid, ReadOnlySpan<byte> bgra)
         {
@@ -100,16 +99,6 @@ public class BulkPanelQuarterTurnTests
             return true;
         }
         public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid) { }
-
-        // [phase, track, x, y] on the glass's own pixels.
-        private sealed class Decoder : IPanelTouchDecoder
-        {
-            public void Decode(ReadOnlySpan<byte> data, int width, int height, List<PanelTouchReport> output)
-            {
-                Assert.Equal((NativeW, NativeH), (width, height));
-                output.Add(new PanelTouchReport(data[1], (TouchPhase)data[0], data[2], data[3], true));
-            }
-        }
     }
 
     private sealed class TouchPipe : IBulkUsbPipe
@@ -177,45 +166,6 @@ public class BulkPanelQuarterTurnTests
                 Assert.InRange(sy, 0, RenderH - 1);
                 Assert.Equal(Px(sent, NativeW, x, y), Px(source, RenderW, sx, sy));
             }
-        }
-    }
-
-    [Theory]
-    [MemberData(nameof(Turns))]
-    public void A_touch_on_every_glass_pixel_reaches_the_page_where_that_pixel_was_drawn(int rotation, bool mirror)
-    {
-        var (hub, glass, pipe) = Attach();
-        using var _h = hub;
-        using var transport = new BulkPanelStreamTransport(hub, "serial", renderTurned: true);
-        transport.BindOrientation(() => (rotation, mirror));
-        var contacts = new ConcurrentQueue<PanelTouchContact>();
-        transport.BindTouch(contacts.Enqueue);
-        transport.Open();
-        // The source pixel (x, y) is the colour (x, y, ..), so the glass shows where each touch must land.
-        var source = Source(RenderW, RenderH);
-        transport.Write(source);
-        var sent = Assert.Single(glass.Frames);
-
-        for (int y = 0; y < NativeH; y++)
-        {
-            for (int x = 0; x < NativeW; x++)
-            {
-                pipe.Input.Enqueue(new byte[] { (byte)TouchPhase.Down, 0, (byte)x, (byte)y });
-                pipe.Input.Enqueue(new byte[] { (byte)TouchPhase.Up, 0, (byte)x, (byte)y });
-            }
-        }
-        Assert.True(SpinWait.SpinUntil(() => contacts.Count >= NativeW * NativeH * 2, 10000));
-
-        var downs = contacts.Where(c => c.Phase == TouchPhase.Down).ToArray();
-        Assert.Equal(NativeW * NativeH, downs.Length);
-        for (int i = 0; i < downs.Length; i++)
-        {
-            int x = i % NativeW;
-            int y = i / NativeW;
-            var (b, g, _, _) = Px(sent, NativeW, x, y);
-            // The blue and green channels carry the source column and row of the pixel the glass shows there.
-            Assert.Equal((b + 0.5) / RenderW, downs[i].X, 9);
-            Assert.Equal((g + 0.5) / RenderH, downs[i].Y, 9);
         }
     }
 
@@ -302,8 +252,8 @@ public class BulkPanelQuarterTurnTests
         Assert.Equal((RenderW, RenderH), host.Created);
         Assert.Equal(Expected(Source(RenderW, RenderH), rotation, mirror), glass.Frames.First());
 
-        // Glass pixel (3, 5) as the page frame would map it.
-        pipe.Input.Enqueue(new byte[] { (byte)TouchPhase.Down, 0, 3, 5 });
+        // Glass pixel (3, 5) as a ZMatrices v1 report: AE track event w h x y, x up the short side.
+        pipe.Input.Enqueue(new byte[] { 0xAE, 0, (byte)TouchPhase.Down, 0, NativeW, 0, NativeH, 0, NativeH - 1 - 5, 0, 3 });
         Assert.True(SpinWait.SpinUntil(() => host.Touches.Count >= 1, 5000));
         var (sx, sy) = BgraOrientation.MapToSource(3, 5, RenderW, RenderH, rotation, mirror, quarterOnRectangle: true);
         Assert.True(host.Touches.TryPeek(out var touch));

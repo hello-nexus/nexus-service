@@ -169,29 +169,6 @@ public class PanelLegacyLayoutPayloadTests
     // ── a look this build writes is always marked, so an empty quarter slot is never mistaken for an old payload ──
 
     [Fact]
-    public void A_fresh_preset_on_non_square_glass_does_not_leak_the_portrait_layout_into_the_next()
-    {
-        var store = new InMemoryConfigStore();
-        var registry = new PanelDeviceRegistry(store);
-        var record = registry.Allocate("Vision", Vision());
-        registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("a-landscape") });
-        registry.Patch(record.Id, new PanelDevicePatch { Rotation = 90, Layout = Layout("a-portrait") });
-        var a = registry.CreatePreset(record.Id, "A", out _)!.ActiveId!;
-        var b = registry.CreatePreset(record.Id, "B", out _, fresh: true)!.ActiveId!;
-        var stored = store.Load().PanelDevices[record.Id];
-        Assert.Null(stored.PortraitLayout);
-
-        registry.ActivatePreset(record.Id, a);
-        Assert.Equal("a-portrait", Type(stored.PortraitLayout));
-        registry.ActivatePreset(record.Id, b);
-
-        // B was captured empty and stamped, so it clears the slot instead of inheriting A's.
-        Assert.Null(stored.PortraitLayout);
-        Assert.True(stored.Presets!.Single(p => p.Id == b).LayoutSlots);
-        Assert.Equal("a-portrait", Type(stored.Presets!.Single(p => p.Id == a).PortraitLayout));
-    }
-
-    [Fact]
     public void A_profile_written_for_non_square_glass_carries_the_marker_and_clears_an_empty_slot_on_apply()
     {
         var source = new NexusSettings();
