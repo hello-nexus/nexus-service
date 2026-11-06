@@ -102,7 +102,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     /// <summary>How the head is mounted, from its panel record; library videos are encoded to match.</summary>
     public (bool Flip180, bool Mirror) Mount() => MountOf(Record());
 
-    private static (bool Flip180, bool Mirror) MountOf(PanelDeviceRecord? record) =>
+    internal static (bool Flip180, bool Mirror) MountOf(PanelDeviceRecord? record) =>
         record is null ? (false, false) : (record.Rotation == 180, record.Mirror == true);
 
     private PanelDeviceRecord? Record()

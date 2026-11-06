@@ -267,7 +267,7 @@ public class UniversalScreen88Tests
         Assert.Equal(OpenRgbLightingDeviceProvider.DefaultCardLayout(0), OpenRgbLightingDeviceProvider.DefaultCardLayout(0, strip));
     }
 
-    private static byte[] Quadrants(int width, int height)
+    internal static byte[] Quadrants(int width, int height)
     {
         var frame = new byte[width * height * 4];
         for (int y = 0; y < height; y++)
@@ -290,7 +290,7 @@ public class UniversalScreen88Tests
     private static bool IsRed(SKColor p) => p.Red > 200 && p.Green < 60 && p.Blue < 60;
 
     /// <summary>Decrypts each command header, answers it like the glass does, and keeps any payload after the header.</summary>
-    private sealed class GlassPipe : IBulkUsbPipe
+    internal sealed class GlassPipe : IBulkUsbPipe
     {
         private readonly Queue<byte[]> _pending = new();
         public bool Answers { get; set; } = true;
