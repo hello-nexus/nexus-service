@@ -110,7 +110,7 @@ public static class PanelProfileData
         var targets = live.PanelDevices.Values.Where(r => !IsPhone(r)).ToList();
         foreach (var (src, dst) in Pair(saved, targets))
         {
-            CopyLook(src, dst);
+            CopyLook(src, dst, toLive: true);
             // A layout left unset on a streamed strip reseeds the way a personalization reset does.
             dst.Layout ??= PanelLayoutDefaults.StripSeedFor(dst);
         }
@@ -195,6 +195,7 @@ public static class PanelProfileData
         PanelPresets.Copy(look, copy);
         var layout = copy.Layout;
         copy.Layout = null;
+        copy.LayoutSlots = null;
         return Json(copy) + (layout is null ? "" : Shape(layout));
     }
 
@@ -251,6 +252,7 @@ public static class PanelProfileData
         PanelPresets.Copy(record, copy);
         var layout = copy.Layout;
         copy.Layout = null;
+        copy.LayoutSlots = null;
         if (Json(copy) != Json(new PanelPreset()))
         {
             return false;
@@ -318,6 +320,7 @@ public static class PanelProfileData
         if (IsDefaultLook(keep))
         {
             CopyLook(others[0], keep);
+            keep.LayoutSlots = others[0].LayoutSlots;
         }
         foreach (var o in others)
         {
@@ -349,12 +352,14 @@ public static class PanelProfileData
             FingerprintKey = live.FingerprintKey ?? FingerprintKey(live.DisplayFingerprint),
         };
         CopyLook(live, stripped);
+        // Tells a later apply that this look stores its layout per orientation.
+        stripped.LayoutSlots = live.LayoutSlots;
         return stripped;
     }
 
-    internal static void CopyLook(PanelDeviceRecord from, PanelDeviceRecord to)
+    internal static void CopyLook(PanelDeviceRecord from, PanelDeviceRecord to, bool toLive = false)
     {
-        PanelPresets.Copy(from, to);
+        PanelPresets.Copy(from, to, toLive);
         to.Presets = from.Presets?.Select(ClonePreset).ToList();
         to.ActivePresetId = from.ActivePresetId;
         to.WidgetsLocked = from.WidgetsLocked;

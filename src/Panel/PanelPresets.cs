@@ -27,9 +27,25 @@ public static class PanelPresets
 
     /// <summary>Deep-copies every personalization field, nulls included, so a
     /// field left at its default in the source is reset in the target.</summary>
-    public static void Copy(IPanelPersonalization from, IPanelPersonalization to)
+    public static void Copy(IPanelPersonalization from, IPanelPersonalization to, bool toLive = false)
     {
-        to.Layout = CloneLayout(from.Layout);
+        if (to is PanelPreset)
+        {
+            to.LayoutSlots = from.LayoutSlots;
+        }
+        if (toLive && to is PanelDeviceRecord live && IsSingleLayout(from, live))
+        {
+            CopySingleLayout(from, live);
+        }
+        else
+        {
+            to.Layout = CloneLayout(from.Layout);
+            to.WidgetSize = from.WidgetSize;
+            to.GridSlots = from.GridSlots;
+            to.PortraitLayout = CloneLayout(from.PortraitLayout);
+            to.PortraitWidgetSize = from.PortraitWidgetSize;
+            to.PortraitGridSlots = from.PortraitGridSlots;
+        }
         to.ThemeMode = from.ThemeMode;
         to.AccentColor = from.AccentColor;
         to.BackgroundColor = from.BackgroundColor;
@@ -59,11 +75,32 @@ public static class PanelPresets
         to.Font = from.Font;
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
-        to.WidgetSize = from.WidgetSize;
-        to.GridSlots = from.GridSlots;
-        to.PortraitLayout = CloneLayout(from.PortraitLayout);
-        to.PortraitWidgetSize = from.PortraitWidgetSize;
-        to.PortraitGridSlots = from.PortraitGridSlots;
+    }
+
+    /// <summary>
+    /// A payload an older build saved holds one layout and says nothing about orientations. On the 8.8 inch
+    /// strip that is the slot payloads without the marker lack; on other glass a payload with nothing in the
+    /// quarter-turn slot is treated the same way, since those builds could not turn it.
+    /// </summary>
+    private static bool IsSingleLayout(IPanelPersonalization from, PanelDeviceRecord live) =>
+        live.Capabilities?.SupportsPortrait == true
+            ? from.LayoutSlots != true
+            : from.PortraitLayout is null && from.PortraitWidgetSize is null && from.PortraitGridSlots is null;
+
+    // The single layout lands in the slot the record shows now on the strip, in the landscape slot elsewhere,
+    // and the slot it does not touch keeps what it holds.
+    private static void CopySingleLayout(IPanelPersonalization from, PanelDeviceRecord live)
+    {
+        if (live.Capabilities?.SupportsPortrait == true)
+        {
+            PanelLayoutSlots.SetActiveLayout(live, CloneLayout(from.Layout));
+            PanelLayoutSlots.SetActiveWidgetSize(live, from.WidgetSize);
+            PanelLayoutSlots.SetActiveGridSlots(live, from.GridSlots);
+            return;
+        }
+        live.Layout = CloneLayout(from.Layout);
+        live.WidgetSize = from.WidgetSize;
+        live.GridSlots = from.GridSlots;
     }
 
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()

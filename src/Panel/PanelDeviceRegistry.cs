@@ -1115,7 +1115,7 @@ public sealed class PanelDeviceRegistry
             if (target is null)
                 return;
             PanelPresets.CaptureActive(record);
-            PanelPresets.Copy(target, record);
+            PanelPresets.Copy(target, record, toLive: true);
             record.ActivePresetId = target.Id;
             result = PanelPresets.ToResponse(record);
         });
@@ -1266,6 +1266,7 @@ public sealed class PanelDeviceRegistry
             FirstSeenAt = r.FirstSeenAt,
             LastSeenAt = r.LastSeenAt,
             Capabilities = r.Capabilities,
+            LayoutSlots = r.LayoutSlots,
             // A response clone always carries a number and what the glass supports; neither is a user's choice.
             Rotation = r.Rotation == 0 ? 0 : null,
             SupportedRotations = r.SupportedRotations,
