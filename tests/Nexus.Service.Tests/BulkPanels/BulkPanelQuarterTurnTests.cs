@@ -239,19 +239,37 @@ public class BulkPanelQuarterTurnTests
         var (hub, glass, _) = Attach();
         using var _h = hub;
         using var transport = new BulkPanelStreamTransport(hub, "serial", renderTurned: true);
+        long now = 0;
+        transport.Orientation.NowMs = () => now;
         var fail = false;
         transport.BindOrientation(() => fail ? throw new InvalidOperationException("record gone") : (270, false));
         var source = Source(RenderW, RenderH);
 
         transport.Write(source);
         fail = true;
-        Thread.Sleep(600);
+        now += PanelOrientationFilter.TtlMs + 1;
         transport.Write(source);
 
         var frames = glass.Frames.ToArray();
         Assert.Equal(2, frames.Length);
         Assert.Equal(Expected(source, 270, false), frames[0]);
         Assert.Equal(frames[0], frames[1]);
+    }
+
+    [Fact]
+    public void A_first_read_that_fails_on_a_mirrored_270_session_still_sends_that_turn_and_mirror()
+    {
+        var (hub, glass, _) = Attach();
+        using var _h = hub;
+        using var transport = new BulkPanelStreamTransport(hub, "serial", renderTurned: true);
+        var reads = 0;
+        // The read at bind time answers; every later one, including the first the filter makes, fails.
+        transport.BindOrientation(() => reads++ == 0 ? (270, true) : throw new InvalidOperationException("record gone"));
+        var source = Source(RenderW, RenderH);
+
+        transport.Write(source);
+
+        Assert.Equal(Expected(source, 270, true), Assert.Single(glass.Frames));
     }
 
     [Fact]

@@ -1067,10 +1067,20 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             }
             if (transport is IOrientablePanelTransport orientable)
             {
+                var known = (Rotation: 0, Mirror: false);
                 orientable.BindOrientation(() =>
                 {
-                    var rec = _registry.Get(panelId);
-                    return (rec?.Rotation ?? 0, rec?.Mirror ?? false);
+                    // A failed read keeps the last answer rather than reading as an upright, unmirrored mount.
+                    try
+                    {
+                        var rec = _registry.Get(panelId);
+                        known = (rec?.Rotation ?? 0, rec?.Mirror ?? false);
+                    }
+                    catch (Exception ex)
+                    {
+                        ServiceLog.Warn($"[streamed-panel] orientation read failed for '{panelId}': {ex.GetType().Name}: {ex.Message}");
+                    }
+                    return known;
                 });
             }
             // The backlight is a device command, so the transport writes it rather than

@@ -148,7 +148,9 @@ public sealed class WidgetSettingsService
         }
         foreach (var device in s.PanelDevices.Values)
         {
-            foreach (var layout in PanelLayoutSlots.All(device))
+            // The slot the panel shows first, so an id the other slot still shares is the one the user is editing.
+            var shown = PanelLayoutSlots.Active(device);
+            foreach (var layout in PanelLayoutSlots.All(device).OrderBy(l => ReferenceEquals(l, shown) ? 0 : 1))
             {
                 var hit = FindInLayout(layout, instanceId);
                 if (hit is not null) return hit;
