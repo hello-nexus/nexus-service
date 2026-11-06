@@ -213,9 +213,8 @@ public partial class Slv3HubTests
     [Fact]
     public void A_restart_with_no_rx_to_open_and_no_cycler_is_unavailable_and_with_one_cycles_directly()
     {
-        var r = RestartHub(withCycler: false, connect: false);
         // Discovery is the only source of an RX to open; without one the reset cannot go out.
-        var noRx = new Slv3Hub(new ToggleDiscovery { RxPresent = false }, _ => new FakeTxTransport(new FakeSlv3Network()), r.Clock.NowMs);
+        var noRx = new Slv3Hub(new ToggleDiscovery { RxPresent = false }, _ => new FakeTxTransport(new FakeSlv3Network()), new ManualClock().NowMs);
         Assert.Equal(Slv3RestartResult.Unavailable, noRx.RestartController());
 
         var discovery = new ToggleDiscovery { RxPresent = false };
@@ -259,5 +258,49 @@ public partial class Slv3HubTests
         r.Clock.AdvanceMs(Slv3Hub.ManualRestartWaitMs + Slv3Hub.ManualRestartExpiryMs + 1);
         r.Hub.PollTick();
         Assert.Empty(r.Cycler.Cycled);
+    }
+
+    [Fact]
+    public void A_tx_that_comes_back_before_the_wait_ends_is_connected_not_port_cycled()
+    {
+        var r = RestartHub(connect: false);
+        r.Net.TxWedged = true;
+        r.Net.TxIgnoresReset = true;
+        Assert.Equal(Slv3RestartResult.Started, r.Hub.RestartController());
+        Assert.Equal(1, r.RxResets);
+
+        r.Clock.AdvanceMs(5_000);
+        Assert.False(r.Hub.EnsureConnected());
+        r.Net.TxWedged = false;
+
+        r.Clock.AdvanceMs(Slv3Hub.ManualRestartWaitMs - 5_000 + 500);
+        Assert.True(r.Hub.EnsureConnected());
+        r.Hub.PollTick();
+
+        Assert.Empty(r.Cycler.Cycled);
+        Assert.Equal(0, r.Cycler.Resolves);
+    }
+
+    [Fact]
+    public void A_restart_is_refused_without_a_cycle_when_another_app_holds_the_rx()
+    {
+        var cycler = new FakeTxPortCycler();
+        var net = new FakeSlv3Network();
+        var clock = new ManualClock();
+        var hub = new Slv3Hub(new ToggleDiscovery(), port => port.Role == Slv3DongleRole.Rx
+            ? throw new Slv3OpenException("in use", OperatingSystem.IsLinux() ? 16 : 5)
+            : new FakeTxTransport(net), clock.NowMs)
+        {
+            RunPortCycle = work => work(),
+            TxPortCycler = cycler,
+        };
+
+        Assert.Equal(Slv3RestartResult.Unavailable, hub.RestartController());
+        clock.AdvanceMs(Slv3Hub.ManualRestartWaitMs + 1);
+        hub.PollTick();
+        hub.EnsureConnected();
+
+        Assert.Empty(cycler.Cycled);
+        Assert.Equal(0, cycler.Resolves);
     }
 }

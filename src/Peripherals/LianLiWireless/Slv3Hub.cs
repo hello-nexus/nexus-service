@@ -457,94 +457,101 @@ public sealed partial class Slv3Hub : IDisposable
                 return true;
             }
 
-            Slv3PortInfo? txPort = null;
-            Slv3PortInfo? rxPort = null;
-            foreach (var port in _discovery.Discover())
-            {
-                if (port.Role == Slv3DongleRole.Tx)
-                {
-                    txPort ??= port;
-                }
-                else if (port.Role == Slv3DongleRole.Rx)
-                {
-                    rxPort ??= port;
-                }
-            }
-            ConsiderTxPortCycleLocked(txPort, _nowMs());
-            if (txPort is null || rxPort is null)
-            {
-                // The module presents TX and RX as two WinUSB devices behind its
-                // own hub, so one half missing is a real state (a failed
-                // enumeration on that port), not "nothing plugged in".
-                State.LinkStatus = txPort is null && rxPort is null ? Slv3LinkStatus.None
-                    : txPort is null ? Slv3LinkStatus.TxMissing
-                    : Slv3LinkStatus.RxMissing;
-                // A reset via the RX re-enumerates only the TX, so only a module
-                // with neither half listed for LinkAbsentDisconnectMs was
-                // unplugged and starts a fresh streak.
-                var nowMs = _nowMs();
-                if (txPort is not null || rxPort is not null)
-                {
-                    _bothAbsentSinceMs = 0;
-                }
-                else if (_bothAbsentSinceMs == 0)
-                {
-                    _bothAbsentSinceMs = nowMs;
-                }
-                else if (nowMs - _bothAbsentSinceMs >= LinkAbsentDisconnectMs)
-                {
-                    _txFails = 0;
-                    _txRecoveries = 0;
-                    _nextTxRecoveryMs = 0;
-                    ClearPortCycleEpisodeLocked();
-                }
-                return false;
-            }
-            _bothAbsentSinceMs = 0;
-
-            try
-            {
-                _tx = _transportFactory(txPort);
-                _rx = _transportFactory(rxPort);
-            }
-            catch (Exception ex)
-            {
-                State.LinkStatus = ex is Slv3OpenException { IsInUseByAnotherApp: true }
-                    ? Slv3LinkStatus.Busy
-                    : Slv3LinkStatus.OpenFailed;
-                ServiceLog.Error($"[lianli-wireless] open failed: {ex.GetType().Name}: {ex.Message}");
-                DisconnectLocked();
-                return false;
-            }
-
-            if (!MasterInitLocked(out var anyWritten))
-            {
-                State.LinkStatus = _probesSinceLastMac >= Slv3Protocol.ChannelScanOrder().Length
-                    ? Slv3LinkStatus.NoResponse
-                    : Slv3LinkStatus.Unknown;
-                ServiceLog.Warn($"[lianli-wireless] GetMac failed on connect{(anyWritten ? "" : " (every write failed)")}");
-                // A TX parked on another channel still takes writes, and a hard write
-                // error closes the handle of a TX that is re-enumerating, so writes
-                // that all timed out on a handle still open are a hung TX: the first
-                // reset of a streak goes out now instead of after TxFailsBeforeReset
-                // attempts.
-                if (!anyWritten && _tx is { IsOpen: true } && _txRecoveries == 0)
-                {
-                    ResetTxViaRxLocked(_nowMs(), "every GetMac write on connect failed");
-                }
-                else
-                {
-                    NoteTxFailureLocked(_nowMs());
-                }
-                DisconnectLocked();
-                return false;
-            }
-
-            State.LinkStatus = Slv3LinkStatus.Ok;
-            State.IsConnected = true;
-            ServiceLog.Info($"[lianli-wireless] connected (tx={txPort.PortName}, rx={rxPort.PortName}, master={State.MasterMac})");
-            return true;
+            var connected = ConnectAttemptLocked();
+            ConsiderManualEscalationLocked(_nowMs());
+            return connected;
         }
+    }
+
+    private bool ConnectAttemptLocked()
+    {
+        Slv3PortInfo? txPort = null;
+        Slv3PortInfo? rxPort = null;
+        foreach (var port in _discovery.Discover())
+        {
+            if (port.Role == Slv3DongleRole.Tx)
+            {
+                txPort ??= port;
+            }
+            else if (port.Role == Slv3DongleRole.Rx)
+            {
+                rxPort ??= port;
+            }
+        }
+        ConsiderTxPortCycleLocked(txPort, _nowMs());
+        if (txPort is null || rxPort is null)
+        {
+            // The module presents TX and RX as two WinUSB devices behind its
+            // own hub, so one half missing is a real state (a failed
+            // enumeration on that port), not "nothing plugged in".
+            State.LinkStatus = txPort is null && rxPort is null ? Slv3LinkStatus.None
+                : txPort is null ? Slv3LinkStatus.TxMissing
+                : Slv3LinkStatus.RxMissing;
+            // A reset via the RX re-enumerates only the TX, so only a module
+            // with neither half listed for LinkAbsentDisconnectMs was
+            // unplugged and starts a fresh streak.
+            var nowMs = _nowMs();
+            if (txPort is not null || rxPort is not null)
+            {
+                _bothAbsentSinceMs = 0;
+            }
+            else if (_bothAbsentSinceMs == 0)
+            {
+                _bothAbsentSinceMs = nowMs;
+            }
+            else if (nowMs - _bothAbsentSinceMs >= LinkAbsentDisconnectMs)
+            {
+                _txFails = 0;
+                _txRecoveries = 0;
+                _nextTxRecoveryMs = 0;
+                ClearPortCycleEpisodeLocked();
+            }
+            return false;
+        }
+        _bothAbsentSinceMs = 0;
+
+        try
+        {
+            _tx = _transportFactory(txPort);
+            _rx = _transportFactory(rxPort);
+        }
+        catch (Exception ex)
+        {
+            State.LinkStatus = ex is Slv3OpenException { IsInUseByAnotherApp: true }
+                ? Slv3LinkStatus.Busy
+                : Slv3LinkStatus.OpenFailed;
+            ServiceLog.Error($"[lianli-wireless] open failed: {ex.GetType().Name}: {ex.Message}");
+            DisconnectLocked();
+            return false;
+        }
+
+        if (!MasterInitLocked(out var anyWritten))
+        {
+            State.LinkStatus = _probesSinceLastMac >= Slv3Protocol.ChannelScanOrder().Length
+                ? Slv3LinkStatus.NoResponse
+                : Slv3LinkStatus.Unknown;
+            ServiceLog.Warn($"[lianli-wireless] GetMac failed on connect{(anyWritten ? "" : " (every write failed)")}");
+            // A TX parked on another channel still takes writes, and a hard write
+            // error closes the handle of a TX that is re-enumerating, so writes
+            // that all timed out on a handle still open are a hung TX: the first
+            // reset of a streak goes out now instead of after TxFailsBeforeReset
+            // attempts.
+            if (!anyWritten && _tx is { IsOpen: true } && _txRecoveries == 0)
+            {
+                ResetTxViaRxLocked(_nowMs(), "every GetMac write on connect failed");
+            }
+            else
+            {
+                NoteTxFailureLocked(_nowMs());
+            }
+            DisconnectLocked();
+            return false;
+        }
+
+        State.LinkStatus = Slv3LinkStatus.Ok;
+        State.IsConnected = true;
+        ServiceLog.Info($"[lianli-wireless] connected (tx={txPort.PortName}, rx={rxPort.PortName}, master={State.MasterMac})");
+        return true;
     }
 
     public void Disconnect()
@@ -697,7 +704,6 @@ public sealed partial class Slv3Hub : IDisposable
         // The restarted TX lost the LCD video arming; the LCD loop re-arms it.
         _videoModeActive = false;
         _videoModePreppedCount = 0;
-        _lastTxAnswerMs = _nowMs();
         ServiceLog.Info("[lianli-wireless] TX reopened");
     }
 
@@ -793,7 +799,6 @@ public sealed partial class Slv3Hub : IDisposable
     // that left the bus was re-enumerated, which is not a hang the RX reset ignored.
     private void ConsiderTxPortCycleLocked(Slv3PortInfo? txPort, long nowMs)
     {
-        ConsiderManualEscalationLocked(nowMs);
         if (txPort is null)
         {
             _txHungResets = 0;
@@ -943,7 +948,13 @@ public sealed partial class Slv3Hub : IDisposable
                 ServiceLog.Info($"[lianli-wireless] controller restart held back: {hold}");
                 return Slv3RestartResult.HeldBack;
             }
-            var sent = SendManualTxResetLocked();
+            var sent = SendManualTxResetLocked(out var rxInUse);
+            if (rxInUse)
+            {
+                // Another app holds the dongle: cycling the port would pull it out from under that app.
+                ServiceLog.Warn("[lianli-wireless] controller restart refused, another app holds the RX");
+                return Slv3RestartResult.Unavailable;
+            }
             if (!sent && TxPortCycler is null)
             {
                 return Slv3RestartResult.Unavailable;
@@ -956,7 +967,7 @@ public sealed partial class Slv3Hub : IDisposable
                 // The TX is about to restart on purpose: the failures that follow are not a hang
                 // for the automatic path to reset again mid-boot. Its episode counters stay as they were.
                 _txFails = 0;
-                _nextTxRecoveryMs = nowMs + RecoveryBackoffMs;
+                _nextTxRecoveryMs = Math.Max(_nextTxRecoveryMs, nowMs + RecoveryBackoffMs);
             }
             if (IsConnected)
             {
@@ -971,8 +982,9 @@ public sealed partial class Slv3Hub : IDisposable
 
     // UsbResetAnother on the RX handle. A link that failed to connect has no handle (the failed
     // attempt tore it down), so a fresh one is opened for the one frame and released.
-    private bool SendManualTxResetLocked()
+    private bool SendManualTxResetLocked(out bool rxInUseByAnotherApp)
     {
+        rxInUseByAnotherApp = false;
         if (_rx is { IsOpen: true })
         {
             return _rx.RfSend(Slv3Protocol.BuildResetAnother());
@@ -990,6 +1002,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
         catch (Exception ex)
         {
+            rxInUseByAnotherApp = ex is Slv3OpenException { IsInUseByAnotherApp: true };
             ServiceLog.Warn($"[lianli-wireless] controller restart could not open the RX: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
@@ -1100,6 +1113,7 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
         probe = TxProbe.Answered;
+        _lastTxAnswerMs = _nowMs();
         // A reply of any kind means the TX is not hung, whatever it says about the master.
         _txHungResets = 0;
         _txHungSinceMs = 0;
@@ -1208,12 +1222,13 @@ public sealed partial class Slv3Hub : IDisposable
     // Caller holds _lock.
     private bool RunPassLocked(Func<bool> pass)
     {
-        ConsiderManualEscalationLocked(_nowMs());
         _pollSendsActive = true;
         _txStalledThisPoll = false;
         try
         {
-            return pass();
+            var ok = pass();
+            ConsiderManualEscalationLocked(_nowMs());
+            return ok;
         }
         finally
         {
@@ -2146,7 +2161,6 @@ public sealed partial class Slv3Hub : IDisposable
         TryGetMacOnChannelLocked(_channel, out var probe);
         if (probe == TxProbe.Answered)
         {
-            _lastTxAnswerMs = _nowMs();
             _txMissedProbes = 0;
             _txProbeWriteFailures = 0;
             return;
