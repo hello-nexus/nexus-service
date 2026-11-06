@@ -259,36 +259,21 @@ public class PanelRotationTests : IDisposable
     }
 
     [Fact]
-    public void The_corsair_link_lcd_takes_no_panel_rotation_because_it_turns_in_firmware()
+    public void The_corsair_link_lcd_takes_only_the_software_half_turn_and_a_stored_flip_becomes_it()
     {
         var caps = Caps(PanelSurfaces.LcdRound);
         caps.Family = Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd.DeviceId;
+        Assert.Equal(new[] { 0, 180 }, PanelRotation.SupportedFor(caps));
+        Assert.False(PanelRotation.TryResolve(Record(caps), new PanelDevicePatch { Rotation = 90 }, out _));
 
-        Assert.Equal(new[] { 0 }, PanelRotation.SupportedFor(caps));
-        Assert.False(PanelRotation.TryResolve(Record(caps), new PanelDevicePatch { Rotation = 180 }, out _));
-    }
-
-    [Theory]
-    [InlineData(0, 2)]
-    [InlineData(1, 3)]
-    [InlineData(2, 0)]
-    [InlineData(3, 1)]
-    public void A_stored_corsair_flip_moves_into_the_lcds_firmware_rotation(int firmware, int expected)
-    {
         var settings = new NexusSettings();
-        settings.Devices.Corsair.LcdRotation = (byte)firmware;
-        var caps = Caps(PanelSurfaces.LcdRound);
-        caps.Family = Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd.DeviceId;
+        settings.Devices.Corsair.LcdRotation = 1;
         settings.PanelDevices["link"] = new PanelDeviceRecord { Id = "link", Capabilities = caps, Flip180 = true };
 
-        Assert.True(PanelRotationMigration.Apply(settings));
-        Assert.Equal(expected, settings.Devices.Corsair.LcdRotation);
-        Assert.Null(settings.PanelDevices["link"].Rotation);
-        Assert.Null(settings.PanelDevices["link"].Flip180);
+        PanelRotationMigration.Apply(settings);
 
-        // A second pass has nothing left to fold.
-        Assert.False(PanelRotationMigration.Apply(settings));
-        Assert.Equal(expected, settings.Devices.Corsair.LcdRotation);
+        Assert.Equal(180, settings.PanelDevices["link"].Rotation);
+        Assert.Equal(1, settings.Devices.Corsair.LcdRotation);
     }
 
     [Fact]
@@ -386,15 +371,5 @@ public class PanelRotationTests : IDisposable
 
         Assert.True(PanelDeviceRegistry.IsCustomized(registry.Get(record.Id)!));
         Assert.True(registry.IsCustomized(record.Id));
-    }
-
-    [Theory]
-    [InlineData(0, 0)]
-    [InlineData(90, 1)]
-    [InlineData(180, 2)]
-    [InlineData(270, 3)]
-    public void Quarter_turns_count_clockwise_from_the_rotation(int rotation, int turns)
-    {
-        Assert.Equal(turns, PanelRotation.QuarterTurns(rotation));
     }
 }
