@@ -4,6 +4,7 @@ using System.Linq;
 using Nexus.Service.Devices.Firmware;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals;
+using Nexus.Service.Platform.Displays;
 using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
 using Nexus.Service.Persistence;
@@ -19,6 +20,25 @@ public class Y70GtTests
         Assert.Equal("y70-gt", Y70DisplayProtocol.VariantForProductId(0x0C06));
         Assert.Equal(-1, Y70DisplayProtocol.ProductIdForVariant(Y70DisplayProtocol.VariantGt));
         Assert.Null(DfuProductKey.IdentityForProductId(0x0C06));
+    }
+
+    [Theory]
+    [InlineData(@"\\?\DISPLAY#RTK2234#5&1264575b&0&UID4356#{guid}")]
+    [InlineData(@"\\?\DISPLAY#RTK0004#5&1264575b&0&UID4353#{guid}")]
+    public void Gt_and_touch_screens_are_both_the_y70_display(string rawHardwareId)
+    {
+        Assert.True(DisplayTopologyService.IsY70Display(rawHardwareId));
+        Assert.True(Y70DisplayProtocol.PanelRank(rawHardwareId) >= 0);
+    }
+
+    [Fact]
+    public void Gt_screen_outranks_the_touch_screen_when_both_are_attached()
+    {
+        var gt = Y70DisplayProtocol.PanelRank(@"\\?\DISPLAY#RTK2234#5&1264575b&0&UID4356#{guid}");
+        var touch = Y70DisplayProtocol.PanelRank(@"\\?\DISPLAY#RTK0004#5&1264575b&0&UID4353#{guid}");
+        Assert.Equal(0, gt);
+        Assert.True(gt < touch);
+        Assert.Equal(-1, Y70DisplayProtocol.PanelRank(@"\\?\DISPLAY#SAM71AA#5&1264575b&0&UID4355#{guid}"));
     }
 
     [Theory]
