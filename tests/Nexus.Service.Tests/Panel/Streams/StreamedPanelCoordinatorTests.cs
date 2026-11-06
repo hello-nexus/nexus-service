@@ -163,8 +163,23 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         }
     }
 
+    private sealed class FakeOrientableTransport : IStreamedPanelTransport, IOrientablePanelTransport
+    {
+        public Func<(int Rotation, bool Mirror)>? Source { get; private set; }
+        public bool IsOpen { get; private set; }
+        public string Serial { get; }
+        public FakeOrientableTransport(string serial) { Serial = serial; }
+        public void BindOrientation(Func<(int Rotation, bool Mirror)> source) => Source = source;
+        public void Open() => IsOpen = true;
+        public void StartPlayer() { }
+        public void Write(ReadOnlySpan<byte> annexBAccessUnit) { }
+        public void Dispose() { IsOpen = false; }
+    }
+
     private sealed class FakeDiscovery : IStreamedPanelDiscovery
     {
+        public bool UseOrientableTransport { get; set; }
+        public List<FakeOrientableTransport> Orientables { get; } = new();
         public string HandlerId => "fake-panel";
         public List<StreamedPanelDeviceInfo> Devices { get; } = new();
         public List<FakeTransport> Transports { get; } = new();
@@ -179,6 +194,12 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         public IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info)
         {
+            if (UseOrientableTransport)
+            {
+                var orientable = new FakeOrientableTransport(info.Serial);
+                Orientables.Add(orientable);
+                return orientable;
+            }
             if (UseBrightnessTransport)
             {
                 var brightness = new FakeBrightnessTransport(info.Serial);
@@ -242,6 +263,24 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.NotEqual(turned.SessionId, back.SessionId);
         Assert.Equal((854, 480), (back.CssWidth, back.CssHeight));
         Assert.Equal((854, 480), (_registry.Get(id)!.Capabilities!.CssWidth, _registry.Get(id)!.Capabilities!.CssHeight));
+    }
+
+    [Fact]
+    public void The_orientation_the_coordinator_binds_starts_from_the_record_and_keeps_it_when_a_read_comes_back_empty()
+    {
+        var record = _registry.Allocate("Vision", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide, Family = "thermalright-lcd", CssWidth = 854, CssHeight = 480 });
+        _registry.Patch(record.Id, new PanelDevicePatch { Rotation = 270, Mirror = true });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["vision"] = new() { PanelDeviceId = record.Id } });
+        _discovery.UseOrientableTransport = true;
+        _discovery.Devices.Add(TurnableGlass());
+
+        Coordinator().TickOnce();
+
+        var source = Assert.Single(_discovery.Orientables).Source!;
+        Assert.Equal((270, true), source());
+        // The record going away reads as a failed read, not as an upright unmirrored mount.
+        _registry.Remove(record.Id);
+        Assert.Equal((270, true), source());
     }
 
     [Fact]

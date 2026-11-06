@@ -121,12 +121,14 @@ public class WidgetSettingsServiceTests : IDisposable
         });
         var strip = _store.Load().PanelDevices["strip"];
         var portraitId = strip.PortraitLayout!.Pages.Single().Widgets.Single().Id;
-        Assert.NotEqual("landscape-copy", portraitId);
+        var landscapeId = strip.Layout!.Pages.Single().Widgets.Single().Id;
+        Assert.Equal("landscape-copy", portraitId);
+        Assert.NotEqual(portraitId, landscapeId);
 
         Set(svc, portraitId, "#111111");
         Assert.Null(strip.Layout!.Pages.Single().Widgets.Single().Config);
 
-        Set(svc, "landscape-copy", "#222222");
+        Set(svc, landscapeId, "#222222");
         Assert.Equal("#111111", strip.PortraitLayout!.Pages.Single().Widgets.Single().Config!["color"].GetString());
         Assert.Equal("#222222", strip.Layout.Pages.Single().Widgets.Single().Config!["color"].GetString());
     }

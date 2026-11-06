@@ -1172,13 +1172,25 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             if (transport is IOrientablePanelTransport orientable)
             {
                 var known = (Rotation: 0, Mirror: false);
+                try
+                {
+                    if (_registry.Get(panelId) is { } seed)
+                    {
+                        known = (seed.Rotation ?? 0, seed.Mirror ?? false);
+                    }
+                }
+                catch (Exception)
+                {
+                }
                 orientable.BindOrientation(() =>
                 {
-                    // A failed read keeps the last answer rather than reading as an upright, unmirrored mount.
+                    // A failed or empty read keeps the last answer rather than reading as an upright, unmirrored mount.
                     try
                     {
-                        var rec = _registry.Get(panelId);
-                        known = (rec?.Rotation ?? 0, rec?.Mirror ?? false);
+                        if (_registry.Get(panelId) is { } rec)
+                        {
+                            known = (rec.Rotation ?? 0, rec.Mirror ?? false);
+                        }
                     }
                     catch (Exception ex)
                     {

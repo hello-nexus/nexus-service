@@ -69,13 +69,16 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
         var stored = store.Load().PanelDevices["s"];
         var shown = new PanelDeviceRegistry(store).Get("s")!;
 
-        Assert.Equal(Screen(Layout()), Screen(shown.Layout));
+        // The slot on show keeps every id exactly, since state outside the service is keyed by them.
+        Assert.Equal(before, Json(shown.Layout));
         Assert.Equal("small", shown.WidgetSize);
         Assert.Equal(6, shown.GridSlots);
         Assert.True(stored.LayoutSlots);
-        // The landscape fields keep what the strip showed, so a downgraded build still finds it.
-        Assert.Equal(before, Json(stored.Layout));
+        // The landscape fields stay filled, so a downgraded build still finds a layout.
+        Assert.Equal(Screen(Layout()), Screen(stored.Layout));
+        Assert.Equal(portrait ? before : "", portrait ? Json(stored.PortraitLayout) : "");
         Assert.Equal(portrait ? Screen(Layout()) : "", Screen(stored.PortraitLayout));
+        Assert.Equal(portrait, Json(stored.Layout) != before);
         Assert.Equal("small", stored.WidgetSize);
         Assert.Equal(portrait ? "small" : null, stored.PortraitWidgetSize);
         Assert.Equal(portrait ? 6 : null, stored.PortraitGridSlots);
@@ -94,8 +97,8 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
         var shown = new PanelDeviceRegistry(store).Get("s")!;
 
         Assert.True(PanelRotation.IsPortrait(shown.Rotation ?? 0));
-        Assert.Equal(Screen(Layout()), Screen(shown.Layout));
-        Assert.Equal(Screen(Layout()), Screen(store.Load().PanelDevices["s"].PortraitLayout));
+        Assert.Equal(before, Json(shown.Layout));
+        Assert.Equal(before, Json(store.Load().PanelDevices["s"].PortraitLayout));
     }
 
     [Fact]
@@ -270,7 +273,57 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
     }
 
     [Fact]
-    public void The_portrait_copy_has_its_own_ids_and_its_own_deck_rows()
+    public void The_landscape_copy_has_its_own_ids_and_its_own_deck_rows()
+    {
+        var path = WriteDeckStrip(null);
+
+        using var store = new JsonConfigStore(path);
+        var loaded = store.Load();
+        var stored = loaded.PanelDevices["s"];
+        var portraitWidget = stored.PortraitLayout!.Pages.Single().Widgets.Single();
+        var landscapeWidget = stored.Layout!.Pages.Single().Widgets.Single();
+
+        // The slot on show keeps the original ids, the other one is re-identified.
+        Assert.Equal("w", portraitWidget.Id);
+        Assert.Equal("p", stored.PortraitLayout.Pages.Single().Id);
+        Assert.Equal("p", stored.PortraitLayout.ActivePageId);
+        Assert.Equal("w", stored.PortraitLayout.ImmersiveOnLoadWidgetId);
+        Assert.NotEqual("w", landscapeWidget.Id);
+        Assert.NotEqual("p", stored.Layout.Pages.Single().Id);
+        Assert.Equal(stored.Layout.Pages.Single().Id, stored.Layout.ActivePageId);
+        Assert.Equal(landscapeWidget.Id, stored.Layout.ImmersiveOnLoadWidgetId);
+
+        var rows = loaded.StreamDeck.Instances;
+        var shownRow = rows["widget:w"];
+        var copyRow = rows["widget:" + landscapeWidget.Id];
+        Assert.NotSame(shownRow, copyRow);
+        Assert.Equal("preset-1", copyRow.ActivePresetId);
+        copyRow.ActivePresetId = "preset-2";
+        Assert.Equal("preset-1", shownRow.ActivePresetId);
+    }
+
+    [Fact]
+    public void Placing_it_again_after_a_downgrade_overwrites_the_copys_deck_row()
+    {
+        var first = WriteDeckStrip(null);
+        string copyRow;
+        using (var store = new JsonConfigStore(first))
+        {
+            copyRow = "widget:" + store.Load().PanelDevices["s"].Layout!.Pages.Single().Widgets.Single().Id;
+        }
+        // A downgrade drops the slot and the marker; the copy's row was left behind, stale, and the original's moved on.
+        var again = WriteDeckStrip(doc =>
+        {
+            doc.StreamDeck.Instances[copyRow] = new DeckInstance { Mode = "custom", ActivePresetId = "stale" };
+            doc.StreamDeck.Instances["widget:w"].ActivePresetId = "moved-on";
+        });
+
+        using var reloaded = new JsonConfigStore(again);
+
+        Assert.Equal("moved-on", reloaded.Load().StreamDeck.Instances[copyRow].ActivePresetId);
+    }
+
+    private string WriteDeckStrip(Action<NexusSettings>? shape)
     {
         var path = Write(31, r =>
         {
@@ -280,31 +333,11 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
             r.Layout.ImmersiveOnLoadWidgetId = "w";
             r.Layout.Pages[0].Widgets[0].Type = "deck";
         });
-        var json = File.ReadAllText(path);
-        var withRow = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.NexusSettings)!;
-        withRow.StreamDeck.Instances["widget:w"] = new DeckInstance { Mode = "custom", ActivePresetId = "preset-1" };
-        File.WriteAllText(path, JsonSerializer.Serialize(withRow, PersistenceJsonContext.Default.NexusSettings));
-
-        using var store = new JsonConfigStore(path);
-        var loaded = store.Load();
-        var stored = loaded.PanelDevices["s"];
-        var landscapeWidget = stored.Layout!.Pages.Single().Widgets.Single();
-        var portraitWidget = stored.PortraitLayout!.Pages.Single().Widgets.Single();
-
-        Assert.Equal("w", landscapeWidget.Id);
-        Assert.NotEqual("w", portraitWidget.Id);
-        Assert.NotEqual(stored.Layout.Pages.Single().Id, stored.PortraitLayout.Pages.Single().Id);
-        Assert.Equal(stored.PortraitLayout.Pages.Single().Id, stored.PortraitLayout.ActivePageId);
-        Assert.Equal(portraitWidget.Id, stored.PortraitLayout.ImmersiveOnLoadWidgetId);
-        Assert.Equal("w", stored.Layout.ImmersiveOnLoadWidgetId);
-
-        var rows = loaded.StreamDeck.Instances;
-        var landscapeRow = rows["widget:w"];
-        var portraitRow = rows["widget:" + portraitWidget.Id];
-        Assert.NotSame(landscapeRow, portraitRow);
-        Assert.Equal("preset-1", portraitRow.ActivePresetId);
-        portraitRow.ActivePresetId = "preset-2";
-        Assert.Equal("preset-1", landscapeRow.ActivePresetId);
+        var doc = JsonSerializer.Deserialize(File.ReadAllText(path), PersistenceJsonContext.Default.NexusSettings)!;
+        doc.StreamDeck.Instances["widget:w"] = new DeckInstance { Mode = "custom", ActivePresetId = "preset-1" };
+        shape?.Invoke(doc);
+        File.WriteAllText(path, JsonSerializer.Serialize(doc, PersistenceJsonContext.Default.NexusSettings));
+        return path;
     }
 
     [Fact]
@@ -314,12 +347,13 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
         string id;
         using (var store = new JsonConfigStore(first))
         {
-            id = store.Load().PanelDevices["s"].PortraitLayout!.Pages.Single().Widgets.Single().Id;
+            id = store.Load().PanelDevices["s"].Layout!.Pages.Single().Widgets.Single().Id;
         }
         var second = Write(NexusSettings.CurrentSchemaVersion, r => r.Rotation = 90);
 
         using var again = new JsonConfigStore(second);
 
-        Assert.Equal(id, again.Load().PanelDevices["s"].PortraitLayout!.Pages.Single().Widgets.Single().Id);
+        Assert.Equal(id, again.Load().PanelDevices["s"].Layout!.Pages.Single().Widgets.Single().Id);
+        Assert.Equal("w", again.Load().PanelDevices["s"].PortraitLayout!.Pages.Single().Widgets.Single().Id);
     }
 }

@@ -6,13 +6,18 @@ namespace Nexus.Service.Panel;
 
 /// <summary>
 /// v32: the 8.8 inch strip stores its layout per orientation. Until now it kept one layout for both
-/// mountings, so a record turned to portrait gets that layout (with its widget size and grid slots)
-/// copied into the portrait slot, and keeps it in the landscape slot too: the user sees the same layout
-/// after the upgrade, and a downgraded build, which reads only the landscape fields and drops the rest,
-/// still finds what the strip showed. A record in landscape is untouched.
-/// <see cref="PanelDeviceRecord.LayoutSlots"/> marks a record as placed, which makes the pass idempotent
-/// and safe to run on a current document: a downgraded build drops the marker and the portrait slot
-/// with it, and the next load places whatever it left in the landscape fields again.
+/// mountings. A record in landscape is untouched. A record turned to portrait gets that layout (with its
+/// widget size and grid slots) copied into the portrait slot, and the landscape fields stay filled so a
+/// downgraded build still finds a layout. The slot the record shows keeps the original page and widget
+/// ids, because state outside the service is keyed by them (a whiteboard's drawing, an app's local
+/// storage); the other slot's copy gets fresh ids derived from them, so each slot is independent. The
+/// trade-off: a downgraded build reads the landscape fields, so a portrait user who downgrades sees the
+/// fresh-id copy and loses that id-keyed state until upgrading again. Deck widgets keep a mode and a
+/// preset in a row keyed by widget id; the copy gets its own row, while the preset itself is still
+/// host-wide and shared. <see cref="PanelDeviceRecord.LayoutSlots"/> marks a record as placed, which makes
+/// the pass idempotent and safe to run on a current document: a downgraded build drops the marker and the
+/// portrait slot with it, and the next load places whatever it left in the landscape fields again,
+/// deterministically.
 /// </summary>
 public static class PanelLayoutSlotsMigration
 {
@@ -35,7 +40,9 @@ public static class PanelLayoutSlotsMigration
             }
             if (PanelRotation.IsPortrait(PanelRotation.Effective(record)) && HasLandscapeLook(record))
             {
-                record.PortraitLayout = CopyWithFreshIds(doc, record.Layout);
+                // Portrait is on show and keeps the ids; the landscape copy is the one re-identified.
+                record.PortraitLayout = PanelPresets.CloneLayout(record.Layout);
+                record.Layout = CopyWithFreshIds(doc, record.PortraitLayout);
                 record.PortraitWidgetSize = record.WidgetSize;
                 record.PortraitGridSlots = record.GridSlots;
             }
@@ -46,10 +53,10 @@ public static class PanelLayoutSlotsMigration
     }
 
     /// <summary>
-    /// The portrait slot's copy of the layout, with its own page and widget ids so each slot is fully
-    /// independent: a widget's settings are found by id, and a deck widget's mode and preset live in a row
-    /// keyed by id, which the copy gets as well. The ids derive from the old ones, so placing the same layout
-    /// again after a downgrade gives the same ids and finds the rows already there.
+    /// A copy of the layout with its own page and widget ids so each slot is fully independent: a widget's
+    /// settings are found by id, and a deck widget's mode and preset live in a row keyed by id, which the copy
+    /// gets as well. The ids derive from the old ones, so the same input always gives the same copy. The copy's
+    /// rows are overwritten from the original's: while the slot was dropped no build could edit them.
     /// </summary>
     private static PanelLayoutDto? CopyWithFreshIds(NexusSettings doc, PanelLayoutDto? source)
     {
@@ -74,7 +81,7 @@ public static class PanelLayoutSlotsMigration
                 widgetIds[old] = widget.Id;
                 var oldRow = Deck.DeckInstanceResolver.WidgetInstanceId(old);
                 var newRow = Deck.DeckInstanceResolver.WidgetInstanceId(widget.Id);
-                if (doc.StreamDeck.Instances.TryGetValue(oldRow, out var row) && !doc.StreamDeck.Instances.ContainsKey(newRow))
+                if (doc.StreamDeck.Instances.TryGetValue(oldRow, out var row))
                 {
                     doc.StreamDeck.Instances[newRow] = new DeckInstance { Mode = row.Mode, ActivePresetId = row.ActivePresetId };
                 }
