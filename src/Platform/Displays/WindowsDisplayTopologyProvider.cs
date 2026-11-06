@@ -270,6 +270,15 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
     {
         try
         {
+            // "Turn off Tablet PC touch input" policy, machine or user: nonzero in either wins.
+            const string policyKey = @"Software\Policies\Microsoft\TabletPC";
+            foreach (var hive in new[] { Registry.LocalMachine, Registry.CurrentUser })
+            {
+                using var policy = hive.OpenSubKey(policyKey);
+                var off = policy?.GetValue("TurnOffTouchInput");
+                if (off is null) continue;
+                if (off is not int offValue || offValue != 0) return false;
+            }
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Wisp\Touch");
             var value = key?.GetValue("TouchGate");
             if (value is null) return true;

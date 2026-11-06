@@ -352,6 +352,8 @@ public sealed class TouchDigitizerRecoveryTests
 
     [Theory]
     [InlineData(22)]
+    [InlineData(29)]
+    [InlineData(1)]
     [InlineData(null)]
     public void Disabled_or_unreadable_devnode_never_restarts(int? problem)
     {
