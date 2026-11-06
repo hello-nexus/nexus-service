@@ -303,7 +303,7 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
     }
 
     [Fact]
-    public void Placing_it_again_after_a_downgrade_overwrites_the_copys_deck_row()
+    public void A_deck_row_the_copy_already_has_is_never_overwritten()
     {
         var first = WriteDeckStrip(null);
         string copyRow;
@@ -311,16 +311,45 @@ public class PanelLayoutSlotsMigrationTests : IDisposable
         {
             copyRow = "widget:" + store.Load().PanelDevices["s"].Layout!.Pages.Single().Widgets.Single().Id;
         }
-        // A downgrade drops the slot and the marker; the copy's row was left behind, stale, and the original's moved on.
-        var again = WriteDeckStrip(doc =>
-        {
-            doc.StreamDeck.Instances[copyRow] = new DeckInstance { Mode = "custom", ActivePresetId = "stale" };
-            doc.StreamDeck.Instances["widget:w"].ActivePresetId = "moved-on";
-        });
+        var again = WriteDeckStrip(doc => doc.StreamDeck.Instances[copyRow] = new DeckInstance { Mode = "custom", ActivePresetId = "kept" });
 
         using var reloaded = new JsonConfigStore(again);
 
-        Assert.Equal("moved-on", reloaded.Load().StreamDeck.Instances[copyRow].ActivePresetId);
+        Assert.Equal("kept", reloaded.Load().StreamDeck.Instances[copyRow].ActivePresetId);
+    }
+
+    [Fact]
+    public void A_downgrade_and_a_second_upgrade_of_a_strip_in_portrait_show_what_the_old_build_last_showed()
+    {
+        // Upgrade: portrait keeps the original A, landscape holds the re-identified copy H(A).
+        var path = Write(31, r => r.Rotation = 90);
+        PanelLayoutDto copy;
+        using (var store = new JsonConfigStore(path))
+        {
+            var placed = store.Load().PanelDevices["s"];
+            Assert.Equal("w", placed.PortraitLayout!.Pages.Single().Widgets.Single().Id);
+            copy = PanelPresets.CloneLayout(placed.Layout)!;
+        }
+
+        // An old build shows and writes only the landscape fields: H(A), with no portrait slot and no marker.
+        var downgraded = Write(NexusSettings.CurrentSchemaVersion, r =>
+        {
+            r.Rotation = 90;
+            r.Layout = copy;
+            r.PortraitLayout = null;
+            r.LayoutSlots = null;
+        });
+
+        using var again = new JsonConfigStore(downgraded);
+        var stored = again.Load().PanelDevices["s"];
+
+        // Portrait is H(A) exactly, the screen the old build last showed; landscape is H(H(A)).
+        Assert.Equal(Json(copy), Json(stored.PortraitLayout));
+        Assert.Equal(Screen(copy), Screen(stored.Layout));
+        var ids = new[] { stored.Layout!, stored.PortraitLayout! }
+            .SelectMany(l => l.Pages.Select(p => p.Id).Concat(l.Pages.SelectMany(p => p.Widgets.Select(w => w.Id)))).ToArray();
+        Assert.Equal(ids.Length, ids.Distinct().Count());
+        Assert.NotEqual("w", stored.PortraitLayout!.Pages.Single().Widgets.Single().Id);
     }
 
     private string WriteDeckStrip(Action<NexusSettings>? shape)

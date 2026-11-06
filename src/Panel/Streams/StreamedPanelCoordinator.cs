@@ -1067,33 +1067,33 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             }
             if (transport is IOrientablePanelTransport orientable)
             {
+                // Read from the frame thread and the touch reader; the pair is swapped as a whole.
+                var gate = new object();
                 var known = (Rotation: 0, Mirror: false);
-                try
-                {
-                    if (_registry.Get(panelId) is { } seed)
-                    {
-                        known = (seed.Rotation ?? 0, seed.Mirror ?? false);
-                    }
-                }
-                catch (Exception)
-                {
-                }
-                orientable.BindOrientation(() =>
+                (int Rotation, bool Mirror) ReadKnown()
                 {
                     // A failed or empty read keeps the last answer rather than reading as an upright, unmirrored mount.
                     try
                     {
                         if (_registry.Get(panelId) is { } rec)
                         {
-                            known = (rec.Rotation ?? 0, rec.Mirror ?? false);
+                            lock (gate)
+                            {
+                                known = (rec.Rotation ?? 0, rec.Mirror ?? false);
+                            }
                         }
                     }
                     catch (Exception ex)
                     {
                         ServiceLog.Warn($"[streamed-panel] orientation read failed for '{panelId}': {ex.GetType().Name}: {ex.Message}");
                     }
-                    return known;
-                });
+                    lock (gate)
+                    {
+                        return known;
+                    }
+                }
+                ReadKnown();
+                orientable.BindOrientation(ReadKnown);
             }
             // The backlight is a device command, so the transport writes it rather than
             // filtering frames with it. Null is passed through: a record that carries no
