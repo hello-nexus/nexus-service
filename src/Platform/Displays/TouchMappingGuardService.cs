@@ -64,6 +64,12 @@ public sealed class TouchMappingGuardService : BackgroundService
         {
             try { await _guard.RunPassAsync().ConfigureAwait(false); }
             catch (Exception ex) { Console.Error.WriteLine($"[touch-map] pass failed: {ex.Message}"); }
+            // One-shot follow-up only while a digitizer-absent window is
+            // pending; null once the digitizer is seen or the restart is spent.
+            if (_guard.NextRecheckDelay is { } delay)
+            {
+                try { _debounce.Change(delay, Timeout.InfiniteTimeSpan); } catch (ObjectDisposedException) { }
+            }
         });
     }
 }

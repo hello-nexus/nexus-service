@@ -2245,6 +2245,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.IEdgeSwipePolicy,
             Nexus.Service.Platform.Displays.WindowsEdgeSwipePolicy>();
         services.AddHostedService<Nexus.Service.Platform.Displays.TouchMappingGuardService>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.TouchDigitizerRecovery>();
         // Screen-mirror frames also flow through the helper - DXGI desktop
         // duplication is Session 0-blind, so the helper captures + downsamples
         // and pushes canvas-resolution RGB24 over the pipe.
@@ -2306,7 +2307,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter,
             Nexus.Service.Platform.Displays.NullTouchDigitizerDevnodeRestarter>();
 #endif
-        services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
+        services.AddSingleton(sp => new Nexus.Service.Platform.Displays.TouchMappingGuard(
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.ITouchMapSnapshotSource>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.IDigimonRegistryWriter>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter>(),
+            sp.GetService<Nexus.Service.Platform.Displays.IEdgeSwipePolicy>(),
+            recovery: sp.GetService<Nexus.Service.Platform.Displays.TouchDigitizerRecovery>()));
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyService>();
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchRoutingStatus>();

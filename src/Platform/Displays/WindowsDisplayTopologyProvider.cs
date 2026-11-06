@@ -214,16 +214,25 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
             }
 
             uint count = 0;
-            if (GetPointerDevices(ref count, null) && count > 0)
+            // A failed query must stay distinguishable from "no touch device":
+            // only a call that succeeded may report PointerQueryOk.
+            var countOk = GetPointerDevices(ref count, null);
+            if (countOk && count == 0) snapshot.PointerQueryOk = true;
+            if (countOk && count > 0)
             {
                 var devices = new POINTER_DEVICE_INFO[count];
                 if (GetPointerDevices(ref count, devices))
                 {
+                    snapshot.PointerQueryOk = true;
                     for (var i = 0; i < count && i < devices.Length; i++)
                     {
                         if (devices[i].pointerDeviceType != POINTER_DEVICE_TYPE_TOUCH) continue;
                         var interfacePath = ReadRawInputDeviceName(devices[i].device);
-                        if (string.IsNullOrEmpty(interfacePath)) continue;
+                        if (string.IsNullOrEmpty(interfacePath))
+                        {
+                            snapshot.UnnamedTouchPointers++;
+                            continue;
+                        }
                         var associatedId = devices[i].monitor != IntPtr.Zero
                             && monitorsById.TryGetValue(devices[i].monitor, out var m)
                                 ? m.Id

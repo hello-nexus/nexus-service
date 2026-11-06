@@ -41,7 +41,11 @@ public sealed class TouchMappingGuard
     private readonly IEdgeSwipePolicy? _edgeSwipePolicy;
     private readonly TimeSpan _verifyTimeout;
     private readonly TimeSpan _verifyPollInterval;
+    private readonly TouchDigitizerRecovery? _recovery;
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>Delay for a bounded follow-up pass while a digitizer-absent window is pending; null otherwise.</summary>
+    public TimeSpan? NextRecheckDelay { get; private set; }
 
     /// <summary>verifyTimeout/verifyPollInterval override the bench-derived
     /// defaults for tests; production callers (DI) always get the defaults.
@@ -53,8 +57,10 @@ public sealed class TouchMappingGuard
         ITouchDigitizerDevnodeRestarter devnodeRestarter,
         IEdgeSwipePolicy? edgeSwipePolicy = null,
         TimeSpan? verifyTimeout = null,
-        TimeSpan? verifyPollInterval = null)
+        TimeSpan? verifyPollInterval = null,
+        TouchDigitizerRecovery? recovery = null)
     {
+        _recovery = recovery;
         _snapshotSource = snapshotSource;
         _registryWriter = registryWriter;
         _devnodeRestarter = devnodeRestarter;
@@ -76,15 +82,18 @@ public sealed class TouchMappingGuard
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            NextRecheckDelay = null;
             var snapshot = await _snapshotSource.GetSnapshotAsync(ct).ConfigureAwait(false);
             if (snapshot is null)
             {
+                _recovery?.Reset();
                 Log("no helper connected; skipping");
                 return new TouchMappingPassOutcome(TouchMappingPassResult.NoHelper);
             }
 
             var (outcome, plans) = TouchMappingDecision.Decide(snapshot);
             AssertEdgeSwipePolicy(snapshot);
+            ObserveRecovery(snapshot, outcome);
             switch (outcome)
             {
                 case TouchMappingOutcome.NoPanel:
@@ -143,6 +152,18 @@ public sealed class TouchMappingGuard
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Feeds the digitizer-absent recovery. It only restarts on NoDigitizer;
+    /// every other outcome merely resets its pending window, and the repair
+    /// and already-correct paths below are untouched.
+    /// </summary>
+    private void ObserveRecovery(TouchMapSnapshot snapshot, TouchMappingOutcome outcome)
+    {
+        if (_recovery is null) return;
+        try { NextRecheckDelay = _recovery.Observe(snapshot, outcome); }
+        catch (Exception ex) { Log($"digitizer recovery check failed: {ex.Message}"); }
     }
 
     /// <summary>
