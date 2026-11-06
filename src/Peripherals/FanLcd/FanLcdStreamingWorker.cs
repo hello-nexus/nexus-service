@@ -36,8 +36,14 @@ public sealed class FanLcdStreamingWorker : BackgroundService
     // run, or that hand-back would take the screen from the new loop.
     private readonly Dictionary<string, Task> _stopping = new(StringComparer.OrdinalIgnoreCase);
 
-    public FanLcdStreamingWorker(IFanLcdScreens screens, Slv3LcdMediaLibrary library, Slv3LcdSensorReader sensorReader, IConfigStore store, DeviceControlGate gate)
+    private readonly Func<string, int>? _panelRotation;
+
+    /// <param name="panelRotation">The mount rotation (clockwise degrees) of a screen's panel record, by screen serial; 0 when it has none.</param>
+    public FanLcdStreamingWorker(
+        IFanLcdScreens screens, Slv3LcdMediaLibrary library, Slv3LcdSensorReader sensorReader, IConfigStore store, DeviceControlGate gate,
+        Func<string, int>? panelRotation = null)
     {
+        _panelRotation = panelRotation;
         _screens = screens;
         _library = library;
         _sensorReader = sensorReader;
@@ -171,10 +177,11 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                         : new LianLiWirelessScreenSettings();
 
                     _screens.SyncBrightness(serial, settings, ref appliedBrightness, ref lockSlept);
-                    if (settings.Rotation != appliedRotation)
+                    var wantedRotation = HardwareRotation(settings, PanelTurns(serial, settings));
+                    if (wantedRotation != appliedRotation)
                     {
-                        _screens.SetRotation(serial, settings.Rotation);
-                        appliedRotation = settings.Rotation;
+                        _screens.SetRotation(serial, (byte)wantedRotation);
+                        appliedRotation = wantedRotation;
                         // The screen turns a frame as it arrives, so a still picture is sent again to follow the new rotation.
                         pushedStatic = false;
                     }
@@ -287,6 +294,30 @@ public sealed class FanLcdStreamingWorker : BackgroundService
             {
                 ServiceLog.Error($"[{_screens.LogTag}] release failed for {serial}: {ex.Message}");
             }
+        }
+    }
+
+    /// <summary>
+    /// The screen's own firmware rotation (quarter turns clockwise) for its settings and the panel's mount turns.
+    /// The panel record turns the picture on top of the screen's setting, so the two add.
+    /// </summary>
+    internal static int HardwareRotation(LianLiWirelessScreenSettings settings, int panelTurns) => (settings.Rotation + panelTurns) & 3;
+
+    /// <summary>Quarter turns the screen's panel record asks for; only a screen showing its panel has any.</summary>
+    private int PanelTurns(string serial, LianLiWirelessScreenSettings settings)
+    {
+        if (_panelRotation is null || !FanLcdContent.IsPanel(settings))
+        {
+            return 0;
+        }
+        try
+        {
+            return Nexus.Service.Panel.PanelRotation.QuarterTurns(_panelRotation(serial));
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[{_screens.LogTag}] panel rotation read failed for {serial}: {ex.GetType().Name}: {ex.Message}");
+            return 0;
         }
     }
 
