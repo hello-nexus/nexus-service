@@ -364,7 +364,11 @@ public static class PanelRoutes
             // plays an audio file is desktop-only: PanelDeckRoutes executes those
             // in the user's session on the panel's behalf.
             if (body.Layout is not null && !HasServiceToken(ctx, tokens)
-                && Nexus.Service.Deck.DeckLayoutPolicy.IntroducesPrivilegedActions(body.Layout, registry.Get(id)?.Layout, listed.Snapshot()))
+                && Nexus.Service.Deck.DeckLayoutPolicy.IntroducesPrivilegedActions(
+                    body.Layout,
+                    // A patch that also turns the glass lands in the other orientation's slot, which this layout is not compared against.
+                    body.Rotation.HasValue || body.Flip180.HasValue || body.Portrait.HasValue ? null : registry.Get(id)?.Layout,
+                    listed.Snapshot()))
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
@@ -381,7 +385,7 @@ public static class PanelRoutes
                 return Results.Json(ApiResponse.Fail("invalid_rotation"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
             var before = registry.Get(id);
-            var layoutBefore = body.Layout is null ? null : before?.Layout;
+            var layoutsBefore = body.Layout is null ? null : registry.StoredLayouts(id);
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
@@ -403,7 +407,13 @@ public static class PanelRoutes
             }
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)
-                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);
+            {
+                // Compared slot to slot: a patch that also turns the glass lands in the other slot.
+                var slotBefore = layoutsBefore is { } stored
+                    ? (PanelLayoutSlots.UsesPortraitSlot(updated) ? stored.Portrait : stored.Landscape)
+                    : null;
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, slotBefore, updated.Layout);
+            }
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 

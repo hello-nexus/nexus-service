@@ -667,6 +667,14 @@ public sealed class PanelDeviceRegistry
             .ToList();
     }
 
+    /// <summary>Both stored layouts of a record as they are now, for a caller that compares across a patch that may turn it.</summary>
+    public (PanelLayoutDto? Landscape, PanelLayoutDto? Portrait)? StoredLayouts(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || !_store.Load().PanelDevices.TryGetValue(id, out var record))
+            return null;
+        return (record.Layout, record.PortraitLayout);
+    }
+
     public PanelDeviceRecord? Get(string id)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -1051,6 +1059,7 @@ public sealed class PanelDeviceRegistry
             PanelPresets.CaptureActive(record);
             var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
             PanelPresets.Copy(record, preset);
+            PanelPresets.Stamp(record, preset);
             record.Presets.Add(preset);
             record.ActivePresetId = preset.Id;
             result = PanelPresets.ToResponse(record);

@@ -9,7 +9,8 @@ namespace Nexus.Service.Panel;
 /// turning it never rearranges the other one. The 8.8 inch strip is in this class too. <see cref="PanelDeviceRecord.Layout"/> and its
 /// WidgetSize and GridSlots are the half-turn class, exactly as earlier builds stored them;
 /// the Portrait-prefixed fields are the quarter class and stay empty until something is saved
-/// there, which reads like a layout nobody has saved yet.
+/// there, which reads like a layout nobody has saved yet (GET of the panel then serves the
+/// surface's starter layout, as it does for any record with none).
 /// </summary>
 public static class PanelLayoutSlots
 {
@@ -83,6 +84,10 @@ public static class PanelLayoutSlots
             yield return record.PortraitLayout;
         }
     }
+
+    /// <summary>The glass can hold a layout per orientation: the 8.8 inch strip, or non-square glass that takes a quarter turn.</summary>
+    public static bool HasSlots(PanelDeviceCapabilities? caps) =>
+        caps?.SupportsPortrait == true || PanelRotation.SwapsRenderSize(caps);
 
     /// <summary>Clears the quarter-turn slot, as a personalization reset does.</summary>
     public static void ClearPortraitSlot(PanelDeviceRecord record)

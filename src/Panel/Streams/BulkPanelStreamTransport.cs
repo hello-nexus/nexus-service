@@ -101,10 +101,19 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             // The render size is fixed for this session, so the quarter is too: a record that has just
             // turned back keeps this session's quarter until the coordinator re-mints it.
             var requested = source;
+            var last = (Rotation: 90, Mirror: false);
             source = () =>
             {
-                var (rotation, mirror) = requested();
-                return (rotation >= 180 ? 270 : 90, mirror);
+                // A read that throws keeps the last answer: identity here would send a frame of the wrong shape.
+                try
+                {
+                    var (rotation, mirror) = requested();
+                    last = (rotation >= 180 ? 270 : 90, mirror);
+                }
+                catch (Exception)
+                {
+                }
+                return last;
             };
         }
         _orientationSource = source;

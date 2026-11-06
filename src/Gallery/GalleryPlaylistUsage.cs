@@ -36,7 +36,8 @@ public static class GalleryPlaylistUsage
 
         foreach (var device in s.PanelDevices.Values.OrderBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
-            var count = PanelLayoutSlots.All(device).Sum(layout => CountInLayout(layout, playlistId));
+            // A migrated strip holds the same layout in both slots, so the busier slot is the count, not their sum.
+            var count = PanelLayoutSlots.All(device).Select(layout => CountInLayout(layout, playlistId)).DefaultIfEmpty(0).Max();
             if (count == 0
                 && PanelLayoutSlots.Active(device)?.SingleWidgetConfigs is { } saved
                 && saved.TryGetValue(GalleryType, out var config)

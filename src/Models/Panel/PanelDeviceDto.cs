@@ -168,7 +168,7 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public int? PortraitGridSlots { get; set; }
     /// <summary>
     /// Persisted only. Set on a record whose glass has its own portrait mode (the 8.8 inch strip) once its layout is
-    /// stored per orientation, so the schema 32 migration never moves a layout it has already placed.
+    /// stored per orientation, so the schema 32 migration never copies a layout it has already placed.
     /// </summary>
     public bool? LayoutSlots { get; set; }
     /// <summary>
