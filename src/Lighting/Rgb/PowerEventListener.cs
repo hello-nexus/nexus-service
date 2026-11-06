@@ -94,8 +94,10 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             _bridge.OnSystemResume();
             _lianLi?.OnSystemResumed();
             _slv3?.OnSystemResumed();
-            _curve?.OnSystemResumed();
-            _aio?.OnSystemResumed();
+            try { _curve?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II Curve resume failed: {ex.Message}"); }
+            try { _aio?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II resume failed: {ex.Message}"); }
         }
     }
 #endif

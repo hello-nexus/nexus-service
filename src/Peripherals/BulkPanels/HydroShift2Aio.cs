@@ -75,6 +75,7 @@ public sealed class HydroShift2Aio : BackgroundService
     private long _rewipeAt;
     private int _rewipeRetriesLeft;
     private volatile bool _resumed;
+    private long _ringResendAt;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
@@ -201,6 +202,7 @@ public sealed class HydroShift2Aio : BackgroundService
             _rewipeAt = 0;
             _rewipeRetriesLeft = 0;
             _resumed = false;
+            _ringResendAt = 0;
             _ownScreen = null;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
@@ -247,6 +249,7 @@ public sealed class HydroShift2Aio : BackgroundService
                 _resumed = false;
                 _rewipeAt = now + ResumeRewipeMs;
                 _rewipeRetriesLeft = RewipeRetries;
+                _ringResendAt = now + ResumeRewipeMs;
                 ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] resumed; wiping the firmware overlay again once the display settles");
             }
             if (own != _ownScreen)
@@ -258,6 +261,14 @@ public sealed class HydroShift2Aio : BackgroundService
                 }
                 _ownScreen = own;
                 RaiseScreenOwnerChanged(current.Mac, own);
+            }
+            if (_ringResendAt != 0 && now >= _ringResendAt)
+            {
+                _ringResendAt = 0;
+                lock (_lock)
+                {
+                    _ringDirty = _ring is not null;
+                }
             }
             var rewipe = _rewipeAt != 0 && now >= _rewipeAt;
             if (rewipe)

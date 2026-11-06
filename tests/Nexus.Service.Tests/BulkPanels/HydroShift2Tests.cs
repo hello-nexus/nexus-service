@@ -601,6 +601,49 @@ public class HydroShift2Tests
     }
 
     [Fact]
+    public void A_resume_forces_the_unchanged_ring_to_be_uploaded_again_once_the_display_settles()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(1_000);
+        aio.Tick(30_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        aio.OnSystemResumed();
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(40_000);
+        aio.Tick(40_000 + HydroShift2Aio.ResumeRewipeMs - 1);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        aio.Tick(40_000 + HydroShift2Aio.ResumeRewipeMs);
+        aio.Tick(100_000);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void A_resume_while_the_unit_is_disconnected_is_covered_by_the_connect_wipe_after_reconnect()
+    {
+        var driver = new HydroShift2LcdDriver();
+        var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(new FirmwarePipe(), null));
+        var aio = new HydroShift2Aio(hub, driver, _ => false);
+        aio.Tick(1_000);
+        hub.Detach();
+        aio.OnSystemResumed();
+        aio.Tick(2_000);
+
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        aio.Tick(3_000);
+        var before = pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng);
+        aio.Tick(3_000 + HydroShift2Aio.ConnectRewipeMs - 1);
+        Assert.Equal(before, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(3_000 + HydroShift2Aio.ConnectRewipeMs);
+        Assert.Equal(before + 1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
     public void An_unanswered_scheduled_wipe_is_retried_a_bounded_number_of_times()
     {
         var (aio, pipe) = Attached(_ => false);
