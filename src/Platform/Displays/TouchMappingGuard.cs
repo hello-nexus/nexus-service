@@ -19,7 +19,7 @@ public enum TouchMappingPassResult
 
 /// <summary>Detail is a short machine-readable reason, populated on Failed
 /// ("devnode-restart-failed", "verify-timeout"); empty otherwise.</summary>
-public sealed record TouchMappingPassOutcome(TouchMappingPassResult Result, string Detail = "");
+public sealed record TouchMappingPassOutcome(TouchMappingPassResult Result, string Detail = "", TimeSpan? RecheckAfter = null);
 
 /// <summary>
 /// Detects and repairs a mis-mapped touch digitizer: Windows can associate a
@@ -44,8 +44,7 @@ public sealed class TouchMappingGuard
     private readonly TouchDigitizerRecovery? _recovery;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    /// <summary>Delay for a bounded follow-up pass while a digitizer-absent window is pending; null otherwise.</summary>
-    public TimeSpan? NextRecheckDelay { get; private set; }
+    private TimeSpan? _recheckDelay;
 
     /// <summary>verifyTimeout/verifyPollInterval override the bench-derived
     /// defaults for tests; production callers (DI) always get the defaults.
@@ -82,7 +81,20 @@ public sealed class TouchMappingGuard
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            NextRecheckDelay = null;
+            _recheckDelay = null;
+            var outcome = await RunPassLockedAsync(ct).ConfigureAwait(false);
+            // Read under the gate so the delay belongs to this pass.
+            return outcome with { RecheckAfter = _recheckDelay };
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<TouchMappingPassOutcome> RunPassLockedAsync(CancellationToken ct)
+    {
+        {
             var snapshot = await _snapshotSource.GetSnapshotAsync(ct).ConfigureAwait(false);
             if (snapshot is null)
             {
@@ -148,10 +160,6 @@ public sealed class TouchMappingGuard
             Log("repair could not be verified within the timeout");
             return new TouchMappingPassOutcome(TouchMappingPassResult.Failed, "verify-timeout");
         }
-        finally
-        {
-            _gate.Release();
-        }
     }
 
     /// <summary>
@@ -162,7 +170,7 @@ public sealed class TouchMappingGuard
     private void ObserveRecovery(TouchMapSnapshot snapshot, TouchMappingOutcome outcome)
     {
         if (_recovery is null) return;
-        try { NextRecheckDelay = _recovery.Observe(snapshot, outcome); }
+        try { _recheckDelay = _recovery.Observe(snapshot, outcome); }
         catch (Exception ex) { Log($"digitizer recovery check failed: {ex.Message}"); }
     }
 

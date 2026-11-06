@@ -197,7 +197,7 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
             }
             EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, Cb, IntPtr.Zero);
 
-            var snapshot = new TouchMapSnapshot();
+            var snapshot = new TouchMapSnapshot { TouchInputEnabled = ReadTouchInputEnabled() };
             foreach (var (id, manufacturer, model, monitorInterfacePath) in monitorsById.Values)
             {
                 // A non-interface DeviceID (older driver, no EDD_GET_DEVICE_INTERFACE_NAME
@@ -258,6 +258,26 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
         finally
         {
             RestoreThreadDpiContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// The Windows touch toggle lives in the interactive user's hive (this
+    /// runs in the user-session helper). A missing value is the default (on);
+    /// any read problem or non-DWORD data returns false so callers fail closed.
+    /// </summary>
+    private static bool ReadTouchInputEnabled()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Wisp\Touch");
+            var value = key?.GetValue("TouchGate");
+            if (value is null) return true;
+            return value is int gate && gate != 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 

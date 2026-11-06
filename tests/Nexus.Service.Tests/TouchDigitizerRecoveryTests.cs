@@ -27,12 +27,15 @@ public sealed class TouchDigitizerRecoveryTests
         public int Restarts;
         public bool RestartResult = true;
         public DateTime? Stamp;
+        public bool StampWrites = true;
+        public int? Problem = 0;
         public readonly TouchDigitizerRecovery Recovery;
 
         public Rig()
         {
             Recovery = new TouchDigitizerRecovery(
-                (_, _) => Hid, new Restarter(this), new Stamps(this), () => Now);
+                (v, p) => Hid.FindAll(h => h.VendorId == v && h.ProductId == p),
+                _ => Problem, new Restarter(this), new Stamps(this), () => Now);
         }
 
         public TimeSpan? Pass(TouchMapSnapshot snapshot, TimeSpan advance)
@@ -54,7 +57,12 @@ public sealed class TouchDigitizerRecoveryTests
         private sealed class Stamps(Rig r) : ITouchRecoveryStampStore
         {
             public DateTime? LastRestartUtc() => r.Stamp;
-            public void Record(DateTime utc) => r.Stamp = utc;
+            public bool Record(DateTime utc)
+            {
+                if (!r.StampWrites) return false;
+                r.Stamp = utc;
+                return true;
+            }
         }
     }
 
@@ -70,12 +78,14 @@ public sealed class TouchDigitizerRecoveryTests
     private static TouchMapSnapshot Absent(bool queryOk = true) => new()
     {
         PointerQueryOk = queryOk,
+        TouchInputEnabled = true,
         Displays = { new TouchMapDisplayInfo { Id = "y70-1", MonitorInterfacePath = Y70MonitorPath } },
     };
 
     private static TouchMapSnapshot Working() => new()
     {
         PointerQueryOk = true,
+        TouchInputEnabled = true,
         Displays = { new TouchMapDisplayInfo { Id = "y70-1", MonitorInterfacePath = Y70MonitorPath } },
         Digitizers = { new TouchMapDigitizerInfo { InterfacePath = PointerPath, AssociatedDisplayId = "y70-1" } },
     };
@@ -264,7 +274,7 @@ public sealed class TouchDigitizerRecoveryTests
     public void No_panel_never_restarts()
     {
         var rig = new Rig();
-        var s = new TouchMapSnapshot { PointerQueryOk = true };
+        var s = new TouchMapSnapshot { PointerQueryOk = true, TouchInputEnabled = true };
         for (var i = 0; i < 20; i++) rig.Pass(s, TimeSpan.FromSeconds(30));
         Assert.Equal(0, rig.Restarts);
     }
@@ -276,5 +286,130 @@ public sealed class TouchDigitizerRecoveryTests
         Assert.Null(rig.Pass(Working(), Tick));
         Assert.NotNull(rig.Pass(Absent(), Tick));
         Assert.Null(rig.Pass(Working(), Tick));
+    }
+
+    private static void ConfirmedAbsence(Rig rig, TouchMapSnapshot? s = null)
+    {
+        s ??= Absent();
+        rig.Pass(s, TimeSpan.Zero);
+        rig.Pass(s, TimeSpan.FromSeconds(50));
+        for (var i = 0; i < 10; i++) rig.Pass(s, TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public void Edge_pointer_device_claimed_by_companion_blocks_the_restart()
+    {
+        var rig = new Rig();
+        var s = Absent();
+        s.Digitizers.Add(new TouchMapDigitizerInfo
+        {
+            InterfacePath = PointerPath,
+            CompanionHardwareIds = { @"USB\VID_1B1C&PID_1D0D\SERIAL" },
+        });
+        ConfirmedAbsence(rig, s);
+        Assert.Equal(0, rig.Restarts);
+    }
+
+    [Fact]
+    public void Companion_endpoint_on_the_bus_blocks_the_restart()
+    {
+        var rig = new Rig();
+        rig.Hid.Add(new HidDeviceInfo { VendorId = 0x1B1C, ProductId = 0x1D0D, Path = "x", UsagePage = 0xFF1B, Usage = 1 });
+        ConfirmedAbsence(rig);
+        Assert.Equal(0, rig.Restarts);
+    }
+
+    [Fact]
+    public void Two_touch_collections_are_ambiguous_and_never_restart()
+    {
+        var rig = new Rig();
+        rig.Hid.Add(new HidDeviceInfo
+        {
+            VendorId = 0x27C0, ProductId = 0x0859, Path = HidPath.Replace("14bf8c3d", "99999999"), UsagePage = 0x0D, Usage = 0x04,
+        });
+        ConfirmedAbsence(rig);
+        Assert.Equal(0, rig.Restarts);
+    }
+
+    [Fact]
+    public void Collection_with_a_different_vid_pid_is_never_restarted()
+    {
+        var rig = new Rig { Hid = new List<HidDeviceInfo> { new() { VendorId = 0x1234, ProductId = 0x0859, Path = HidPath, UsagePage = 0x0D, Usage = 0x04 } } };
+        ConfirmedAbsence(rig);
+        Assert.Equal(0, rig.Restarts);
+    }
+
+    [Fact]
+    public void Touch_turned_off_or_unreadable_never_restarts()
+    {
+        var rig = new Rig();
+        var s = Absent();
+        s.TouchInputEnabled = false;
+        ConfirmedAbsence(rig, s);
+        Assert.Equal(0, rig.Restarts);
+        Assert.False(new TouchMapSnapshot().TouchInputEnabled);
+    }
+
+    [Theory]
+    [InlineData(22)]
+    [InlineData(null)]
+    public void Disabled_or_unreadable_devnode_never_restarts(int? problem)
+    {
+        var rig = new Rig { Problem = problem };
+        ConfirmedAbsence(rig);
+        Assert.Equal(0, rig.Restarts);
+    }
+
+    [Fact]
+    public void Failed_start_devnode_is_still_restarted()
+    {
+        var rig = new Rig { Problem = 10 };
+        ConfirmedAbsence(rig);
+        Assert.Equal(1, rig.Restarts);
+    }
+
+    [Fact]
+    public void Unwritable_stamp_means_no_restart()
+    {
+        var rig = new Rig { StampWrites = false };
+        ConfirmedAbsence(rig);
+        Assert.Equal(0, rig.Restarts);
+    }
+
+    [Fact]
+    public void Instance_id_is_derived_from_the_interface_path()
+    {
+        Assert.Equal(@"HID\VID_27C0&PID_0859&COL01\A&14BF8C3D&0&0000", TouchDigitizerRecoveryGate.InstanceIdFromInterfacePath(HidPath));
+        Assert.Null(TouchDigitizerRecoveryGate.InstanceIdFromInterfacePath("garbage"));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Guard_pass_outcome_carries_the_follow_up_delay_only_while_pending()
+    {
+        var rig = new Rig();
+        var absent = Absent();
+        var guard = new TouchMappingGuard(
+            new Src(absent), new Reg(), new Rest(), recovery: rig.Recovery);
+        var first = await guard.RunPassAsync();
+        Assert.NotNull(first.RecheckAfter);
+        var healthyGuard = new TouchMappingGuard(
+            new Src(Working()), new Reg(), new Rest(), recovery: rig.Recovery);
+        Assert.Null((await healthyGuard.RunPassAsync()).RecheckAfter);
+    }
+
+    private sealed class Src(TouchMapSnapshot s) : ITouchMapSnapshotSource
+    {
+        public System.Threading.Tasks.Task<TouchMapSnapshot?> GetSnapshotAsync(System.Threading.CancellationToken ct = default) =>
+            System.Threading.Tasks.Task.FromResult<TouchMapSnapshot?>(s);
+    }
+
+    private sealed class Reg : IDigimonRegistryWriter
+    {
+        public void Write(string a, string b) { }
+    }
+
+    private sealed class Rest : ITouchDigitizerDevnodeRestarter
+    {
+        public bool Restart(string p) => true;
     }
 }
