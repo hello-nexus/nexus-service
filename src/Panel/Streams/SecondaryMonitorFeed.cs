@@ -20,7 +20,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     private readonly IVirtualMonitorHost _host;
     private readonly BulkPanelHub _hub;
     private readonly Func<byte[], bool> _push;
-    private readonly Func<(bool Flip180, bool Mirror)> _orientation;
+    private readonly Func<(int Rotation, bool Mirror)> _orientation;
     private readonly Action _stateChanged;
     private readonly Func<int?>? _fpsCap;
     private readonly CancellationTokenSource _cts = new();
@@ -35,7 +35,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         IVirtualMonitorHost host,
         BulkPanelHub hub,
         Func<byte[], bool> push,
-        Func<(bool Flip180, bool Mirror)> orientation,
+        Func<(int Rotation, bool Mirror)> orientation,
         Action stateChanged,
         Func<int?>? fpsCap = null)
     {

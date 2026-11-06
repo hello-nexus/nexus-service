@@ -588,7 +588,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
     }
 
-    private void Touch(string id) => _config.Update(s => s.PanelDevices[id].Flip180 = false);
+    private void Touch(string id) => _config.Update(s => s.PanelDevices[id].AccentColor = "#010203");
 
     [Fact]
     public void The_customers_two_record_shape_keeps_the_record_with_a_stored_setting()

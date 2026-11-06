@@ -103,7 +103,7 @@ public sealed class HydroShift2CurvePlayer : BackgroundService
     public (bool Flip180, bool Mirror) Mount() => MountOf(Record());
 
     private static (bool Flip180, bool Mirror) MountOf(PanelDeviceRecord? record) =>
-        record is null ? (false, false) : (record.Flip180 == true, record.Mirror == true);
+        record is null ? (false, false) : (record.Rotation == 180, record.Mirror == true);
 
     private PanelDeviceRecord? Record()
     {

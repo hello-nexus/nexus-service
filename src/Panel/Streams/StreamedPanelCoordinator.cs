@@ -1173,7 +1173,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                 orientable.BindOrientation(() =>
                 {
                     var rec = _registry.Get(panelId);
-                    return (rec?.Flip180 ?? false, rec?.Mirror ?? false);
+                    return (rec?.Rotation ?? 0, rec?.Mirror ?? false);
                 });
             }
             // The backlight is a device command, so the transport writes it rather than

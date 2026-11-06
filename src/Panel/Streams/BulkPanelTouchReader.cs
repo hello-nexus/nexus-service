@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
+using Nexus.Service.Peripherals.PixelFormats;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel.Streams;
@@ -20,7 +21,7 @@ internal sealed class BulkPanelTouchReader : IDisposable
     private readonly BulkPanelHub _hub;
     private readonly int _width;
     private readonly int _height;
-    private readonly Func<(bool Flip180, bool Mirror)> _orientation;
+    private readonly Func<(int Rotation, bool Mirror)> _orientation;
     private readonly Func<TouchContactTracker.Injection, bool> _sink;
     private readonly CancellationTokenSource _cts;
     private readonly Thread _thread;
@@ -29,7 +30,7 @@ internal sealed class BulkPanelTouchReader : IDisposable
     private int _started;
     private int _disposed;
 
-    public BulkPanelTouchReader(BulkPanelHub hub, int width, int height, Func<(bool Flip180, bool Mirror)> orientation, Func<TouchContactTracker.Injection, bool> sink, string name, CancellationToken stop = default)
+    public BulkPanelTouchReader(BulkPanelHub hub, int width, int height, Func<(int Rotation, bool Mirror)> orientation, Func<TouchContactTracker.Injection, bool> sink, string name, CancellationToken stop = default)
     {
         // A stop token covers a reader its owner never got to dispose.
         _cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -119,15 +120,8 @@ internal sealed class BulkPanelTouchReader : IDisposable
                 int x = report.X;
                 int y = report.Y;
                 // The frame on the glass was turned for the mount; undo that to land on the source.
-                var (flip180, mirror) = _orientation();
-                if (flip180)
-                {
-                    (x, y) = (_width - 1 - x, _height - 1 - y);
-                }
-                if (mirror)
-                {
-                    x = _width - 1 - x;
-                }
+                var (rotation, mirror) = _orientation();
+                (x, y) = BgraOrientation.MapToSource(x, y, _width, _height, rotation, mirror);
                 injections.Clear();
                 tracker.Apply(report.TrackId, report.Phase, x, y, report.Mapped, injections);
                 foreach (var injection in injections)

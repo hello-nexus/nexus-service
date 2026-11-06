@@ -841,8 +841,14 @@ public sealed class PanelDeviceRegistry
                 record.DesktopImport = null;
             // Orientation is a property of how the glass is physically mounted, so it
             // applies to any record; the transport ignores it on surfaces it cannot turn.
-            if (patch.Flip180.HasValue)
-                record.Flip180 = patch.Flip180.Value;
+            // The route has already answered 400 for an unsupported request, so one that reaches here
+            // from another caller is dropped like any other invalid value.
+            if (PanelRotation.TryResolve(record, patch, out var rotation) && rotation is { } turn)
+            {
+                record.Rotation = turn == 0 ? null : turn;
+                record.Flip180 = null;
+                record.Portrait = null;
+            }
             if (patch.Mirror.HasValue)
                 record.Mirror = patch.Mirror.Value;
             // Same reasoning: a backlight belongs to the glass, and transports that
@@ -853,8 +859,6 @@ public sealed class PanelDeviceRegistry
                 record.SleepWhenLocked = patch.SleepWhenLocked.Value;
             if (patch.SecondaryMonitor.HasValue)
                 record.SecondaryMonitor = patch.SecondaryMonitor.Value;
-            if (patch.Portrait.HasValue)
-                record.Portrait = patch.Portrait.Value;
             if (patch.FpsCap is { } fpsCap)
                 record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
@@ -980,6 +984,7 @@ public sealed class PanelDeviceRegistry
             record.KeepCursorOff = null;
             record.AlwaysOnTop = null;
             record.ClickThrough = null;
+            record.Rotation = null;
             record.Flip180 = null;
             record.Mirror = null;
             record.LcdBrightness = null;
@@ -1244,6 +1249,9 @@ public sealed class PanelDeviceRegistry
             FirstSeenAt = r.FirstSeenAt,
             LastSeenAt = r.LastSeenAt,
             Capabilities = r.Capabilities,
+            // A response clone always carries a number and what the glass supports; neither is a user's choice.
+            Rotation = r.Rotation == 0 ? 0 : null,
+            SupportedRotations = r.SupportedRotations,
         };
         return System.Text.Json.JsonSerializer.Serialize(r, Serialization.AppJsonContext.Default.PanelDeviceRecord)
             != System.Text.Json.JsonSerializer.Serialize(fresh, Serialization.AppJsonContext.Default.PanelDeviceRecord);
@@ -1315,13 +1323,13 @@ public sealed class PanelDeviceRegistry
             AutoOrient = r.AutoOrient,
             KeepCursorOff = r.KeepCursorOff,
             AlwaysOnTop = r.AlwaysOnTop,
-            Flip180 = r.Flip180,
+            Rotation = PanelRotation.Effective(r),
+            SupportedRotations = PanelRotation.SupportedFor(r.Capabilities),
             Mirror = r.Mirror,
             LcdBrightness = r.LcdBrightness,
             SleepWhenLocked = r.SleepWhenLocked,
             LockRestoreBrightness = r.LockRestoreBrightness,
             SecondaryMonitor = r.SecondaryMonitor,
-            Portrait = r.Portrait,
             FpsCap = r.FpsCap,
             WidgetSize = r.WidgetSize,
             KioskViewport = r.KioskViewport,
