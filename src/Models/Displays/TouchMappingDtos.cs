@@ -56,6 +56,14 @@ public sealed class TouchMapSnapshot
 {
     public List<TouchMapDigitizerInfo> Digitizers { get; set; } = new();
     public List<TouchMapDisplayInfo> Displays { get; set; } = new();
+    /// <summary>
+    /// True only when GetPointerDevices itself succeeded. Defaults to false
+    /// so an older helper, a failed query or a missing field can never read
+    /// as "Windows has no pointer device".
+    /// </summary>
+    public bool PointerQueryOk { get; set; }
+    /// <summary>Touch pointer devices whose interface path could not be read; any makes the digitizer list incomplete.</summary>
+    public int UnnamedTouchPointers { get; set; }
 }
 
 /// <summary>Response for POST /displays/touch-mapping/repair.</summary>
