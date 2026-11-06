@@ -26,6 +26,12 @@ public sealed class GallerySource
     /// files stay on disk untouched; restoring clears this list.
     /// </summary>
     public List<string> Excluded { get; set; } = new();
+    /// <summary>
+    /// Set when <see cref="Path"/> is a copy in gallery storage: the path the
+    /// user added, which the service could not read (a mapped network drive).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? OriginalPath { get; set; }
 }
 
 /// <summary>
@@ -77,6 +83,13 @@ public static class GalleryErrorCodes
     public const string NotFound = "not_found";
     /// <summary>A playlist name is empty or too long.</summary>
     public const string InvalidName = "invalid_name";
+    /// <summary>The path is outside the service's reach (a mapped network
+    /// drive or share), so it can only be added as a copy.</summary>
+    public const string Unreachable = "unreachable";
+    /// <summary>A copy would exceed <see cref="Nexus.Service.Gallery.GalleryImportCopier.MaxImportBytes"/>.</summary>
+    public const string TooLarge = "too_large";
+    /// <summary>Copying into gallery storage failed.</summary>
+    public const string ImportFailed = "import_failed";
 }
 
 public sealed class GallerySourceMutationResponse

@@ -43,6 +43,8 @@ public sealed class GalleryRoutesTests : IDisposable
     private readonly string _tempDir;
     private readonly string _photosDir;
     private readonly StubPicker _picker = new();
+    private readonly StubImporter _importer = new();
+    private readonly string _galleryRoot;
 
     public GalleryRoutesTests()
     {
@@ -52,6 +54,7 @@ public sealed class GalleryRoutesTests : IDisposable
 
         _baseFactory = new NexusAppFactory();
         var galleryRoot = Path.Combine(_tempDir, "gallery");
+        _galleryRoot = galleryRoot;
         _factory = _baseFactory.WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
             {
@@ -61,6 +64,8 @@ public sealed class GalleryRoutesTests : IDisposable
                 // exercise the route plumbing + auth tier.
                 services.RemoveAll<IFileDialogPicker>();
                 services.AddSingleton<IFileDialogPicker>(_picker);
+                services.RemoveAll<IGalleryImporter>();
+                services.AddSingleton<IGalleryImporter>(_importer);
             }));
     }
 
@@ -77,6 +82,43 @@ public sealed class GalleryRoutesTests : IDisposable
             LastMode = mode;
             return Task.FromResult(new FileDialogPickResult { Paths = StubPaths });
         }
+    }
+
+    /// <summary>Plays the user-session helper: a path the service cannot see
+    /// maps to a local stand-in, which the real copier copies.</summary>
+    private sealed class StubImporter : IGalleryImporter
+    {
+        public Dictionary<string, string> SeenByUser { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public GalleryImportResult? Fail { get; set; }
+        public int Calls { get; private set; }
+
+        public Task<GalleryImportResult> ImportAsync(GalleryImportRequest request, CancellationToken ct)
+        {
+            Calls++;
+            if (Fail is not null) return Task.FromResult(Fail);
+            var local = SeenByUser[request.Path];
+            return Task.FromResult(GalleryImportCopier.Copy(
+                new GalleryImportRequest { Path = local, Kind = request.Kind, DestDir = request.DestDir }, ct));
+        }
+    }
+
+    // A drive letter with no volume behind it stands in for a mapped drive the
+    // LocalSystem service cannot see. Null off Windows, where nothing is out of reach.
+    private static string? UnseenDrive()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        foreach (var c in "QJKLMNOPRSTUVWXYZ")
+        {
+            if (!Directory.Exists($"{c}:\\")) return $"{c}:\\";
+        }
+
+        return null;
+    }
+
+    private string[] ImportDirs()
+    {
+        var dir = Path.Combine(_galleryRoot, "imported");
+        return Directory.Exists(dir) ? Directory.GetDirectories(dir) : Array.Empty<string>();
     }
 
     public void Dispose()
@@ -311,6 +353,110 @@ public sealed class GalleryRoutesTests : IDisposable
             new AddGallerySourceBody { Path = "photos/a.png", Kind = GallerySourceKinds.File });
 
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task AddSource_OnDriveServiceCannotSee_AddsACopy_AndDeleteRemovesOnlyTheCopy()
+    {
+        var drive = UnseenDrive();
+        if (drive is null) return;
+        var client = DesktopClient();
+        var local = WriteImage("local.gif");
+        var unseen = drive + @"art\Kiera\kieradadadada.gif";
+        _importer.SeenByUser[unseen] = local;
+
+        var add = await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = unseen, Kind = GallerySourceKinds.File });
+        Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+        var added = (await ReadAs(add, AppJsonContext.Default.GallerySourceMutationResponse))!.Source!;
+        Assert.Equal("kieradadadada.gif", added.Name);
+        Assert.Equal(unseen, added.OriginalPath);
+        Assert.StartsWith(Path.Combine(_galleryRoot, "imported"), added.Path);
+
+        var items = await ReadAs(await client.GetAsync("/gallery/items"), AppJsonContext.Default.GalleryItemsResponse);
+        var item = Assert.Single(items!.Items);
+        Assert.Equal("kieradadadada.gif", item.Name);
+        var file = await client.GetAsync($"/gallery/items/{item.Id}/file");
+        Assert.Equal("image/gif", file.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(TinyPng, await file.Content.ReadAsByteArrayAsync());
+
+        var again = await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = unseen, Kind = GallerySourceKinds.File });
+        Assert.Equal(HttpStatusCode.BadRequest, again.StatusCode);
+        Assert.Equal(GalleryErrorCodes.Duplicate, (await ReadAs(again, AppJsonContext.Default.GallerySourceMutationResponse))!.Code);
+        Assert.Equal(1, _importer.Calls);
+        Assert.Single(ImportDirs());
+
+        var del = await client.DeleteAsync($"/gallery/sources/{added.Id}");
+        Assert.Equal(HttpStatusCode.OK, del.StatusCode);
+        Assert.Empty(ImportDirs());
+        Assert.True(File.Exists(local));
+    }
+
+    [Fact]
+    public async Task AddSource_FolderOnDriveServiceCannotSee_CopiesOnlyMedia()
+    {
+        var drive = UnseenDrive();
+        if (drive is null) return;
+        var client = DesktopClient();
+        WriteImage("a.png");
+        Directory.CreateDirectory(Path.Combine(_photosDir, "sub"));
+        File.WriteAllBytes(Path.Combine(_photosDir, "sub", "b.gif"), TinyPng);
+        File.WriteAllText(Path.Combine(_photosDir, "notes.txt"), "not media");
+        var unseen = drive + @"art\Kiera";
+        _importer.SeenByUser[unseen] = _photosDir;
+
+        var add = await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = unseen, Kind = GallerySourceKinds.Auto });
+        Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+        var added = (await ReadAs(add, AppJsonContext.Default.GallerySourceMutationResponse))!.Source!;
+        Assert.Equal(GallerySourceKinds.Folder, added.Kind);
+        Assert.Equal("Kiera", added.Name);
+
+        var items = await ReadAs(await client.GetAsync("/gallery/items"), AppJsonContext.Default.GalleryItemsResponse);
+        Assert.Equal(new[] { "a.png", "b.gif" }, items!.Items.Select(i => i.Name).ToArray());
+        Assert.False(File.Exists(Path.Combine(added.Path, "notes.txt")));
+    }
+
+    [Fact]
+    public async Task AddSource_ImportFails_ReturnsTheReason_AndLeavesNoCopy()
+    {
+        var drive = UnseenDrive();
+        if (drive is null) return;
+        _importer.Fail = new GalleryImportResult { Error = "folder too large to copy", Code = GalleryErrorCodes.TooLarge };
+
+        var res = await DesktopClient().PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = drive + "huge", Kind = GallerySourceKinds.Folder });
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        var body = await ReadAs(res, AppJsonContext.Default.GallerySourceMutationResponse);
+        Assert.Equal(GalleryErrorCodes.TooLarge, body!.Code);
+        Assert.Equal("folder too large to copy", body.Msg);
+        Assert.Empty(ImportDirs());
+    }
+
+    [Fact]
+    public async Task AddSource_MissingLocalFile_IsNotFound_NotImported()
+    {
+        var res = await DesktopClient().PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = Path.Combine(_photosDir, "gone.gif"), Kind = GallerySourceKinds.File });
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Equal(0, _importer.Calls);
+    }
+
+    [Fact]
+    public void Copier_OverTheSizeCap_IsTooLarge_AndCopiesNothing()
+    {
+        WriteImage("a.png");
+        var dest = Path.Combine(_tempDir, "dest");
+        Directory.CreateDirectory(dest);
+
+        var result = GalleryImportCopier.Copy(
+            new GalleryImportRequest { Path = _photosDir, Kind = GallerySourceKinds.Folder, DestDir = dest }, maxBytes: 10);
+
+        Assert.Equal(GalleryErrorCodes.TooLarge, result.Code);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(dest));
     }
 
     [Fact]

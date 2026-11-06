@@ -127,7 +127,26 @@ public sealed class GalleryLibrary
         Name = s.Name,
         AddedAtUnixMs = s.AddedAtUnixMs,
         Excluded = new List<string>(s.Excluded),
+        OriginalPath = s.OriginalPath,
     };
+
+    /// <summary>Copies of files the service could not read where they were added from.</summary>
+    public string ImportsDir => Path.Combine(RootDir, "imported");
+
+    /// <summary>
+    /// True when <paramref name="full"/> is outside what this process can see:
+    /// on Windows the LocalSystem service has no mapped drives (R:) and
+    /// usually no access to network shares.
+    /// </summary>
+    public static bool IsOutOfServiceReach(string full)
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+        if (full.StartsWith(@"\\", StringComparison.Ordinal))
+            return true;
+        var root = Path.GetPathRoot(full);
+        return !string.IsNullOrEmpty(root) && !Directory.Exists(root);
+    }
 
     public GallerySourceMutationResponse AddReference(string path, string kind)
     {
@@ -144,6 +163,17 @@ public sealed class GalleryLibrary
         catch
         {
             return Fail("invalid path");
+        }
+
+        if (!File.Exists(full) && !Directory.Exists(full) && IsOutOfServiceReach(full))
+        {
+            lock (_lock)
+            {
+                if (LoadSources().Any(s => s.OriginalPath is not null && string.Equals(s.OriginalPath, full, PathComparison)))
+                    return Fail("source already added", GalleryErrorCodes.Duplicate);
+            }
+
+            return Fail("path is not visible to the service", GalleryErrorCodes.Unreachable);
         }
 
         if (kind == GallerySourceKinds.Auto)
@@ -177,8 +207,87 @@ public sealed class GalleryLibrary
     }
 
     /// <summary>
-    /// Remove a source. Sources are references - nothing is ever deleted
-    /// from disk.
+    /// Empty folder under <see cref="ImportsDir"/> for one copy. The copier
+    /// fills it; <see cref="AddImported"/> or <see cref="DiscardImport"/> follows.
+    /// </summary>
+    public string CreateImportDir()
+    {
+        var dir = Path.Combine(ImportsDir, Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant());
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    public void DiscardImport(string importDir)
+    {
+        if (!IsImportDir(importDir))
+            return;
+        try
+        {
+            Directory.Delete(importDir, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gallery] could not delete import {importDir}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Register a copy the importer made inside <paramref name="importDir"/>.</summary>
+    public GallerySourceMutationResponse AddImported(string importDir, GalleryImportResult copy, string originalPath)
+    {
+        if (!IsImportDir(importDir) || string.IsNullOrEmpty(copy.CopiedPath))
+            return Fail("bad import", GalleryErrorCodes.ImportFailed);
+
+        string copied;
+        string original;
+        try
+        {
+            copied = Path.GetFullPath(copy.CopiedPath);
+            original = Path.TrimEndingDirectorySeparator(Path.GetFullPath(originalPath));
+        }
+        catch
+        {
+            return Fail("bad import", GalleryErrorCodes.ImportFailed);
+        }
+
+        var kind = copy.Kind;
+        var inside = string.Equals(Path.GetDirectoryName(copied), Path.TrimEndingDirectorySeparator(importDir), PathComparison);
+        var exists = kind == GallerySourceKinds.Folder ? Directory.Exists(copied)
+            : kind == GallerySourceKinds.File && File.Exists(copied) && IsMediaFile(copied);
+        if (!inside || !exists)
+            return Fail("bad import", GalleryErrorCodes.ImportFailed);
+
+        lock (_lock)
+        {
+            var sources = LoadSources();
+            if (sources.Any(s => s.OriginalPath is not null && string.Equals(s.OriginalPath, original, PathComparison)))
+                return Fail("source already added", GalleryErrorCodes.Duplicate);
+
+            var source = NewSource(sources, kind, copied, Path.GetFileName(original));
+            source.OriginalPath = original;
+            sources.Add(source);
+            SaveSources(sources);
+            InvalidateItemsLocked();
+            return new GallerySourceMutationResponse { Source = source };
+        }
+    }
+
+    // Only a direct child of ImportsDir, so a stored path can never steer a delete elsewhere.
+    private bool IsImportDir(string dir)
+    {
+        try
+        {
+            var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir));
+            return string.Equals(Path.GetDirectoryName(full), Path.TrimEndingDirectorySeparator(Path.GetFullPath(ImportsDir)), PathComparison);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Remove a source. Sources are references - nothing the user added is
+    /// deleted from disk. An imported source's copy in gallery storage is.
     /// </summary>
     public bool RemoveSource(string id)
     {
@@ -199,6 +308,11 @@ public sealed class GalleryLibrary
 
             SaveSources(sources);
             InvalidateItemsLocked();
+            if (source.OriginalPath is not null && Path.GetDirectoryName(source.Path) is { } importDir)
+            {
+                DiscardImport(importDir);
+            }
+
             return true;
         }
     }
