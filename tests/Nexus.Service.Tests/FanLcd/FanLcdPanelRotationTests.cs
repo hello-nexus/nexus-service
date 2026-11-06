@@ -12,7 +12,7 @@ using Xunit;
 
 namespace Nexus.Service.Tests.FanLcd;
 
-/// <summary>A fan screen has a firmware rotation, so the panel's mount turn rides it instead of being turned in software.</summary>
+/// <summary>A fan screen keeps its firmware rotation as a device-page setting; the panel only flips and mirrors the frame in software.</summary>
 public class FanLcdPanelRotationTests
 {
     private sealed class Screens : IFanLcdScreens
@@ -47,81 +47,6 @@ public class FanLcdPanelRotationTests
         public byte[][] Frames { get { lock (_gate) { return _frames.ToArray(); } } }
     }
 
-    [Theory]
-    [InlineData(0, 0, 0)]
-    [InlineData(0, 1, 1)]
-    [InlineData(0, 2, 2)]
-    [InlineData(0, 3, 3)]
-    [InlineData(1, 2, 3)]
-    [InlineData(3, 1, 0)]
-    [InlineData(2, 2, 0)]
-    public void The_firmware_turn_is_the_screens_setting_plus_the_panels(int setting, int panelTurns, int expected)
-    {
-        var screen = new LianLiWirelessScreenSettings { Rotation = (byte)setting };
-
-        Assert.Equal(expected, FanLcdStreamingWorker.HardwareRotation(screen, panelTurns));
-    }
-
-    private static async Task WaitFor(Func<bool> condition)
-    {
-        for (var i = 0; i < 100 && !condition(); i++)
-        {
-            await Task.Delay(50);
-        }
-        Assert.True(condition());
-    }
-
-    private static async Task<(Screens Screens, int[] Seen)> Run(bool panelMode, Func<int> panelRotation, Func<Screens, Task> act)
-    {
-        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fanlcd-panelrot-" + Guid.NewGuid().ToString("N"));
-        var store = new InMemoryConfigStore();
-        store.Update(s => s.Devices.TlLcdScreens["a"] = panelMode
-            ? new LianLiWirelessScreenSettings { NexusPanel = true, ContentType = "clock", Rotation = 1 }
-            : new LianLiWirelessScreenSettings { ContentType = "off", Rotation = 1 });
-        var screens = new Screens();
-        var worker = new FanLcdStreamingWorker(
-            screens, new Slv3LcdMediaLibrary(System.IO.Path.Combine(dir, "media")), new Slv3LcdSensorReader(null!), store, new DeviceControlGate(store),
-            _ => panelRotation());
-        await worker.StartAsync(CancellationToken.None);
-        try
-        {
-            await act(screens);
-        }
-        finally
-        {
-            await worker.StopAsync(CancellationToken.None);
-            try { System.IO.Directory.Delete(dir, recursive: true); } catch { }
-        }
-        return (screens, screens.Rotations.Select(r => (int)r).ToArray());
-    }
-
-    [Fact]
-    public async Task A_screen_showing_its_panel_follows_the_records_rotation_in_firmware()
-    {
-        var rotation = 90;
-        var (_, seen) = await Run(panelMode: true, () => rotation, async screens =>
-        {
-            await WaitFor(() => screens.Rotations.Length >= 1);
-            rotation = 180;
-            await WaitFor(() => screens.Rotations.Length >= 2);
-        });
-
-        // The screen's own setting (1 quarter turn) plus the record's: 90 then 180 degrees.
-        Assert.Equal(new[] { 2, 3 }, seen.Take(2));
-    }
-
-    [Fact]
-    public async Task A_screen_showing_other_content_ignores_the_panel_records_rotation()
-    {
-        var (_, seen) = await Run(panelMode: false, () => 180, async screens =>
-        {
-            await WaitFor(() => screens.Rotations.Length >= 1);
-            await Task.Delay(300);
-        });
-
-        Assert.Equal(new[] { 1 }, seen);
-    }
-
     // Left half red, right half blue in BGRA: a flip, a turn and a mirror each give a different picture.
     private static byte[] Halves()
     {
@@ -141,7 +66,7 @@ public class FanLcdPanelRotationTests
         return frame;
     }
 
-    private static byte[] PushedWith(int rotation, bool mirror)
+    private static (byte[] Frame, Screens Screens) PushedWith(int rotation, bool mirror)
     {
         var screens = new Screens();
         screens.SetPanelOwned("a", true);
@@ -151,18 +76,37 @@ public class FanLcdPanelRotationTests
 
         transport.Write(Halves());
 
-        return Assert.Single(screens.Frames);
+        return (Assert.Single(screens.Frames), screens);
     }
 
-    [Fact]
-    public void The_panel_transport_leaves_the_turn_to_the_firmware_and_applies_only_the_mirror()
+    // The same pixels the old Flip180 path produced: the BGRA frame turned in software before encoding.
+    private static byte[] OldFlipPath(bool flip, bool mirror)
     {
-        var upright = PushedWith(0, false);
+        var frame = Halves();
+        var turned = new byte[frame.Length];
+        Nexus.Service.Peripherals.PixelFormats.BgraOrientation.Apply(frame, FanLcdContent.Size, FanLcdContent.Size, flip ? 180 : 0, mirror, turned);
+        using var encoder = new Nexus.Service.Peripherals.JpegPanels.BgraJpegEncoder(FanLcdContent.Size, FanLcdContent.Size);
+        return encoder.Encode(turned).ToArray();
+    }
 
-        Assert.Equal(upright, PushedWith(90, false));
-        Assert.Equal(upright, PushedWith(180, false));
-        Assert.Equal(upright, PushedWith(270, false));
-        Assert.NotEqual(upright, PushedWith(0, true));
-        Assert.Equal(PushedWith(0, true), PushedWith(180, true));
+    [Theory]
+    [InlineData(0, false, false)]
+    [InlineData(180, false, true)]
+    [InlineData(0, true, false)]
+    [InlineData(180, true, true)]
+    public void A_half_turn_and_mirror_are_applied_in_software_exactly_as_the_old_flip_was(int rotation, bool mirror, bool flip)
+    {
+        Assert.Equal(OldFlipPath(flip, mirror), PushedWith(rotation, mirror).Frame);
+    }
+
+    [Theory]
+    [InlineData(90)]
+    [InlineData(270)]
+    public void Quarter_turns_are_not_taken_and_no_firmware_rotation_is_written_from_the_panel_path(int rotation)
+    {
+        var (frame, screens) = PushedWith(rotation, false);
+
+        Assert.Equal(OldFlipPath(false, false), frame);
+        Assert.Empty(screens.Rotations);
     }
 }

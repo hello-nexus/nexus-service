@@ -3002,25 +3002,11 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
-    /// <summary>
-    /// The content worker also drives the screen's firmware rotation, so the panel record's mount
-    /// rotation is read through the stream store (screen serial to panel record) rather than turned in software.
-    /// </summary>
     private static Nexus.Service.Peripherals.FanLcd.FanLcdStreamingWorker NewFanLcdStreamingWorker(
-        IServiceProvider sp, Nexus.Service.Peripherals.FanLcd.IFanLcdScreens screens)
-    {
-        var registry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
-        var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>();
-        var rotations = new Nexus.Service.Peripherals.FanLcd.FanLcdPanelRotationSource(
-            serial => streams.Load().TryGetValue(Nexus.Service.Panel.Streams.FanLcdPanelDiscovery.PanelSerial(screens, serial), out var rec)
-                ? rec.PanelDeviceId
-                : null,
-            panelId => registry.Get(panelId) is { } record ? record.Rotation ?? 0 : null);
-        return new(screens,
+        IServiceProvider sp, Nexus.Service.Peripherals.FanLcd.IFanLcdScreens screens) =>
+        new(screens,
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdSensorReader>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
-            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-            rotations.RotationOf);
-    }
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>());
 }

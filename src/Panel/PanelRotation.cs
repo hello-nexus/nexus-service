@@ -40,6 +40,12 @@ public static class PanelRotation
         {
             return None;
         }
+        // The Lian Li fan screens keep their firmware rotation as a device-page setting, so the panel only
+        // flips the frame in software.
+        if (caps.Family is "lianli-tl-lcd" or "lianli-flex-lcd" or "lianli-wireless-lcd")
+        {
+            return HalfTurn;
+        }
         if (caps.Surface is not (PanelSurfaces.LcdRound or PanelSurfaces.LcdSquare or PanelSurfaces.LcdWide))
         {
             return None;

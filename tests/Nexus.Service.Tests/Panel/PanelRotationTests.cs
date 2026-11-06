@@ -231,6 +231,33 @@ public class PanelRotationTests : IDisposable
         Assert.False(PanelRotationMigration.Apply(settings));
     }
 
+    [Theory]
+    [InlineData("lianli-tl-lcd")]
+    [InlineData("lianli-flex-lcd")]
+    [InlineData("lianli-wireless-lcd")]
+    public void The_fan_lcds_take_only_the_software_half_turn(string family)
+    {
+        var caps = Caps(PanelSurfaces.LcdRound, 400, 400);
+        caps.Family = family;
+
+        Assert.Equal(new[] { 0, 180 }, PanelRotation.SupportedFor(caps));
+        Assert.False(PanelRotation.TryResolve(Record(caps), new PanelDevicePatch { Rotation = 90 }, out _));
+    }
+
+    [Fact]
+    public void A_stored_fan_panel_flip_becomes_a_half_turn_with_no_fold_into_the_screen_setting()
+    {
+        var settings = new NexusSettings();
+        var caps = Caps(PanelSurfaces.LcdRound, 400, 400);
+        caps.Family = "lianli-tl-lcd";
+        settings.PanelDevices["fan"] = new PanelDeviceRecord { Id = "fan", Capabilities = caps, Flip180 = true };
+
+        PanelRotationMigration.Apply(settings);
+
+        Assert.Equal(180, settings.PanelDevices["fan"].Rotation);
+        Assert.Empty(settings.Devices.TlLcdScreens);
+    }
+
     [Fact]
     public void The_corsair_link_lcd_takes_no_panel_rotation_because_it_turns_in_firmware()
     {
