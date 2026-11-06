@@ -187,6 +187,89 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         }
     }
 
+    private static StreamedPanelDeviceInfo TurnableGlass(int width = 854, int height = 480) => new()
+    {
+        Serial = "vision",
+        Profile = new StreamedPanelProfile
+        {
+            Kind = "vision",
+            DisplayName = "Vision",
+            Surface = PanelSurfaces.LcdWide,
+            Family = "thermalright-lcd",
+            CssWidth = width,
+            CssHeight = height,
+            SupportsRenderTurn = true,
+        },
+    };
+
+    [Fact]
+    public void A_quarter_turn_on_non_square_glass_remakes_the_session_at_the_swapped_size_and_a_turn_back_remakes_it_again()
+    {
+        _discovery.Devices.Add(TurnableGlass());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var flat = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.Equal((854, 480), (flat.CssWidth, flat.CssHeight));
+        var id = flat.PanelDeviceId;
+
+        // A half turn is the same class: nothing is remade.
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 180 });
+        coordinator.TickOnce();
+        Assert.Equal(flat.SessionId, Assert.Single(coordinator.GetAssignments().Assignments).SessionId);
+
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 90 });
+        coordinator.TickOnce();
+        var turned = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.NotEqual(flat.SessionId, turned.SessionId);
+        Assert.Equal((480, 854), (turned.CssWidth, turned.CssHeight));
+        // The record keeps the glass's own size and reports the render size beside it.
+        var record = _registry.Get(id)!;
+        Assert.Equal((854, 480), (record.Capabilities!.CssWidth, record.Capabilities.CssHeight));
+        Assert.Equal((480, 854), (record.RenderWidth, record.RenderHeight));
+
+        // 90 to 270 stays in the class.
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 270 });
+        coordinator.TickOnce();
+        Assert.Equal(turned.SessionId, Assert.Single(coordinator.GetAssignments().Assignments).SessionId);
+
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 0 });
+        coordinator.TickOnce();
+        var back = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.NotEqual(turned.SessionId, back.SessionId);
+        Assert.Equal((854, 480), (back.CssWidth, back.CssHeight));
+        Assert.Equal((854, 480), (_registry.Get(id)!.Capabilities!.CssWidth, _registry.Get(id)!.Capabilities!.CssHeight));
+    }
+
+    [Fact]
+    public void A_restart_with_the_glass_already_turned_starts_the_session_at_the_swapped_size()
+    {
+        var record = _registry.Allocate("Vision", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide, Family = "thermalright-lcd", CssWidth = 854, CssHeight = 480 });
+        _registry.Patch(record.Id, new PanelDevicePatch { Rotation = 270 });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["vision"] = new() { PanelDeviceId = record.Id } });
+        _discovery.Devices.Add(TurnableGlass());
+
+        Coordinator().TickOnce();
+
+        var assignment = Assert.Single(Coordinator().GetAssignments().Assignments);
+        Assert.Equal((480, 854), (assignment.CssWidth, assignment.CssHeight));
+    }
+
+    [Fact]
+    public void Square_glass_and_glass_without_a_turned_render_keep_their_session_at_any_rotation()
+    {
+        _discovery.Devices.Add(TurnableGlass(480, 480));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var square = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _registry.Patch(square.PanelDeviceId, new PanelDevicePatch { Rotation = 90 });
+        coordinator.TickOnce();
+
+        var after = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.Equal(square.SessionId, after.SessionId);
+        Assert.Equal((480, 480), (after.CssWidth, after.CssHeight));
+    }
+
     [Fact]
     public void A_new_strip_panel_is_seeded_with_a_page_that_spans_the_strip()
     {

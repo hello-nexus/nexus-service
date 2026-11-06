@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using Nexus.Service.Models.Gallery;
 using Nexus.Service.Models.Panel;
+using Nexus.Service.Panel;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Gallery;
@@ -35,9 +36,9 @@ public static class GalleryPlaylistUsage
 
         foreach (var device in s.PanelDevices.Values.OrderBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
-            var count = CountInLayout(device.Layout, playlistId);
+            var count = PanelLayoutSlots.All(device).Sum(layout => CountInLayout(layout, playlistId));
             if (count == 0
-                && device.Layout?.SingleWidgetConfigs is { } saved
+                && PanelLayoutSlots.Active(device)?.SingleWidgetConfigs is { } saved
                 && saved.TryGetValue(GalleryType, out var config)
                 && Plays(config, playlistId))
             {

@@ -380,7 +380,8 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid_rotation"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
+            var before = registry.Get(id);
+            var layoutBefore = body.Layout is null ? null : before?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
@@ -394,8 +395,12 @@ public static class PanelRoutes
                 streams.ApplySecondaryMonitor(updated.Id);
                 streams.Wake();
             }
-            if (body.HighResolution.HasValue || body.FpsCap.HasValue)
+            // A glass turned into or out of the quarter class renders at another size: the next discovery pass re-mints its session.
+            if (body.HighResolution.HasValue || body.FpsCap.HasValue
+                || (before is not null && PanelLayoutSlots.UsesPortraitSlot(before) != PanelLayoutSlots.UsesPortraitSlot(updated)))
+            {
                 streams.Wake();
+            }
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)
                 Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);

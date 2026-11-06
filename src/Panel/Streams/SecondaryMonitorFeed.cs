@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
+using Nexus.Service.Peripherals.PixelFormats;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Panel.Streams;
@@ -25,6 +26,9 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     private readonly Func<(int Rotation, bool Mirror)> _orientation;
     private readonly Action _stateChanged;
     private readonly Func<int?>? _fpsCap;
+    // The size the pushed frames have when the transport renders turned; 0 reads the glass's size at start.
+    private readonly int _frameWidth;
+    private readonly int _frameHeight;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _monitorLock = new();
     private readonly Thread _frames;
@@ -39,9 +43,13 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         Func<byte[], bool> push,
         Func<(int Rotation, bool Mirror)> orientation,
         Action stateChanged,
-        Func<int?>? fpsCap = null)
+        Func<int?>? fpsCap = null,
+        int frameWidth = 0,
+        int frameHeight = 0)
     {
         _fpsCap = fpsCap;
+        _frameWidth = frameWidth;
+        _frameHeight = frameHeight;
         _host = host;
         _hub = hub;
         _push = push;
@@ -87,8 +95,8 @@ internal sealed class SecondaryMonitorFeed : IDisposable
 
     private void PumpFrames()
     {
-        int width = _hub.Width;
-        int height = _hub.Height;
+        int width = _frameWidth > 0 ? _frameWidth : _hub.Width;
+        int height = _frameHeight > 0 ? _frameHeight : _hub.Height;
         var monitor = _host.Create(width, height, _hub.Driver.Dpi, _cts.Token, out var failure);
         if (monitor is null)
         {
@@ -221,17 +229,11 @@ internal sealed class SecondaryMonitorFeed : IDisposable
             parser.Feed(buffer.AsSpan(0, read), reports);
             foreach (var report in reports)
             {
-                bool mapped = ZMatricesTouchParser.TryMapToFrame(report, width, height, out int x, out int y);
+                // Contacts arrive on the glass's own size; the desktop may be that size turned a quarter.
+                bool mapped = ZMatricesTouchParser.TryMapToFrame(report, _hub.Width, _hub.Height, out int x, out int y);
                 // The frame on the glass was turned for the mount; undo that to land on the desktop.
-                var (flip180, mirror) = _orientation();
-                if (flip180)
-                {
-                    (x, y) = (width - 1 - x, height - 1 - y);
-                }
-                if (mirror)
-                {
-                    x = width - 1 - x;
-                }
+                var (rotation, mirror) = _orientation();
+                (x, y) = BgraOrientation.MapToSource(x, y, width, height, rotation, mirror, width != _hub.Width);
                 injections.Clear();
                 tracker.Apply(report.TrackId, report.Phase, x, y, mapped, injections);
                 foreach (var injection in injections)

@@ -155,6 +155,26 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }
+    /// <summary>
+    /// Storage slot for the layout of a glass mounted at 90 or 270 whose render size swaps (a non-square pushed-frame
+    /// panel). <see cref="Layout"/>, <see cref="WidgetSize"/> and <see cref="GridSlots"/> stay the 0/180 slot, byte for
+    /// byte what earlier builds stored. Persisted only: a response clone carries the slot for the record's current
+    /// rotation in <see cref="Layout"/> and leaves these null.
+    /// </summary>
+    public PanelLayoutDto? PortraitLayout { get; set; }
+    /// <summary>The 90/270 slot's <see cref="WidgetSize"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
+    public string? PortraitWidgetSize { get; set; }
+    /// <summary>The 90/270 slot's <see cref="GridSlots"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
+    public int? PortraitGridSlots { get; set; }
+    /// <summary>
+    /// Response-only: the size in CSS pixels this panel renders at for its current rotation, on glass that takes
+    /// quarter turns. A non-square pushed-frame panel swaps width and height at 90 and 270 while
+    /// <see cref="PanelDeviceCapabilities.CssWidth"/> and CssHeight keep the glass's native size. Null where the
+    /// glass takes no quarter turn; read the capabilities then. Never persisted.
+    /// </summary>
+    public int? RenderWidth { get; set; }
+    /// <summary>Response-only, see <see cref="RenderWidth"/>.</summary>
+    public int? RenderHeight { get; set; }
     /// <summary>Downgrade guard. When non-null it replaces <see cref="Enabled"/> (see <see cref="Nexus.Service.Panel.PanelHosting"/>)
     /// and <see cref="Enabled"/> is stored false, so a build that predates it hosts no kiosk for this record. Persisted only.</summary>
     public bool? Hosted { get; set; }
@@ -308,6 +328,10 @@ public interface IPanelPersonalization
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
     string? WidgetSize { get; set; }
     int? GridSlots { get; set; }
+    /// <summary>The layout for a glass turned a quarter whose render size swaps; <see cref="Layout"/> is the other slot.</summary>
+    PanelLayoutDto? PortraitLayout { get; set; }
+    string? PortraitWidgetSize { get; set; }
+    int? PortraitGridSlots { get; set; }
 }
 
 /// <summary>
@@ -354,6 +378,9 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
     public int? GridSlots { get; set; }
+    public PanelLayoutDto? PortraitLayout { get; set; }
+    public string? PortraitWidgetSize { get; set; }
+    public int? PortraitGridSlots { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }

@@ -29,6 +29,12 @@ public sealed class PanelOrientationFilter
     // negative, which pinned the cache at its default and silently ignored the setting.
     private long _nextReadMs;
 
+    /// <summary>
+    /// A quarter turn of a rectangle is applied and swaps the frame's sides. Set by a transport that renders
+    /// the swapped size and has already pinned the rotation's quarter to its own geometry.
+    /// </summary>
+    public bool QuarterOnRectangles { get; set; }
+
     public void Bind(Func<(int Rotation, bool Mirror)> source)
     {
         _source = source;
@@ -59,7 +65,8 @@ public sealed class PanelOrientationFilter
             // Geometry moved under us mid-frame; orienting against a stale size would tear.
             return frame;
         }
-        if (BgraOrientation.IsIdentity(BgraOrientation.Effective(_current.Rotation, width, height), _current.Mirror))
+        var turn = QuarterOnRectangles ? BgraOrientation.Normalize(_current.Rotation) : BgraOrientation.Effective(_current.Rotation, width, height);
+        if (BgraOrientation.IsIdentity(turn, _current.Mirror))
         {
             return frame;
         }
@@ -67,7 +74,7 @@ public sealed class PanelOrientationFilter
         {
             _oriented = new byte[frame.Length];
         }
-        BgraOrientation.Apply(frame, width, height, _current.Rotation, _current.Mirror, _oriented);
+        BgraOrientation.Apply(frame, width, height, _current.Rotation, _current.Mirror, _oriented, QuarterOnRectangles);
         return _oriented;
     }
 }

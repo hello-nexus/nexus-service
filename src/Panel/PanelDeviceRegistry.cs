@@ -618,17 +618,22 @@ public sealed class PanelDeviceRegistry
             changed.Clear();
             foreach (var record in s.PanelDevices.Values)
             {
-                if (record.Layout is null) continue;
                 var removed = 0;
-                foreach (var page in record.Layout.Pages)
-                    removed += page.Widgets.RemoveAll(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal));
-                if (removed == 0) continue;
-                var mark = record.Layout.ImmersiveOnLoadWidgetId;
-                if (!string.IsNullOrEmpty(mark)
-                    && !record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Id, mark, StringComparison.Ordinal))))
+                foreach (var layout in PanelLayoutSlots.All(record))
                 {
-                    record.Layout.ImmersiveOnLoadWidgetId = null;
+                    var removedHere = 0;
+                    foreach (var page in layout.Pages)
+                        removedHere += page.Widgets.RemoveAll(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal));
+                    if (removedHere == 0) continue;
+                    removed += removedHere;
+                    var mark = layout.ImmersiveOnLoadWidgetId;
+                    if (!string.IsNullOrEmpty(mark)
+                        && !layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Id, mark, StringComparison.Ordinal))))
+                    {
+                        layout.ImmersiveOnLoadWidgetId = null;
+                    }
                 }
+                if (removed == 0) continue;
                 changed.Add(record.Id);
             }
         });
@@ -636,8 +641,8 @@ public sealed class PanelDeviceRegistry
     }
 
     private static bool HasWidgetType(PanelDeviceRecord record, string widgetType)
-        => record.Layout is not null
-           && record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal)));
+        => PanelLayoutSlots.All(record).Any(layout =>
+            layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal))));
 
     internal static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
     {
@@ -750,8 +755,16 @@ public sealed class PanelDeviceRegistry
                 if (!string.IsNullOrEmpty(name))
                     record.DisplayName = name;
             }
+            // Resolved before the layout writes: a patch that turns the glass and saves a layout means the
+            // layout for the new rotation.
+            if (PanelRotation.TryResolve(record, patch, out var rotation) && rotation is { } turn)
+            {
+                record.Rotation = turn == 0 ? null : turn;
+                record.Flip180 = null;
+                record.Portrait = null;
+            }
             if (patch.Layout is not null)
-                record.Layout = patch.Layout;
+                PanelLayoutSlots.SetActiveLayout(record, patch.Layout);
             if (patch.ThemeMode is not null)
                 record.ThemeMode = NullIfEmpty(patch.ThemeMode);
             if (patch.AccentColor is not null)
@@ -836,21 +849,15 @@ public sealed class PanelDeviceRegistry
                 record.RestrictedMode = patch.RestrictedMode.Value ? true : null;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
-                record.GridSlots = null;
+                PanelLayoutSlots.SetActiveGridSlots(record, null);
             else if (patch.GridSlots is { } slots && slots is >= MinGridSlots and <= MaxGridSlots && slots % 2 == 0)
-                record.GridSlots = slots;
+                PanelLayoutSlots.SetActiveGridSlots(record, slots);
             if (patch.ClearDesktopImport == true)
                 record.DesktopImport = null;
             // Orientation is a property of how the glass is physically mounted, so it
             // applies to any record; the transport ignores it on surfaces it cannot turn.
             // The route has already answered 400 for an unsupported request, so one that reaches here
-            // from another caller is dropped like any other invalid value.
-            if (PanelRotation.TryResolve(record, patch, out var rotation) && rotation is { } turn)
-            {
-                record.Rotation = turn == 0 ? null : turn;
-                record.Flip180 = null;
-                record.Portrait = null;
-            }
+            // from another caller is dropped like any other invalid value. Applied above, ahead of the layout.
             if (patch.Mirror.HasValue)
                 record.Mirror = patch.Mirror.Value;
             // Same reasoning: a backlight belongs to the glass, and transports that
@@ -866,7 +873,7 @@ public sealed class PanelDeviceRegistry
             if (patch.FpsCap is { } fpsCap)
                 record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
-                record.WidgetSize = patch.WidgetSize;
+                PanelLayoutSlots.SetActiveWidgetSize(record, patch.WidgetSize);
             if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
                 record.KioskViewport = new KioskViewportDto { CssWidth = viewport.CssWidth, CssHeight = viewport.CssHeight, Dpr = viewport.Dpr };
             // Capabilities on display-bound records are owned by the topology
@@ -916,6 +923,7 @@ public sealed class PanelDeviceRegistry
             if (!s.PanelDevices.TryGetValue(id, out var record))
                 return;
             record.Layout = PanelLayoutDefaults.StripSeedFor(record);
+            PanelLayoutSlots.ClearPortraitSlot(record);
             record.ThemeMode = null;
             record.AccentColor = null;
             record.BackgroundColor = null;
@@ -1247,6 +1255,8 @@ public sealed class PanelDeviceRegistry
             // A response clone always carries a number and what the glass supports; neither is a user's choice.
             Rotation = r.Rotation == 0 ? 0 : null,
             SupportedRotations = r.SupportedRotations,
+            RenderWidth = r.RenderWidth,
+            RenderHeight = r.RenderHeight,
         };
         return System.Text.Json.JsonSerializer.Serialize(r, Serialization.AppJsonContext.Default.PanelDeviceRecord)
             != System.Text.Json.JsonSerializer.Serialize(fresh, Serialization.AppJsonContext.Default.PanelDeviceRecord);
@@ -1276,7 +1286,8 @@ public sealed class PanelDeviceRegistry
         {
             Id = r.Id,
             DisplayName = r.DisplayName,
-            Layout = r.Layout,
+            // The slot for the record's rotation travels as THE layout; the web never sees the other one.
+            Layout = PanelLayoutSlots.Active(r),
             ThemeMode = r.ThemeMode,
             AccentColor = r.AccentColor,
             BackgroundColor = r.BackgroundColor,
@@ -1327,7 +1338,9 @@ public sealed class PanelDeviceRegistry
             SecondaryMonitor = r.SecondaryMonitor,
             HighResolution = r.HighResolution,
             FpsCap = r.FpsCap,
-            WidgetSize = r.WidgetSize,
+            WidgetSize = PanelLayoutSlots.ActiveWidgetSize(r),
+            RenderWidth = PanelLayoutSlots.RenderSize(r)?.Width,
+            RenderHeight = PanelLayoutSlots.RenderSize(r)?.Height,
             KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
@@ -1345,7 +1358,7 @@ public sealed class PanelDeviceRegistry
             ClickThrough = r.ClickThrough,
             WidgetsLocked = r.WidgetsLocked,
             RestrictedMode = r.RestrictedMode,
-            GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
+            GridSlots = PanelLayoutSlots.ActiveGridSlots(r) is > 0 ? PanelLayoutSlots.ActiveGridSlots(r) : null,
             DesktopImport = r.DesktopImport,
         };
     }

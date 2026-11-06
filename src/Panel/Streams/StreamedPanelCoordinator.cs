@@ -471,8 +471,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             var present = new HashSet<string>(StringComparer.Ordinal);
             foreach (var info in devices) present.Add(info.Serial);
 
-            foreach (var found in devices)
+            foreach (var discovered in devices)
             {
+                var found = WithRenderTurn(discovered);
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
                 var info = existing is null ? found : WithFpsCap(WithRenderScale(found, existing.Session.PanelDeviceId), existing.Session.PanelDeviceId, existing);
@@ -1227,11 +1228,42 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = info.Profile with { Fps = fps }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
+    /// <summary>
+    /// A panel whose record is turned a quarter renders at the swapped size, and the transport turns the
+    /// frame back to the glass's layout. Folding that into the profile makes it a profile change, so the
+    /// session is re-minted the way a renegotiated 8.8 is: new session id, overlay respawn at the new size.
+    /// The glass itself is not touched.
+    /// </summary>
+    private StreamedPanelDeviceInfo WithRenderTurn(StreamedPanelDeviceInfo info)
+    {
+        var profile = info.Profile;
+        if (!profile.SupportsRenderTurn || profile.RenderTurned || profile.CssWidth == profile.CssHeight)
+        {
+            return info;
+        }
+        if (!_store.Load().TryGetValue(info.Serial, out var stored) || string.IsNullOrEmpty(stored.PanelDeviceId))
+        {
+            return info;
+        }
+        var record = _registry.Get(stored.PanelDeviceId);
+        if (record is null || !PanelLayoutSlots.UsesPortraitSlot(record))
+        {
+            return info;
+        }
+        return new StreamedPanelDeviceInfo
+        {
+            Serial = info.Serial,
+            AdoptsFamilyRecords = info.AdoptsFamilyRecords,
+            Profile = profile with { CssWidth = profile.CssHeight, CssHeight = profile.CssWidth, RenderTurned = true },
+        };
+    }
+
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)
         => string.Equals(a.Kind, b.Kind, StringComparison.Ordinal)
            && string.Equals(a.Surface, b.Surface, StringComparison.Ordinal)
            && a.CssWidth == b.CssWidth
            && a.CssHeight == b.CssHeight
+           && a.RenderTurned == b.RenderTurned
            && a.Dpr.Equals(b.Dpr)
            && a.RenderScale.Equals(b.RenderScale)
            && a.Fps == b.Fps

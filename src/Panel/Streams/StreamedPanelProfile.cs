@@ -49,6 +49,18 @@ public sealed record StreamedPanelProfile
     /// <summary>The panel can render tall: its record's Rotation of 90 or 270 selects the portrait mode.</summary>
     public bool SupportsPortrait { get; init; }
 
+    /// <summary>
+    /// The transport can render this glass at the swapped size and turn each frame back to its native
+    /// layout, so a quarter-turned record gets <see cref="RenderTurned"/> (set by the coordinator).
+    /// </summary>
+    public bool SupportsRenderTurn { get; init; }
+
+    /// <summary>
+    /// <see cref="CssWidth"/> and <see cref="CssHeight"/> are the swapped render size, not the glass's.
+    /// The record's capabilities always keep the glass's own size.
+    /// </summary>
+    public bool RenderTurned { get; init; }
+
     /// <summary>One device carries several screens on this surface, so each serial gets its own record instead of the surface's shared one.</summary>
     public bool MultiInstance { get; init; }
 
@@ -128,8 +140,8 @@ public sealed record StreamedPanelProfile
         SupportsRenderScale = SupportsRenderScale ? true : null,
         Dpi = Dpi,
         Touch = false,
-        CssWidth = CssWidth,
-        CssHeight = CssHeight,
+        CssWidth = RenderTurned ? CssHeight : CssWidth,
+        CssHeight = RenderTurned ? CssWidth : CssHeight,
         Dpr = Dpr,
     };
 }
