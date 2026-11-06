@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using Nexus.Service.Models.Panel;
+using Nexus.Service.Panel;
 using Nexus.Service.Models.Widgets;
 using Nexus.Service.Persistence;
 
@@ -128,8 +129,8 @@ public sealed class WidgetSettingsService
     {
         if (TryParseStandIn(instanceId, out var standInDevice, out var standInType))
         {
-            if (!s.PanelDevices.TryGetValue(standInDevice, out var device) || device.Layout is null) return null;
-            var remembered = device.Layout.SingleWidgetConfigs;
+            if (!s.PanelDevices.TryGetValue(standInDevice, out var device) || PanelLayoutSlots.Active(device) is not { } shown) return null;
+            var remembered = shown.SingleWidgetConfigs;
             return new PanelWidgetDto
             {
                 Id = instanceId,
@@ -147,9 +148,11 @@ public sealed class WidgetSettingsService
         }
         foreach (var device in s.PanelDevices.Values)
         {
-            if (device.Layout is null) continue;
-            var hit = FindInLayout(device.Layout, instanceId);
-            if (hit is not null) return hit;
+            foreach (var layout in PanelLayoutSlots.All(device))
+            {
+                var hit = FindInLayout(layout, instanceId);
+                if (hit is not null) return hit;
+            }
         }
         return null;
     }
@@ -182,9 +185,9 @@ public sealed class WidgetSettingsService
     private static void StoreStandInConfig(NexusSettings s, string instanceId, Dictionary<string, JsonElement>? config)
     {
         if (!TryParseStandIn(instanceId, out var deviceId, out var type)) return;
-        if (!s.PanelDevices.TryGetValue(deviceId, out var device) || device.Layout is null) return;
-        device.Layout.SingleWidgetConfigs ??= new Dictionary<string, Dictionary<string, JsonElement>>();
-        device.Layout.SingleWidgetConfigs[type] = config ?? new Dictionary<string, JsonElement>();
+        if (!s.PanelDevices.TryGetValue(deviceId, out var device) || PanelLayoutSlots.Active(device) is not { } shown) return;
+        shown.SingleWidgetConfigs ??= new Dictionary<string, Dictionary<string, JsonElement>>();
+        shown.SingleWidgetConfigs[type] = config ?? new Dictionary<string, JsonElement>();
     }
 
     public static string? MarketplaceIdFromType(string type)

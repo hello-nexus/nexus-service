@@ -15,10 +15,12 @@ public static class PanelRotation
     private static readonly int[] Quarter = [0, 90, 180, 270];
 
     /// <summary>
-    /// Rotations the record's glass takes. Pushed-frame glass that is square turns a quarter at the
-    /// same size; other pushed-frame glass takes the half turn only. The 8.8 inch strip maps its
-    /// quarter turns onto its firmware portrait mode. A surface that does not run through an
-    /// orientation filter (kiosk displays, phones, the Kraken) takes none.
+    /// Rotations the record's glass takes. Pushed-frame glass turns a quarter: square glass at the
+    /// same size, other glass rendered at the swapped size and turned back to its native layout
+    /// by the transport. A few families keep the half turn only (see
+    /// <see cref="IsSoftwareHalfTurnFamily"/>). The 8.8 inch strip maps its quarter turns onto its
+    /// firmware portrait mode. A surface that does not run through an orientation filter (kiosk
+    /// displays, phones, the Kraken) takes none.
     /// </summary>
     public static IReadOnlyList<int> SupportedFor(PanelDeviceCapabilities? caps)
     {
@@ -45,12 +47,27 @@ public static class PanelRotation
         {
             return None;
         }
-        return caps.CssWidth is > 0 && caps.CssWidth == caps.CssHeight ? Quarter : HalfTurn;
+        // A glass whose size is not known yet cannot be turned on a guess.
+        return caps.CssWidth is > 0 && caps.CssHeight is > 0 ? Quarter : HalfTurn;
     }
 
+    /// <summary>
+    /// True for glass whose quarter turn swaps the render size: pushed-frame glass that is not
+    /// square and has no portrait mode of its own. The 8.8 inch strip renegotiates its own
+    /// geometry and square glass renders the same size either way.
+    /// </summary>
+    public static bool SwapsRenderSize(PanelDeviceCapabilities? caps) =>
+        caps is { SupportsPortrait: not true, CssWidth: > 0, CssHeight: > 0 }
+        && caps.CssWidth != caps.CssHeight
+        && Contains(SupportedFor(caps), 90);
+
+    // The Apex OLED is a keyboard strip, and the Curved glass plays video baked per mount with a crop the
+    // web authors for its landscape aspect only, so neither has a swapped-aspect picture to show.
     private static bool IsSoftwareHalfTurnFamily(string? family) =>
         family is not null
         && (string.Equals(family, Peripherals.JpegPanels.JpegPanelModel.TlLcd.HandlerId, StringComparison.Ordinal)
+            || string.Equals(family, Streams.ApexOledPanelDiscovery.Id, StringComparison.Ordinal)
+            || string.Equals(family, Peripherals.BulkPanels.HydroShift2CurveLcdDriver.Id, StringComparison.Ordinal)
             || string.Equals(family, Peripherals.LianLiFlex.FlexScreens.PanelFamilyId, StringComparison.Ordinal)
             || string.Equals(family, Peripherals.LianLiWireless.Slv3LcdScreens.PanelFamilyId, StringComparison.Ordinal)
             || string.Equals(family, Peripherals.CorsairLink.CorsairLinkLcd.DeviceId, StringComparison.Ordinal));

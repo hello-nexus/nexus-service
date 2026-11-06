@@ -21,6 +21,11 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     // another one, with the same byte count, until the coordinator re-mints the session.
     private readonly int _width;
     private readonly int _height;
+    // The glass's own size the frames go out at. It differs from the render size when the page
+    // renders turned a quarter: each frame is then turned back before the driver sees it.
+    private readonly int _nativeWidth;
+    private readonly int _nativeHeight;
+    private readonly bool _renderTurned;
     private int _filled;
     private volatile bool _disposed;
     private bool _opened;
@@ -64,7 +69,8 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private Action<PanelTouchContact>? _touchSink;
     private BulkPanelTouchReader? _touchReader;
 
-    public BulkPanelStreamTransport(BulkPanelHub hub, string serial, IVirtualMonitorHost? monitors = null)
+    /// <param name="renderTurned">The overlay renders the glass's size with its sides swapped (a quarter-turned record on non-square glass).</param>
+    public BulkPanelStreamTransport(BulkPanelHub hub, string serial, IVirtualMonitorHost? monitors = null, bool renderTurned = false)
     {
         _hub = hub;
         Serial = serial;
@@ -72,8 +78,13 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
         // Fixed at construction from the geometry the driver negotiated; discovery only
         // reports a panel once that is known.
         _frame = new byte[Math.Max(0, hub.FrameBytes)];
-        _width = hub.Width;
-        _height = hub.Height;
+        _nativeWidth = hub.Width;
+        _nativeHeight = hub.Height;
+        // A glass with a portrait mode of its own renegotiates its geometry instead.
+        _renderTurned = renderTurned && !hub.Driver.SupportsPortrait && _nativeWidth != _nativeHeight;
+        _width = _renderTurned ? _nativeHeight : _nativeWidth;
+        _height = _renderTurned ? _nativeWidth : _nativeHeight;
+        _orientation.QuarterOnRectangles = _renderTurned;
     }
 
     public bool IsOpen => !_disposed && _hub.IsConnected;
@@ -89,6 +100,17 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             {
                 var (rotation, mirror) = requested();
                 return (rotation >= 180 ? 180 : 0, mirror);
+            };
+        }
+        else if (_renderTurned)
+        {
+            // The render size is fixed for this session, so the quarter is too: a record that has just
+            // turned back keeps this session's quarter until the coordinator re-mints it.
+            var requested = source;
+            source = () =>
+            {
+                var (rotation, mirror) = requested();
+                return (rotation >= 180 ? 270 : 90, mirror);
             };
         }
         _orientationSource = source;
@@ -143,7 +165,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             }
             else if (want && _monitor is null)
             {
-                var feed = new SecondaryMonitorFeed(monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke(), () => _fpsCapSource?.Invoke());
+                var feed = new SecondaryMonitorFeed(monitors, _hub, PushFrame, () => _orientationSource(), () => SecondaryMonitorStateChanged?.Invoke(), () => _fpsCapSource?.Invoke(), _renderTurned ? _width : 0, _renderTurned ? _height : 0);
                 Volatile.Write(ref _monitor, feed);
                 // The monitor reads touch itself; the page's reader lets go of the pipe first.
                 UpdateTouchReader();
@@ -191,7 +213,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             if (want && _touchReader is null)
             {
                 var sink = _touchSink!;
-                _touchReader = new BulkPanelTouchReader(_hub, _width, _height, () => _orientationSource(), injection =>
+                _touchReader = new BulkPanelTouchReader(_hub, _nativeWidth, _nativeHeight, _width, _height, () => _orientationSource(), injection =>
                 {
                     sink(new PanelTouchContact(injection.PointerId, injection.Phase, (injection.X + 0.5) / _width, (injection.Y + 0.5) / _height));
                     return true;
@@ -403,16 +425,16 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     {
         lock (_pushLock)
         {
-            if (_hub.Width != _width || _hub.Height != _height)
+            if (_hub.Width != _nativeWidth || _hub.Height != _nativeHeight)
             {
                 if (!_dropLogged)
                 {
                     _dropLogged = true;
-                    ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected: panel runs {_hub.Width}x{_hub.Height}, stream is {_width}x{_height}");
+                    ServiceLog.Warn($"[{_hub.Driver.HandlerId}] frame rejected: panel runs {_hub.Width}x{_hub.Height}, stream is {_nativeWidth}x{_nativeHeight}");
                 }
                 return false;
             }
-            if (_hub.SendFrame(_orientation.Apply(frame, _width, _height), _width, _height))
+            if (_hub.SendFrame(_orientation.Apply(frame, _width, _height), _nativeWidth, _nativeHeight))
             {
                 Volatile.Write(ref _lastSendMs, Environment.TickCount64);
                 _dropLogged = false;

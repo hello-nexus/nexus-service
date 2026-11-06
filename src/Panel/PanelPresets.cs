@@ -61,6 +61,9 @@ public static class PanelPresets
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
         to.WidgetSize = from.WidgetSize;
         to.GridSlots = from.GridSlots;
+        to.PortraitLayout = CloneLayout(from.PortraitLayout);
+        to.PortraitWidgetSize = from.PortraitWidgetSize;
+        to.PortraitGridSlots = from.PortraitGridSlots;
     }
 
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()
