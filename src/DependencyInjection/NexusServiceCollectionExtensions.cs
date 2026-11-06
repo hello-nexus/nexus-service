@@ -2053,7 +2053,7 @@ public static class NexusServiceCollectionExtensions
                 {
                     recordId = null;
                 }
-                portrait = record?.Portrait == true;
+                portrait = record is not null && Nexus.Service.Panel.PanelRotation.IsPortrait(record.Rotation ?? 0);
             }
             catch (Exception ex)
             {

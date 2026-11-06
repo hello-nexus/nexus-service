@@ -374,6 +374,12 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
+            if ((body.Rotation.HasValue || body.Flip180.HasValue || body.Portrait.HasValue)
+                && registry.Get(id) is { } rotating
+                && !PanelRotation.TryResolve(rotating, body, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_rotation"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = registry.Patch(id, body);
             if (updated is null)

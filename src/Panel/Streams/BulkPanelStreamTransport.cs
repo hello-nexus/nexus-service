@@ -26,7 +26,7 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private bool _opened;
     private bool _dropLogged;
     private readonly PanelOrientationFilter _orientation = new();
-    private Func<(bool Flip180, bool Mirror)> _orientationSource = () => (false, false);
+    private Func<(int Rotation, bool Mirror)> _orientationSource = () => (0, false);
     private readonly object _pushLock = new();
 
     // A static page produces no captured frames, and some panels fall back to their own
@@ -72,8 +72,19 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     public bool IsOpen => !_disposed && _hub.IsConnected;
 
-    public void BindOrientation(Func<(bool Flip180, bool Mirror)> source)
+    public void BindOrientation(Func<(int Rotation, bool Mirror)> source)
     {
+        if (_hub.Driver.SupportsPortrait)
+        {
+            // The quarter turn is the glass's own portrait mode (the driver rotates it); only the
+            // half turn on top of it is left to the frame.
+            var requested = source;
+            source = () =>
+            {
+                var (rotation, mirror) = requested();
+                return (rotation >= 180 ? 180 : 0, mirror);
+            };
+        }
         _orientationSource = source;
         _orientation.Bind(source);
     }

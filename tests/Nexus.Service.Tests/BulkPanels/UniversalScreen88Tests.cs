@@ -193,6 +193,30 @@ public class UniversalScreen88Tests
         Assert.Empty(pipe.Payloads);
     }
 
+    // The quarter turn of the strip is its firmware portrait mode, so the frame only ever takes the half turn.
+    private static byte[] FramePushedWith(int rotation)
+    {
+        var driver = new UniversalScreen88Driver();
+        var pipe = new GlassPipe();
+        using var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial");
+        transport.BindOrientation(() => (rotation, false));
+        pipe.Clear();
+
+        transport.Write(Quadrants(1920, 480));
+
+        return pipe.Payloads.Single().ToArray();
+    }
+
+    [Fact]
+    public void A_quarter_turn_leaves_the_frame_to_the_firmware_portrait_mode()
+    {
+        Assert.Equal(FramePushedWith(0), FramePushedWith(90));
+        Assert.Equal(FramePushedWith(180), FramePushedWith(270));
+        Assert.NotEqual(FramePushedWith(0), FramePushedWith(180));
+    }
+
     [Fact]
     public void Discovery_offers_a_widget_panel_that_can_go_portrait()
     {

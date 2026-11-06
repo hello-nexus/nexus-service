@@ -67,7 +67,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     public bool IsOpen => !_disposed && _hub.IsConnected;
 
-    public void BindOrientation(Func<(bool Flip180, bool Mirror)> source) => _orientation.Bind(source);
+    public void BindOrientation(Func<(int Rotation, bool Mirror)> source) => _orientation.Bind(source);
 
     /// <summary>Ignored for a panel with no backlight command, so those never pay the poll.</summary>
     public void BindBrightness(Func<int?> source)
