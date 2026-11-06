@@ -25,6 +25,8 @@ public sealed class TouchMappingGuardService : BackgroundService
     private readonly HelperRegistry _helpers;
     private readonly TouchMappingGuard _guard;
     private readonly Timer _debounce;
+    private readonly object _timerLock = new();
+    private DateTime? _dueUtc;
 
     public TouchMappingGuardService(HelperRegistry helpers, TouchMappingGuard guard)
     {
@@ -55,21 +57,41 @@ public sealed class TouchMappingGuardService : BackgroundService
 
     private void Kick()
     {
-        try { _debounce.Change(DebounceMs, Timeout.Infinite); } catch (ObjectDisposedException) { }
+        lock (_timerLock)
+        {
+            _dueUtc = DateTime.UtcNow.AddMilliseconds(DebounceMs);
+            try { _debounce.Change(DebounceMs, Timeout.Infinite); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    /// <summary>
+    /// Arms the bounded follow-up unless an event-driven fire is already due
+    /// sooner: an earlier pending fire is never pushed later.
+    /// </summary>
+    private void ArmFollowUp(TimeSpan delay)
+    {
+        lock (_timerLock)
+        {
+            var now = DateTime.UtcNow;
+            if (_dueUtc is { } due && due > now && due <= now + delay) return;
+            _dueUtc = now + delay;
+            try { _debounce.Change(delay, Timeout.InfiniteTimeSpan); } catch (ObjectDisposedException) { }
+        }
     }
 
     private void RunPass()
     {
+        lock (_timerLock) _dueUtc = null;
         _ = Task.Run(async () =>
         {
-            try { await _guard.RunPassAsync().ConfigureAwait(false); }
-            catch (Exception ex) { Console.Error.WriteLine($"[touch-map] pass failed: {ex.Message}"); }
-            // One-shot follow-up only while a digitizer-absent window is
-            // pending; null once the digitizer is seen or the restart is spent.
-            if (_guard.NextRecheckDelay is { } delay)
+            try
             {
-                try { _debounce.Change(delay, Timeout.InfiniteTimeSpan); } catch (ObjectDisposedException) { }
+                var outcome = await _guard.RunPassAsync().ConfigureAwait(false);
+                // One-shot follow-up only while a digitizer-absent window is
+                // pending; null once the digitizer is seen or the restart is spent.
+                if (outcome.RecheckAfter is { } delay) ArmFollowUp(delay);
             }
+            catch (Exception ex) { Console.Error.WriteLine($"[touch-map] pass failed: {ex.Message}"); }
         });
     }
 }

@@ -62,6 +62,12 @@ public sealed class TouchMapSnapshot
     /// as "Windows has no pointer device".
     /// </summary>
     public bool PointerQueryOk { get; set; }
+    /// <summary>
+    /// True only when the interactive user's touch input is readably on
+    /// (HKCU Wisp\Touch TouchGate missing or non-zero). Defaults to false so
+    /// an unreadable value or older helper fails closed.
+    /// </summary>
+    public bool TouchInputEnabled { get; set; }
     /// <summary>Touch pointer devices whose interface path could not be read; any makes the digitizer list incomplete.</summary>
     public int UnnamedTouchPointers { get; set; }
 }

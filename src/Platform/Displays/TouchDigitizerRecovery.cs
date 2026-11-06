@@ -37,13 +37,21 @@ public static class TouchDigitizerRecoveryGate
     internal const int TouchPageUsagePage = 0x0D;
     internal const int TouchScreenUsage = 0x04;
 
+    /// <summary>CM_PROB_DISABLED: the user (or policy) disabled the devnode on purpose.</summary>
+    internal const int ProblemDisabled = 22;
+
     public static (DigitizerHealth Health, string? HidPath) Assess(
-        TouchMapSnapshot snapshot, TouchMappingOutcome outcome, Func<int, int, IReadOnlyList<HidDeviceInfo>> findHid)
+        TouchMapSnapshot snapshot,
+        TouchMappingOutcome outcome,
+        Func<int, int, IReadOnlyList<HidDeviceInfo>> findHid,
+        Func<string, int?> readProblemCode)
     {
         if (outcome is TouchMappingOutcome.AlreadyCorrect or TouchMappingOutcome.NeedsRepair)
             return (DigitizerHealth.Healthy, null);
         if (outcome != TouchMappingOutcome.NoDigitizer) return (DigitizerHealth.Unknown, null);
         if (!snapshot.PointerQueryOk || snapshot.UnnamedTouchPointers > 0) return (DigitizerHealth.Unknown, null);
+        // Touch switched off by the user (or unreadable): never override it.
+        if (!snapshot.TouchInputEnabled) return (DigitizerHealth.Unknown, null);
 
         TouchPanelCatalogEntry? y70 = null;
         foreach (var display in snapshot.Displays)
@@ -57,15 +65,48 @@ public static class TouchDigitizerRecoveryGate
         }
         if (y70 is null) return (DigitizerHealth.Unknown, null);
 
+        // Any pointer device carrying the Y70 VID/PID means Windows does have
+        // one, even when Decide handed it to a companion-scoped panel.
+        foreach (var digitizer in snapshot.Digitizers)
+        {
+            if (TouchPanelCatalog.MatchesDigitizer(y70, digitizer.InterfacePath)) return (DigitizerHealth.Unknown, null);
+        }
+        // A companion endpoint (an Edge's control interface) on the bus means
+        // the VID/PID collection may belong to that panel, not the Y70.
+        foreach (var id in TouchPanelCatalog.CompanionUsbIds())
+        {
+            if (findHid(id.VendorId, id.ProductId).Count > 0) return (DigitizerHealth.Unknown, null);
+        }
+
+        string? found = null;
         foreach (var id in y70.DigitizerIds)
         {
             foreach (var hid in findHid(id.VendorId, id.ProductId))
             {
-                if (hid.UsagePage == TouchPageUsagePage && hid.Usage == TouchScreenUsage && !string.IsNullOrEmpty(hid.Path))
-                    return (DigitizerHealth.Absent, hid.Path);
+                if (hid.VendorId != id.VendorId || hid.ProductId != id.ProductId) continue;
+                if (hid.UsagePage != TouchPageUsagePage || hid.Usage != TouchScreenUsage || string.IsNullOrEmpty(hid.Path)) continue;
+                // Two touch collections (two panels): ambiguous, never pick one.
+                if (found is not null) return (DigitizerHealth.Unknown, null);
+                found = hid.Path;
             }
         }
-        return (DigitizerHealth.Unknown, null);
+        if (found is null) return (DigitizerHealth.Unknown, null);
+
+        var instanceId = InstanceIdFromInterfacePath(found);
+        if (instanceId is null) return (DigitizerHealth.Unknown, null);
+        var problem = readProblemCode(instanceId);
+        if (problem is null || problem == ProblemDisabled) return (DigitizerHealth.Unknown, null);
+        return (DigitizerHealth.Absent, found);
+    }
+
+    /// <summary>\\?\hid#vid_..&pid_..&col01#inst#{guid} to HID\VID_..&PID_..&COL01\INST; null when malformed.</summary>
+    public static string? InstanceIdFromInterfacePath(string interfacePath)
+    {
+        const string prefix = @"\\?\";
+        if (!interfacePath.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        var parts = interfacePath[prefix.Length..].Split('#');
+        if (parts.Length < 3 || parts[0].Length == 0 || parts[1].Length == 0 || parts[2].Length == 0) return null;
+        return $@"{parts[0]}\{parts[1]}\{parts[2]}".ToUpperInvariant();
     }
 }
 
@@ -150,7 +191,8 @@ public sealed class TouchRecoveryTracker
 public interface ITouchRecoveryStampStore
 {
     DateTime? LastRestartUtc();
-    void Record(DateTime utc);
+    /// <summary>False when the stamp could not be persisted; the caller must then not restart.</summary>
+    bool Record(DateTime utc);
 }
 
 public sealed class FileTouchRecoveryStampStore : ITouchRecoveryStampStore
@@ -170,14 +212,18 @@ public sealed class FileTouchRecoveryStampStore : ITouchRecoveryStampStore
         catch { return DateTime.UtcNow; }
     }
 
-    public void Record(DateTime utc)
+    public bool Record(DateTime utc)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(StampPath)!);
             File.WriteAllText(StampPath, utc.Ticks.ToString());
+            return true;
         }
-        catch { }
+        catch
+        {
+            return false;
+        }
     }
 }
 
@@ -194,26 +240,36 @@ public sealed class TouchDigitizerRecovery
     internal static readonly TimeSpan PersistedCap = TimeSpan.FromHours(2);
 
     private readonly Func<int, int, IReadOnlyList<HidDeviceInfo>> _findHid;
+    private readonly Func<string, int?> _readProblemCode;
     private readonly ITouchDigitizerDevnodeRestarter _restarter;
     private readonly ITouchRecoveryStampStore _stamps;
     private readonly Func<DateTime> _utcNow;
     private readonly TouchRecoveryTracker _tracker = new(Settle, PostRestartDelay);
 
     public TouchDigitizerRecovery(IHidEnumerator hid, ITouchDigitizerDevnodeRestarter restarter)
-        : this(hid.Find, restarter, new FileTouchRecoveryStampStore(), () => DateTime.UtcNow)
+        : this(hid.Find, ReadProblemCode, restarter, new FileTouchRecoveryStampStore(), () => DateTime.UtcNow)
     {
     }
 
     internal TouchDigitizerRecovery(
         Func<int, int, IReadOnlyList<HidDeviceInfo>> findHid,
+        Func<string, int?> readProblemCode,
         ITouchDigitizerDevnodeRestarter restarter,
         ITouchRecoveryStampStore stamps,
         Func<DateTime> utcNow)
     {
         _findHid = findHid;
+        _readProblemCode = readProblemCode;
         _restarter = restarter;
         _stamps = stamps;
         _utcNow = utcNow;
+    }
+
+    private static int? ReadProblemCode(string instanceId)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try { return Nexus.Service.Platform.Windows.WindowsDevnodes.ReadProblemCode(instanceId); }
+        catch { return null; }
     }
 
     public void Reset() => _tracker.Observe(_utcNow(), DigitizerHealth.Unknown, null, capBlocked: true);
@@ -222,7 +278,7 @@ public sealed class TouchDigitizerRecovery
     public TimeSpan? Observe(TouchMapSnapshot snapshot, TouchMappingOutcome outcome)
     {
         var now = _utcNow();
-        var (health, hidPath) = TouchDigitizerRecoveryGate.Assess(snapshot, outcome, _findHid);
+        var (health, hidPath) = TouchDigitizerRecoveryGate.Assess(snapshot, outcome, _findHid, _readProblemCode);
         var last = _stamps.LastRestartUtc();
         var capBlocked = last is { } l && (l > now || now - l < PersistedCap);
         var step = _tracker.Observe(now, health, hidPath, capBlocked);
@@ -233,7 +289,13 @@ public sealed class TouchDigitizerRecovery
                 break;
             case TouchRecoveryStep.Restart:
                 Log("digitizer absence confirmed; restarting the touch devnode once");
-                _stamps.Record(now);
+                if (!_stamps.Record(now))
+                {
+                    // No durable cap means no restart: fail closed.
+                    _tracker.RestartFailed();
+                    Log("could not persist the restart cap; not restarting");
+                    break;
+                }
                 if (!_restarter.Restart(hidPath!))
                 {
                     _tracker.RestartFailed();
