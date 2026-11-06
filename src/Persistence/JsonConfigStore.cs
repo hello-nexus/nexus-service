@@ -201,6 +201,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             {
                 recovered = true;
             }
+            // A downgrade to a pre-rotation build writes the flags back at the current schema version.
+            if (Nexus.Service.Panel.PanelRotationMigration.Apply(_cached))
+            {
+                recovered = true;
+            }
             if (recovered)
             {
                 Persist(_cached);
@@ -311,6 +316,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// v23: the removed Game Sync mode becomes static.
     /// v24: Lighting.RenderBackend "wgl" (the old default, always persisted) becomes "angle".
     /// v25: a stored Keeb.FirmwareLighting.Brightness equal to the old default (always persisted) moves to the new default. Profile files are covered by ProfileManager.
+    /// v31: panel records' Flip180/Portrait fold into one clockwise Rotation (PanelRotationMigration).
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -427,6 +433,10 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 30)
         {
             Nexus.Service.Lighting.AnimateSimpleMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < Nexus.Service.Panel.PanelRotationMigration.SchemaVersion)
+        {
+            Nexus.Service.Panel.PanelRotationMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

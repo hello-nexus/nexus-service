@@ -2,16 +2,33 @@ using System;
 
 namespace Nexus.Service.Peripherals.PixelFormats;
 
-/// <summary>Re-orients a 4-byte-per-pixel frame for glass mounted upside down or read through a
-/// reflection. Both transforms keep the frame's dimensions; a quarter turn would swap them.</summary>
+/// <summary>
+/// Re-orients a 4-byte-per-pixel frame for glass mounted turned or read through a reflection.
+/// The result is the source mirrored left to right when asked, then turned clockwise by the
+/// rotation, so a mount turn always acts on the content as authored. A quarter turn needs a
+/// square frame: turning a rectangle would swap the dimensions the transport reads back.
+/// </summary>
 public static class BgraOrientation
 {
     /// <summary>True when <see cref="Apply"/> would do anything.</summary>
-    public static bool IsIdentity(bool flip180, bool mirror) => !flip180 && !mirror;
+    public static bool IsIdentity(int rotation, bool mirror) => Normalize(rotation) == 0 && !mirror;
+
+    /// <summary>Folds any whole-degree turn into 0, 90, 180 or 270 clockwise.</summary>
+    public static int Normalize(int rotation) => (((rotation % 360) + 360) % 360) / 90 * 90;
+
+    /// <summary>
+    /// The turn a frame of this size can really take: a rectangle keeps only the half turn
+    /// component, since a quarter turn would change its dimensions.
+    /// </summary>
+    public static int Effective(int rotation, int width, int height)
+    {
+        var normalized = Normalize(rotation);
+        return width == height || normalized % 180 == 0 ? normalized : (normalized >= 180 ? 180 : 0);
+    }
 
     /// <summary>Writes the re-oriented frame into <paramref name="dest"/>.</summary>
     public static void Apply(
-        ReadOnlySpan<byte> src, int width, int height, bool flip180, bool mirror, Span<byte> dest)
+        ReadOnlySpan<byte> src, int width, int height, int rotation, bool mirror, Span<byte> dest)
     {
         int stride = width * 4;
         if (src.Length < stride * height)
@@ -23,6 +40,14 @@ public static class BgraOrientation
             throw new ArgumentException("destination is too small", nameof(dest));
         }
 
+        rotation = Effective(rotation, width, height);
+        if (rotation % 180 != 0)
+        {
+            ApplyQuarterTurn(src, width, height, rotation, mirror, dest);
+            return;
+        }
+
+        bool flip180 = rotation == 180;
         // A 180 turn and a mirror both flip x, so together they cancel to a y-only flip.
         bool flipX = flip180 ^ mirror;
         for (int y = 0; y < height; y++)
@@ -40,5 +65,54 @@ public static class BgraOrientation
                 srcRow.Slice((width - 1 - x) * 4, 4).CopyTo(destRow.Slice(x * 4, 4));
             }
         }
+    }
+
+    private static void ApplyQuarterTurn(
+        ReadOnlySpan<byte> src, int width, int height, int rotation, bool mirror, Span<byte> dest)
+    {
+        if (rotation == 90)
+        {
+            BgraQuarterTurn.RotateCw(src, width, height, dest);
+        }
+        else
+        {
+            BgraQuarterTurn.RotateCcw(src, width, height, dest);
+        }
+        if (!mirror)
+        {
+            return;
+        }
+        // Mirroring first and turning after is the turn followed by a flip of the turned rows.
+        int stride = height * 4;
+        for (int top = 0, bottom = width - 1; top < bottom; top++, bottom--)
+        {
+            var a = dest.Slice(top * stride, stride);
+            var b = dest.Slice(bottom * stride, stride);
+            for (int i = 0; i < stride; i++)
+            {
+                (a[i], b[i]) = (b[i], a[i]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The source pixel that <see cref="Apply"/> placed at (<paramref name="x"/>, <paramref name="y"/>)
+    /// of the oriented frame; the inverse a touch point needs to land back on the content.
+    /// </summary>
+    public static (int X, int Y) MapToSource(int x, int y, int width, int height, int rotation, bool mirror)
+    {
+        switch (Effective(rotation, width, height))
+        {
+            case 90:
+                (x, y) = (y, height - 1 - x);
+                break;
+            case 180:
+                (x, y) = (width - 1 - x, height - 1 - y);
+                break;
+            case 270:
+                (x, y) = (width - 1 - y, x);
+                break;
+        }
+        return mirror ? (width - 1 - x, y) : (x, y);
     }
 }

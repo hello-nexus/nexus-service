@@ -8,8 +8,8 @@ namespace Nexus.Service.Panel.Streams;
 /// <summary>Transport that can turn its frames for glass mounted the wrong way up.</summary>
 public interface IOrientablePanelTransport
 {
-    /// <summary>Supplies the panel record's mount orientation, polled per frame.</summary>
-    void BindOrientation(Func<(bool Flip180, bool Mirror)> source);
+    /// <summary>Supplies the panel record's mount orientation (clockwise degrees, mirror), polled per frame.</summary>
+    void BindOrientation(Func<(int Rotation, bool Mirror)> source);
 }
 
 /// <summary>
@@ -22,14 +22,14 @@ public sealed class PanelOrientationFilter
     /// <summary>How stale the cached orientation may get; reading it clones the panel record.</summary>
     private const long TtlMs = 500;
 
-    private Func<(bool Flip180, bool Mirror)>? _source;
+    private Func<(int Rotation, bool Mirror)>? _source;
     private byte[] _oriented = Array.Empty<byte>();
-    private (bool Flip180, bool Mirror) _current;
+    private (int Rotation, bool Mirror) _current;
     // A deadline rather than a last-read stamp: `now - long.MinValue` overflows to a
     // negative, which pinned the cache at its default and silently ignored the setting.
     private long _nextReadMs;
 
-    public void Bind(Func<(bool Flip180, bool Mirror)> source)
+    public void Bind(Func<(int Rotation, bool Mirror)> source)
     {
         _source = source;
         _nextReadMs = 0;
@@ -51,23 +51,23 @@ public sealed class PanelOrientationFilter
             catch { _current = default; }
             if (_current != previous)
             {
-                ServiceLog.Info($"[panel-orientation] flip180={_current.Flip180} mirror={_current.Mirror}");
+                ServiceLog.Info($"[panel-orientation] rotation={_current.Rotation} mirror={_current.Mirror}");
             }
-        }
-        if (BgraOrientation.IsIdentity(_current.Flip180, _current.Mirror))
-        {
-            return frame;
         }
         if (width <= 0 || height <= 0 || width * height * 4 != frame.Length)
         {
             // Geometry moved under us mid-frame; orienting against a stale size would tear.
             return frame;
         }
+        if (BgraOrientation.IsIdentity(BgraOrientation.Effective(_current.Rotation, width, height), _current.Mirror))
+        {
+            return frame;
+        }
         if (_oriented.Length != frame.Length)
         {
             _oriented = new byte[frame.Length];
         }
-        BgraOrientation.Apply(frame, width, height, _current.Flip180, _current.Mirror, _oriented);
+        BgraOrientation.Apply(frame, width, height, _current.Rotation, _current.Mirror, _oriented);
         return _oriented;
     }
 }

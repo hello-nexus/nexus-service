@@ -378,6 +378,10 @@ builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.Shut
 // Information lines, which otherwise flood nexus-service.log on every internal API call.
 // Keep Microsoft.Hosting.Lifetime at Information for the useful "Now listening" /
 // "Application started/stopping" boot markers.
+// CreateSlimBuilder registers the console provider, which writes two untimestamped, untagged lines per
+// entry. It is replaced with ServiceLog output so ILogger lines match the rest of the file; the other
+// registered provider, ErrorLoggerProvider, is kept.
+Nexus.Service.Platform.ServiceLogLoggerProvider.ReplaceConsoleProvider(builder.Logging);
 builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
 builder.Logging.AddFilter("System", LogLevel.Warning);
 builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);

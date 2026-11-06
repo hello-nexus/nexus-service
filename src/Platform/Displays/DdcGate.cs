@@ -144,9 +144,16 @@ internal static class DdcGate
         }
         catch (Exception ex)
         {
-            Nexus.Service.Platform.HelperLog.Write($"[ddc] settle callback failed: {ex.Message}");
+            Nexus.Service.Platform.HelperLog.Warn($"[ddc] settle callback failed: {ex.Message}");
         }
     }
+
+    /// <summary>How often a repeating DDC log line is restated with its count.</summary>
+    internal static readonly TimeSpan RepeatLogInterval = TimeSpan.FromMinutes(10);
+
+    private static readonly Nexus.Service.Platform.LogGate s_queryFailureLog = new(RepeatLogInterval);
+    private static readonly Nexus.Service.Platform.LogGate s_queryRecoveryLog = new(RepeatLogInterval);
+    private static int s_queryFailing;
 
     /// <summary>
     /// WTS lock state for this process's own session. UNKNOWN (0xFFFFFFFF) and
@@ -157,24 +164,43 @@ internal static class DdcGate
     {
         try
         {
-            if (!WTSQuerySessionInformationW(IntPtr.Zero, WTS_CURRENT_SESSION, WTSSessionInfoEx, out var buf, out var len)
-                || buf == IntPtr.Zero)
+            var locked = QueryCore();
+            // The failure key is kept so an alternating throw/succeed query still writes at most
+            // one failed and one recovered line per interval.
+            if (Interlocked.Exchange(ref s_queryFailing, 0) == 1)
             {
-                return false;
+                if (s_queryRecoveryLog.Check("lock-state", "", out _))
+                    Nexus.Service.Platform.HelperLog.Write("[ddc] lock-state query recovered");
             }
-            try
-            {
-                if (len < (uint)Marshal.SizeOf<WTSINFOEX_PREFIX>()) return false;
-                var info = Marshal.PtrToStructure<WTSINFOEX_PREFIX>(buf);
-                return info.Level == 1 && info.SessionFlags == WTS_SESSIONSTATE_LOCK;
-            }
-            finally { WTSFreeMemory(buf); }
+            return locked;
         }
         catch (Exception ex)
         {
-            Nexus.Service.Platform.HelperLog.Write($"[ddc] lock-state query failed: {ex.Message}");
+            Interlocked.Exchange(ref s_queryFailing, 1);
+            // Runs every poll, so a persistent failure is one line per interval.
+            if (s_queryFailureLog.Check("lock-state", ex.GetType().Name, out var withheld, out var changed))
+            {
+                Nexus.Service.Platform.HelperLog.Warn(
+                    $"[ddc] lock-state query failed: {ex.Message}{Nexus.Service.Platform.LogGate.Suffix(withheld, changed)}");
+            }
             return false;
         }
+    }
+
+    private static bool QueryCore()
+    {
+        if (!WTSQuerySessionInformationW(IntPtr.Zero, WTS_CURRENT_SESSION, WTSSessionInfoEx, out var buf, out var len)
+            || buf == IntPtr.Zero)
+        {
+            return false;
+        }
+        try
+        {
+            if (len < (uint)Marshal.SizeOf<WTSINFOEX_PREFIX>()) return false;
+            var info = Marshal.PtrToStructure<WTSINFOEX_PREFIX>(buf);
+            return info.Level == 1 && info.SessionFlags == WTS_SESSIONSTATE_LOCK;
+        }
+        finally { WTSFreeMemory(buf); }
     }
 
     private const uint WTS_CURRENT_SESSION = unchecked((uint)-1);

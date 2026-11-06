@@ -388,6 +388,12 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
+            if ((body.Rotation.HasValue || body.Flip180.HasValue || body.Portrait.HasValue)
+                && registry.Get(id) is { } rotating
+                && !PanelRotation.TryResolve(rotating, body, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_rotation"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
             var updated = body.LcdBrightness.HasValue
                 ? streams.CommitBrightness(id, () => registry.Patch(id, body))
@@ -402,7 +408,7 @@ public static class PanelRoutes
                 streams.ApplySecondaryMonitor(updated.Id);
                 streams.Wake();
             }
-            if (body.HighResolution.HasValue || body.FpsCap.HasValue)
+            if (body.FpsCap.HasValue)
                 streams.Wake();
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)
