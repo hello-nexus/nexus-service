@@ -621,6 +621,50 @@ public class HydroShift2Tests
     }
 
     [Fact]
+    public void A_resume_ring_upload_waits_for_an_unanswered_wipe_to_be_answered()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(1_000);
+        aio.Tick(30_000);
+        aio.OnSystemResumed();
+        aio.Tick(40_000);
+
+        pipe.Silent = true;
+        var t = 40_000 + HydroShift2Aio.ResumeRewipeMs;
+        aio.Tick(t);
+        aio.Tick(t + HydroShift2Aio.RewipeRetryMs);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        pipe.Silent = false;
+        aio.Tick(t + 2 * HydroShift2Aio.RewipeRetryMs);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void A_resume_ring_upload_is_spaced_past_the_last_unanswered_wipe()
+    {
+        var (aio, pipe) = Attached(_ => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(1_000);
+        aio.Tick(30_000);
+        aio.OnSystemResumed();
+        aio.Tick(40_000);
+
+        pipe.Silent = true;
+        var t = 40_000 + HydroShift2Aio.ResumeRewipeMs;
+        for (var i = 0; i <= HydroShift2Aio.RewipeRetries; i++)
+        {
+            aio.Tick(t);
+            t += HydroShift2Aio.RewipeRetryMs;
+        }
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        aio.Tick(t);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
     public void A_resume_while_the_unit_is_disconnected_is_covered_by_the_connect_wipe_after_reconnect()
     {
         var driver = new HydroShift2LcdDriver();

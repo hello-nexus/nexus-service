@@ -65,7 +65,7 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
 
     public void Dispose() => _dbus?.Dispose();
 
-    internal void ResumeHydroShift2()
+    private void ResumeHydroShift2()
     {
         try { _hydroShift2Curve?.OnSystemResumed(); }
         catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II Curve resume failed: {ex.Message}"); }

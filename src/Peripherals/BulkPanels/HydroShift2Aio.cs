@@ -104,7 +104,7 @@ public sealed class HydroShift2Aio : BackgroundService
     /// <summary>Wipes what the firmware drew over the glass once the unit is read, unless it shows its own screen by then.</summary>
     public void ClearScreenOverlay() => _overlayClear = true;
 
-    /// <summary>Called on a system resume; the loop wipes the overlay again once the unit has settled.</summary>
+    /// <summary>Called on a system resume; the loop wipes the overlay again and re-sends the ring once the unit has settled.</summary>
     public void OnSystemResumed() => _resumed = true;
 
     /// <summary>Connected over USB and not handed to the wireless link.</summary>
@@ -262,14 +262,6 @@ public sealed class HydroShift2Aio : BackgroundService
                 _ownScreen = own;
                 RaiseScreenOwnerChanged(current.Mac, own);
             }
-            if (_ringResendAt != 0 && now >= _ringResendAt)
-            {
-                _ringResendAt = 0;
-                lock (_lock)
-                {
-                    _ringDirty = _ring is not null;
-                }
-            }
             var rewipe = _rewipeAt != 0 && now >= _rewipeAt;
             if (rewipe)
             {
@@ -282,11 +274,24 @@ public sealed class HydroShift2Aio : BackgroundService
                 if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
                 {
                     ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay wipe unanswered");
+                    if (_ringResendAt != 0)
+                    {
+                        // An upload right behind an unanswered wipe would eat the spacing its retry relies on.
+                        _ringResendAt = Math.Max(_ringResendAt, now + RewipeRetryMs);
+                    }
                     if (rewipe && _rewipeRetriesLeft > 0)
                     {
                         _rewipeRetriesLeft--;
                         _rewipeAt = now + RewipeRetryMs;
                     }
+                }
+            }
+            if (_ringResendAt != 0 && now >= _ringResendAt && _rewipeAt == 0)
+            {
+                _ringResendAt = 0;
+                lock (_lock)
+                {
+                    _ringDirty = _ring is not null;
                 }
             }
         }
