@@ -21,6 +21,7 @@ public sealed class AiCapabilitiesDto
     public bool Lighting { get; set; } = true;
     public bool Profiles { get; set; } = true;
     public bool History { get; set; } = true;
+    public bool Panels { get; set; } = true;
 }
 
 /// <summary>Body for POST /ai/config. Every field is nullable so the handler can
@@ -39,4 +40,5 @@ public sealed class AiCapabilitiesPatch
     public bool? Lighting { get; set; }
     public bool? Profiles { get; set; }
     public bool? History { get; set; }
+    public bool? Panels { get; set; }
 }

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Models.Panel;
 using Nexus.Service.Models.Sensors;
 
 namespace Nexus.Service.Models.Mcp;
@@ -318,4 +319,126 @@ public sealed class McpCalibrateFansResult
     /// <summary>Echoes the requested fan channel id; null when every fan was calibrated.</summary>
     public string? Fan { get; set; }
     public string Message { get; set; } = "";
+}
+
+/// <summary>One panel in the list_panels MCP tool payload.</summary>
+public sealed class McpPanelSummary
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>Layout surface: y70, q60, phone, monitor, lcd-round, lcd-square or lcd-wide.</summary>
+    public string Surface { get; set; } = "";
+    /// <summary>Curated display family (e.g. "xeneon-edge"); null for a generic panel.</summary>
+    public string? Family { get; set; }
+    public int Pages { get; set; }
+    public int Widgets { get; set; }
+    public string? ActivePreset { get; set; }
+    /// <summary>Unix milliseconds the panel last connected or was edited.</summary>
+    public long LastSeenAt { get; set; }
+}
+
+/// <summary>Payload for the list_panels MCP tool.</summary>
+public sealed class McpPanelListResult
+{
+    public List<McpPanelSummary> Panels { get; set; } = new();
+}
+
+/// <summary>Page grid of a panel whose cell counts the service knows (a Y70).</summary>
+public sealed class McpPanelGrid
+{
+    public int Cols { get; set; }
+    public int Rows { get; set; }
+}
+
+/// <summary>The look fields of a panel. Null means unset: the panel applies its own default.</summary>
+public sealed class McpPanelLook
+{
+    public string? ThemeMode { get; set; }
+    public string? AccentColor { get; set; }
+    public bool? AccentSyncWithDesktop { get; set; }
+    public bool? ThemeSyncWithDesktop { get; set; }
+    public string? BackgroundMode { get; set; }
+    public string? BackgroundColor { get; set; }
+    public string? BackgroundColorLight { get; set; }
+    public string? BackgroundEffect { get; set; }
+    public int? BackgroundTemplate { get; set; }
+    public double? BackgroundOpacity { get; set; }
+    public double? BackgroundFrostLevel { get; set; }
+    public string? BackgroundMediaId { get; set; }
+    public bool? BackgroundMediaSlideshow { get; set; }
+    public int? BackgroundMediaInterval { get; set; }
+    public bool? BackgroundMediaShuffle { get; set; }
+    public bool? ImmersiveBackdrop { get; set; }
+    public double? WidgetOpacity { get; set; }
+    public bool? WidgetLabels { get; set; }
+    public double? WidgetPadding { get; set; }
+    public string? TextColorMode { get; set; }
+    public string? TextColor { get; set; }
+    public string? Font { get; set; }
+    public List<PanelGaugeGradientStop>? GaugeGradient { get; set; }
+}
+
+/// <summary>One imported background media asset a panel can show.</summary>
+public sealed class McpPanelMediaItem
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>"static" or "animated".</summary>
+    public string Type { get; set; } = "";
+}
+
+/// <summary>Payload for the get_panel MCP tool.</summary>
+public sealed class McpPanelDetailResult
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Surface { get; set; } = "";
+    public string? Family { get; set; }
+    public string? Orientation { get; set; }
+    /// <summary>Null when the panel derives its grid from its own viewport.</summary>
+    public McpPanelGrid? Grid { get; set; }
+    public McpPanelLook Look { get; set; } = new();
+    public PanelLayoutDto Layout { get; set; } = new();
+    public List<McpPanelMediaItem> BackgroundMedia { get; set; } = new();
+    public string? ActivePresetId { get; set; }
+}
+
+/// <summary>Payload for the update_panel_look MCP tool.</summary>
+public sealed class McpPanelLookResult
+{
+    public string Panel { get; set; } = "";
+    public List<string> Changed { get; set; } = new();
+    public McpPanelLook Look { get; set; } = new();
+}
+
+/// <summary>Payload for the set_panel_layout MCP tool.</summary>
+public sealed class McpPanelLayoutResult
+{
+    public string Panel { get; set; } = "";
+    public int Pages { get; set; }
+    public int Widgets { get; set; }
+    /// <summary>Ids assigned to pages and widgets sent without one, in input order.</summary>
+    public List<string> AssignedIds { get; set; } = new();
+}
+
+/// <summary>Payload for the update_panel_widget MCP tool.</summary>
+public sealed class McpPanelWidgetResult
+{
+    public string Panel { get; set; } = "";
+    public PanelWidgetDto Widget { get; set; } = new();
+}
+
+/// <summary>One saved preset in a panel preset tool payload.</summary>
+public sealed class McpPanelPresetSummary
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public bool Active { get; set; }
+}
+
+/// <summary>Payload for the panel preset MCP tools.</summary>
+public sealed class McpPanelPresetsResult
+{
+    public string Panel { get; set; } = "";
+    public List<McpPanelPresetSummary> Presets { get; set; } = new();
 }
