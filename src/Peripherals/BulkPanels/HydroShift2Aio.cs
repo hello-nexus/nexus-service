@@ -41,9 +41,9 @@ public sealed class HydroShift2Aio : BackgroundService
     /// <summary>A unit that lost power in sleep reboots to its own screen behind an open pipe, so the wipe is sent again once it has settled.</summary>
     internal const int ResumeRewipeMs = 12_000;
 
-    /// <summary>An unanswered scheduled wipe is retried this many times, this far apart.</summary>
+    /// <summary>An unanswered scheduled wipe is retried this many times, spaced past the stall it causes.</summary>
     internal const int RewipeRetries = 3;
-    internal const int RewipeRetryMs = 3000;
+    internal const int RewipeRetryMs = RingRetryMs;
 
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
