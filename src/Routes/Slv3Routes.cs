@@ -271,6 +271,16 @@ public static partial class Slv3Routes
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });
 
+        // POST /devices/lianli-wireless/restart-controller - restart the TX: RX reset first,
+        // the hub port cycle (Windows) only if it stays silent. The failure Msg is the result name.
+        app.MapPost("/devices/lianli-wireless/restart-controller", (Slv3Hub hub) =>
+        {
+            var result = hub.RestartController();
+            return Results.Json(
+                result == Slv3RestartResult.Started ? ApiResponse.Ok() : ApiResponse.Fail(result.ToString()),
+                AppJsonContext.Default.ApiResponse);
+        });
+
         // GET /devices/lianli-wireless/lighting - each bound chain's animation catalog and lighting mode.
         app.MapGet("/devices/lianli-wireless/lighting", (Slv3Hub hub, IConfigStore store) =>
             Results.Json(BuildLightingResponse(hub, store.Load()), AppJsonContext.Default.Slv3LightingResponse));

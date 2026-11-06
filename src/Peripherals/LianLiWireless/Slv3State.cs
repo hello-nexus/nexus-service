@@ -99,3 +99,16 @@ public sealed class Slv3FanInfo
     /// <summary>The chain's PWM cable to a motherboard fan header is plugged in; without it, following the header has no input.</summary>
     public bool PwmCableConnected { get; set; }
 }
+
+/// <summary>Outcome of a user-requested controller restart.</summary>
+public enum Slv3RestartResult
+{
+    /// <summary>The TX reset went out; a silent TX is handed to the port cycle after a short wait.</summary>
+    Started,
+    /// <summary>A restart is already running or the cooldown has not passed.</summary>
+    Busy,
+    /// <summary>The system is suspending or has just resumed, so the TX is re-enumerating on its own.</summary>
+    HeldBack,
+    /// <summary>No open RX to reset through and no port cycle on this platform.</summary>
+    Unavailable,
+}

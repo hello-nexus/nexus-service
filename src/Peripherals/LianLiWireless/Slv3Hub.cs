@@ -694,6 +694,7 @@ public sealed partial class Slv3Hub : IDisposable
         // The restarted TX lost the LCD video arming; the LCD loop re-arms it.
         _videoModeActive = false;
         _videoModePreppedCount = 0;
+        _lastTxAnswerMs = _nowMs();
         ServiceLog.Info("[lianli-wireless] TX reopened");
     }
 
@@ -743,6 +744,17 @@ public sealed partial class Slv3Hub : IDisposable
         Volatile.Write(ref _portCycleRefusalLogged, 0);
     }
 
+    // The holds a person at the keyboard does not make moot: the TX is re-enumerating on its own.
+    private string? PowerHoldReason(long nowMs)
+    {
+        var quietUntil = Volatile.Read(ref _powerQuietUntilMs);
+        if (quietUntil == long.MaxValue)
+        {
+            return "suspend seen without a resume";
+        }
+        return nowMs < quietUntil || nowMs < Volatile.Read(ref _displayQuietUntilMs) ? "recent power transition" : null;
+    }
+
     private string? PortCycleHoldReason(long nowMs)
     {
         var quietUntil = Volatile.Read(ref _powerQuietUntilMs);
@@ -778,6 +790,7 @@ public sealed partial class Slv3Hub : IDisposable
     // that left the bus was re-enumerated, which is not a hang the RX reset ignored.
     private void ConsiderTxPortCycleLocked(Slv3PortInfo? txPort, long nowMs)
     {
+        ConsiderManualEscalationLocked(nowMs);
         if (txPort is null)
         {
             _txHungResets = 0;
@@ -826,7 +839,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     // Runs without _lock: the hub IOCTL and the re-arrival wait can block for seconds.
     // A cap slot is taken only once the IOCTL is about to be issued.
-    private void CycleTxPort(ISlv3TxPortCycler cycler, Slv3PortInfo txPort, int resets, long hungMinutes)
+    private void CycleTxPort(ISlv3TxPortCycler cycler, Slv3PortInfo txPort, int resets, long hungMinutes, bool manual = false)
     {
         try
         {
@@ -839,18 +852,25 @@ public sealed partial class Slv3Hub : IDisposable
                 return;
             }
             var nowMs = _nowMs();
-            if (_disposed || PortCycleHoldReason(nowMs) is not null)
+            if (_disposed || (manual ? PowerHoldReason(nowMs) : PortCycleHoldReason(nowMs)) is not null)
             {
                 return;
             }
-            int slot;
-            lock (_portCycleGate)
+            if (manual)
             {
-                _portCycleTimesMs.Enqueue(nowMs);
-                slot = _portCycleTimesMs.Count;
+                ServiceLog.Warn($"[lianli-wireless] TX silent after the requested restart, cycling its USB port {target}");
             }
-            Interlocked.Increment(ref _portCycles);
-            ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({slot}/{MaxPortCyclesPerWindow} today)");
+            else
+            {
+                int slot;
+                lock (_portCycleGate)
+                {
+                    _portCycleTimesMs.Enqueue(nowMs);
+                    slot = _portCycleTimesMs.Count;
+                }
+                Interlocked.Increment(ref _portCycles);
+                ServiceLog.Warn($"[lianli-wireless] TX ignored {resets} RX reset(s) over {hungMinutes} min, cycling its USB port {target} ({slot}/{MaxPortCyclesPerWindow} today)");
+            }
             var ok = cycler.TryCycle(instanceId, out var detail);
             ServiceLog.Warn($"[lianli-wireless] TX port cycle {(ok ? "done" : "failed")}: {detail}");
         }
@@ -877,6 +897,81 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>The system resumed: no TX port cycle until it has had time to re-enumerate on its own.</summary>
     public void OnSystemResumed() =>
         Volatile.Write(ref _powerQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
+
+    // User-requested restart: RX reset forced past the auto backoff, then the TX port
+    // cycle only if the TX stays silent. It never touches the automatic episode state or
+    // the daily cap, so a button press cannot use up the safety net.
+    internal const long ManualRestartCooldownMs = 10_000;
+    internal const long ManualRestartWaitMs = 8_000;
+    // A TX answer this soon after the reset may predate the restart and proves nothing.
+    internal const long ManualRestartSettleMs = 2_000;
+    private long _manualCooldownUntilMs;
+    private long _manualResetSentMs;
+    private long _manualEscalateAtMs;
+    private long _lastTxAnswerMs;
+
+    /// <summary>Restarts the TX from the device page. See <see cref="Slv3RestartResult"/>.</summary>
+    public Slv3RestartResult RestartController()
+    {
+        lock (_lock)
+        {
+            var nowMs = _nowMs();
+            if (_disposed)
+            {
+                return Slv3RestartResult.Unavailable;
+            }
+            if (nowMs < _manualCooldownUntilMs || _manualEscalateAtMs != 0 || Volatile.Read(ref _portCycleInFlight) != 0)
+            {
+                return Slv3RestartResult.Busy;
+            }
+            if (PowerHoldReason(nowMs) is { } hold)
+            {
+                ServiceLog.Info($"[lianli-wireless] controller restart held back: {hold}");
+                return Slv3RestartResult.HeldBack;
+            }
+            var sent = _rx is { IsOpen: true } && _rx.RfSend(Slv3Protocol.BuildResetAnother());
+            if (!sent && TxPortCycler is null)
+            {
+                return Slv3RestartResult.Unavailable;
+            }
+            _manualCooldownUntilMs = nowMs + ManualRestartCooldownMs;
+            _manualResetSentMs = nowMs;
+            _manualEscalateAtMs = nowMs + (sent ? ManualRestartWaitMs : 0);
+            if (IsConnected)
+            {
+                State.LinkStatus = Slv3LinkStatus.Recovering;
+            }
+            ServiceLog.Warn(sent
+                ? "[lianli-wireless] controller restart requested, resetting TX via RX"
+                : "[lianli-wireless] controller restart requested, the RX is not open so the TX port is cycled directly");
+            return Slv3RestartResult.Started;
+        }
+    }
+
+    // Runs under _lock on every poll and connect attempt. The wait ends the request when
+    // the TX answered after the reset, or hands a still-silent TX to the port cycle.
+    private void ConsiderManualEscalationLocked(long nowMs)
+    {
+        if (_manualEscalateAtMs == 0 || nowMs < _manualEscalateAtMs)
+        {
+            return;
+        }
+        _manualEscalateAtMs = 0;
+        if (_lastTxAnswerMs >= _manualResetSentMs + ManualRestartSettleMs)
+        {
+            ServiceLog.Info("[lianli-wireless] controller restart done, the TX answered after the reset");
+            return;
+        }
+        var cycler = TxPortCycler;
+        var txPort = FindPortLocked(Slv3DongleRole.Tx);
+        if (cycler is null || txPort is null || Volatile.Read(ref _portCycleInFlight) != 0)
+        {
+            ServiceLog.Warn("[lianli-wireless] controller restart: the TX stayed silent and its port cannot be cycled");
+            return;
+        }
+        Volatile.Write(ref _portCycleInFlight, 1);
+        RunPortCycle(() => CycleTxPort(cycler, txPort, 0, 0, manual: true));
+    }
 
     private bool MasterInitLocked(out bool anyWritten)
     {
@@ -1986,6 +2081,7 @@ public sealed partial class Slv3Hub : IDisposable
     // path. Any reply proves the TX alive, even without a master MAC.
     private void RefreshMasterMacLocked()
     {
+        ConsiderManualEscalationLocked(_nowMs());
         if (_tx is not { IsOpen: true })
         {
             return;
@@ -1993,6 +2089,7 @@ public sealed partial class Slv3Hub : IDisposable
         TryGetMacOnChannelLocked(_channel, out var probe);
         if (probe == TxProbe.Answered)
         {
+            _lastTxAnswerMs = _nowMs();
             _txMissedProbes = 0;
             _txProbeWriteFailures = 0;
             return;
