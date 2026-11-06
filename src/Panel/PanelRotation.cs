@@ -35,14 +35,9 @@ public static class PanelRotation
         {
             return None;
         }
-        // The LINK LCD turns in firmware from its own setting, and its transport applies no panel rotation.
-        if (string.Equals(caps.Family, Peripherals.CorsairLink.CorsairLinkLcd.DeviceId, StringComparison.Ordinal))
-        {
-            return None;
-        }
-        // The Lian Li fan screens keep their firmware rotation as a device-page setting, so the panel only
-        // flips the frame in software.
-        if (caps.Family is "lianli-tl-lcd" or "lianli-flex-lcd" or "lianli-wireless-lcd")
+        // These screens keep their firmware rotation as a device-page setting (or have no panel control for
+        // it), so the panel only flips the frame in software.
+        if (IsSoftwareHalfTurnFamily(caps.Family))
         {
             return HalfTurn;
         }
@@ -53,14 +48,18 @@ public static class PanelRotation
         return caps.CssWidth is > 0 && caps.CssWidth == caps.CssHeight ? Quarter : HalfTurn;
     }
 
+    private static bool IsSoftwareHalfTurnFamily(string? family) =>
+        family is not null
+        && (string.Equals(family, Peripherals.JpegPanels.JpegPanelModel.TlLcd.HandlerId, StringComparison.Ordinal)
+            || string.Equals(family, Peripherals.LianLiFlex.FlexScreens.PanelFamilyId, StringComparison.Ordinal)
+            || string.Equals(family, Peripherals.LianLiWireless.Slv3LcdScreens.PanelFamilyId, StringComparison.Ordinal)
+            || string.Equals(family, Peripherals.CorsairLink.CorsairLinkLcd.DeviceId, StringComparison.Ordinal));
+
     /// <summary>True when the rotation is one of the four mount turns.</summary>
     public static bool IsValid(int rotation) => rotation is 0 or 90 or 180 or 270;
 
     /// <summary>The glass runs tall: the 8.8 inch strip's firmware portrait mode follows 90 and 270.</summary>
     public static bool IsPortrait(int rotation) => rotation is 90 or 270;
-
-    /// <summary>The quarter turns clockwise that rotation names, 0 to 3.</summary>
-    public static int QuarterTurns(int rotation) => (rotation / 90) & 3;
 
     /// <summary>The rotation a stored legacy Flip180/Portrait pair produced, 0 when it produced none.</summary>
     public static int FromLegacy(bool? flip180, bool? portrait, PanelDeviceCapabilities? caps)
