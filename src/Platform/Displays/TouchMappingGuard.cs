@@ -94,72 +94,70 @@ public sealed class TouchMappingGuard
 
     private async Task<TouchMappingPassOutcome> RunPassLockedAsync(CancellationToken ct)
     {
+        var snapshot = await _snapshotSource.GetSnapshotAsync(ct).ConfigureAwait(false);
+        if (snapshot is null)
         {
-            var snapshot = await _snapshotSource.GetSnapshotAsync(ct).ConfigureAwait(false);
-            if (snapshot is null)
-            {
-                _recovery?.Reset();
-                Log("no helper connected; skipping");
-                return new TouchMappingPassOutcome(TouchMappingPassResult.NoHelper);
-            }
-
-            var (outcome, plans) = TouchMappingDecision.Decide(snapshot);
-            AssertEdgeSwipePolicy(snapshot);
-            ObserveRecovery(snapshot, outcome);
-            switch (outcome)
-            {
-                case TouchMappingOutcome.NoPanel:
-                    Log("no catalog touch panel display attached; no-op");
-                    return new TouchMappingPassOutcome(TouchMappingPassResult.NoPanel);
-                case TouchMappingOutcome.NoDigitizer:
-                    Log("catalog panel attached but its digitizer is not present; no-op");
-                    return new TouchMappingPassOutcome(TouchMappingPassResult.NoDigitizer);
-                case TouchMappingOutcome.AlreadyCorrect:
-                    Log("digitizer already mapped to its panel display; no-op");
-                    return new TouchMappingPassOutcome(TouchMappingPassResult.AlreadyCorrect);
-            }
-
-            var anyRestartFailed = false;
-            foreach (var repairPlan in plans)
-            {
-                var tierLabel = repairPlan.Tier == TouchMappingTier.Generic ? "generic tier" : "catalog tier";
-                Log($"{tierLabel}: mismatch detected, repairing: digitizer '{repairPlan.DigitizerInterfacePath}' -> display '{repairPlan.PanelDisplayId}'");
-                _registryWriter.Write(repairPlan.DigitizerInterfacePath, repairPlan.PanelMonitorInterfacePath);
-                if (!_devnodeRestarter.Restart(repairPlan.DigitizerInterfacePath))
-                {
-                    Log($"devnode restart failed for digitizer '{repairPlan.DigitizerInterfacePath}'");
-                    anyRestartFailed = true;
-                }
-            }
-            if (anyRestartFailed)
-                return new TouchMappingPassOutcome(TouchMappingPassResult.Failed, "devnode-restart-failed");
-
-            // The registry write alone is inert; Windows only re-reads the
-            // mapping at digitizer arrival (bench-proven). The restart is
-            // sub-second on the bench but carries no completion signal this
-            // process can await, so poll the bounded window instead.
-            var pending = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var repairPlan in plans) pending.Add(repairPlan.DigitizerInterfacePath);
-
-            var deadline = DateTime.UtcNow + _verifyTimeout;
-            while (DateTime.UtcNow < deadline && pending.Count > 0)
-            {
-                await Task.Delay(_verifyPollInterval, ct).ConfigureAwait(false);
-                var verify = await _snapshotSource.GetSnapshotAsync(ct).ConfigureAwait(false);
-                if (verify is null) continue;
-                var (_, stillMismatched) = TouchMappingDecision.Decide(verify);
-                var stillPending = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var repairPlan in stillMismatched) stillPending.Add(repairPlan.DigitizerInterfacePath);
-                pending.IntersectWith(stillPending);
-            }
-            if (pending.Count == 0)
-            {
-                Log("repair verified");
-                return new TouchMappingPassOutcome(TouchMappingPassResult.Repaired);
-            }
-            Log("repair could not be verified within the timeout");
-            return new TouchMappingPassOutcome(TouchMappingPassResult.Failed, "verify-timeout");
+            _recovery?.Reset();
+            Log("no helper connected; skipping");
+            return new TouchMappingPassOutcome(TouchMappingPassResult.NoHelper);
         }
+
+        var (outcome, plans) = TouchMappingDecision.Decide(snapshot);
+        AssertEdgeSwipePolicy(snapshot);
+        ObserveRecovery(snapshot, outcome);
+        switch (outcome)
+        {
+            case TouchMappingOutcome.NoPanel:
+                Log("no catalog touch panel display attached; no-op");
+                return new TouchMappingPassOutcome(TouchMappingPassResult.NoPanel);
+            case TouchMappingOutcome.NoDigitizer:
+                Log("catalog panel attached but its digitizer is not present; no-op");
+                return new TouchMappingPassOutcome(TouchMappingPassResult.NoDigitizer);
+            case TouchMappingOutcome.AlreadyCorrect:
+                Log("digitizer already mapped to its panel display; no-op");
+                return new TouchMappingPassOutcome(TouchMappingPassResult.AlreadyCorrect);
+        }
+
+        var anyRestartFailed = false;
+        foreach (var repairPlan in plans)
+        {
+            var tierLabel = repairPlan.Tier == TouchMappingTier.Generic ? "generic tier" : "catalog tier";
+            Log($"{tierLabel}: mismatch detected, repairing: digitizer '{repairPlan.DigitizerInterfacePath}' -> display '{repairPlan.PanelDisplayId}'");
+            _registryWriter.Write(repairPlan.DigitizerInterfacePath, repairPlan.PanelMonitorInterfacePath);
+            if (!_devnodeRestarter.Restart(repairPlan.DigitizerInterfacePath))
+            {
+                Log($"devnode restart failed for digitizer '{repairPlan.DigitizerInterfacePath}'");
+                anyRestartFailed = true;
+            }
+        }
+        if (anyRestartFailed)
+            return new TouchMappingPassOutcome(TouchMappingPassResult.Failed, "devnode-restart-failed");
+
+        // The registry write alone is inert; Windows only re-reads the
+        // mapping at digitizer arrival (bench-proven). The restart is
+        // sub-second on the bench but carries no completion signal this
+        // process can await, so poll the bounded window instead.
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var repairPlan in plans) pending.Add(repairPlan.DigitizerInterfacePath);
+
+        var deadline = DateTime.UtcNow + _verifyTimeout;
+        while (DateTime.UtcNow < deadline && pending.Count > 0)
+        {
+            await Task.Delay(_verifyPollInterval, ct).ConfigureAwait(false);
+            var verify = await _snapshotSource.GetSnapshotAsync(ct).ConfigureAwait(false);
+            if (verify is null) continue;
+            var (_, stillMismatched) = TouchMappingDecision.Decide(verify);
+            var stillPending = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var repairPlan in stillMismatched) stillPending.Add(repairPlan.DigitizerInterfacePath);
+            pending.IntersectWith(stillPending);
+        }
+        if (pending.Count == 0)
+        {
+            Log("repair verified");
+            return new TouchMappingPassOutcome(TouchMappingPassResult.Repaired);
+        }
+        Log("repair could not be verified within the timeout");
+        return new TouchMappingPassOutcome(TouchMappingPassResult.Failed, "verify-timeout");
     }
 
     /// <summary>

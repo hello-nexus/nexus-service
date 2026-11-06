@@ -37,8 +37,9 @@ public static class TouchDigitizerRecoveryGate
     internal const int TouchPageUsagePage = 0x0D;
     internal const int TouchScreenUsage = 0x04;
 
-    /// <summary>CM_PROB_DISABLED: the user (or policy) disabled the devnode on purpose.</summary>
-    internal const int ProblemDisabled = 22;
+    /// <summary>Allow-list of devnode problem codes a restart may act on: started cleanly, or CM_PROB_FAILED_START.</summary>
+    private const int ProblemNone = 0;
+    private const int ProblemFailedStart = 10;
 
     public static (DigitizerHealth Health, string? HidPath) Assess(
         TouchMapSnapshot snapshot,
@@ -95,7 +96,7 @@ public static class TouchDigitizerRecoveryGate
         var instanceId = InstanceIdFromInterfacePath(found);
         if (instanceId is null) return (DigitizerHealth.Unknown, null);
         var problem = readProblemCode(instanceId);
-        if (problem is null || problem == ProblemDisabled) return (DigitizerHealth.Unknown, null);
+        if (problem is not (ProblemNone or ProblemFailedStart)) return (DigitizerHealth.Unknown, null);
         return (DigitizerHealth.Absent, found);
     }
 
