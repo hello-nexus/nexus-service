@@ -3016,11 +3016,34 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// The content worker also drives the screen's firmware rotation, so the panel record's mount
+    /// rotation is read through the stream store (screen serial to panel record) rather than turned in software.
+    /// </summary>
     private static Nexus.Service.Peripherals.FanLcd.FanLcdStreamingWorker NewFanLcdStreamingWorker(
-        IServiceProvider sp, Nexus.Service.Peripherals.FanLcd.IFanLcdScreens screens) =>
-        new(screens,
+        IServiceProvider sp, Nexus.Service.Peripherals.FanLcd.IFanLcdScreens screens)
+    {
+        var registry = sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>();
+        var streams = sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>();
+        var panelIds = new System.Collections.Concurrent.ConcurrentDictionary<string, (string Id, long ExpiresMs)>(StringComparer.OrdinalIgnoreCase);
+        return new(screens,
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdMediaLibrary>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.LianLiWireless.Slv3LcdSensorReader>(),
             sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
-            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>());
+            sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
+            serial =>
+            {
+                // The store is a file read, so the record id is kept briefly; a session that re-mints its record is picked up when it lapses.
+                var now = Environment.TickCount64;
+                if (!panelIds.TryGetValue(serial, out var cached) || cached.ExpiresMs <= now)
+                {
+                    cached = streams.Load().TryGetValue(Nexus.Service.Panel.Streams.FanLcdPanelDiscovery.PanelSerial(screens, serial), out var rec)
+                        && !string.IsNullOrEmpty(rec.PanelDeviceId)
+                            ? (rec.PanelDeviceId, now + 5000)
+                            : ("", now + 5000);
+                    panelIds[serial] = cached;
+                }
+                return cached.Id.Length > 0 && registry.Get(cached.Id) is { } record ? record.Rotation ?? 0 : 0;
+            });
+    }
 }
