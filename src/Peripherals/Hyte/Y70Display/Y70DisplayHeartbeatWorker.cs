@@ -140,6 +140,12 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
             return;
         }
 
+        if (_hub.IsConnected && !_hub.HasBacklight
+            && _presence.UsbPresent(Y70DisplayProtocol.VendorId, Y70DisplayProtocol.Y70GtProductId))
+        {
+            _hub.EnsureBacklightConnected();
+        }
+
         var connectedBefore = _hub.IsConnected;
         if (!_hub.EnsureConnected()) return;
         if (!connectedBefore || string.IsNullOrEmpty(_hub.State.FirmwareVersion))

@@ -96,6 +96,65 @@ public class Y70GtTests
     }
 
     [Fact]
+    public void Hub_binds_touch_and_gt_when_both_are_discovered()
+    {
+        var hub = BothHub(true, true, out var touch, out var gt);
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        Assert.Equal(Y70DisplayProtocol.VariantTouch, hub.Variant);
+        Assert.True(hub.IsConnected);
+        Assert.True(hub.HasBacklight);
+        Assert.Equal("y70:GTSER", hub.BacklightDeviceId);
+        Assert.True(hub.WriteBacklight(new byte[105]));
+        Assert.Single(gt.Writes);
+        Assert.Empty(touch.Writes);
+    }
+
+    [Fact]
+    public void Hub_binds_gt_only_as_primary()
+    {
+        var hub = BothHub(false, true, out _, out var gt);
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        Assert.Equal(Y70DisplayProtocol.VariantGt, hub.Variant);
+        Assert.Equal(hub.DeviceId, hub.BacklightDeviceId);
+        Assert.True(hub.WriteBacklight(new byte[105]));
+        Assert.Single(gt.Writes);
+    }
+
+    [Fact]
+    public void Hub_binds_touch_only_without_backlight()
+    {
+        var hub = BothHub(true, false, out var touch, out _);
+        Assert.True(hub.EnsureConnected());
+        Assert.False(hub.EnsureBacklightConnected());
+        Assert.True(hub.IsConnected);
+        Assert.False(hub.HasBacklight);
+        Assert.Equal("", hub.BacklightDeviceId);
+        Assert.False(hub.WriteBacklight(new byte[105]));
+        Assert.Empty(touch.Writes);
+    }
+
+    private static Y70DisplayHub BothHub(bool touchPresent, bool gtPresent, out FakeTransport touch, out FakeTransport gt)
+    {
+        var tt = new FakeTransport();
+        var gg = new FakeTransport();
+        touch = tt;
+        gt = gg;
+        var ports = new List<Y70DisplayPort>();
+        if (touchPresent) ports.Add(new Y70DisplayPort { PortName = "COM3", Serial = "TOUCH", Variant = Y70DisplayProtocol.VariantTouch });
+        if (gtPresent) ports.Add(new Y70DisplayPort { PortName = "COM7", Serial = "GTSER", Variant = Y70DisplayProtocol.VariantGt });
+        return new Y70DisplayHub(new ListDiscovery(ports), p => p.PortName == "COM7" ? gg : tt);
+    }
+
+    private sealed class ListDiscovery : IY70DisplayPortDiscovery
+    {
+        private readonly IReadOnlyList<Y70DisplayPort> _ports;
+        public ListDiscovery(IReadOnlyList<Y70DisplayPort> ports) => _ports = ports;
+        public IReadOnlyList<Y70DisplayPort> Discover() => _ports;
+    }
+
+    [Fact]
     public void Handler_names_the_gt_and_claims_its_pid()
     {
         var hub = ConnectedHub(Y70DisplayProtocol.VariantGt, out _);
