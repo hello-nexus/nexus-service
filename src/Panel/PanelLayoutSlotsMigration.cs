@@ -35,7 +35,7 @@ public static class PanelLayoutSlotsMigration
             }
             if (PanelRotation.IsPortrait(PanelRotation.Effective(record)) && HasLandscapeLook(record))
             {
-                record.PortraitLayout = PanelPresets.CloneLayout(record.Layout);
+                record.PortraitLayout = CopyWithFreshIds(doc, record.Layout);
                 record.PortraitWidgetSize = record.WidgetSize;
                 record.PortraitGridSlots = record.GridSlots;
             }
@@ -44,6 +44,51 @@ public static class PanelLayoutSlotsMigration
         }
         return changed;
     }
+
+    /// <summary>
+    /// The portrait slot's copy of the layout, with its own page and widget ids so each slot is fully
+    /// independent: a widget's settings are found by id, and a deck widget's mode and preset live in a row
+    /// keyed by id, which the copy gets as well. The ids derive from the old ones, so placing the same layout
+    /// again after a downgrade gives the same ids and finds the rows already there.
+    /// </summary>
+    private static PanelLayoutDto? CopyWithFreshIds(NexusSettings doc, PanelLayoutDto? source)
+    {
+        var copy = PanelPresets.CloneLayout(source);
+        if (copy is null)
+        {
+            return null;
+        }
+        var widgetIds = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.Ordinal);
+        foreach (var page in copy.Pages)
+        {
+            var newPage = FreshId(page.Id);
+            if (copy.ActivePageId == page.Id)
+            {
+                copy.ActivePageId = newPage;
+            }
+            page.Id = newPage;
+            foreach (var widget in page.Widgets)
+            {
+                var old = widget.Id;
+                widget.Id = FreshId(old);
+                widgetIds[old] = widget.Id;
+                var oldRow = Deck.DeckInstanceResolver.WidgetInstanceId(old);
+                var newRow = Deck.DeckInstanceResolver.WidgetInstanceId(widget.Id);
+                if (doc.StreamDeck.Instances.TryGetValue(oldRow, out var row) && !doc.StreamDeck.Instances.ContainsKey(newRow))
+                {
+                    doc.StreamDeck.Instances[newRow] = new DeckInstance { Mode = row.Mode, ActivePresetId = row.ActivePresetId };
+                }
+            }
+        }
+        if (copy.ImmersiveOnLoadWidgetId is { } mark && widgetIds.TryGetValue(mark, out var moved))
+        {
+            copy.ImmersiveOnLoadWidgetId = moved;
+        }
+        return copy;
+    }
+
+    private static string FreshId(string id) =>
+        new System.Guid(System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(id + "/portrait"))).ToString();
 
     /// <summary>
     /// Non-square glass takes quarter turns from this version on, so a quarter stored on one before it was

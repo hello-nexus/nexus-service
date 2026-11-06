@@ -20,7 +20,10 @@ public interface IOrientablePanelTransport
 public sealed class PanelOrientationFilter
 {
     /// <summary>How stale the cached orientation may get; reading it clones the panel record.</summary>
-    private const long TtlMs = 500;
+    internal const long TtlMs = 500;
+
+    /// <summary>Milliseconds on the clock the cache ages against; a test replaces it.</summary>
+    internal Func<long> NowMs { get; set; } = () => Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
 
     private Func<(int Rotation, bool Mirror)>? _source;
     private byte[] _oriented = Array.Empty<byte>();
@@ -48,7 +51,7 @@ public sealed class PanelOrientationFilter
         {
             return frame;
         }
-        var nowMs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
+        var nowMs = NowMs();
         if (nowMs >= _nextReadMs)
         {
             _nextReadMs = nowMs + TtlMs;

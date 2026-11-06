@@ -671,7 +671,7 @@ public sealed class PanelDeviceRegistry
     {
         if (string.IsNullOrWhiteSpace(id) || !_store.Load().PanelDevices.TryGetValue(id, out var record))
             return null;
-        return (record.Layout, record.PortraitLayout);
+        return (PanelPresets.CloneLayout(record.Layout), PanelPresets.CloneLayout(record.PortraitLayout));
     }
 
     public PanelDeviceRecord? Get(string id)

@@ -31,6 +31,8 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private bool _opened;
     private bool _dropLogged;
     private readonly PanelOrientationFilter _orientation = new();
+
+    internal PanelOrientationFilter Orientation => _orientation;
     private Func<(int Rotation, bool Mirror)> _orientationSource = () => (0, false);
     private readonly object _pushLock = new();
 
@@ -108,6 +110,15 @@ public sealed class BulkPanelStreamTransport : IStreamedPanelTransport, IOrienta
             // turned back keeps this session's quarter until the coordinator re-mints it.
             var requested = source;
             var last = (Rotation: 90, Mirror: false);
+            // Seeded now so a first read that fails later still has the record's own turn and mirror.
+            try
+            {
+                var (seedRotation, seedMirror) = requested();
+                last = (seedRotation >= 180 ? 270 : 90, seedMirror);
+            }
+            catch (Exception)
+            {
+            }
             source = () =>
             {
                 // A read that throws keeps the last answer: identity here would send a frame of the wrong shape.

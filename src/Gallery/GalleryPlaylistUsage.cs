@@ -36,8 +36,7 @@ public static class GalleryPlaylistUsage
 
         foreach (var device in s.PanelDevices.Values.OrderBy(d => d.DisplayName, StringComparer.OrdinalIgnoreCase))
         {
-            // A migrated strip holds the same layout in both slots, so the busier slot is the count, not their sum.
-            var count = PanelLayoutSlots.All(device).Select(layout => CountInLayout(layout, playlistId)).DefaultIfEmpty(0).Max();
+            var count = PanelLayoutSlots.All(device).SelectMany(layout => PlayingIds(layout, playlistId)).Distinct(StringComparer.Ordinal).Count();
             if (count == 0
                 && PanelLayoutSlots.Active(device)?.SingleWidgetConfigs is { } saved
                 && saved.TryGetValue(GalleryType, out var config)
@@ -59,6 +58,9 @@ public static class GalleryPlaylistUsage
 
         return uses;
     }
+
+    private static IEnumerable<string> PlayingIds(PanelLayoutDto layout, string playlistId) =>
+        layout.Pages.SelectMany(p => p.Widgets).Where(w => w.Type == GalleryType && Plays(w.Config, playlistId)).Select(w => w.Id);
 
     private static int CountInLayout(PanelLayoutDto? layout, string playlistId) =>
         layout?.Pages.Sum(p => p.Widgets.Count(w => w.Type == GalleryType && Plays(w.Config, playlistId))) ?? 0;
