@@ -230,6 +230,9 @@ public sealed class RgbBridge : IDisposable
     internal const int EVisionDefaultCapHz = RgbDevice.EVisionDefaultCapHz;
     internal IReadOnlyDictionary<string, int> DefaultRatesHz => _defaultRatesHz;
     internal bool IsSaveOnlyPhysical(int physIdx) => _physSaveOnly.Contains(physIdx);
+    // Physical indices whose controller is never re-pushed an unchanged frame. Replaced wholesale on device-set change.
+    private volatile HashSet<int> _physNoHeartbeat = new();
+    internal bool IsNoHeartbeatPhysical(int physIdx) => _physNoHeartbeat.Contains(physIdx);
     // Physical index -> user cap in Hz for devices that have one, rebuilt every frame.
     private readonly Dictionary<int, int> _physCapsHz = new();
     // Physical index -> stable OpenRGB device id, the key LightingMaxRates uses. Replaced wholesale on device-set change.
@@ -1933,17 +1936,17 @@ public sealed class RgbBridge : IDisposable
 
     /// <summary>True when this device's bytes differ from the last push, or the
     /// heartbeat is due (never for <paramref name="saveOnly"/>: its writes hit
-    /// device memory, so only changed bytes push). Records what it approves as the new baseline.
+    /// device memory, so only changed bytes push; nor for <paramref name="noHeartbeat"/>). Records what it approves as the new baseline.
     /// Compares as bytes: RgbColor has no IEquatable, so Span.SequenceEqual over
     /// the structs themselves would fall back to reflective ValueType.Equals and
     /// cost more than the push it saves.</summary>
-    internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null, bool saveOnly = false)
+    internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null, bool saveOnly = false, bool noHeartbeat = false)
     {
         var now = nowMs ?? Environment.TickCount64;
         if (_lastPushed.TryGetValue(physIdx, out var last)
             && last.Length == buf.Length
             && _lastPushTicks.TryGetValue(physIdx, out var when)
-            && (saveOnly || now - when < HeartbeatMs)
+            && (saveOnly || noHeartbeat || now - when < HeartbeatMs)
             && System.Runtime.InteropServices.MemoryMarshal.AsBytes(buf.AsSpan())
                 .SequenceEqual(System.Runtime.InteropServices.MemoryMarshal.AsBytes(last.AsSpan())))
         {
@@ -2003,12 +2006,17 @@ public sealed class RgbBridge : IDisposable
         _pushLimiter.Reset();
         var stableIds = new Dictionary<int, string>();
         var saveOnly = new HashSet<int>();
+        var noHeartbeat = new HashSet<int>();
         var defaultRates = new Dictionary<string, int>();
         foreach (var d in devices)
         {
             if (d.LedCount > 0)
             {
                 stableIds[d.Address] = d.StableId;
+                if (d.SkipsHeartbeat)
+                {
+                    noHeartbeat.Add(d.Address);
+                }
                 if (d.IsSaveOnly)
                 {
                     saveOnly.Add(d.Address);
@@ -2020,6 +2028,7 @@ public sealed class RgbBridge : IDisposable
             }
         }
         _physSaveOnly = saveOnly;
+        _physNoHeartbeat = noHeartbeat;
         _defaultRatesHz = defaultRates;
         _physStableIds = stableIds;
         SizePhysicalBuffers(_physBuffers, devices);
@@ -2786,7 +2795,7 @@ public sealed class RgbBridge : IDisposable
         foreach (var physIdx in _touchedPhysicals)
         {
             if (_physBuffers.TryGetValue(physIdx, out var buf)
-                && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx)))
+                && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx), noHeartbeat: _physNoHeartbeat.Contains(physIdx)))
             {
                 _ = _controller.PushFrameAsync(physIdx, buf);
             }

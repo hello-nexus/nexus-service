@@ -74,6 +74,15 @@ public sealed class RgbDevice
         }
     }
 
+    /// <summary>
+    /// MSI GeForce GPU controllers (OpenRGB MSIGPUController, NvAPI I2C): each push is
+    /// several register transactions and a corrupted one shows as a color flash, so an
+    /// unchanged frame is never re-pushed. Unlike <see cref="IsSaveOnly"/> this writes nothing extra.
+    /// </summary>
+    public bool SkipsHeartbeat =>
+        string.Equals(Vendor, "MSI", StringComparison.OrdinalIgnoreCase)
+        && Name.StartsWith("MSI GeForce", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Default write cap in Hz for the EVision keyboard family.</summary>
     public const int EVisionDefaultCapHz = 2;
 

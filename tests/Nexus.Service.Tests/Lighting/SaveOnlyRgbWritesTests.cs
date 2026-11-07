@@ -234,4 +234,37 @@ public class SaveOnlyRgbWritesTests : IDisposable
     {
         Assert.True(Nexus.Service.Lighting.DeviceRateCap.IsValid(RgbDevice.EVisionDefaultCapHz));
     }
+
+    [Theory]
+    [InlineData("MSI", "MSI GeForce GTX 1660 Ti Gaming X", true)]
+    [InlineData("MSI", "MSI MAG B650 TOMAHAWK WIFI (MS-7D75)", false)]
+    [InlineData("ASUS", "ASUS Aura GPU", false)]
+    public void SkipsHeartbeat_matches_only_msi_geforce_cards(string vendor, string name, bool expected)
+    {
+        Assert.Equal(expected, new RgbDevice { Vendor = vendor, Name = name }.SkipsHeartbeat);
+    }
+
+    [Fact]
+    public void No_heartbeat_device_pushes_on_change_and_after_reconnect_but_not_on_the_interval()
+    {
+        using var bridge = NewBridge();
+        var gpu = new RgbDevice { Address = 0, Name = "MSI GeForce GTX 1660 Ti Gaming X", Vendor = "MSI", Serial = "G", LedCount = 1 };
+        var other = new RgbDevice { Address = 1, Name = "Dev O", Vendor = "Akko", Serial = "O", LedCount = 1 };
+        bridge.SyncPhysicalBuffers(new[] { gpu, other });
+        Assert.True(bridge.IsNoHeartbeatPhysical(0));
+        Assert.False(bridge.IsNoHeartbeatPhysical(1));
+        var buf = new RgbColor[] { new(1, 2, 3) };
+
+        Assert.True(bridge.ShouldPush(0, buf, 0, 1000, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 2001, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 600_000, noHeartbeat: true));
+        buf[0] = new RgbColor(9, 9, 9);
+        Assert.True(bridge.ShouldPush(0, buf, 0, 600_001, noHeartbeat: true));
+
+        bridge.SyncPhysicalBuffers(new[] { gpu, other });
+        Assert.True(bridge.ShouldPush(0, buf, 0, 600_002, noHeartbeat: true));
+
+        Assert.True(bridge.ShouldPush(1, buf, 0, 1000));
+        Assert.True(bridge.ShouldPush(1, buf, 0, 2000));
+    }
 }
