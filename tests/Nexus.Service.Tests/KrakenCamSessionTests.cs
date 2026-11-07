@@ -521,6 +521,38 @@ public class KrakenCamSessionTests
         Assert.False(rig.Hub.CamSenderRunning);
     }
 
+    private static byte[] FrameWithBrightFirstRow(Rig rig)
+    {
+        var f = rig.FrameOf(10);
+        Array.Fill(f, (byte)200, 0, rig.Hub.LcdWidth * 4);
+        return f;
+    }
+
+    [Fact]
+    public void The_stopgap_copies_row_one_over_row_zero_for_the_2023_Kraken_stream()
+    {
+        var rig = new Rig(0x300E);
+        var transport = new Nexus.Service.Panel.Streams.KrakenStreamTransport(rig.Hub, "s");
+
+        transport.Write(FrameWithBrightFirstRow(rig));
+        Assert.True(rig.Hub.SendCamSlot());
+
+        var sent = Assert.Single(rig.SentFrames());
+        Assert.Equal(new byte[] { 0x08, 0x41 }, sent[..2]);
+    }
+
+    [Fact]
+    public void The_stopgap_leaves_every_other_model_s_frame_alone()
+    {
+        var rig = new Rig(0x3014);
+        var transport = new Nexus.Service.Panel.Streams.KrakenStreamTransport(rig.Hub, "s");
+
+        transport.Write(FrameWithBrightFirstRow(rig));
+
+        var sent = Assert.Single(rig.SentFrames());
+        Assert.NotEqual(new byte[] { 0x08, 0x41 }, sent[..2]);
+    }
+
     [Fact]
     public void The_Plus_V2_session_is_unchanged()
     {
