@@ -383,9 +383,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // fail the walk for every other device or the routes that triggered it.
     private void TryUpdate(IHardware hw)
     {
-        // LHM's driver for the 2023 Kraken (named plain "NZXT Kraken") sends its own status
-        // request on every walk; while the hub streams that panel, those requests stay off.
-        if (_kraken is { StreamQuiet: true } && hw.HardwareType == HardwareType.Cooler && hw.Name == "NZXT Kraken")
+        // A Kraken the hub drives is not polled here: a second status request on the same
+        // device stalls its LCD. GetSensorExtras fills its entries from the hub instead.
+        if (hw.HardwareType == HardwareType.Cooler && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name))
         {
             return;
         }

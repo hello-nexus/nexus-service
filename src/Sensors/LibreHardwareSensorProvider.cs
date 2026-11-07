@@ -26,15 +26,18 @@ namespace Nexus.Service.Sensors;
 public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 {
     private readonly LhmComputer _lhm;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (float Min, float Max)> _krakenRange = new();
     private readonly AstralGpuSupplement _astral;
     private readonly AstralMonitor? _astralMonitor;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
-    public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null)
+    public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
         _lhm = lhm;
+        _kraken = kraken;
         _astralMonitor = astral;
         _astral = new AstralGpuSupplement(new AstralNvApiClient(), astral);
     }
@@ -445,8 +448,15 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.Nics.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Cooler:
-                    extras.Coolers.Add(BuildComponent(hw));
+                {
+                    var cooler = BuildComponent(hw);
+                    if (_kraken is not null && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name))
+                    {
+                        KrakenLhmSensors.Apply(cooler, _kraken.Snapshot, _kraken.StatusFresh, _krakenRange);
+                    }
+                    extras.Coolers.Add(cooler);
                     break;
+                }
                 case HardwareType.Psu:
                     extras.Psus.Add(BuildComponent(hw));
                     break;
