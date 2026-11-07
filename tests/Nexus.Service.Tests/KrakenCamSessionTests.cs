@@ -26,6 +26,7 @@ public class KrakenCamSessionTests
             Hub = new KrakenHub(new Factory(Bulk)) { Clock = () => Now, CamSenderThread = false };
             Hub.FadeRunner.AutoRun = false;
             Hub.DelayMs = ms => Delays.Add((ms, Device.Writes.Count));
+            Device.BulkCount = () => Bulk.Writes.Count;
             Hub.Attach(Device, model, KrakenProtocol.ReportLength);
             Assert.True(Hub.Connect());
         }
@@ -66,6 +67,15 @@ public class KrakenCamSessionTests
             Device.Echo = false;
             Device.Writes.Clear();
             Delays.Clear();
+        }
+
+        // Forgets what the opening frame did, so a test sees only its own frame's waits and writes.
+        public void ForgetOpeningFrame()
+        {
+            Bulk.Writes.Clear();
+            Device.Delivered.Clear();
+            Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency);
+            Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency);
         }
 
         public bool PollWithReport(double liquidC = 31.5)
@@ -618,13 +628,170 @@ public class KrakenCamSessionTests
         Assert.Equal(new[] { 0x300E }, KrakenModel.All.Where(m => m.CamSessionInit).Select(m => m.ProductId));
     }
 
+    private static byte[] TransferReply(byte sub)
+    {
+        var r = new byte[KrakenProtocol.ReportLength];
+        r[0] = 0x37;
+        r[1] = sub;
+        r[14] = KrakenProtocol.AckOk;
+        return r;
+    }
+
+    // The cooler answers start and end after a few empty polls, as a real one does within a slot.
+    private static void AnswerTransfers(Rig rig, int emptyReads = 2)
+    {
+        rig.Device.OnWrite = w =>
+        {
+            if (w[0] == 0x36 && w[1] == 0x01)
+            {
+                rig.Device.PushAfter(TransferReply(0x01), emptyReads);
+            }
+            else if (w[0] == 0x36 && w[1] == 0x02)
+            {
+                rig.Device.PushAfter(TransferReply(0x02), emptyReads);
+            }
+        };
+    }
+
+    [Fact]
+    public void The_bulk_does_not_start_until_the_start_reply_arrives_and_the_frame_ends_on_the_end_reply()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        AnswerTransfers(rig);
+
+        Assert.True(rig.Push(rig.Frame()));
+
+        var start = Assert.Single(rig.Device.Delivered, d => d.Id == 0x37 && d.Sub == 0x01);
+        var end = Assert.Single(rig.Device.Delivered, d => d.Id == 0x37 && d.Sub == 0x02);
+        Assert.Equal(0, start.BulkWrites);
+        Assert.Equal(2, end.BulkWrites);
+        Assert.Single(rig.SentFrames());
+        Assert.Equal(new[] { "3601", "3602" }, rig.Ids());
+        var startStats = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency);
+        var endStats = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency);
+        Assert.Equal((1, 0), (startStats!.Value.Replies, startStats.Value.Misses));
+        Assert.Equal((1, 0), (endStats!.Value.Replies, endStats.Value.Misses));
+    }
+
+    [Fact]
+    public void A_missing_reply_times_out_carries_on_and_counts_a_miss_without_resetting_the_stream()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+
+        Assert.True(rig.Push(rig.Frame()));
+        Assert.True(rig.Push(rig.Frame()));
+
+        Assert.Equal(2, rig.SentFrames().Length);
+        Assert.Equal(new[] { "3601", "3602", "3601", "3602" }, rig.Ids());
+        var start = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        var end = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        Assert.Equal((0, 2), (start.Replies, start.Misses));
+        Assert.Equal((0, 2), (end.Replies, end.Misses));
+    }
+
+    [Fact]
+    public void A_reply_left_from_an_earlier_frame_does_not_satisfy_the_wait()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        rig.Device.Push(TransferReply(0x01));
+        rig.Device.Push(TransferReply(0x02));
+
+        Assert.True(rig.Push(rig.Frame()));
+
+        var start = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        var end = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        Assert.Equal((0, 1), (start.Replies, start.Misses));
+        Assert.Equal((0, 1), (end.Replies, end.Misses));
+    }
+
+    [Fact]
+    public void A_status_report_queued_before_the_frame_is_folded_not_dropped_by_the_drain()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        var before = rig.Hub.StatusReportsRead;
+        rig.Device.Push(Rig.Status(33.5));
+
+        Assert.True(rig.Push(rig.Frame()));
+
+        Assert.Equal(before + 1, rig.Hub.StatusReportsRead);
+        Assert.Equal(33.5, rig.Hub.Snapshot.LiquidTempC, 1);
+    }
+
+    [Fact]
+    public void Status_reports_read_while_waiting_are_folded_and_counted_and_the_reply_still_lands()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        var before = rig.Hub.StatusReportsRead;
+        rig.Device.OnWrite = w =>
+        {
+            if (w[0] == 0x36 && w[1] == 0x01)
+            {
+                rig.Device.Push(Rig.Status(36.5));
+                rig.Device.Push(TransferReply(0x01));
+            }
+            else if (w[0] == 0x36 && w[1] == 0x02)
+            {
+                rig.Device.Push(Rig.Status(37.5));
+                rig.Device.Push(TransferReply(0x02));
+            }
+        };
+
+        Assert.True(rig.Push(rig.Frame()));
+
+        Assert.Equal(before + 2, rig.Hub.StatusReportsRead);
+        Assert.Equal(37.5, rig.Hub.Snapshot.LiquidTempC, 1);
+        var start = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        var end = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        Assert.Equal((1, 0), (start.Replies, start.Misses));
+        Assert.Equal((1, 0), (end.Replies, end.Misses));
+        Assert.Equal(0, rig.Device.Delivered.First(d => d.Id == 0x37 && d.Sub == 0x01).BulkWrites);
+    }
+
+    [Fact]
+    public void The_Plus_V2_sends_a_frame_without_waiting_on_any_reply()
+    {
+        var rig = new Rig(0x3014);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        var reads = rig.Device.Reads;
+
+        Assert.True(rig.Push(rig.FrameOf(9)));
+
+        Assert.Equal(reads, rig.Device.Reads);
+        Assert.Equal(new[] { "3601", "3602" }, rig.Ids());
+        Assert.Null(rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency));
+    }
+
     private sealed class Hid : IHidDevice
     {
-        private readonly Queue<byte[]> _replies = new();
+        private readonly Queue<(byte[] Report, int EmptyReadsFirst)> _replies = new();
         public List<byte[]> Writes { get; } = new();
         public bool Echo { get; set; } = true;
+        public int Reads { get; private set; }
+        public Func<int> BulkCount { get; set; } = () => 0;
 
-        public void Push(byte[] report) => _replies.Enqueue(report);
+        // Called after every write that is not echoed, so a test can script what the cooler answers.
+        public Action<byte[]>? OnWrite { get; set; }
+
+        // Each report handed to the hub, with how many bulk writes had gone out by then.
+        public List<(byte Id, byte Sub, int BulkWrites)> Delivered { get; } = new();
+
+        private int _emptyReads;
+
+        public void Push(byte[] report) => _replies.Enqueue((report, 0));
+
+        // The report becomes readable only after the hub has polled an empty queue this many times.
+        public void PushAfter(byte[] report, int emptyReads) => _replies.Enqueue((report, emptyReads));
 
         public int VendorId => 0x1E71;
         public int ProductId => 0x300E;
@@ -639,6 +806,7 @@ public class KrakenCamSessionTests
             Writes.Add(copy);
             if (!Echo)
             {
+                OnWrite?.Invoke(copy);
                 return true;
             }
             var reply = new byte[KrakenProtocol.ReportLength];
@@ -650,14 +818,22 @@ public class KrakenCamSessionTests
                 reply[0x11] = 1;
                 reply[0x12] = 0;
             }
-            _replies.Enqueue(reply);
+            _replies.Enqueue((reply, 0));
             return true;
         }
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            Reads++;
             if (_replies.Count == 0) return 0;
-            var r = _replies.Dequeue();
+            if (_replies.Peek().EmptyReadsFirst > _emptyReads)
+            {
+                _emptyReads++;
+                return 0;
+            }
+            _emptyReads = 0;
+            var r = _replies.Dequeue().Report;
+            Delivered.Add((r[0], r[1], BulkCount()));
             r.CopyTo(buffer);
             return r.Length;
         }

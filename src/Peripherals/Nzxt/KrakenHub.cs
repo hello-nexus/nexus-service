@@ -35,6 +35,12 @@ public sealed class KrakenHub : IDisposable
     private const long CamFallbackLogMs = 60_000;
     private const long CamDiagMs = 30_000;
     private const int CamBacklightDelayMs = 70;
+    // A frame on this model waits for the cooler's reply to its start and end commands before the
+    // next step. The start wait is a small multiple of the vendor app's start-to-bulk gap. The end
+    // reply follows the cooler taking the whole frame in, so it gets longer. Both waits plus the bulk
+    // stay inside the slot, and a miss only moves on.
+    private const int CamStartReplyMs = 5;
+    private const int CamEndReplyMs = 15;
 
     // Bulk pixel data goes out in chunks; 64 KiB measured ~13 MB/s on the bench unit.
     private const int BulkChunkBytes = 64 * 1024;
@@ -841,7 +847,7 @@ public sealed class KrakenHub : IDisposable
         ServiceLog.Info(
             $"[nzxt-kraken] 30 s: {written} frames written, {skipped} skipped as unchanged, " +
             $"{reports} status reports read, {fallbacks} fallback polls, stream {(_streamReady ? "open" : "closed")}" +
-            CamCadenceText());
+            CamCadenceText() + CamReplyText());
     }
 
     public bool SetPumpCurve(ReadOnlySpan<byte> duties) => SendCurve(pump: true, duties);
@@ -1631,10 +1637,63 @@ public sealed class KrakenHub : IDisposable
         }
     }
 
+    // Waits for the cooler's 0x37 reply to a frame's start (sub-command 1) or end (2) command, at most
+    // timeoutMs from sentAt, and records the latency or a miss. Status reports read meanwhile are folded
+    // as ExchangeLocked does. A miss neither fails the frame nor touches the stream state. Caller holds
+    // _lock, the only place HID input is read, so nothing else can take the reply. The deadline runs on
+    // Stopwatch because TickCount64 steps about 15 ms on Windows.
+    private void AwaitCamReplyLocked(byte subCommand, int timeoutMs, long sentAt, KrakenReplySeries stats)
+    {
+        if (_device == null)
+        {
+            return;
+        }
+        Span<byte> buf = stackalloc byte[KrakenProtocol.ReportLength];
+        long deadline = sentAt + timeoutMs * Stopwatch.Frequency / 1000;
+        while (true)
+        {
+            long now = Stopwatch.GetTimestamp();
+            long left = deadline - now;
+            if (left <= 0)
+            {
+                stats.RecordMiss();
+                return;
+            }
+            int waitMs = (int)Math.Max(1, (left * 1000 + Stopwatch.Frequency - 1) / Stopwatch.Frequency);
+            int n = _device.Read(buf, waitMs);
+            if (n < 0)
+            {
+                stats.RecordMiss();
+                return;
+            }
+            if (n == 0)
+            {
+                continue;
+            }
+            var span = buf[..n];
+            if (KrakenProtocol.IsStatusReply(span))
+            {
+                var reading = KrakenProtocol.DecodeStatus(span);
+                if (reading.HasValue)
+                {
+                    FoldStatusLocked(reading.Value);
+                }
+                continue;
+            }
+            if (span.Length > 1 && span[0] == 0x37 && span[1] == subCommand)
+            {
+                stats.RecordReply(Stopwatch.GetTimestamp() - sentAt);
+                return;
+            }
+        }
+    }
+
     // Caller holds _lcdTransferLock. The device lock covers only the HID steps.
     private bool SendPlusWireLocked(long now, bool still)
     {
         int gen = BeginPlusSend(still);
+        bool cam = _model.CamSessionInit;
+        long startedAt = 0;
         var wire = _plusWire;
         var header = _plusHeader;
         IKrakenLcdTransport lcd;
@@ -1663,15 +1722,25 @@ public sealed class KrakenHub : IDisposable
             {
                 _snapshot = _snapshot.WithDisplayMode(mode);
             }
+            if (cam)
+            {
+                // A reply left from an earlier frame must not answer this frame's start.
+                DrainLocked();
+            }
             if (!WriteLocked(PlusStart))
             {
                 _streamReady = false;
                 return false;
             }
+            if (cam)
+            {
+                startedAt = Stopwatch.GetTimestamp();
+                AwaitCamReplyLocked(0x01, CamStartReplyMs, startedAt, _camReplies.Start);
+            }
         }
-        if (_model.CamSessionInit)
+        if (cam)
         {
-            _camStats.RecordStart(Stopwatch.GetTimestamp());
+            _camStats.RecordStart(startedAt);
         }
         // The header is its own bulk transfer, then the whole frame in one.
         if (!lcd.Write(header) || !lcd.Write(wire))
@@ -1681,10 +1750,23 @@ public sealed class KrakenHub : IDisposable
         }
         lock (_lock)
         {
-            if (_device == null || !WriteLocked(PlusEnd))
+            if (_device == null)
             {
                 _streamReady = false;
                 return false;
+            }
+            if (cam)
+            {
+                DrainLocked();
+            }
+            if (!WriteLocked(PlusEnd))
+            {
+                _streamReady = false;
+                return false;
+            }
+            if (cam)
+            {
+                AwaitCamReplyLocked(0x02, CamEndReplyMs, Stopwatch.GetTimestamp(), _camReplies.End);
             }
         }
         Interlocked.Increment(ref _framesWritten);
@@ -1693,15 +1775,20 @@ public sealed class KrakenHub : IDisposable
     }
 
     // Cadenced LCD sender for the 2023 Kraken (KrakenModel.CamSessionInit). The vendor app starts a frame
-    // every fixed interval, repeats a frame when nothing new is ready, and the panel drops frames that
-    // arrive sooner or irregularly. A producer only hands over its latest frame (a newer one replaces a
-    // pending one, nothing queues) and one sender thread owns the wire. It runs only while frames keep
-    // arriving: once they stop for the idle window the hold's slower resend keeps the panel lit.
+    // every fixed interval and repeats a frame when nothing new is ready; this sender does the same. A
+    // producer only hands over its latest frame (a newer one replaces a pending one, nothing queues) and
+    // one sender thread owns the wire. It runs only while frames keep arriving: once they stop for the
+    // idle window the hold's slower resend keeps the panel lit.
     private const long CamSenderIdleExitMs = 10_000;
     private const int CamSenderJoinMs = 2_000;
     private const long CamSendWarnMs = 60_000;
     private readonly object _camLock = new();
     private readonly KrakenCadenceStats _camStats = new();
+    private readonly KrakenReplyStats _camReplies = new();
+
+    internal KrakenReplyStats CamReplies => _camReplies;
+
+    internal int StatusReportsRead => Volatile.Read(ref _statusReads);
     private byte[]? _camPending;
     private bool _camFresh;
     private long _camOfferedAtMs;
@@ -1870,6 +1957,22 @@ public sealed class KrakenHub : IDisposable
             }
             return sent;
         }
+    }
+
+    private string CamReplyText()
+    {
+        var f = CultureInfo.InvariantCulture;
+        var text = string.Empty;
+        foreach (var (name, series) in new[] { ("start", _camReplies.Start), ("end", _camReplies.End) })
+        {
+            if (series.Take(Stopwatch.Frequency) is not { } r)
+            {
+                continue;
+            }
+            text += $", {name} reply ms p50 {r.P50Ms.ToString("F1", f)} p95 {r.P95Ms.ToString("F1", f)} " +
+                $"max {r.MaxMs.ToString("F1", f)} over {r.Replies}, {r.Misses} missed";
+        }
+        return text;
     }
 
     private string CamCadenceText()
@@ -2243,7 +2346,7 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
-        var buf = new byte[KrakenProtocol.ReportLength];
+        Span<byte> buf = stackalloc byte[KrakenProtocol.ReportLength];
         for (int i = 0; i < 64; i++)
         {
             int n = _device.Read(buf, 0);
@@ -2251,7 +2354,7 @@ public sealed class KrakenHub : IDisposable
             {
                 return;
             }
-            var span = buf.AsSpan(0, n);
+            var span = buf[..n];
             if (KrakenProtocol.IsStatusReply(span))
             {
                 var reading = KrakenProtocol.DecodeStatus(span);
