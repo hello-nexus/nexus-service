@@ -494,6 +494,64 @@ public class Slv3LightingFrameWriterTests
         Assert.True(tx.SentFrames.Count > countAfterFirst);
     }
 
+    [Theory]
+    [InlineData(1, 132, 1, 450)]
+    [InlineData(8, 798, 3, 2195)]
+    public void WindowPlan_stretches_frames_only_when_a_round_of_uploads_outgrows_the_air(int chains, int leds, int stretch, int cycleMs)
+    {
+        var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
+        Assert.Equal(stretch, plan.Stretch);
+        Assert.Equal(cycleMs, plan.CycleMs, 0);
+    }
+
+    [Theory]
+    [InlineData(1, 3, 2)]
+    [InlineData(2, 2, 1)]
+    [InlineData(3, 1, 1)]
+    public void Window_lead_and_safety_keep_their_time_as_the_interval_stretches(int stretch, int lead, int safety)
+    {
+        Assert.Equal(lead, Slv3LightingFrameWriter.LeadFramesFor(stretch));
+        Assert.Equal(safety, Slv3LightingFrameWriter.SafetyFramesFor(stretch));
+    }
+
+    [Fact]
+    public void Tick_pushes_one_live_chain_per_tick_and_serves_the_longest_waiting_next()
+    {
+        var now = 0L;
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        var macs = new[] { "AA0000000001", "AA0000000002", "AA0000000003" };
+        foreach (var mac in macs)
+        {
+            net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = Convert.FromHexString(mac), MasterMac = net.MasterMac, RxType = 1, FanCount = 1 });
+        }
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var frames = new List<DeviceFrame>(provider.BuildFrames(0));
+        var engine = new LightingEngine();
+        engine.UpdateDevices(frames.ToArray());
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, () => now);
+
+        var counts = new List<int>();
+        for (var tick = 0; tick < 3; tick++)
+        {
+            FillAll(frames, (byte)(10 + tick), 20, 30);
+            now += 1000 * TimeSpan.TicksPerMillisecond;
+            writer.Tick();
+            counts.Add(RgbSyncFrames(tx).Count);
+        }
+        var perPush = counts[0];
+        Assert.True(perPush > 0);
+        Assert.Equal(new[] { perPush, 2 * perPush, 3 * perPush }, counts);
+        var payloads = ReassembleRfPayloads(tx);
+        foreach (var mac in macs)
+        {
+            var bytes = Convert.FromHexString(mac);
+            Assert.Contains(payloads, p => p.AsSpan().IndexOf(bytes) >= 0);
+        }
+    }
+
     [Fact]
     public void Tick_rate_limits_rapid_pushes_on_the_shared_rf_link()
     {

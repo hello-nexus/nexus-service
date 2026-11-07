@@ -199,16 +199,27 @@ public sealed partial class LinuxDisplayBrightnessProvider : IDisplayBrightnessP
     {
         if (nameFragments is null || nameFragments.Count == 0)
             return null;
+        string? best = null;
+        var bestRank = int.MaxValue;
         foreach (var dto in Enumerate())
         {
             string pnpId;
             lock (_gate)
                 pnpId = _targets.TryGetValue(dto.Id, out var t) ? t.PnpId : "";
             var haystack = $"{dto.Name} {dto.Manufacturer} {dto.Model} {dto.Id} {pnpId}";
-            if (nameFragments.Any(f => !string.IsNullOrEmpty(f) && haystack.Contains(f, StringComparison.OrdinalIgnoreCase)))
-                return dto.Id;
+            // Fragment order is priority: the best-ranked fragment wins across all displays.
+            for (var i = 0; i < nameFragments.Count && i < bestRank; i++)
+            {
+                var f = nameFragments[i];
+                if (!string.IsNullOrEmpty(f) && haystack.Contains(f, StringComparison.OrdinalIgnoreCase))
+                {
+                    bestRank = i;
+                    best = dto.Id;
+                    break;
+                }
+            }
         }
-        return null;
+        return best;
     }
 
     public void RequestRescan()

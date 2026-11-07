@@ -18,6 +18,19 @@ public class HydroShift2LoopTests
             .ToList();
 
     [Fact]
+    public void A_render_waits_until_the_context_has_held_still()
+    {
+        string? pending = null;
+        long since = 0;
+        const int settle = HydroShift2LightingFrameWriter.LoopSettleMs;
+
+        Assert.False(HydroShift2LightingFrameWriter.HasSettled(ref pending, ref since, "a", 1_000));
+        Assert.False(HydroShift2LightingFrameWriter.HasSettled(ref pending, ref since, "b", 1_000 + settle - 1));
+        Assert.False(HydroShift2LightingFrameWriter.HasSettled(ref pending, ref since, "b", 1_000 + (2 * settle) - 2));
+        Assert.True(HydroShift2LightingFrameWriter.HasSettled(ref pending, ref since, "b", 1_000 + (2 * settle) - 1));
+    }
+
+    [Fact]
     public void A_repeating_effect_loops_on_its_own_period()
     {
         var frames = Render((f, c) => (byte)(((f % 37) * 7) + c));
