@@ -6,7 +6,8 @@ namespace Nexus.Service.Peripherals.PixelFormats;
 /// Re-orients a 4-byte-per-pixel frame for glass mounted turned or read through a reflection.
 /// The result is the source mirrored left to right when asked, then turned clockwise by the
 /// rotation, so a mount turn always acts on the content as authored. A quarter turn needs a
-/// square frame: turning a rectangle would swap the dimensions the transport reads back.
+/// square frame unless the caller opts in: turning a rectangle swaps its dimensions, which only
+/// a transport that renders the swapped size expects.
 /// </summary>
 public static class BgraOrientation
 {
@@ -26,9 +27,13 @@ public static class BgraOrientation
         return width == height || normalized % 180 == 0 ? normalized : (normalized >= 180 ? 180 : 0);
     }
 
-    /// <summary>Writes the re-oriented frame into <paramref name="dest"/>.</summary>
+    /// <summary>
+    /// Writes the re-oriented frame into <paramref name="dest"/>. With <paramref name="quarterOnRectangle"/> a
+    /// quarter turn of a rectangle is honored and <paramref name="dest"/> holds the frame with its sides swapped.
+    /// </summary>
     public static void Apply(
-        ReadOnlySpan<byte> src, int width, int height, int rotation, bool mirror, Span<byte> dest)
+        ReadOnlySpan<byte> src, int width, int height, int rotation, bool mirror, Span<byte> dest,
+        bool quarterOnRectangle = false)
     {
         int stride = width * 4;
         if (src.Length < stride * height)
@@ -40,7 +45,7 @@ public static class BgraOrientation
             throw new ArgumentException("destination is too small", nameof(dest));
         }
 
-        rotation = Effective(rotation, width, height);
+        rotation = quarterOnRectangle ? Normalize(rotation) : Effective(rotation, width, height);
         if (rotation % 180 != 0)
         {
             ApplyQuarterTurn(src, width, height, rotation, mirror, dest);
@@ -98,10 +103,13 @@ public static class BgraOrientation
     /// <summary>
     /// The source pixel that <see cref="Apply"/> placed at (<paramref name="x"/>, <paramref name="y"/>)
     /// of the oriented frame; the inverse a touch point needs to land back on the content.
+    /// <paramref name="width"/> and <paramref name="height"/> are the source's, which a quarter turn of a
+    /// rectangle (<paramref name="quarterOnRectangle"/>) swaps on the oriented side.
     /// </summary>
-    public static (int X, int Y) MapToSource(int x, int y, int width, int height, int rotation, bool mirror)
+    public static (int X, int Y) MapToSource(
+        int x, int y, int width, int height, int rotation, bool mirror, bool quarterOnRectangle = false)
     {
-        switch (Effective(rotation, width, height))
+        switch (quarterOnRectangle ? Normalize(rotation) : Effective(rotation, width, height))
         {
             case 90:
                 (x, y) = (y, height - 1 - x);

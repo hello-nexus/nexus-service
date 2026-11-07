@@ -104,7 +104,24 @@ public static class Y70DisplayProtocol
     /// PanelDisplay.cs - keep all three in sync.
     /// </summary>
     public static readonly string[] DdcPanelHardwareNames =
-        { "RTK0004", "RTD1100", "RTK1234", "RTK2234", "BOE2143", "RTK409A", "RTK2345" };
+        { "RTK2234", "RTK0004", "RTD1100", "RTK1234", "BOE2143", "RTK409A", "RTK2345" };
+
+    /// <summary>
+    /// Index of the best (lowest) <see cref="DdcPanelHardwareNames"/> fragment
+    /// found in <paramref name="rawHardwareId"/>, or -1. The GT screen leads the
+    /// list so it wins over the touch panel when both are attached, matching the
+    /// overlay kiosk's choice; the GT and touch share every display option.
+    /// </summary>
+    public static int PanelRank(string? rawHardwareId)
+    {
+        if (string.IsNullOrEmpty(rawHardwareId)) return -1;
+        for (var i = 0; i < DdcPanelHardwareNames.Length; i++)
+        {
+            if (rawHardwareId.IndexOf(DdcPanelHardwareNames[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                return i;
+        }
+        return -1;
+    }
 
     // DDC/CI VCP codes (driven via the platform display-brightness provider).
     // Values match the reference Y70DDCCIHelper: screen-off is Standby (0x04),

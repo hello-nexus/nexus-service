@@ -23,7 +23,9 @@ internal static class DeckWidgetLayoutMigration
         MigrateLayout(doc, doc.Panel.DashboardLayout, "Desktop");
         foreach (var record in doc.PanelDevices.Values)
         {
-            MigrateLayout(doc, record.Layout, string.IsNullOrEmpty(record.DisplayName) ? "Panel" : record.DisplayName);
+            var panelName = string.IsNullOrEmpty(record.DisplayName) ? "Panel" : record.DisplayName;
+            MigrateLayout(doc, record.Layout, panelName);
+            MigrateLayout(doc, record.PortraitLayout, panelName);
         }
     }
 

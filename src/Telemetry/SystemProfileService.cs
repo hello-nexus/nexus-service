@@ -225,7 +225,7 @@ internal sealed class SystemProfileService : BackgroundService
             phones = PhoneUsage(settings, now ?? DateTimeOffset.UtcNow);
             foreach (var panel in settings.PanelDevices.Values)
             {
-                var layout = panel.Layout;
+                var layout = Nexus.Service.Panel.PanelLayoutSlots.Active(panel);
                 if (layout is null) continue;
                 if (IsSafeToken(layout.Surface)) surfaces.Add(layout.Surface);
                 foreach (var page in layout.Pages)

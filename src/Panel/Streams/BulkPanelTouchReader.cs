@@ -9,7 +9,7 @@ namespace Nexus.Service.Panel.Streams;
 
 /// <summary>
 /// Reads a bulk-pipe panel's touch pipe on its own thread and hands each contact, on the
-/// upright frame of the given size, to a sink. Only one reader may run per panel: the pipe
+/// upright frame, to a sink. Only one reader may run per panel: the pipe
 /// has one consumer.
 /// </summary>
 internal sealed class BulkPanelTouchReader : IDisposable
@@ -19,8 +19,12 @@ internal sealed class BulkPanelTouchReader : IDisposable
     private const int JoinMs = 3000;
 
     private readonly BulkPanelHub _hub;
+    // The glass's own size, which the touch decoder reports in.
     private readonly int _width;
     private readonly int _height;
+    // The frame the contacts are placed on: the glass's size, or its sides swapped when the page renders turned.
+    private readonly int _sourceWidth;
+    private readonly int _sourceHeight;
     private readonly Func<(int Rotation, bool Mirror)> _orientation;
     private readonly Func<TouchContactTracker.Injection, bool> _sink;
     private readonly CancellationTokenSource _cts;
@@ -31,12 +35,20 @@ internal sealed class BulkPanelTouchReader : IDisposable
     private int _disposed;
 
     public BulkPanelTouchReader(BulkPanelHub hub, int width, int height, Func<(int Rotation, bool Mirror)> orientation, Func<TouchContactTracker.Injection, bool> sink, string name, CancellationToken stop = default)
+        : this(hub, width, height, width, height, orientation, sink, name, stop)
+    {
+    }
+
+    /// <param name="sourceWidth">Width of the frame the contacts land on; with the height, the glass's size or that size turned a quarter.</param>
+    public BulkPanelTouchReader(BulkPanelHub hub, int width, int height, int sourceWidth, int sourceHeight, Func<(int Rotation, bool Mirror)> orientation, Func<TouchContactTracker.Injection, bool> sink, string name, CancellationToken stop = default)
     {
         // A stop token covers a reader its owner never got to dispose.
         _cts = CancellationTokenSource.CreateLinkedTokenSource(stop);
         _hub = hub;
         _width = width;
         _height = height;
+        _sourceWidth = sourceWidth;
+        _sourceHeight = sourceHeight;
         _orientation = orientation;
         _sink = sink;
         _thread = new Thread(RunGuarded) { IsBackground = true, Name = $"{name}-{hub.Driver.HandlerId}" };
@@ -121,7 +133,7 @@ internal sealed class BulkPanelTouchReader : IDisposable
                 int y = report.Y;
                 // The frame on the glass was turned for the mount; undo that to land on the source.
                 var (rotation, mirror) = _orientation();
-                (x, y) = BgraOrientation.MapToSource(x, y, _width, _height, rotation, mirror);
+                (x, y) = BgraOrientation.MapToSource(x, y, _sourceWidth, _sourceHeight, rotation, mirror, _sourceWidth != _width);
                 injections.Clear();
                 tracker.Apply(report.TrackId, report.Phase, x, y, report.Mapped, injections);
                 foreach (var injection in injections)
