@@ -159,6 +159,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     public Computer Instance => _computer;
 
+    /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
+    internal bool IsHubDriven(IHardware hw) =>
+        hw.HardwareType == HardwareType.Cooler
+        && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name, _computer.Hardware.Count(h => h.HardwareType == HardwareType.Cooler && h.Name == hw.Name));
+
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
         if (!string.Equals(handlerId, SmbusDramHandler.HandlerId, StringComparison.OrdinalIgnoreCase))
@@ -385,7 +390,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     {
         // A Kraken the hub drives is not polled here. Everything that reads its entries
         // takes the hub's values instead, because LHM's stay at their last reading.
-        if (hw.HardwareType == HardwareType.Cooler && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name))
+        if (IsHubDriven(hw))
         {
             return;
         }

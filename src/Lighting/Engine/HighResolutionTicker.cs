@@ -17,7 +17,7 @@ internal sealed partial class HighResolutionTicker : IDisposable
 {
     private const uint CreateWaitableTimerHighResolution = 0x2;
     private const uint TimerAllAccess = 0x1F0003;
-    private const long SpinMarginMs = 1;
+    internal const long SpinMarginMs = 1;
 
     private readonly TimerHandle _timer;
     private readonly CancellationToken _ct;
@@ -72,7 +72,7 @@ internal sealed partial class HighResolutionTicker : IDisposable
 
     /// <summary>
     /// Blocks until a Stopwatch timestamp: the timer covers the bulk of the wait and a short spin
-    /// takes the last stretch, because a timer wake lands up to about a millisecond late. False once cancelled.
+    /// takes the last stretch, because a timer wake can land late. False once cancelled.
     /// </summary>
     public bool WaitUntil(long deadlineTimestamp)
     {

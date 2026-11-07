@@ -50,6 +50,8 @@ public sealed class KrakenHub : IDisposable
     // frame while taking _lock only for the short HID steps, so the ~414 ms of pixels does
     // not block the lighting writer: pixels ride the bulk endpoint, colours ride HID.
     private readonly object _lcdTransferLock = new();
+    // True from a 2023 Kraken frame's start command to its end command; guarded by _lock.
+    private bool _camFrameOpen;
     private readonly IKrakenLcdTransportFactory? _lcdFactory;
     private IHidDevice? _device;
     private IKrakenLcdTransport? _lcd;
@@ -667,6 +669,10 @@ public sealed class KrakenHub : IDisposable
             }
             _lockRestorePending = restoreFailed;
 
+            lock (_camLock)
+            {
+                _camClosed = false;
+            }
             _isConnected = true;
             return true;
         }
@@ -748,6 +754,12 @@ public sealed class KrakenHub : IDisposable
             if (_device == null)
             {
                 return false;
+            }
+            if (_camFrameOpen)
+            {
+                // A command between a frame's start, bulk and end would break the transfer. The next
+                // poll finds the keepalive and the fallback still due.
+                return true;
             }
             DrainLocked();
             RetryRestoreLocked();
@@ -843,7 +855,7 @@ public sealed class KrakenHub : IDisposable
             return;
         }
         ServiceLog.Info(
-            $"[nzxt-kraken] 30 s: {written} frames written, {skipped} skipped as unchanged, " +
+            $"[nzxt-kraken] {CamDiagMs / 1000} s: {written} frames written, {skipped} skipped as unchanged, " +
             $"{reports} status reports read, {fallbacks} fallback polls, stream {(_streamReady ? "open" : "closed")}" +
             CamCadenceText() + CamReplyText());
     }
@@ -1639,7 +1651,7 @@ public sealed class KrakenHub : IDisposable
     // timeoutMs from sentAt, and records the latency or a miss. Status reports read meanwhile are folded
     // as ExchangeLocked does. A miss neither fails the frame nor touches the stream state. Caller holds
     // _lock, the only place HID input is read, so nothing else can take the reply. The deadline runs on
-    // Stopwatch because TickCount64 steps about 15 ms on Windows.
+    // Stopwatch because TickCount64 follows the coarse system tick on Windows.
     private void AwaitCamReplyLocked(byte subCommand, int timeoutMs, long sentAt, KrakenReplySeries stats)
     {
         if (_device == null)
@@ -1732,6 +1744,7 @@ public sealed class KrakenHub : IDisposable
             }
             if (cam)
             {
+                _camFrameOpen = true;
                 startedAt = Stopwatch.GetTimestamp();
                 AwaitCamReplyLocked(0x01, CamStartReplyMs, startedAt, _camReplies);
             }
@@ -1740,23 +1753,33 @@ public sealed class KrakenHub : IDisposable
         {
             _camStats.RecordStart(startedAt);
         }
-        // The header is its own bulk transfer, then the whole frame in one.
-        if (!lcd.Write(header) || !lcd.Write(wire))
+        try
         {
-            lock (_lock) { _streamReady = false; }
-            return false;
-        }
-        lock (_lock)
-        {
-            if (_device == null)
+            // The header is its own bulk transfer, then the whole frame in one.
+            if (!lcd.Write(header) || !lcd.Write(wire))
             {
-                _streamReady = false;
+                lock (_lock) { _streamReady = false; }
                 return false;
             }
-            if (!WriteLocked(PlusEnd))
+            lock (_lock)
             {
-                _streamReady = false;
-                return false;
+                if (_device == null)
+                {
+                    _streamReady = false;
+                    return false;
+                }
+                if (!WriteLocked(PlusEnd))
+                {
+                    _streamReady = false;
+                    return false;
+                }
+            }
+        }
+        finally
+        {
+            if (cam)
+            {
+                lock (_lock) { _camFrameOpen = false; }
             }
         }
         Interlocked.Increment(ref _framesWritten);
@@ -1784,6 +1807,12 @@ public sealed class KrakenHub : IDisposable
     private long _camOfferedAtMs;
     private long _camWarnedAtMs;
     private CamRun? _camRun;
+    // Set by Detach and Dispose under _camLock before the sender stops, so a frame offered in the
+    // window before the device goes cannot start a new run; Connect clears it.
+    private bool _camClosed;
+
+    /// <summary>Tests run code in the window between an offer's device check and its sender start.</summary>
+    internal Action? BeforeCamOffer { get; set; }
 
     /// <summary>Tests turn the thread off and step the sender by hand.</summary>
     internal bool CamSenderThread { get; set; } = true;
@@ -1817,6 +1846,7 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
         }
+        BeforeCamOffer?.Invoke();
         int w = _lcdWidth, h = _lcdHeight;
         int turns = _snapshot.LcdOrientationQuarterTurns;
         var len = Rgb565Encoder.EncodedLength(w, h);
@@ -1829,7 +1859,7 @@ public sealed class KrakenHub : IDisposable
             Rgb565Encoder.Encode(bgra, w, h, turns, _camPending, sourceIsBgra: true, highByteFirst: true);
             _camFresh = true;
             Volatile.Write(ref _camOfferedAtMs, Clock());
-            if (_camRun == null && CamSenderThread && !_disposed)
+            if (_camRun == null && CamSenderThread && !_camClosed && !_disposed)
             {
                 _camRun = StartCamRunLocked();
             }
@@ -1882,11 +1912,15 @@ public sealed class KrakenHub : IDisposable
         }
     }
 
-    private void StopCamSender(bool join)
+    private void StopCamSender(bool join, bool close = false)
     {
         CamRun? run;
         lock (_camLock)
         {
+            if (close)
+            {
+                _camClosed = true;
+            }
             run = _camRun;
             _camRun = null;
             run?.Cts.Cancel();
@@ -1935,8 +1969,11 @@ public sealed class KrakenHub : IDisposable
                 return true;
             }
             var sent = SendPlusWireLocked(Clock(), still: false);
-            _camStats.CountSend(fresh);
-            if (!sent)
+            if (sent)
+            {
+                _camStats.CountSend(fresh);
+            }
+            else
             {
                 var now = Clock();
                 if (_camWarnedAtMs == 0 || now - _camWarnedAtMs >= CamSendWarnMs)
@@ -2351,11 +2388,16 @@ public sealed class KrakenHub : IDisposable
         }
     }
 
+    // Counts Detach calls, so a reader of per-connection state can tell a new cooler from the same one.
+    private int _detaches;
+    internal int Detaches => Volatile.Read(ref _detaches);
+
     public void Detach()
     {
-        StopCamSender(join: false);
+        StopCamSender(join: false, close: true);
         lock (_lock)
         {
+            Interlocked.Increment(ref _detaches);
             _isConnected = false;
             _fade = null;
             _snapshot = KrakenSnapshot.Empty;
@@ -2376,7 +2418,7 @@ public sealed class KrakenHub : IDisposable
 
     public void Dispose()
     {
-        StopCamSender(join: false);
+        StopCamSender(join: false, close: true);
         lock (_lock)
         {
             if (_disposed)

@@ -194,40 +194,53 @@ public class KrakenLhmSensorsTests
         }
     }
 
+    [Fact]
+    public void Only_the_2023_Kraken_is_hub_driven_and_only_while_connected()
+    {
+        Assert.True(KrakenLhmSensors.IsHubDriven(true, 0x300E, "NZXT Kraken", 1));
+        Assert.False(KrakenLhmSensors.IsHubDriven(false, 0x300E, "NZXT Kraken", 1));
+    }
+
     [Theory]
     [InlineData(0x3008, "NZXT Kraken Z3")]
     [InlineData(0x300C, "NZXT Kraken Elite")]
     [InlineData(0x3012, "NZXT Kraken Elite v2")]
-    [InlineData(0x300E, "NZXT Kraken")]
     [InlineData(0x2007, "NZXT Kraken X3")]
     [InlineData(0x2014, "NZXT Kraken X3")]
-    public void Each_hub_model_LHM_drives_maps_to_the_name_LHM_gives_it(int productId, string lhmName)
+    [InlineData(0x3014, "NZXT Kraken")]
+    public void Every_other_model_keeps_LHM_polling(int productId, string lhmName)
     {
-        Assert.Equal(lhmName, KrakenLhmSensors.LhmName(productId));
-        Assert.True(KrakenLhmSensors.IsHubDriven(true, productId, lhmName));
-        Assert.False(KrakenLhmSensors.IsHubDriven(false, productId, lhmName));
+        Assert.False(KrakenLhmSensors.IsHubDriven(true, productId, lhmName, 1));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void The_2023_Kraken_is_left_to_LHM_unless_exactly_one_cooler_has_its_name(int sameNameCount)
+    {
+        Assert.False(KrakenLhmSensors.IsHubDriven(true, 0x300E, "NZXT Kraken", sameNameCount));
     }
 
     [Fact]
-    public void A_model_LHM_does_not_claim_and_a_different_name_are_not_overridden()
+    public void A_different_name_is_not_overridden()
     {
-        Assert.Null(KrakenLhmSensors.LhmName(0x3014));
-        Assert.False(KrakenLhmSensors.IsHubDriven(true, 0x3014, "NZXT Kraken"));
-        Assert.False(KrakenLhmSensors.IsHubDriven(true, 0x300E, "NZXT Kraken Elite"));
-        Assert.False(KrakenLhmSensors.IsHubDriven(true, 0x3012, "NZXT Kraken Elite V2"));
-        Assert.False(KrakenLhmSensors.IsHubDriven(null, "NZXT Kraken"));
-    }
-
-    [Fact]
-    public void Every_hub_row_is_either_mapped_or_known_unclaimed()
-    {
-        var unclaimed = KrakenModel.All.Where(m => KrakenLhmSensors.LhmName(m.ProductId) is null).Select(m => m.ProductId);
-        Assert.Equal(new[] { 0x3014 }, unclaimed);
+        Assert.False(KrakenLhmSensors.IsHubDriven(true, 0x300E, "NZXT Kraken Elite", 1));
+        Assert.False(KrakenLhmSensors.IsHubDriven(null, "NZXT Kraken", 1));
     }
 
     [Fact]
     public void A_hub_that_is_not_connected_leaves_LHM_polling()
     {
-        Assert.False(KrakenLhmSensors.IsHubDriven(new KrakenHub(null), "NZXT Kraken Elite v2"));
+        Assert.False(KrakenLhmSensors.IsHubDriven(new KrakenHub(null), "NZXT Kraken", 1));
+    }
+
+    [Fact]
+    public void Every_sensor_LHM_creates_for_the_2023_Kraken_is_one_the_hub_fills()
+    {
+        // LHM's KrakenV3 driver creates exactly these five for a model with fan control.
+        var c = Component();
+        KrakenLhmSensors.Apply(c, Snap(30), true, null);
+        Assert.All(c.Sensors, s => Assert.NotEqual("stale", s.Formatted));
+        Assert.Equal(5, c.Sensors.Count);
     }
 }

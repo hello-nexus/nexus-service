@@ -429,6 +429,9 @@ public class KrakenCamSessionTests
     private sealed class GatedCadence
     {
         public readonly System.Threading.SemaphoreSlim Gate = new(0);
+
+        // Set once a run's wait has been cancelled, so the loop is known to have left without a send.
+        public readonly System.Threading.ManualResetEventSlim Stopped = new(false);
         private long _tick;
 
         public Func<System.Threading.CancellationToken, KrakenCadence> Factory => ct => new KrakenCadence(
@@ -443,6 +446,7 @@ public class KrakenCamSessionTests
                 }
                 catch (OperationCanceledException)
                 {
+                    Stopped.Set();
                     return false;
                 }
             });
@@ -476,7 +480,7 @@ public class KrakenCamSessionTests
         Assert.False(rig.Hub.CamSenderRunning);
         var sent = rig.Bulk.Writes.Count;
         gated.Gate.Release(5);
-        System.Threading.Thread.Sleep(50);
+        Assert.True(gated.Stopped.Wait(TimeSpan.FromSeconds(10)));
         Assert.Equal(sent, rig.Bulk.Writes.Count);
     }
 
@@ -494,8 +498,56 @@ public class KrakenCamSessionTests
 
         Assert.False(rig.Hub.CamSenderRunning);
         gated.Gate.Release(3);
-        System.Threading.Thread.Sleep(50);
+        Assert.True(gated.Stopped.Wait(TimeSpan.FromSeconds(10)));
         Assert.Empty(rig.Bulk.Writes);
+    }
+
+    [Fact]
+    public void A_frame_offered_while_the_cooler_detaches_does_not_start_a_sender()
+    {
+        var rig = new Rig(0x300E);
+        var gated = new GatedCadence();
+        rig.Hub.CamSenderThread = true;
+        rig.Hub.CadenceFactory = gated.Factory;
+        rig.Hub.BeforeCamOffer = rig.Hub.Detach;
+
+        Assert.True(rig.Hub.PushStreamFrame(rig.Frame()));
+
+        Assert.False(rig.Hub.CamSenderRunning);
+    }
+
+    [Fact]
+    public void A_reconnected_cooler_gets_its_sender_back()
+    {
+        var rig = new Rig(0x300E);
+        var gated = new GatedCadence();
+        rig.Hub.CamSenderThread = true;
+        rig.Hub.CadenceFactory = gated.Factory;
+        rig.Hub.Detach();
+        rig.Hub.Attach(rig.Device, KrakenModel.Find(0x300E)!, KrakenProtocol.ReportLength);
+        Assert.True(rig.Hub.Connect());
+
+        Assert.True(rig.Hub.PushStreamFrame(rig.Frame()));
+
+        Assert.True(rig.Hub.CamSenderRunning);
+        rig.Hub.ReleaseStream();
+    }
+
+    [Fact]
+    public void A_poll_never_writes_between_a_frames_start_and_end_and_still_runs_after_it()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        rig.Now += 100_000;
+        rig.Bulk.OnWrite = () => Assert.True(rig.Hub.Poll());
+
+        Assert.True(rig.Push(rig.Frame()));
+
+        Assert.Equal(new[] { "3601", "3602" }, rig.Ids());
+        rig.Bulk.OnWrite = null;
+        Assert.True(rig.Hub.Poll());
+        Assert.True(rig.Ids().Length > 2, "the poll after the frame still sends its keepalive or status request");
     }
 
     [Fact]
@@ -836,9 +888,13 @@ public class KrakenCamSessionTests
     {
         public readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> Writes = new();
 
+        // Runs on each bulk write, so a test can act while a frame is between its start and end commands.
+        public Action? OnWrite { get; set; }
+
         public bool Write(ReadOnlySpan<byte> data)
         {
             Writes.Enqueue(data.ToArray());
+            OnWrite?.Invoke();
             return true;
         }
 

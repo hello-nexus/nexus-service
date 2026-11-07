@@ -11,23 +11,22 @@ namespace Nexus.Service.Sensors;
 /// </summary>
 internal static class KrakenLhmSensors
 {
-    /// <summary>Name LHM's Kraken driver gives the hardware for a USB product id; null where that driver does not claim the id.</summary>
-    public static string? LhmName(int productId) => productId switch
-    {
-        0x3008 => "NZXT Kraken Z3",
-        0x300C => "NZXT Kraken Elite",
-        0x3012 => "NZXT Kraken Elite v2",
-        0x300E => "NZXT Kraken",
-        0x2007 or 0x2014 => "NZXT Kraken X3",
-        _ => null,
-    };
+    // The 2023 Kraken is the one model where LHM's own polling was shown to fight the hub's LCD
+    // stream, so it is the only one the hub drives. Every other model keeps LHM polling.
+    internal const int HubDrivenProductId = 0x300E;
+    internal const string HubDrivenLhmName = "NZXT Kraken";
 
-    /// <summary>True for the LHM cooler the connected hub is driving, so LHM leaves it unpolled.</summary>
-    public static bool IsHubDriven(KrakenHub? hub, string hardwareName) =>
-        hub is not null && IsHubDriven(hub.IsConnected, hub.Model.ProductId, hardwareName);
+    /// <summary>
+    /// True for the LHM cooler the connected hub is driving, so LHM leaves it unpolled.
+    /// <paramref name="sameNameCount"/> is how many LHM coolers carry this name: with two, the hub cannot
+    /// tell which one it is, so LHM keeps polling both.
+    /// </summary>
+    public static bool IsHubDriven(KrakenHub? hub, string hardwareName, int sameNameCount) =>
+        hub is not null && IsHubDriven(hub.IsConnected, hub.Model.ProductId, hardwareName, sameNameCount);
 
-    internal static bool IsHubDriven(bool connected, int productId, string hardwareName) =>
-        connected && LhmName(productId) is { } name && string.Equals(name, hardwareName, StringComparison.Ordinal);
+    internal static bool IsHubDriven(bool connected, int productId, string hardwareName, int sameNameCount) =>
+        connected && productId == HubDrivenProductId && sameNameCount == 1
+            && string.Equals(HubDrivenLhmName, hardwareName, StringComparison.Ordinal);
 
     /// <summary>The hub's liquid temperature, or null while it has no valid, fresh reading.</summary>
     public static float? Liquid(KrakenHub hub) => Liquid(hub.Snapshot.LiquidTempC, hub.StatusFresh);
@@ -67,9 +66,9 @@ internal static class KrakenLhmSensors
             s.Value = v;
             s.Min = min;
             s.Max = max;
-            s.Formatted = Format(v, s.Type);
-            s.FormattedMin = Format(min, s.Type);
-            s.FormattedMax = Format(max, s.Type);
+            s.Formatted = SensorValueText.Format(v, s.Type);
+            s.FormattedMin = SensorValueText.Format(min, s.Type);
+            s.FormattedMax = SensorValueText.Format(max, s.Type);
         }
     }
 
@@ -83,12 +82,5 @@ internal static class KrakenLhmSensors
         ("Fans", "Fan") => snap.FanRpm,
         ("Fans Control", "Control") => snap.FanDuty,
         _ => null,
-    };
-
-    private static string Format(float v, string type) => type switch
-    {
-        "Temperature" => $"{v:F1} °C",
-        "Fan" => $"{v:F0} RPM",
-        _ => $"{v:F1}%",
     };
 }

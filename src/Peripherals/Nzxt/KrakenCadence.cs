@@ -76,7 +76,7 @@ internal sealed class KrakenCadence : IDisposable
 
     private static bool SleepThenSpin(CancellationToken ct, long deadline)
     {
-        var coarse = Stopwatch.Frequency * 3 / 1000;
+        var coarse = Stopwatch.Frequency * HighResolutionTicker.SpinMarginMs / 1000;
         while (true)
         {
             if (ct.IsCancellationRequested)

@@ -28,6 +28,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     private readonly LhmComputer _lhm;
     private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (float Min, float Max)> _krakenRange = new();
+    private int _krakenRangeDetaches;
     private readonly AstralGpuSupplement _astral;
     private readonly AstralMonitor? _astralMonitor;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
@@ -450,8 +451,13 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 case HardwareType.Cooler:
                 {
                     var cooler = BuildComponent(hw);
-                    if (_kraken is not null && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name))
+                    if (_kraken is not null && _lhm.IsHubDriven(hw))
                     {
+                        // Session min and max belong to one connection.
+                        if (System.Threading.Interlocked.Exchange(ref _krakenRangeDetaches, _kraken.Detaches) != _kraken.Detaches)
+                        {
+                            _krakenRange.Clear();
+                        }
                         KrakenLhmSensors.Apply(cooler, _kraken.Snapshot, _kraken.StatusFresh, _krakenRange);
                     }
                     extras.Coolers.Add(cooler);
@@ -607,45 +613,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         _ => "",
     };
 
-    private static string FormatValue(float value, SensorType type) => type switch
-    {
-        SensorType.Temperature => $"{value:F1} °C",
-        SensorType.Load or SensorType.Control or SensorType.Level => $"{value:F1}%",
-        SensorType.Clock => $"{value:F0} MHz",
-        SensorType.Voltage => $"{value:F3} V",
-        SensorType.Current => $"{value:F3} A",
-        SensorType.Fan => $"{value:F0} RPM",
-        SensorType.Power => $"{value:F1} W",
-        SensorType.Energy => $"{value:F0} mWh",
-        SensorType.Throughput => FormatThroughput(value),
-        SensorType.TimeSpan => FormatTimeSpan(value),
-        _ => $"{value:F1}",
-    };
-
-    private static string FormatThroughput(float bytesPerSec)
-    {
-        if (bytesPerSec <= 0)
-            return "0 B/s";
-        if (bytesPerSec >= 1024 * 1024 * 1024)
-            return $"{bytesPerSec / 1024.0 / 1024.0 / 1024.0:F2} GB/s";
-        if (bytesPerSec >= 1024 * 1024)
-            return $"{bytesPerSec / 1024.0 / 1024.0:F2} MB/s";
-        if (bytesPerSec >= 1024)
-            return $"{bytesPerSec / 1024.0:F1} KB/s";
-        return $"{bytesPerSec:F0} B/s";
-    }
-
-    // LHM reports Battery "Remaining Time" and PSU "Uptime"/"Total uptime" in seconds.
-    private static string FormatTimeSpan(float seconds)
-    {
-        if (seconds <= 0)
-            return "0";
-        if (seconds < 3600)
-            return $"{seconds / 60:F0}m";
-        if (seconds < 86400)
-            return $"{seconds / 3600:F1}h";
-        return $"{seconds / 86400:F1}d";
-    }
+    private static string FormatValue(float value, SensorType type) => SensorValueText.Format(value, MapSensorType(type));
 
     private static string FormatGb(double gb) => gb >= 1000 ? $"{gb / 1024.0:F2} TB" : $"{gb:F2} GB";
 

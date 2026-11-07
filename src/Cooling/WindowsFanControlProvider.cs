@@ -604,7 +604,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     // ── Helpers ──
 
     private bool IsHubDrivenKraken(IHardware hw) =>
-        hw.HardwareType == HardwareType.Cooler && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name);
+        _lhm.IsHubDriven(hw);
 
     private void AddHubLiquid(List<TemperatureSource> list, IHardware hw, string category)
     {
