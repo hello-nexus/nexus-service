@@ -18,14 +18,13 @@ public sealed class BulkPanelHandler : IDeviceHandler
 
     private readonly IReadOnlyList<UsbId> _companions;
 
-    /// <param name="companions">Other USB functions of the same product; any one present lists the row, so its Nexus Control switch stays reachable while the display is on another identity.</param>
+    /// <param name="companions">Other USB functions of the same product; any one present keeps the row connected, without becoming an inventory identity of its own.</param>
     public BulkPanelHandler(BulkPanelHub hub, IReadOnlyList<UsbId>? companions = null)
     {
         _hub = hub;
         _companions = companions ?? Array.Empty<UsbId>();
         Identifiers = hub.Driver.ProductIds
             .Select(pid => new UsbId(hub.Driver.VendorId, pid))
-            .Concat(_companions)
             .ToArray();
     }
 

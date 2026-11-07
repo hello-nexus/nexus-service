@@ -2158,7 +2158,11 @@ public static class NexusServiceCollectionExtensions
                 var running = detector.IsAppRunning("lian-li-l-connect");
                 return detector.DetectionReady ? running : null;
             },
-            handler => sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>().IsChosenOn(handler),
+            handler =>
+            {
+                var gate = sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>();
+                return gate.IsChosenOn(handler) || gate.HeldForMonitor(handler);
+            },
             Nexus.Service.Peripherals.BulkPanels.DesktopModeExit.DescribeParents));
         services.AddHostedService<Nexus.Service.Peripherals.BulkPanels.DesktopModeExitWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>();

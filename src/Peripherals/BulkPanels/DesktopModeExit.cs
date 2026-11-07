@@ -41,7 +41,7 @@ public static class DesktopModeTable
 
     private static readonly byte[] ExitText = "5f3759df"u8.ToArray();
 
-    /// <summary>Report id 0, the ASCII exit text, zero padding to the report length.</summary>
+    /// <summary>Zero report id, the ASCII exit text, zero padding to the report length.</summary>
     public static byte[] ExitReport(int reportLength)
     {
         var report = new byte[Math.Max(reportLength, ExitText.Length + 1)];
@@ -56,7 +56,7 @@ public static class DesktopModeTable
 /// </summary>
 public sealed class DesktopModeExit
 {
-    internal const int HidSettleMs = 3000;
+    internal const int TransientWindowMs = 30_000;
     internal const int ArrivalWaitMs = 30_000;
     internal const int ArrivalPollMs = 250;
     internal const int MinAttemptSpacingMs = 30_000;
@@ -95,7 +95,9 @@ public sealed class DesktopModeExit
     {
         public bool Present;
         public bool Due;
+        public long DueSince;
         public bool VendorAppWasRunning;
+        public bool ControlOffLogged;
         public long? LastAttemptAt;
     }
 
@@ -115,92 +117,111 @@ public sealed class DesktopModeExit
             state = new RowState();
             _states[row.HandlerId] = state;
         }
-        var running = _vendorAppRunning();
-        var present = _presence.UsbPresent(row.DesktopVendorId, row.DesktopProductId);
-        if (!present)
+        if (!_presence.UsbPresent(row.DesktopVendorId, row.DesktopProductId))
         {
             state.Present = false;
             state.Due = false;
-            state.VendorAppWasRunning = running ?? state.VendorAppWasRunning;
+            state.VendorAppWasRunning = false;
+            state.ControlOffLogged = false;
             return;
         }
         if (!state.Present)
         {
             state.Present = true;
-            state.Due = true;
+            MarkDue(state);
         }
-        if (running is not { } appRunning)
+        if (_vendorAppRunning() is not { } appRunning)
         {
             return;
         }
         if (state.VendorAppWasRunning && !appRunning)
         {
-            state.Due = true;
+            MarkDue(state);
         }
         state.VendorAppWasRunning = appRunning;
         if (!state.Due || appRunning)
         {
             return;
         }
-        state.Due = false;
         var now = _now();
         if (state.LastAttemptAt is { } last && now - last < MinAttemptSpacingMs)
         {
+            state.Due = false;
+            ServiceLog.Info($"[desktop-mode] {row.DesktopVendorId:X4}:{row.DesktopProductId:X4} attempt skipped: another ran {now - last} ms ago");
             return;
         }
-        state.LastAttemptAt = now;
-        Attempts++;
-        await AttemptAsync(row, ct).ConfigureAwait(false);
+        if (await AttemptAsync(row, state, ct).ConfigureAwait(false))
+        {
+            state.Due = false;
+            state.LastAttemptAt = _now();
+            Attempts++;
+        }
     }
 
-    private async Task AttemptAsync(DesktopModeRow row, CancellationToken ct)
+    private void MarkDue(RowState state)
     {
+        state.Due = true;
+        state.DueSince = _now();
+        state.ControlOffLogged = false;
+    }
+
+    /// <summary>True once the episode is finished; false leaves it due for the next poll.</summary>
+    private async Task<bool> AttemptAsync(DesktopModeRow row, RowState state, CancellationToken ct)
+    {
+        var id = $"{row.DesktopVendorId:X4}:{row.DesktopProductId:X4}";
+        if (!_nexusControlOn(row.HandlerId))
+        {
+            if (!state.ControlOffLogged)
+            {
+                state.ControlOffLogged = true;
+                ServiceLog.Info($"[desktop-mode] {id} waiting: Nexus Control is off for {row.HandlerId}");
+            }
+            return false;
+        }
+
         var started = _now();
+        var normal = _presence.UsbPresent(row.NormalVendorId, row.NormalProductId);
+        var board = _presence.UsbPresent(row.CompanionVendorId, row.CompanionProductId);
+        var onInterface = _hid.Find(row.DesktopVendorId, row.DesktopProductId)
+            .Where(i => InterfaceOf(i.Path) == row.InterfaceNumber).ToList();
+        var info = onInterface.FirstOrDefault(i =>
+            i.UsagePage == row.UsagePage && i.InputReportByteLength == row.ReportLength && i.OutputReportByteLength == row.ReportLength);
+        string? refusal = normal ? "normal-identity-present"
+            : !board ? "board-absent"
+            : onInterface.Count == 0 ? "no-hid-interface"
+            : info is null ? "hid-shape"
+            : null;
+        var transient = refusal is "board-absent" or "no-hid-interface";
+        if (transient && started - state.DueSince < TransientWindowMs)
+        {
+            return false;
+        }
+
         var line = new StringBuilder();
-        line.Append(CultureInfo.InvariantCulture, $"[desktop-mode] {row.DesktopVendorId:X4}:{row.DesktopProductId:X4}");
+        line.Append(CultureInfo.InvariantCulture, $"[desktop-mode] {id}");
         var warn = true;
         try
         {
             var entry = _presence.UsbEntriesFor(row.DesktopVendorId).FirstOrDefault(e => e.ProductId == row.DesktopProductId);
             line.Append(CultureInfo.InvariantCulture, $" parent={Dash(_parents(row))} product=\"{entry?.Name}\"");
-
-            HidDeviceInfo? info = null;
-            var settleEnd = started + HidSettleMs;
-            while (true)
-            {
-                info = _hid.Find(row.DesktopVendorId, row.DesktopProductId).FirstOrDefault(i => InterfaceOf(i.Path) == row.InterfaceNumber);
-                if (info is not null || _now() >= settleEnd)
-                {
-                    break;
-                }
-                await _delay(ArrivalPollMs, ct).ConfigureAwait(false);
-            }
-            if (info is not null)
+            var shown = info ?? onInterface.FirstOrDefault();
+            if (shown is not null)
             {
                 line.Append(CultureInfo.InvariantCulture,
-                    $" hid up={info.UsagePage:X4} u={info.Usage:X4} rpt={info.InputReportByteLength}/{info.OutputReportByteLength}/{info.FeatureReportByteLength} mi={InterfaceOf(info.Path):X2}");
+                    $" hid up={shown.UsagePage:X4} u={shown.Usage:X4} rpt={shown.InputReportByteLength}/{shown.OutputReportByteLength}/{shown.FeatureReportByteLength} mi={InterfaceOf(shown.Path):X2}");
             }
-
-            var control = _nexusControlOn(row.HandlerId);
-            var board = _presence.UsbPresent(row.CompanionVendorId, row.CompanionProductId);
-            string? refusal = !control ? "nexus-control-off"
-                : !board ? "board-absent"
-                : info is null ? "no-hid-mi"
-                : info.UsagePage != row.UsagePage ? "hid-usage-page"
-                : info.InputReportByteLength != row.ReportLength || info.OutputReportByteLength != row.ReportLength ? "hid-report-length"
-                : null;
-            line.Append(CultureInfo.InvariantCulture, $" gates control={Flag(control)} board={Flag(board)} hid={Flag(refusal is null || refusal is not ("no-hid-mi" or "hid-usage-page" or "hid-report-length"))}");
+            line.Append(CultureInfo.InvariantCulture, $" gates normal-absent={Flag(!normal)} board={Flag(board)} hid={Flag(info is not null)}");
             if (refusal is not null || info is null)
             {
                 line.Append(" refused=").Append(refusal);
-                return;
+                return true;
             }
 
             var how = Write(info);
             line.Append(" write=").Append(how ?? "failed");
             if (how is null)
             {
-                return;
+                return true;
             }
 
             while (true)
@@ -209,12 +230,12 @@ public sealed class DesktopModeExit
                 {
                     line.Append(CultureInfo.InvariantCulture, $" normal identity back in {_now() - started} ms");
                     warn = false;
-                    return;
+                    return true;
                 }
                 if (_now() - started >= ArrivalWaitMs)
                 {
                     line.Append(CultureInfo.InvariantCulture, $" normal identity not back after {_now() - started} ms");
-                    return;
+                    return true;
                 }
                 await _delay(ArrivalPollMs, ct).ConfigureAwait(false);
             }
@@ -222,6 +243,7 @@ public sealed class DesktopModeExit
         catch (OperationCanceledException)
         {
             line.Append(" cancelled");
+            return true;
         }
         finally
         {
@@ -238,7 +260,7 @@ public sealed class DesktopModeExit
 
     private string? Write(HidDeviceInfo info)
     {
-        using var device = _hid.Open(info.Path);
+        using var device = _hid.Open(info.Path, forInput: true);
         if (device is null)
         {
             return null;

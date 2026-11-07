@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Devices.Handlers;
+using Nexus.Service.Models.Peripherals;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
 using Xunit;
@@ -50,6 +51,10 @@ public class DesktopModeExitTests
         }
 
         public Task Poll() => Exit.PollAsync(CancellationToken.None);
+
+        public IHidEnumerator HidEnumerator() => new Hid(this);
+
+        public IUsbEnumerator UsbEnumerator() => new Usb(this);
 
         private sealed class Usb(Rig rig) : IUsbEnumerator
         {
@@ -251,30 +256,89 @@ public class DesktopModeExitTests
         Assert.Equal(0, rig.Writes);
     }
 
+    [Fact]
+    public async Task Nexus_control_off_defers_without_consuming_and_a_later_switch_on_sends_once()
+    {
+        var rig = new Rig { ControlOn = false };
+        await rig.Poll();
+        rig.Now += 120_000;
+        await rig.Poll();
+        Assert.Equal(0, rig.Writes);
+        Assert.Equal(0, rig.Exit.Attempts);
+
+        rig.ControlOn = true;
+        await rig.Poll();
+        await rig.Poll();
+        Assert.Equal(1, rig.Writes);
+        Assert.Equal(1, rig.Exit.Attempts);
+    }
+
     [Theory]
-    [InlineData("control")]
     [InlineData("board")]
     [InlineData("interface")]
-    [InlineData("usage-page")]
-    [InlineData("input-length")]
-    [InlineData("output-length")]
     [InlineData("no-hid")]
-    public async Task Each_failed_gate_refuses_the_write_and_consumes_the_attempt(string failing)
+    public async Task A_transient_refusal_stays_due_inside_the_window_and_is_consumed_after_it(string failing)
     {
         var rig = new Rig();
+        var goodBus = rig.Bus;
+        var goodHid = rig.HidInfos;
         switch (failing)
         {
-            case "control": rig.ControlOn = false; break;
             case "board": rig.Bus = new() { Desktop }; break;
             case "interface": rig.HidInfos = new() { Info(Mi01.Replace("mi_01", "mi_00"), 0xFF00, 513, 513) }; break;
-            case "usage-page": rig.HidInfos = new() { Info(Mi01, 0xFF01, 513, 513) }; break;
-            case "input-length": rig.HidInfos = new() { Info(Mi01, 0xFF00, 65, 513) }; break;
-            case "output-length": rig.HidInfos = new() { Info(Mi01, 0xFF00, 513, 65) }; break;
             case "no-hid": rig.HidInfos = new(); break;
         }
 
         await rig.Poll();
+        rig.Now += DesktopModeExit.TransientWindowMs - 1000;
+        await rig.Poll();
+        Assert.Equal(0, rig.Exit.Attempts);
+
+        rig.Now += 2000;
+        await rig.Poll();
+        Assert.Equal(0, rig.Writes);
+        Assert.Equal(1, rig.Exit.Attempts);
+
+        rig.Bus = goodBus;
+        rig.HidInfos = goodHid;
         rig.Now += 60_000;
+        await rig.Poll();
+        Assert.Equal(0, rig.Writes);
+    }
+
+    [Theory]
+    [InlineData("board")]
+    [InlineData("hid")]
+    public async Task A_transient_gate_that_clears_inside_the_window_sends(string failing)
+    {
+        var rig = new Rig();
+        var bus = rig.Bus;
+        var hid = rig.HidInfos;
+        if (failing == "board") rig.Bus = new() { Desktop }; else rig.HidInfos = new();
+        await rig.Poll();
+        Assert.Equal(0, rig.Writes);
+
+        rig.Bus = bus;
+        rig.HidInfos = hid;
+        rig.Now += 4000;
+        await rig.Poll();
+        Assert.Equal(1, rig.Writes);
+    }
+
+    [Theory]
+    [InlineData("usage-page")]
+    [InlineData("input-length")]
+    [InlineData("output-length")]
+    public async Task A_wrong_hid_shape_refuses_at_once_and_consumes_the_attempt(string failing)
+    {
+        var rig = new Rig();
+        rig.HidInfos = failing switch
+        {
+            "usage-page" => new() { Info(Mi01, 0xFF01, 513, 513) },
+            "input-length" => new() { Info(Mi01, 0xFF00, 65, 513) },
+            _ => new() { Info(Mi01, 0xFF00, 513, 65) },
+        };
+
         await rig.Poll();
 
         Assert.Equal(0, rig.Writes);
@@ -282,16 +346,40 @@ public class DesktopModeExitTests
     }
 
     [Fact]
-    public async Task A_hid_interface_that_shows_up_late_is_waited_for_within_the_settle_window()
+    public async Task An_interface_with_the_right_shape_is_chosen_over_a_wrong_one()
     {
         var rig = new Rig();
-        var late = rig.HidInfos;
-        rig.HidInfos = new();
-        rig.OnDelay = () => rig.HidInfos = late;
+        rig.HidInfos = new() { Info(Mi01, 0xFF01, 65, 65), Info(Mi01.Replace("&mi_01", "&mi_01&col02"), 0xFF00, 513, 513) };
 
         await rig.Poll();
 
         Assert.Equal(1, rig.Writes);
+    }
+
+    [Fact]
+    public async Task A_present_normal_identity_refuses_the_write()
+    {
+        var rig = new Rig();
+        rig.Bus = new() { Desktop, Board, Glass };
+
+        await rig.Poll();
+
+        Assert.Equal(0, rig.Writes);
+        Assert.Equal(1, rig.Exit.Attempts);
+    }
+
+    [Fact]
+    public async Task The_vendor_app_is_only_asked_while_the_desktop_identity_is_present()
+    {
+        var rig = new Rig();
+        var asked = 0;
+        rig.Bus = new() { Board, Glass };
+        var exit = new DesktopModeExit(
+            rig.HidEnumerator(), new HardwarePresence(rig.UsbEnumerator()), () => { asked++; return false; }, _ => true);
+
+        await exit.PollAsync(CancellationToken.None);
+
+        Assert.Equal(0, asked);
     }
 
     [Fact]
@@ -317,7 +405,7 @@ public class DesktopModeExitTests
 
         Assert.True(handler.IsConnected(bus));
         Assert.False(handler.DrivesDisplay(bus));
-        Assert.Contains(handler.Identifiers, i => i.VendorId == 0x0416 && i.ProductId == 0x8051);
+        Assert.DoesNotContain(handler.Identifiers, i => i.ProductId == 0x8051);
     }
 
     [Fact]
@@ -345,5 +433,17 @@ public class DesktopModeExitTests
 
         Assert.False(handler.IsConnected(new[] { Board }));
         Assert.DoesNotContain(handler.Identifiers, i => i.ProductId == 0x8051);
+    }
+
+    [Fact]
+    public void The_inventory_lists_one_curve_for_the_glass_and_board_together()
+    {
+        using var hub = new BulkPanelHub(new HydroShift2CurveLcdDriver());
+        var rows = DeviceInventoryMapper.FromUsb(
+            new[] { Glass, Board }, new IDeviceHandler[] { CurveHandler(hub) },
+            new HashSet<string>(), new HashSet<(int Vid, int Pid)>(), Array.Empty<SupportedDeviceDto>());
+
+        var row = Assert.Single(rows);
+        Assert.StartsWith("usb:1CBE:A068", row.Key, StringComparison.OrdinalIgnoreCase);
     }
 }
