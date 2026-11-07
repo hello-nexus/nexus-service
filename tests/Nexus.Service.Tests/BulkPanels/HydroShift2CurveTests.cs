@@ -747,6 +747,78 @@ public class HydroShift2CurveTests
     }
 
     /// <summary>Stands in for the glass: decrypts each command header and, when it answers, replies [cmd, C8].</summary>
+    [Fact]
+    public void Stop_clock_is_sent_again_at_the_scheduled_offsets_after_each_connect()
+    {
+        long now = 0;
+        var driver = new HydroShift2CurveLcdDriver(() => now);
+        var pipe = new GlassPipe { Answers = true };
+        var frame = new byte[HydroShift2CurveProtocol.Width * HydroShift2CurveProtocol.Height * 4];
+        int StopClocks() => pipe.Commands.Count(c => c == HydroShift2Protocol.CommandStopClock);
+
+        Assert.NotNull(driver.Connect(pipe, null));
+        var atConnect = StopClocks();
+
+        now = 4_999;
+        driver.SendFrame(pipe, null, frame);
+        Assert.Equal(atConnect, StopClocks());
+
+        now = 5_000;
+        driver.SendFrame(pipe, null, frame);
+        driver.SendFrame(pipe, null, frame);
+        Assert.Equal(atConnect + 1, StopClocks());
+
+        now = 10_000;
+        driver.SendFrame(pipe, null, frame);
+        now = 15_000;
+        driver.SendFrame(pipe, null, frame);
+        now = 60_000;
+        driver.SendFrame(pipe, null, frame);
+        Assert.Equal(atConnect + 3, StopClocks());
+
+        Assert.NotNull(driver.Connect(pipe, null));
+        var second = StopClocks();
+        now = 65_000;
+        driver.SendFrame(pipe, null, frame);
+        Assert.Equal(second + 1, StopClocks());
+    }
+
+    [Fact]
+    public void A_late_first_frame_sends_one_stop_clock_for_every_slot_already_past()
+    {
+        long now = 0;
+        var driver = new HydroShift2CurveLcdDriver(() => now);
+        var pipe = new GlassPipe { Answers = true };
+        var frame = new byte[HydroShift2CurveProtocol.Width * HydroShift2CurveProtocol.Height * 4];
+        Assert.NotNull(driver.Connect(pipe, null));
+        var atConnect = pipe.Commands.Count(c => c == HydroShift2Protocol.CommandStopClock);
+
+        now = 40_000;
+        driver.SendFrame(pipe, null, frame);
+        driver.SendFrame(pipe, null, frame);
+
+        Assert.Equal(atConnect + 1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandStopClock));
+    }
+
+    [Fact]
+    public void The_repeated_stop_clock_follows_a_sync_only_set_clock_and_precedes_the_frame()
+    {
+        long now = 0;
+        var driver = new HydroShift2CurveLcdDriver(() => now) { OfflineModeSource = () => true };
+        var pipe = new GlassPipe { Answers = true };
+        var frame = new byte[HydroShift2CurveProtocol.Width * HydroShift2CurveProtocol.Height * 4];
+        Assert.NotNull(driver.Connect(pipe, null));
+        var before = pipe.Commands.Count;
+
+        now = 5_000;
+        driver.SendFrame(pipe, null, frame);
+
+        Assert.Equal(
+            new[] { HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.CommandStopClock, HydroShift2Protocol.CommandPushJpeg },
+            pipe.Commands.Skip(before).ToArray());
+        Assert.Equal(0x02, pipe.Byte15[before]);
+    }
+
     private sealed class GlassPipe : IBulkUsbPipe
     {
         private readonly Queue<byte[]> _pending = new();

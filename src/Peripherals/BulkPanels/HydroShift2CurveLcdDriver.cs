@@ -51,6 +51,12 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
     /// <summary>Firmware string read at connect, or null before it.</summary>
     public string? Firmware { get; private set; }
 
+    /// <summary>Offsets after connect at which StopClock is sent again; a firmware screen that starts after the connect sequence ran is otherwise left under the frames.</summary>
+    internal static readonly long[] StopClockRepeatMs = { 5_000, 10_000, 15_000 };
+
+    private long _connectedAt;
+    private int _repeatIndex;
+
     private volatile bool _videoOwnsGlass;
     private volatile bool _retired;
     private bool _sessionUp;
@@ -105,6 +111,8 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         _sessionUp = false;
         _clock.Restart();
         _lastTimestamp = 0;
+        _connectedAt = _now();
+        _repeatIndex = 0;
 
         var version = Exchange(pipe, HydroShift2Protocol.CommandGetVersion, HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandGetVersion, ReadOnlySpan<byte>.Empty, NextTimestamp()));
@@ -154,6 +162,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         {
             return false;
         }
+        RepeatStopClockIfDue(pipe);
         BgraQuarterTurn.RotateCw(bgra, HydroShift2CurveProtocol.Width, HydroShift2CurveProtocol.Height, _portrait);
         var packet = HydroShift2Protocol.EncodeImage(
             HydroShift2Protocol.CommandPushJpeg, _jpeg.Encode(_portrait), NextTimestamp());
@@ -163,6 +172,22 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         }
         ReadReply(pipe, HydroShift2Protocol.CommandPushJpeg);
         return true;
+    }
+
+    /// <summary>Runs under the hub lock with the frame writes, so it never interleaves with them; one send covers every slot already past.</summary>
+    private void RepeatStopClockIfDue(IBulkUsbPipe pipe)
+    {
+        var elapsed = _now() - _connectedAt;
+        if (_repeatIndex >= StopClockRepeatMs.Length || elapsed < StopClockRepeatMs[_repeatIndex])
+        {
+            return;
+        }
+        while (_repeatIndex < StopClockRepeatMs.Length && elapsed >= StopClockRepeatMs[_repeatIndex])
+        {
+            _repeatIndex++;
+        }
+        Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
+        Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
     }
 
     /// <summary>The glass takes half the percent (L-Connect sends 50 for 100%).</summary>
