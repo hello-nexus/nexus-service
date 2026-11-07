@@ -20,7 +20,10 @@ public interface IOrientablePanelTransport
 public sealed class PanelOrientationFilter
 {
     /// <summary>How stale the cached orientation may get; reading it clones the panel record.</summary>
-    private const long TtlMs = 500;
+    internal const long TtlMs = 500;
+
+    /// <summary>Milliseconds on the clock the cache ages against; a test replaces it.</summary>
+    internal Func<long> NowMs { get; set; } = () => Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
 
     private Func<(int Rotation, bool Mirror)>? _source;
     private byte[] _oriented = Array.Empty<byte>();
@@ -28,6 +31,12 @@ public sealed class PanelOrientationFilter
     // A deadline rather than a last-read stamp: `now - long.MinValue` overflows to a
     // negative, which pinned the cache at its default and silently ignored the setting.
     private long _nextReadMs;
+
+    /// <summary>
+    /// A quarter turn of a rectangle is applied and swaps the frame's sides. Set by a transport that renders
+    /// the swapped size and has already pinned the rotation's quarter to its own geometry.
+    /// </summary>
+    public bool QuarterOnRectangles { get; set; }
 
     public void Bind(Func<(int Rotation, bool Mirror)> source)
     {
@@ -42,7 +51,7 @@ public sealed class PanelOrientationFilter
         {
             return frame;
         }
-        var nowMs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
+        var nowMs = NowMs();
         if (nowMs >= _nextReadMs)
         {
             _nextReadMs = nowMs + TtlMs;
@@ -59,7 +68,8 @@ public sealed class PanelOrientationFilter
             // Geometry moved under us mid-frame; orienting against a stale size would tear.
             return frame;
         }
-        if (BgraOrientation.IsIdentity(BgraOrientation.Effective(_current.Rotation, width, height), _current.Mirror))
+        var turn = QuarterOnRectangles ? BgraOrientation.Normalize(_current.Rotation) : BgraOrientation.Effective(_current.Rotation, width, height);
+        if (BgraOrientation.IsIdentity(turn, _current.Mirror))
         {
             return frame;
         }
@@ -67,7 +77,7 @@ public sealed class PanelOrientationFilter
         {
             _oriented = new byte[frame.Length];
         }
-        BgraOrientation.Apply(frame, width, height, _current.Rotation, _current.Mirror, _oriented);
+        BgraOrientation.Apply(frame, width, height, _current.Rotation, _current.Mirror, _oriented, QuarterOnRectangles);
         return _oriented;
     }
 }

@@ -22,14 +22,46 @@ public static class PanelPresets
     {
         var active = record.Presets?.Find(p => p.Id == record.ActivePresetId);
         if (active is not null)
+        {
             Copy(record, active);
+            Stamp(record, active);
+        }
+    }
+
+    /// <summary>
+    /// Marks a look this build wrote from <paramref name="live"/> as storing its layout per orientation, on glass
+    /// that has more than one. Only an unmarked look is one an older build saved, whose single layout must not
+    /// clear a slot it knows nothing about.
+    /// </summary>
+    public static void Stamp(PanelDeviceRecord live, IPanelPersonalization look)
+    {
+        if (PanelLayoutSlots.HasSlots(live.Capabilities))
+        {
+            look.LayoutSlots = true;
+        }
     }
 
     /// <summary>Deep-copies every personalization field, nulls included, so a
     /// field left at its default in the source is reset in the target.</summary>
-    public static void Copy(IPanelPersonalization from, IPanelPersonalization to)
+    public static void Copy(IPanelPersonalization from, IPanelPersonalization to, bool toLive = false)
     {
-        to.Layout = CloneLayout(from.Layout);
+        if (to is PanelPreset)
+        {
+            to.LayoutSlots = from.LayoutSlots;
+        }
+        if (toLive && to is PanelDeviceRecord live && IsSingleLayout(from, live))
+        {
+            CopySingleLayout(from, live);
+        }
+        else
+        {
+            to.Layout = CloneLayout(from.Layout);
+            to.WidgetSize = from.WidgetSize;
+            to.GridSlots = from.GridSlots;
+            to.PortraitLayout = CloneLayout(from.PortraitLayout);
+            to.PortraitWidgetSize = from.PortraitWidgetSize;
+            to.PortraitGridSlots = from.PortraitGridSlots;
+        }
         to.ThemeMode = from.ThemeMode;
         to.AccentColor = from.AccentColor;
         to.BackgroundColor = from.BackgroundColor;
@@ -59,8 +91,29 @@ public static class PanelPresets
         to.Font = from.Font;
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
-        to.WidgetSize = from.WidgetSize;
-        to.GridSlots = from.GridSlots;
+    }
+
+    /// <summary>
+    /// A look an older build saved holds one layout and says nothing about orientations; this build marks every
+    /// look it writes for glass with more than one (<see cref="Stamp"/>), so an unmarked one is that.
+    /// </summary>
+    private static bool IsSingleLayout(IPanelPersonalization from, PanelDeviceRecord live) =>
+        from.LayoutSlots != true && PanelLayoutSlots.HasSlots(live.Capabilities);
+
+    // The single layout lands in the slot the record shows now on the strip, in the landscape slot elsewhere,
+    // and the slot it does not touch keeps what it holds.
+    private static void CopySingleLayout(IPanelPersonalization from, PanelDeviceRecord live)
+    {
+        if (live.Capabilities?.SupportsPortrait == true)
+        {
+            PanelLayoutSlots.SetActiveLayout(live, CloneLayout(from.Layout));
+            PanelLayoutSlots.SetActiveWidgetSize(live, from.WidgetSize);
+            PanelLayoutSlots.SetActiveGridSlots(live, from.GridSlots);
+            return;
+        }
+        live.Layout = CloneLayout(from.Layout);
+        live.WidgetSize = from.WidgetSize;
+        live.GridSlots = from.GridSlots;
     }
 
     public static PanelPresetsResponse ToResponse(PanelDeviceRecord record) => new()

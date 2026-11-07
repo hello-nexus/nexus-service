@@ -33,12 +33,13 @@ public class PanelRotationTests : IDisposable
     [Theory]
     [InlineData(PanelSurfaces.LcdSquare, 480, 480, new[] { 0, 90, 180, 270 })]
     [InlineData(PanelSurfaces.LcdRound, 400, 400, new[] { 0, 90, 180, 270 })]
-    // Thermalright 640x480 is classed lcd-square but is not square glass.
-    [InlineData(PanelSurfaces.LcdSquare, 640, 480, new[] { 0, 180 })]
-    [InlineData(PanelSurfaces.LcdSquare, 320, 240, new[] { 0, 180 })]
-    [InlineData(PanelSurfaces.LcdSquare, 720, 1280, new[] { 0, 180 })]
-    [InlineData(PanelSurfaces.LcdWide, 1600, 720, new[] { 0, 180 })]
-    [InlineData(PanelSurfaces.LcdWide, 128, 40, new[] { 0, 180 })]
+    // Glass that is not square renders the swapped size at a quarter turn (Panel/PanelPortraitTests covers the families).
+    [InlineData(PanelSurfaces.LcdSquare, 640, 480, new[] { 0, 90, 180, 270 })]
+    [InlineData(PanelSurfaces.LcdSquare, 320, 240, new[] { 0, 90, 180, 270 })]
+    [InlineData(PanelSurfaces.LcdSquare, 720, 1280, new[] { 0, 90, 180, 270 })]
+    [InlineData(PanelSurfaces.LcdWide, 1600, 720, new[] { 0, 90, 180, 270 })]
+    // A glass whose size is unknown yet cannot be turned on a guess.
+    [InlineData(PanelSurfaces.LcdWide, 0, 0, new[] { 0, 180 })]
     // Surfaces no orientation filter reaches take none.
     [InlineData(PanelSurfaces.LegacyKraken, 320, 320, new[] { 0 })]
     [InlineData(PanelSurfaces.Y70, 0, 0, new[] { 0 })]
@@ -89,8 +90,8 @@ public class PanelRotationTests : IDisposable
     }
 
     [Theory]
-    [InlineData(PanelSurfaces.LcdSquare, 640, 480, 90)]
-    [InlineData(PanelSurfaces.LcdWide, 1600, 720, 270)]
+    [InlineData(PanelSurfaces.LcdSquare, 640, 480, 135)]
+    [InlineData(PanelSurfaces.LcdWide, 1600, 720, 360)]
     [InlineData(PanelSurfaces.LcdSquare, 480, 480, 45)]
     [InlineData(PanelSurfaces.LcdSquare, 480, 480, 360)]
     [InlineData(PanelSurfaces.LcdSquare, 480, 480, -90)]

@@ -76,7 +76,7 @@ public sealed class Y70GtLightingFrameWriter : IHostedService, IDisposable
         if (!_hub.HasBacklight) return;
 
         var settings = _store.Load();
-        var id = _hub.DeviceId;
+        var id = _hub.BacklightDeviceId;
         if (string.IsNullOrEmpty(id) || settings.Devices.UncontrolledLightingDevices.Contains(id)) return;
 
         DeviceFrame? frame = null;
