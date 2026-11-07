@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Threading;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.PixelFormats;
@@ -469,6 +472,9 @@ public sealed class KrakenHub : IDisposable
         get { lock (_lock) { return _lcdHeight; } }
     }
 
+    /// <summary>True on the 2023 Kraken (0x300E), whose LCD wire runs on the vendor app's session and cadence.</summary>
+    public bool IsCamSessionModel => _modelRead.CamSessionInit;
+
     /// <summary>Bytes in one uncompressed RGBA frame at the attached panel's size.</summary>
     public int LcdFrameBytes
     {
@@ -834,7 +840,8 @@ public sealed class KrakenHub : IDisposable
         }
         ServiceLog.Info(
             $"[nzxt-kraken] 30 s: {written} frames written, {skipped} skipped as unchanged, " +
-            $"{reports} status reports read, {fallbacks} fallback polls, stream {(_streamReady ? "open" : "closed")}");
+            $"{reports} status reports read, {fallbacks} fallback polls, stream {(_streamReady ? "open" : "closed")}" +
+            CamCadenceText());
     }
 
     public bool SetPumpCurve(ReadOnlySpan<byte> duties) => SendCurve(pump: true, duties);
@@ -1461,6 +1468,10 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     private bool PushPlusFrame(ReadOnlySpan<byte> bgra)
     {
+        if (_model.CamSessionInit)
+        {
+            return OfferCamFrame(bgra);
+        }
         lock (_lcdTransferLock)
         {
             if (LockDimmed)
@@ -1598,6 +1609,16 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
+        if (_model.CamSessionInit)
+        {
+            // Joined before the hold is cleared, so a send in flight cannot re-arm it afterwards.
+            StopCamSender(join: true);
+            lock (_camLock)
+            {
+                _camFresh = false;
+            }
+            _camStats.BreakChain();
+        }
         lock (_plusHoldLock)
         {
             bool holdsStill = _plusSendingStill || (_plusActive && _plusHoldIsStill);
@@ -1648,6 +1669,10 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
         }
+        if (_model.CamSessionInit)
+        {
+            _camStats.RecordStart(Stopwatch.GetTimestamp());
+        }
         // The header is its own bulk transfer, then the whole frame in one.
         if (!lcd.Write(header) || !lcd.Write(wire))
         {
@@ -1665,6 +1690,198 @@ public sealed class KrakenHub : IDisposable
         Interlocked.Increment(ref _framesWritten);
         ArmPlusHold(gen, still, now);
         return true;
+    }
+
+    // Cadenced LCD sender for the 2023 Kraken (KrakenModel.CamSessionInit). The vendor app starts a frame
+    // every fixed interval, repeats a frame when nothing new is ready, and the panel drops frames that
+    // arrive sooner or irregularly. A producer only hands over its latest frame (a newer one replaces a
+    // pending one, nothing queues) and one sender thread owns the wire. It runs only while frames keep
+    // arriving: once they stop for the idle window the hold's slower resend keeps the panel lit.
+    private const long CamSenderIdleExitMs = 10_000;
+    private const int CamSenderJoinMs = 2_000;
+    private const long CamSendWarnMs = 60_000;
+    private readonly object _camLock = new();
+    private readonly KrakenCadenceStats _camStats = new();
+    private byte[]? _camPending;
+    private bool _camFresh;
+    private long _camOfferedAtMs;
+    private long _camWarnedAtMs;
+    private CamRun? _camRun;
+
+    /// <summary>Tests turn the thread off and step the sender by hand.</summary>
+    internal bool CamSenderThread { get; set; } = true;
+
+    /// <summary>The slot clock for one sender run; tests replace it with a fake.</summary>
+    internal Func<CancellationToken, KrakenCadence> CadenceFactory { get; set; } = KrakenCadence.Create;
+
+    internal bool CamSenderRunning
+    {
+        get { lock (_camLock) { return _camRun != null; } }
+    }
+
+    private sealed class CamRun(CancellationTokenSource cts, KrakenCadence cadence)
+    {
+        public CancellationTokenSource Cts { get; } = cts;
+        public KrakenCadence Cadence { get; } = cadence;
+        public Thread? Thread { get; set; }
+    }
+
+    // Encodes the producer's frame into the pending buffer. A frame dropped by the lock fade is reported as taken.
+    private bool OfferCamFrame(ReadOnlySpan<byte> bgra)
+    {
+        if (LockDimmed)
+        {
+            return true;
+        }
+        lock (_lock)
+        {
+            if (_device == null || _lcd == null)
+            {
+                return false;
+            }
+        }
+        int w = _lcdWidth, h = _lcdHeight;
+        int turns = _snapshot.LcdOrientationQuarterTurns;
+        var len = Rgb565Encoder.EncodedLength(w, h);
+        lock (_camLock)
+        {
+            if (_camPending == null || _camPending.Length != len)
+            {
+                _camPending = new byte[len];
+            }
+            Rgb565Encoder.Encode(bgra, w, h, turns, _camPending, sourceIsBgra: true, highByteFirst: true);
+            _camFresh = true;
+            Volatile.Write(ref _camOfferedAtMs, Clock());
+            if (_camRun == null && CamSenderThread && !_disposed)
+            {
+                _camRun = StartCamRunLocked();
+            }
+        }
+        return true;
+    }
+
+    private CamRun StartCamRunLocked()
+    {
+        var cts = new CancellationTokenSource();
+        var run = new CamRun(cts, CadenceFactory(cts.Token));
+        _camStats.BreakChain();
+        run.Thread = new Thread(() => CamSenderLoop(run))
+        {
+            IsBackground = true,
+            Name = "kraken-lcd-cadence",
+        };
+        run.Thread.Start();
+        return run;
+    }
+
+    private void CamSenderLoop(CamRun run)
+    {
+        try
+        {
+            while (run.Cadence.WaitNextSlot(out _))
+            {
+                SendCamSlot();
+                if (Clock() - Volatile.Read(ref _camOfferedAtMs) >= CamSenderIdleExitMs)
+                {
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[nzxt-kraken] LCD sender stopped: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            lock (_camLock)
+            {
+                if (ReferenceEquals(_camRun, run))
+                {
+                    _camRun = null;
+                }
+            }
+            run.Cadence.Dispose();
+            run.Cts.Dispose();
+        }
+    }
+
+    private void StopCamSender(bool join)
+    {
+        CamRun? run;
+        lock (_camLock)
+        {
+            run = _camRun;
+            _camRun = null;
+            run?.Cts.Cancel();
+        }
+        if (join && run?.Thread is { } thread && thread != Thread.CurrentThread)
+        {
+            thread.Join(CamSenderJoinMs);
+        }
+    }
+
+    /// <summary>
+    /// One slot of the cadenced wire: sends the pending frame, or the last one again when nothing new
+    /// arrived. Holds the transfer lock across the frame, the device lock only for the short HID steps.
+    /// </summary>
+    internal bool SendCamSlot()
+    {
+        lock (_lcdTransferLock)
+        {
+            if (LockDimmed)
+            {
+                return true;
+            }
+            bool fresh;
+            lock (_camLock)
+            {
+                fresh = _camFresh;
+                if (fresh && _camPending is { } pending)
+                {
+                    var previous = _plusWire;
+                    bool resized = previous == null || previous.Length != pending.Length;
+                    _plusWire = pending;
+                    _camPending = resized ? null : previous;
+                    if (resized)
+                    {
+                        _plusHeader = KrakenProtocol.EncodeBulkHeader(KrakenProtocol.BulkFormatRgb565, pending.Length);
+                    }
+                    _camFresh = false;
+                }
+                else
+                {
+                    fresh = false;
+                }
+            }
+            if (_plusWire == null)
+            {
+                return true;
+            }
+            var sent = SendPlusWireLocked(Clock(), still: false);
+            _camStats.CountSend(fresh);
+            if (!sent)
+            {
+                var now = Clock();
+                if (_camWarnedAtMs == 0 || now - _camWarnedAtMs >= CamSendWarnMs)
+                {
+                    _camWarnedAtMs = now;
+                    ServiceLog.Warn("[nzxt-kraken] LCD frame send failed; the session reopens on the next slot");
+                }
+            }
+            return sent;
+        }
+    }
+
+    private string CamCadenceText()
+    {
+        if (_camStats.Take(Stopwatch.Frequency) is not { } c)
+        {
+            return string.Empty;
+        }
+        var f = CultureInfo.InvariantCulture;
+        return $", start-to-start ms min {c.MinMs.ToString("F1", f)} p50 {c.P50Ms.ToString("F1", f)} " +
+            $"p95 {c.P95Ms.ToString("F1", f)} max {c.MaxMs.ToString("F1", f)} over {c.Samples}, " +
+            $"{c.Fresh} new frames sent, {c.Repeated} repeated";
     }
 
     // The vendor app's order at stream start, then its real backlight a moment after the dark
@@ -2048,6 +2265,7 @@ public sealed class KrakenHub : IDisposable
 
     public void Detach()
     {
+        StopCamSender(join: false);
         lock (_lock)
         {
             _isConnected = false;
@@ -2070,6 +2288,7 @@ public sealed class KrakenHub : IDisposable
 
     public void Dispose()
     {
+        StopCamSender(join: false);
         lock (_lock)
         {
             if (_disposed)
