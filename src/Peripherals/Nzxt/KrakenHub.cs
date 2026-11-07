@@ -133,12 +133,6 @@ public sealed class KrakenHub : IDisposable
     internal Action<int> DelayMs { get; set; } = Thread.Sleep;
 
     /// <summary>
-    /// True while this hub keeps the cooler quiet for an open LCD stream, so nothing else
-    /// may poll it: the hub's own status request is withheld and so are LibreHardwareMonitor's.
-    /// </summary>
-    public bool StreamQuiet => _isConnected && _modelRead.CamSessionInit && _streamReady;
-
-    /// <summary>
     /// False once the last status report is too old to steer fans by. Always true off the
     /// 2023 Kraken, whose per-second poll keeps the value fresh or fails the connection.
     /// </summary>

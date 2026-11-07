@@ -213,19 +213,6 @@ public class KrakenCamSessionTests
         Assert.Equal(0, rig.Count("1002"));
     }
 
-    [Fact]
-    public void The_stream_quiet_flag_follows_the_open_session()
-    {
-        var rig = new Rig(0x300E);
-        Assert.False(rig.Hub.StreamQuiet);
-
-        Assert.True(rig.Hub.PushStreamFrame(rig.Frame()));
-        Assert.True(rig.Hub.StreamQuiet);
-
-        rig.Hub.Detach();
-        Assert.False(rig.Hub.StreamQuiet);
-    }
-
     [Theory]
     [InlineData(0x3014)]
     [InlineData(0x3012)]
@@ -249,7 +236,6 @@ public class KrakenCamSessionTests
 
         Assert.Equal(40, rig.Count("7401"));
         Assert.Equal(0, rig.Count("1002"));
-        Assert.False(rig.Hub.StreamQuiet);
         Assert.True(rig.Hub.StatusFresh);
     }
 
