@@ -214,7 +214,8 @@ public sealed class RgbBridge : IDisposable
     // Dedup + heartbeat, mirroring Slv3LightingFrameWriter's _lastSent /
     // _lastPushTicks. A frame identical to the last one pushed is skipped, but
     // every device except a save-only one (see _physSaveOnly) is re-pushed at
-    // least every HeartbeatMs regardless, so a
+    // least every HeartbeatMs regardless (a no-heartbeat one, see
+    // _physNoHeartbeat, gets a single trailing push instead), so a
     // device that silently lost state - direct-mode timeout, USB
     // re-enumeration, another OpenRGB client writing over us - still self-heals
     // the way the unconditional 30fps push did, just a second later instead of
@@ -232,6 +233,8 @@ public sealed class RgbBridge : IDisposable
     internal bool IsSaveOnlyPhysical(int physIdx) => _physSaveOnly.Contains(physIdx);
     // Physical indices whose controller is never re-pushed an unchanged frame. Replaced wholesale on device-set change.
     private volatile HashSet<int> _physNoHeartbeat = new();
+    // No-heartbeat physicals whose trailing push for the current frame is already sent. The engine ticks at 33 ms and the MSI controller drops a write within 33 ms of the last, so a change's final frame can be lost without it.
+    private readonly ConcurrentDictionary<int, byte> _trailingPushed = new();
     internal bool IsNoHeartbeatPhysical(int physIdx) => _physNoHeartbeat.Contains(physIdx);
     // Physical index -> user cap in Hz for devices that have one, rebuilt every frame.
     private readonly Dictionary<int, int> _physCapsHz = new();
@@ -711,6 +714,7 @@ public sealed class RgbBridge : IDisposable
         // baselines so the first frame after resume always reaches hardware.
         _lastPushed.Clear();
         _lastPushTicks.Clear();
+        _trailingPushed.Clear();
         return new BlackoutReport(pushed, known, unsettled ? BlackoutSkip.Unsettled : BlackoutSkip.None);
     }
 
@@ -1932,6 +1936,7 @@ public sealed class RgbBridge : IDisposable
     {
         _lastPushed.TryRemove(physIdx, out _);
         _lastPushTicks.TryRemove(physIdx, out _);
+        _trailingPushed.TryRemove(physIdx, out _);
     }
 
     /// <summary>True when this device's bytes differ from the last push, or the
@@ -1943,14 +1948,19 @@ public sealed class RgbBridge : IDisposable
     internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null, bool saveOnly = false, bool noHeartbeat = false)
     {
         var now = nowMs ?? Environment.TickCount64;
+        var unchanged = false;
         if (_lastPushed.TryGetValue(physIdx, out var last)
             && last.Length == buf.Length
             && _lastPushTicks.TryGetValue(physIdx, out var when)
-            && (saveOnly || noHeartbeat || now - when < HeartbeatMs)
             && System.Runtime.InteropServices.MemoryMarshal.AsBytes(buf.AsSpan())
                 .SequenceEqual(System.Runtime.InteropServices.MemoryMarshal.AsBytes(last.AsSpan())))
         {
-            return false;
+            unchanged = true;
+            // A no-heartbeat device gets one trailing push HeartbeatMs after its last change, then none until the frame changes.
+            if (saveOnly || (noHeartbeat ? _trailingPushed.ContainsKey(physIdx) || now - when < HeartbeatMs : now - when < HeartbeatMs))
+            {
+                return false;
+            }
         }
 
         // After the dedupe so an identical frame never spends the gap. A frame
@@ -1965,6 +1975,14 @@ public sealed class RgbBridge : IDisposable
         buf.AsSpan().CopyTo(copy);
         _lastPushed[physIdx] = copy;
         _lastPushTicks[physIdx] = now;
+        if (noHeartbeat && unchanged)
+        {
+            _trailingPushed[physIdx] = 0;
+        }
+        else
+        {
+            _trailingPushed.TryRemove(physIdx, out _);
+        }
         return true;
     }
 
@@ -2003,6 +2021,7 @@ public sealed class RgbBridge : IDisposable
         // Indices are being re-derived, so every dedup baseline is suspect.
         _lastPushed.Clear();
         _lastPushTicks.Clear();
+        _trailingPushed.Clear();
         _pushLimiter.Reset();
         var stableIds = new Dictionary<int, string>();
         var saveOnly = new HashSet<int>();

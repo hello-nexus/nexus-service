@@ -245,7 +245,7 @@ public class SaveOnlyRgbWritesTests : IDisposable
     }
 
     [Fact]
-    public void No_heartbeat_device_pushes_on_change_and_after_reconnect_but_not_on_the_interval()
+    public void No_heartbeat_device_pushes_one_trailing_frame_after_a_change_then_stays_quiet()
     {
         using var bridge = NewBridge();
         var gpu = new RgbDevice { Address = 0, Name = "MSI GeForce GTX 1660 Ti Gaming X", Vendor = "MSI", Serial = "G", LedCount = 1 };
@@ -256,13 +256,20 @@ public class SaveOnlyRgbWritesTests : IDisposable
         var buf = new RgbColor[] { new(1, 2, 3) };
 
         Assert.True(bridge.ShouldPush(0, buf, 0, 1000, noHeartbeat: true));
-        Assert.False(bridge.ShouldPush(0, buf, 0, 2001, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 1999, noHeartbeat: true));
+        Assert.True(bridge.ShouldPush(0, buf, 0, 2000, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 3001, noHeartbeat: true));
         Assert.False(bridge.ShouldPush(0, buf, 0, 600_000, noHeartbeat: true));
         buf[0] = new RgbColor(9, 9, 9);
         Assert.True(bridge.ShouldPush(0, buf, 0, 600_001, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 600_500, noHeartbeat: true));
+        Assert.True(bridge.ShouldPush(0, buf, 0, 601_001, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 900_000, noHeartbeat: true));
 
         bridge.SyncPhysicalBuffers(new[] { gpu, other });
-        Assert.True(bridge.ShouldPush(0, buf, 0, 600_002, noHeartbeat: true));
+        Assert.True(bridge.ShouldPush(0, buf, 0, 900_001, noHeartbeat: true));
+        Assert.True(bridge.ShouldPush(0, buf, 0, 901_001, noHeartbeat: true));
+        Assert.False(bridge.ShouldPush(0, buf, 0, 990_000, noHeartbeat: true));
 
         Assert.True(bridge.ShouldPush(1, buf, 0, 1000));
         Assert.True(bridge.ShouldPush(1, buf, 0, 2000));
