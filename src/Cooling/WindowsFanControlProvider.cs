@@ -26,6 +26,7 @@ namespace Nexus.Service.Cooling;
 public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingProvider
 {
     private readonly LhmComputer _lhm;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
     private readonly IConfigStore _config;
     private List<ChannelMapping>? _channels;
     private readonly object _discoveryLock = new();
@@ -66,8 +67,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private readonly MultiplexHub _hub;
 
-    public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config, MultiplexHub hub)
+    public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config, MultiplexHub hub, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
+        _kraken = kraken;
         _hub = hub;
         _lhm = lhm;
         _config = config;
@@ -142,6 +144,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         foreach (var hw in _lhm.Instance.Hardware)
         {
             var category = MapCategory(hw.HardwareType);
+            if (IsHubDrivenKraken(hw))
+            {
+                // A curve must never steer by LHM's value here, which stopped updating.
+                AddHubLiquid(sources, hw, category);
+                continue;
+            }
             AddTempSensors(sources, hw, category);
 
             foreach (var sub in hw.SubHardware)
@@ -160,7 +168,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             var sensor = FindSensorById(hw, sensorId);
             if (sensor is null) continue;
 
-            return sensor.Value;
+            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : sensor.Value;
         }
 
         return null;
@@ -594,6 +602,25 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     }
 
     // ── Helpers ──
+
+    private bool IsHubDrivenKraken(IHardware hw) =>
+        hw.HardwareType == HardwareType.Cooler && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name);
+
+    private void AddHubLiquid(List<TemperatureSource> list, IHardware hw, string category)
+    {
+        if (KrakenLhmSensors.Liquid(_kraken!) is not { } liquid) return;
+        foreach (var sensor in hw.Sensors)
+        {
+            if (sensor.SensorType != SensorType.Temperature) continue;
+            list.Add(new TemperatureSource
+            {
+                Id = sensor.Identifier.ToString(),
+                Name = sensor.Name,
+                Category = category,
+                Value = liquid,
+            });
+        }
+    }
 
     private static void AddTempSensors(List<TemperatureSource> list, IHardware hw, string category)
     {

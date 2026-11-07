@@ -383,8 +383,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // fail the walk for every other device or the routes that triggered it.
     private void TryUpdate(IHardware hw)
     {
-        // A Kraken the hub drives is not polled here: a second status request on the same
-        // device stalls its LCD. GetSensorExtras fills its entries from the hub instead.
+        // A Kraken the hub drives is not polled here. Everything that reads its entries
+        // takes the hub's values instead, because LHM's stay at their last reading.
         if (hw.HardwareType == HardwareType.Cooler && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name))
         {
             return;

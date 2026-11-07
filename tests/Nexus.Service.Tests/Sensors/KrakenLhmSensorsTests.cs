@@ -40,6 +40,16 @@ public class KrakenLhmSensorsTests
     private static KrakenSnapshot Snap(double liquid, int pumpRpm = 2400, int pumpDuty = 75, int fanRpm = 1300, int fanDuty = 60) =>
         new(liquid, pumpRpm, pumpDuty, fanRpm, fanDuty, "1.0.0", 0, 0, KrakenDisplayMode.Liquid, new System.Collections.Generic.List<KrakenLightingChannel>());
 
+    [Theory]
+    [InlineData(31.5, true, 31.5f)]
+    [InlineData(31.5, false, null)]
+    [InlineData(0.0, true, null)]
+    [InlineData(double.NaN, true, null)]
+    public void Liquid_is_null_without_a_valid_fresh_reading(double reading, bool fresh, float? expected)
+    {
+        Assert.Equal(expected, KrakenLhmSensors.Liquid(reading, fresh));
+    }
+
     [Fact]
     public void Ids_names_and_parent_are_kept_and_values_replaced()
     {

@@ -29,6 +29,12 @@ internal static class KrakenLhmSensors
     internal static bool IsHubDriven(bool connected, int productId, string hardwareName) =>
         connected && LhmName(productId) is { } name && string.Equals(name, hardwareName, StringComparison.Ordinal);
 
+    /// <summary>The hub's liquid temperature, or null while it has no valid, fresh reading.</summary>
+    public static float? Liquid(KrakenHub hub) => Liquid(hub.Snapshot.LiquidTempC, hub.StatusFresh);
+
+    internal static float? Liquid(double liquidTempC, bool statusFresh) =>
+        double.IsFinite(liquidTempC) && liquidTempC > 0 && statusFresh ? (float)liquidTempC : null;
+
     /// <summary>
     /// Replaces the values of LHM's own Kraken sensors in place; ids, names and parent are untouched.
     /// Without a valid liquid reading (none yet, or the status gone stale) the sensors are dropped,
