@@ -108,23 +108,51 @@ public class KrakenLhmSensorsTests
     [InlineData(-1.0)]
     [InlineData(double.NaN)]
     [InlineData(double.PositiveInfinity)]
-    public void Without_a_valid_liquid_reading_the_sensors_are_dropped_not_left_stale(double liquid)
+    public void Without_a_valid_liquid_reading_the_sensors_stay_and_read_unavailable(double liquid)
     {
         var c = Component();
+        var ids = c.Sensors.Select(s => s.Id).ToList();
 
         KrakenLhmSensors.Apply(c, Snap(liquid), true, null);
 
-        Assert.Empty(c.Sensors);
+        AssertUnavailable(c, ids);
+    }
+
+    private static void AssertUnavailable(HardwareComponent c, System.Collections.Generic.List<string> ids)
+    {
+        Assert.Equal(ids, c.Sensors.Select(s => s.Id).ToList());
+        Assert.All(c.Sensors, s =>
+        {
+            Assert.Equal(0f, s.Value);
+            Assert.Equal(0f, s.Min);
+            Assert.Equal(0f, s.Max);
+            Assert.Equal("-", s.Formatted);
+            Assert.Equal("-", s.FormattedMin);
+            Assert.Equal("-", s.FormattedMax);
+        });
     }
 
     [Fact]
-    public void A_stale_hub_status_drops_the_sensors()
+    public void A_stale_hub_status_keeps_the_sensors_unavailable_not_at_the_last_value()
     {
         var c = Component();
+        var ids = c.Sensors.Select(s => s.Id).ToList();
+        KrakenLhmSensors.Apply(c, Snap(30), true, null);
 
         KrakenLhmSensors.Apply(c, Snap(30), false, null);
 
-        Assert.Empty(c.Sensors);
+        AssertUnavailable(c, ids);
+    }
+
+    [Fact]
+    public void An_unavailable_reading_leaves_the_session_range_untouched()
+    {
+        var range = new ConcurrentDictionary<string, (float Min, float Max)>();
+        KrakenLhmSensors.Apply(Component(), Snap(30), true, range);
+
+        KrakenLhmSensors.Apply(Component(), Snap(30), false, range);
+
+        Assert.Equal((30f, 30f), range["/nzxtkrakenz/0/temperature/0"]);
     }
 
     [Fact]

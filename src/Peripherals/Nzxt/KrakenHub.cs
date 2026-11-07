@@ -35,12 +35,10 @@ public sealed class KrakenHub : IDisposable
     private const long CamFallbackLogMs = 60_000;
     private const long CamDiagMs = 30_000;
     private const int CamBacklightDelayMs = 70;
-    // A frame on this model waits for the cooler's reply to its start and end commands before the
-    // next step. The start wait is a small multiple of the vendor app's start-to-bulk gap. The end
-    // reply follows the cooler taking the whole frame in, so it gets longer. Both waits plus the bulk
-    // stay inside the slot, and a miss only moves on.
+    // A frame on this model waits for the cooler's reply to its start command before the bulk. The
+    // wait is a small multiple of the vendor app's start-to-bulk gap, and a miss only moves on. The
+    // cooler never answers the end command, so the frame does not wait for one.
     private const int CamStartReplyMs = 5;
-    private const int CamEndReplyMs = 15;
 
     // Bulk pixel data goes out in chunks; 64 KiB measured ~13 MB/s on the bench unit.
     private const int BulkChunkBytes = 64 * 1024;
@@ -1637,7 +1635,7 @@ public sealed class KrakenHub : IDisposable
         }
     }
 
-    // Waits for the cooler's 0x37 reply to a frame's start (sub-command 1) or end (2) command, at most
+    // Waits for the cooler's 0x37 reply to a frame's start command (sub-command 1), at most
     // timeoutMs from sentAt, and records the latency or a miss. Status reports read meanwhile are folded
     // as ExchangeLocked does. A miss neither fails the frame nor touches the stream state. Caller holds
     // _lock, the only place HID input is read, so nothing else can take the reply. The deadline runs on
@@ -1735,7 +1733,7 @@ public sealed class KrakenHub : IDisposable
             if (cam)
             {
                 startedAt = Stopwatch.GetTimestamp();
-                AwaitCamReplyLocked(0x01, CamStartReplyMs, startedAt, _camReplies.Start);
+                AwaitCamReplyLocked(0x01, CamStartReplyMs, startedAt, _camReplies);
             }
         }
         if (cam)
@@ -1755,18 +1753,10 @@ public sealed class KrakenHub : IDisposable
                 _streamReady = false;
                 return false;
             }
-            if (cam)
-            {
-                DrainLocked();
-            }
             if (!WriteLocked(PlusEnd))
             {
                 _streamReady = false;
                 return false;
-            }
-            if (cam)
-            {
-                AwaitCamReplyLocked(0x02, CamEndReplyMs, Stopwatch.GetTimestamp(), _camReplies.End);
             }
         }
         Interlocked.Increment(ref _framesWritten);
@@ -1784,9 +1774,9 @@ public sealed class KrakenHub : IDisposable
     private const long CamSendWarnMs = 60_000;
     private readonly object _camLock = new();
     private readonly KrakenCadenceStats _camStats = new();
-    private readonly KrakenReplyStats _camReplies = new();
+    private readonly KrakenReplySeries _camReplies = new();
 
-    internal KrakenReplyStats CamReplies => _camReplies;
+    internal KrakenReplySeries CamReplies => _camReplies;
 
     internal int StatusReportsRead => Volatile.Read(ref _statusReads);
     private byte[]? _camPending;
@@ -1961,18 +1951,13 @@ public sealed class KrakenHub : IDisposable
 
     private string CamReplyText()
     {
-        var f = CultureInfo.InvariantCulture;
-        var text = string.Empty;
-        foreach (var (name, series) in new[] { ("start", _camReplies.Start), ("end", _camReplies.End) })
+        if (_camReplies.Take(Stopwatch.Frequency) is not { } r)
         {
-            if (series.Take(Stopwatch.Frequency) is not { } r)
-            {
-                continue;
-            }
-            text += $", {name} reply ms p50 {r.P50Ms.ToString("F1", f)} p95 {r.P95Ms.ToString("F1", f)} " +
-                $"max {r.MaxMs.ToString("F1", f)} over {r.Replies}, {r.Misses} missed";
+            return string.Empty;
         }
-        return text;
+        var f = CultureInfo.InvariantCulture;
+        return $", start reply ms p50 {r.P50Ms.ToString("F1", f)} p95 {r.P95Ms.ToString("F1", f)} " +
+            $"max {r.MaxMs.ToString("F1", f)} over {r.Replies}, {r.Misses} missed";
     }
 
     private string CamCadenceText()

@@ -3,17 +3,10 @@ using System;
 namespace Nexus.Service.Peripherals.Nzxt;
 
 /// <summary>
-/// How long the cooler took to answer a frame's start and end commands, and how many waits ran out.
+/// How long the cooler took to answer a frame's start command, and how many waits ran out.
 /// Fixed buffers: recording is allocation free and a summary sorts a preallocated copy, so the
 /// periodic log costs nothing on the steady path.
 /// </summary>
-internal sealed class KrakenReplyStats
-{
-    public KrakenReplySeries Start { get; } = new();
-
-    public KrakenReplySeries End { get; } = new();
-}
-
 internal sealed class KrakenReplySeries
 {
     private const int Capacity = 1024;

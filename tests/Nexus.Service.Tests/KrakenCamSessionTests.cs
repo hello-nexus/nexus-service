@@ -74,8 +74,7 @@ public class KrakenCamSessionTests
         {
             Bulk.Writes.Clear();
             Device.Delivered.Clear();
-            Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency);
-            Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency);
+            Hub.CamReplies.Take(System.Diagnostics.Stopwatch.Frequency);
         }
 
         public bool PollWithReport(double liquidC = 31.5)
@@ -637,8 +636,9 @@ public class KrakenCamSessionTests
         return r;
     }
 
-    // The cooler answers start and end after a few empty polls, as a real one does within a slot.
-    private static void AnswerTransfers(Rig rig, int emptyReads = 2)
+    // The cooler answers start after a few empty polls, as a real one does within a slot. It never
+    // answers end. readsAtEnd gets the device's read count at the moment the end command goes out.
+    private static void AnswerStart(Rig rig, Action<int>? readsAtEnd = null, int emptyReads = 2)
     {
         rig.Device.OnWrite = w =>
         {
@@ -648,31 +648,30 @@ public class KrakenCamSessionTests
             }
             else if (w[0] == 0x36 && w[1] == 0x02)
             {
-                rig.Device.PushAfter(TransferReply(0x02), emptyReads);
+                readsAtEnd?.Invoke(rig.Device.Reads);
             }
         };
     }
 
     [Fact]
-    public void The_bulk_does_not_start_until_the_start_reply_arrives_and_the_frame_ends_on_the_end_reply()
+    public void The_bulk_does_not_start_until_the_start_reply_arrives_and_the_end_path_reads_nothing()
     {
         var rig = new Rig(0x300E);
         rig.OpenStream();
         rig.ForgetOpeningFrame();
-        AnswerTransfers(rig);
+        int readsAtEnd = -1;
+        AnswerStart(rig, r => readsAtEnd = r);
 
         Assert.True(rig.Push(rig.Frame()));
 
         var start = Assert.Single(rig.Device.Delivered, d => d.Id == 0x37 && d.Sub == 0x01);
-        var end = Assert.Single(rig.Device.Delivered, d => d.Id == 0x37 && d.Sub == 0x02);
         Assert.Equal(0, start.BulkWrites);
-        Assert.Equal(2, end.BulkWrites);
         Assert.Single(rig.SentFrames());
         Assert.Equal(new[] { "3601", "3602" }, rig.Ids());
-        var startStats = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency);
-        var endStats = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency);
+        Assert.True(readsAtEnd >= 0);
+        Assert.Equal(readsAtEnd, rig.Device.Reads);
+        var startStats = rig.Hub.CamReplies.Take(System.Diagnostics.Stopwatch.Frequency);
         Assert.Equal((1, 0), (startStats!.Value.Replies, startStats.Value.Misses));
-        Assert.Equal((1, 0), (endStats!.Value.Replies, endStats.Value.Misses));
     }
 
     [Fact]
@@ -687,10 +686,8 @@ public class KrakenCamSessionTests
 
         Assert.Equal(2, rig.SentFrames().Length);
         Assert.Equal(new[] { "3601", "3602", "3601", "3602" }, rig.Ids());
-        var start = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
-        var end = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        var start = rig.Hub.CamReplies.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
         Assert.Equal((0, 2), (start.Replies, start.Misses));
-        Assert.Equal((0, 2), (end.Replies, end.Misses));
     }
 
     [Fact]
@@ -700,14 +697,11 @@ public class KrakenCamSessionTests
         rig.OpenStream();
         rig.ForgetOpeningFrame();
         rig.Device.Push(TransferReply(0x01));
-        rig.Device.Push(TransferReply(0x02));
 
         Assert.True(rig.Push(rig.Frame()));
 
-        var start = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
-        var end = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        var start = rig.Hub.CamReplies.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
         Assert.Equal((0, 1), (start.Replies, start.Misses));
-        Assert.Equal((0, 1), (end.Replies, end.Misses));
     }
 
     [Fact]
@@ -726,7 +720,7 @@ public class KrakenCamSessionTests
     }
 
     [Fact]
-    public void Status_reports_read_while_waiting_are_folded_and_counted_and_the_reply_still_lands()
+    public void Status_reports_read_while_waiting_for_the_start_reply_are_folded_and_counted_and_the_reply_still_lands()
     {
         var rig = new Rig(0x300E);
         rig.OpenStream();
@@ -739,21 +733,14 @@ public class KrakenCamSessionTests
                 rig.Device.Push(Rig.Status(36.5));
                 rig.Device.Push(TransferReply(0x01));
             }
-            else if (w[0] == 0x36 && w[1] == 0x02)
-            {
-                rig.Device.Push(Rig.Status(37.5));
-                rig.Device.Push(TransferReply(0x02));
-            }
         };
 
         Assert.True(rig.Push(rig.Frame()));
 
-        Assert.Equal(before + 2, rig.Hub.StatusReportsRead);
-        Assert.Equal(37.5, rig.Hub.Snapshot.LiquidTempC, 1);
-        var start = rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
-        var end = rig.Hub.CamReplies.End.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
+        Assert.Equal(before + 1, rig.Hub.StatusReportsRead);
+        Assert.Equal(36.5, rig.Hub.Snapshot.LiquidTempC, 1);
+        var start = rig.Hub.CamReplies.Take(System.Diagnostics.Stopwatch.Frequency)!.Value;
         Assert.Equal((1, 0), (start.Replies, start.Misses));
-        Assert.Equal((1, 0), (end.Replies, end.Misses));
         Assert.Equal(0, rig.Device.Delivered.First(d => d.Id == 0x37 && d.Sub == 0x01).BulkWrites);
     }
 
@@ -769,7 +756,7 @@ public class KrakenCamSessionTests
 
         Assert.Equal(reads, rig.Device.Reads);
         Assert.Equal(new[] { "3601", "3602" }, rig.Ids());
-        Assert.Null(rig.Hub.CamReplies.Start.Take(System.Diagnostics.Stopwatch.Frequency));
+        Assert.Null(rig.Hub.CamReplies.Take(System.Diagnostics.Stopwatch.Frequency));
     }
 
     private sealed class Hid : IHidDevice

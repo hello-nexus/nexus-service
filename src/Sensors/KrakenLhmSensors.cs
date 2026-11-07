@@ -37,16 +37,16 @@ internal static class KrakenLhmSensors
 
     /// <summary>
     /// Replaces the values of LHM's own Kraken sensors in place; ids, names and parent are untouched.
-    /// Without a valid liquid reading (none yet, or the status gone stale) the sensors are dropped,
-    /// as the cooling provider offers no source then, rather than showing a frozen LHM number.
+    /// Without a valid liquid reading (none yet, or the status gone stale) the sensors stay, so a bound
+    /// widget keeps its id, and read as unavailable: value 0 and a "-" text with no number, which the
+    /// web shows as "-". Neither a frozen LHM number nor a stale hub value is shown.
     /// <paramref name="range"/> carries session min/max per sensor id; null clears them.
     /// </summary>
     public static void Apply(HardwareComponent component, KrakenSnapshot snap, bool statusFresh, ConcurrentDictionary<string, (float Min, float Max)>? range)
     {
         var valid = double.IsFinite(snap.LiquidTempC) && snap.LiquidTempC > 0 && statusFresh;
-        for (var i = component.Sensors.Count - 1; i >= 0; i--)
+        foreach (var s in component.Sensors)
         {
-            var s = component.Sensors[i];
             var value = ValueFor(s, snap);
             if (value is null)
             {
@@ -54,7 +54,12 @@ internal static class KrakenLhmSensors
             }
             if (!valid || !float.IsFinite(value.Value))
             {
-                component.Sensors.RemoveAt(i);
+                s.Value = 0;
+                s.Min = 0;
+                s.Max = 0;
+                s.Formatted = Unavailable;
+                s.FormattedMin = Unavailable;
+                s.FormattedMax = Unavailable;
                 continue;
             }
             var v = value.Value;
@@ -67,6 +72,8 @@ internal static class KrakenLhmSensors
             s.FormattedMax = Format(max, s.Type);
         }
     }
+
+    private const string Unavailable = "-";
 
     private static float? ValueFor(HardwareSensor s, KrakenSnapshot snap) => (s.Name, s.Type) switch
     {
