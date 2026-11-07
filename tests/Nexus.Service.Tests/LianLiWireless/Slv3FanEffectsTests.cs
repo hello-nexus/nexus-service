@@ -299,6 +299,302 @@ public class Slv3FanEffectsTests
         Assert.Equal(a.Frames, b.Frames);
     }
 
+    // ── TL effects drawn the way L-Connect draws them ───────────────────────────
+
+    private static readonly RgbColor[] FourColours =
+    {
+        new(255, 0, 0), new(0, 255, 0), new(0, 0, 255), new(255, 255, 0),
+    };
+
+    private static RgbColor TlLed(Slv3StrimerAnimation anim, int frame, int fanCount, int fan, int led)
+    {
+        var ledsPerFan = Slv3Protocol.LedsPerFanFor(Slv3FanFamily.Tlv2Led);
+        var o = ((frame * fanCount + fan) * ledsPerFan + led) * 3;
+        return new RgbColor(anim.Frames[o], anim.Frames[o + 1], anim.Frames[o + 2]);
+    }
+
+    [Fact]
+    public void TL_static_gives_each_fan_its_own_colour()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "static", 4, 2, 0, FourColours);
+        for (var fan = 0; fan < 4; fan++)
+        {
+            for (var led = 0; led < 26; led++)
+            {
+                Assert.Equal(FourColours[fan], TlLed(anim, 0, 4, fan, led));
+            }
+        }
+    }
+
+    [Fact]
+    public void TL_breathing_keeps_each_fan_in_its_own_colour()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "breathing", 4, 2, 0, FourColours);
+        var peak = new int[4];
+        for (var f = 0; f < anim.FrameCount; f++)
+        {
+            var red = TlLed(anim, f, 4, 0, 0);
+            var green = TlLed(anim, f, 4, 1, 0);
+            var blue = TlLed(anim, f, 4, 2, 0);
+            var yellow = TlLed(anim, f, 4, 3, 0);
+            Assert.True(red.G == 0 && red.B == 0);
+            Assert.True(green.R == 0 && green.B == 0);
+            Assert.True(blue.R == 0 && blue.G == 0);
+            Assert.True(yellow.R == yellow.G && yellow.B == 0);
+            peak[0] = Math.Max(peak[0], red.R);
+            peak[1] = Math.Max(peak[1], green.G);
+            peak[2] = Math.Max(peak[2], blue.B);
+            peak[3] = Math.Max(peak[3], yellow.R);
+        }
+        Assert.All(peak, p => Assert.True(p >= 250));
+    }
+
+    [Fact]
+    public void TL_colours_brighter_than_LConnect_allows_are_stepped_down()
+    {
+        Assert.Equal(new RgbColor(195, 195, 195), Slv3FanEffects.CapColourSum(new RgbColor(255, 255, 255)));
+        Assert.Equal(new RgbColor(255, 0, 0), Slv3FanEffects.CapColourSum(new RgbColor(255, 0, 0)));
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "static", 1, 2, 0, new[] { new RgbColor(255, 255, 255) });
+        Assert.Equal(new RgbColor(195, 195, 195), TlLed(anim, 0, 1, 0, 0));
+    }
+
+    [Theory]
+    [InlineData(Slv3FanScope.All, true, true)]
+    [InlineData(Slv3FanScope.Top, true, false)]
+    [InlineData(Slv3FanScope.Bottom, false, true)]
+    public void TL_scope_lights_the_chosen_half_of_each_fan(Slv3FanScope scope, bool topLit, bool bottomLit)
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "static", 2, 2, 0, FourColours, scope: scope);
+        for (var fan = 0; fan < 2; fan++)
+        {
+            Assert.Equal(topLit ? FourColours[fan] : default, TlLed(anim, 0, 2, fan, 0));
+            Assert.Equal(topLit ? FourColours[fan] : default, TlLed(anim, 0, 2, fan, 12));
+            Assert.Equal(bottomLit ? FourColours[fan] : default, TlLed(anim, 0, 2, fan, 13));
+            Assert.Equal(bottomLit ? FourColours[fan] : default, TlLed(anim, 0, 2, fan, 25));
+        }
+    }
+
+    [Fact]
+    public void A_scope_keeps_any_TL_effect_to_one_half()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "door", 1, 2, 0, FourColours, scope: Slv3FanScope.Top);
+        for (var f = 0; f < anim.FrameCount; f++)
+        {
+            for (var led = 13; led < 26; led++)
+            {
+                Assert.Equal(default, TlLed(anim, f, 1, 0, led));
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(0, 77.0)]
+    [InlineData(2, 55.0)]
+    [InlineData(4, 33.0)]
+    public void TL_rainbow_steps_at_LConnect_speeds(int speed, double intervalMs)
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "rainbow", 1, speed, 0, Array.Empty<RgbColor>());
+        Assert.Equal(13, anim.FrameCount);
+        Assert.Equal(intervalMs, anim.IntervalMs, 6);
+    }
+
+    [Fact]
+    public void TL_rainbow_runs_one_colour_wheel_along_the_chain()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "rainbow", 1, 2, 1, Array.Empty<RgbColor>());
+        Assert.Equal(new RgbColor(255, 0, 0), TlLed(anim, 0, 1, 0, 0));
+        Assert.Equal(new RgbColor(204, 51, 0), TlLed(anim, 0, 1, 0, 1));
+        Assert.Equal(new RgbColor(0, 255, 0), TlLed(anim, 0, 1, 0, 5));
+        Assert.Equal(new RgbColor(0, 0, 255), TlLed(anim, 0, 1, 0, 10));
+        // One frame later the wheel has moved on by one LED.
+        Assert.Equal(new RgbColor(204, 51, 0), TlLed(anim, 1, 1, 0, 0));
+    }
+
+    [Fact]
+    public void TL_runway_runs_along_the_chain_and_back()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "runway", 1, 2, 0, FourColours);
+        Assert.Equal(2 * (13 + 2 - 1), anim.FrameCount);
+        Assert.Equal(FourColours[0], TlLed(anim, 0, 1, 0, 0));
+        Assert.Equal(FourColours[1], TlLed(anim, 0, 1, 0, 1));
+        Assert.Equal(FourColours[0], TlLed(anim, 14, 1, 0, 12));
+    }
+
+    [Fact]
+    public void TL_stack_keeps_the_pile_while_the_next_block_slides()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "stack", 1, 2, 1, FourColours);
+        Assert.Equal(4 * (91 + 13), anim.FrameCount);
+        // Frame 13 starts the second block: it enters at the first LED while the first one stays piled at the end.
+        Assert.Equal(FourColours[0], TlLed(anim, 13, 1, 0, 0));
+        Assert.Equal(default, TlLed(anim, 13, 1, 0, 11));
+        Assert.Equal(FourColours[0], TlLed(anim, 13, 1, 0, 12));
+    }
+
+    [Fact]
+    public void TL_color_cycle_blocks_differ_between_the_halves_as_in_LConnect()
+    {
+        var top = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "colorCycle", 1, 2, 1, FourColours, scope: Slv3FanScope.Top);
+        var bottom = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "colorCycle", 1, 2, 1, FourColours, scope: Slv3FanScope.Bottom);
+        Assert.Equal(FourColours[1], TlLed(top, 0, 1, 0, 3));
+        Assert.Equal(FourColours[1], TlLed(bottom, 0, 1, 0, 13 + 4));
+    }
+
+    [Fact]
+    public void TL_twinkle_flashes_every_LED_once_a_loop()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "twinkle", 1, 2, 0, FourColours);
+        Assert.Equal(200, anim.FrameCount);
+        for (var led = 0; led < 26; led++)
+        {
+            Assert.Equal(19, Enumerable.Range(0, anim.FrameCount).Count(f => TlLed(anim, f, 1, 0, led) != default));
+        }
+    }
+
+    // ── TL effects from L-Connect's lighting library ─────────────────────────────
+
+    private static readonly RgbColor PureRed = new(255, 0, 0);
+    private static readonly RgbColor PureGreen = new(0, 255, 0);
+
+    [Theory]
+    [InlineData(0, 4)]
+    [InlineData(2, 2)]
+    [InlineData(4, 4)]
+    public void TL_staggered_steps_through_as_many_colours_as_chosen(int chosen, int colours)
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "staggered", 1, 2, 0, FourColours.Take(chosen).ToArray());
+        Assert.Equal(colours * 24, anim.FrameCount);
+    }
+
+    [Fact]
+    public void TL_staggered_lights_the_halves_crosswise_from_fan_to_fan()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "staggered", 2, 2, 0, FourColours);
+        Assert.Equal(FourColours[0], TlLed(anim, 11, 2, 0, 0));
+        Assert.Equal(default, TlLed(anim, 11, 2, 0, 13));
+        Assert.Equal(default, TlLed(anim, 11, 2, 1, 0));
+        Assert.Equal(FourColours[0], TlLed(anim, 11, 2, 1, 13));
+        // Twelve frames later the other halves take their turn.
+        Assert.Equal(default, TlLed(anim, 23, 2, 0, 0));
+        Assert.Equal(FourColours[0], TlLed(anim, 23, 2, 0, 13));
+    }
+
+    [Theory]
+    [InlineData("staggered")]
+    [InlineData("tide")]
+    [InlineData("door")]
+    [InlineData("render")]
+    [InlineData("ripple")]
+    [InlineData("reflect")]
+    [InlineData("paint")]
+    [InlineData("pingPong")]
+    [InlineData("coverCycle")]
+    [InlineData("wave")]
+    [InlineData("collide")]
+    [InlineData("electricCurrent")]
+    public void TL_colour_stepping_effects_use_only_the_chosen_colours(string key)
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, key, 1, 2, 0, new[] { PureRed, PureGreen });
+        bool red = false, green = false;
+        for (var f = 0; f < anim.FrameCount; f++)
+        {
+            for (var led = 0; led < 26; led++)
+            {
+                var c = TlLed(anim, f, 1, 0, led);
+                Assert.True(c.B == 0 && (c.R == 0 || c.G == 0), $"{key}: frame {f} LED {led} is {c}");
+                red |= c == PureRed;
+                green |= c == PureGreen;
+            }
+        }
+        Assert.True(red && green, $"{key}: both colours should show at full");
+    }
+
+    [Fact]
+    public void TL_tide_flows_in_from_both_ends_over_the_last_colour()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "tide", 1, 2, 0, FourColours);
+        Assert.Equal(4 * 10, anim.FrameCount);
+        Assert.Equal(FourColours[0], TlLed(anim, 0, 1, 0, 0));
+        Assert.Equal(FourColours[0], TlLed(anim, 0, 1, 0, 12));
+        Assert.Equal(FourColours[3], TlLed(anim, 0, 1, 0, 6));
+        Assert.Equal(FourColours[0], TlLed(anim, 9, 1, 0, 6));
+    }
+
+    [Fact]
+    public void TL_render_goes_round_the_chain_one_half_at_a_time()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "render", 2, 2, 0, FourColours);
+        // Top halves first, fan after fan, 13 frames each; then the bottom halves from the last fan back.
+        Assert.Equal(FourColours[1], TlLed(anim, 25, 2, 1, 0));
+        Assert.Equal(FourColours[0], TlLed(anim, 25, 2, 1, 13));
+        Assert.Equal(FourColours[1], TlLed(anim, 38, 2, 1, 13));
+        Assert.Equal(FourColours[0], TlLed(anim, 38, 2, 0, 13));
+        Assert.Equal(FourColours[1], TlLed(anim, 51, 2, 0, 13));
+    }
+
+    [Fact]
+    public void TL_mixing_bursts_out_in_the_two_colours_mixed()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "mixing", 1, 2, 0, new[] { PureRed, PureGreen });
+        Assert.Contains(Enumerable.Range(0, anim.FrameCount), f => TlLed(anim, f, 1, 0, 6) == new RgbColor(255, 255, 0));
+    }
+
+    [Fact]
+    public void TL_tail_chasing_runs_round_the_top_and_then_the_bottom_half()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "tailChasing", 1, 2, 0, new[] { PureRed, PureGreen });
+        Assert.Equal(24, anim.FrameCount);
+        // The first colour's head starts on the top half, the second's half a loop on, on the bottom half.
+        Assert.Equal(PureRed, TlLed(anim, 0, 1, 0, 2));
+        Assert.Equal(PureGreen, TlLed(anim, 0, 1, 0, 23));
+        // Half a loop later they have swapped halves.
+        Assert.Equal(PureRed, TlLed(anim, 12, 1, 0, 23));
+        Assert.Equal(PureGreen, TlLed(anim, 12, 1, 0, 2));
+    }
+
+    [Fact]
+    public void TL_racing_comets_cross_to_the_other_half_at_every_fan()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "racing", 2, 2, 0, new[] { PureRed, PureGreen });
+        for (var f = 0; f < anim.FrameCount; f++)
+        {
+            for (var i = 0; i < 13; i++)
+            {
+                Assert.Equal(0, TlLed(anim, f, 2, 0, i).G);
+                Assert.Equal(0, TlLed(anim, f, 2, 0, 13 + i).R);
+                Assert.Equal(0, TlLed(anim, f, 2, 1, i).R);
+                Assert.Equal(0, TlLed(anim, f, 2, 1, 13 + i).G);
+            }
+        }
+    }
+
+    [Fact]
+    public void TL_collide_steps_at_16_ms_times_the_speed_level()
+    {
+        var anim = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, "collide", 1, 2, 0, FourColours);
+        Assert.Equal(80.0, anim.IntervalMs, 6);
+    }
+
+    [Theory]
+    [InlineData("voice")]
+    [InlineData("meteorShower")]
+    [InlineData("kaleidoscope")]
+    public void TL_effects_that_pick_their_own_colours_ignore_the_user_colours(string key)
+    {
+        Assert.Equal(0, Slv3FanEffects.Find(Slv3FanFamily.Tlv2Led, key)!.ColorsMax);
+        var a = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, key, 2, 2, 0, FourColours);
+        var b = Slv3FanEffects.Render(Slv3FanFamily.Tlv2Led, key, 2, 2, 0, new[] { new RgbColor(255, 255, 255) });
+        Assert.Equal(a.Frames, b.Frames);
+    }
+
+    [Fact]
+    public void Only_TL_effects_offer_a_scope()
+    {
+        Assert.All(Slv3FanEffects.CatalogFor(Slv3FanFamily.Slv3Led), info => Assert.False(info.HasScope));
+        Assert.All(Slv3FanEffects.CatalogFor(Slv3FanFamily.SlInf), info => Assert.False(info.HasScope));
+        Assert.All(Slv3FanEffects.CatalogFor(Slv3FanFamily.Tlv2Lcd), info => Assert.True(info.HasScope));
+    }
+
     private static readonly string[] SlInfKeys =
     {
         "rainbow", "rainbowMorph", "static", "breathing", "runway", "meteor", "twinkle", "taichi",
