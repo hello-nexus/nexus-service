@@ -186,6 +186,22 @@ public sealed class GalleryLibraryTests : IDisposable
         Assert.Equal(new[] { "apple.jpg", "deep.png", "zebra.png" }, items.Select(i => i.Name).ToArray());
     }
 
+    [Fact]
+    public void EnumerateItems_FolderFilesSortNaturally()
+    {
+        foreach (var n in new[] { "10", "2", "0", "100", "1", "1000", "101" })
+        {
+            WriteImage(n + ".png");
+        }
+
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+
+        Assert.Equal(
+            new[] { "0.png", "1.png", "2.png", "10.png", "100.png", "101.png", "1000.png" },
+            lib.EnumerateItems().Select(i => i.Name).ToArray());
+    }
+
     private string MakeDir(string name, int count, string prefix = "img")
     {
         var dir = Path.Combine(_tempDir, name);
