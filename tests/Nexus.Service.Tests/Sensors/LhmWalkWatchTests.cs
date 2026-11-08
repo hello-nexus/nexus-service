@@ -67,4 +67,35 @@ public class LhmWalkWatchTests
         Assert.False(watch.CheckStalled(out _));
         Assert.Equal(TimeSpan.FromHours(4), watch.SinceLastWalk);
     }
+
+    [Fact]
+    public void A_check_after_the_walk_ended_does_not_mark_stale()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        Advance(LhmWalkWatch.StallLimit + TimeSpan.FromSeconds(1));
+        watch.EndWalk();
+
+        Assert.False(watch.CheckStalled(out _));
+        Assert.False(watch.IsStale);
+    }
+
+    [Fact]
+    public async Task Racing_checks_and_walk_ends_never_leave_the_flag_stale_when_idle()
+    {
+        var watch = NewWatch();
+        for (var i = 0; i < 2000; i++)
+        {
+            watch.BeginWalk();
+            Advance(LhmWalkWatch.StallLimit + TimeSpan.FromSeconds(1));
+            var check = Task.Run(() => watch.CheckStalled(out _));
+            var end = Task.Run(() => watch.EndWalk());
+            await Task.WhenAll(check, end);
+            if (check.Result)
+            {
+                Assert.True(end.Result);
+            }
+            Assert.False(watch.IsStale);
+        }
+    }
 }
