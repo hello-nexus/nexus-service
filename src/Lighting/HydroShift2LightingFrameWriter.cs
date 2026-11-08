@@ -41,6 +41,9 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     /// <summary>The ring applies an upload a few hundred ms after the request, so rendering starts past that.</summary>
     private const int LoopLeadMs = 300;
 
+    /// <summary>A render-ahead starts only once the loop context has held this long, so a burst of edits uploads its final state once.</summary>
+    internal const int LoopSettleMs = 600;
+
     private readonly LightingEngine _engine;
     private readonly HydroShift2Aio _aio;
     private readonly IConfigStore _store;
@@ -51,6 +54,8 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     private AheadRequest? _loopRequest;
     private string? _loopRequestContext;
     private string? _loopContext;
+    private string? _settlingContext;
+    private long _settlingSince;
 
     public HydroShift2LightingFrameWriter(
         LightingEngine engine, HydroShift2Aio aio, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
@@ -190,6 +195,11 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         }
         if (_loopContext == context)
         {
+            _settlingContext = null;
+            return;
+        }
+        if (!HasSettled(ref _settlingContext, ref _settlingSince, context, Environment.TickCount64))
+        {
             return;
         }
         // A render requested before the engine lists the ring would come back without it.
@@ -208,8 +218,21 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         _loopRequestContext = context;
     }
 
+    /// <summary>True once <paramref name="context"/> has been seen unchanged for <see cref="LoopSettleMs"/>; any change restarts the wait.</summary>
+    internal static bool HasSettled(ref string? pending, ref long since, string context, long now)
+    {
+        if (pending != context)
+        {
+            pending = context;
+            since = now;
+            return false;
+        }
+        return now - since >= LoopSettleMs;
+    }
+
     private void DropLoop()
     {
+        _settlingContext = null;
         _loopRequest?.Abandon();
         _loopRequest = null;
         _loopContext = null;

@@ -492,8 +492,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             var present = new HashSet<string>(StringComparer.Ordinal);
             foreach (var info in devices) present.Add(info.Serial);
 
-            foreach (var found in devices)
+            foreach (var discovered in devices)
             {
+                var found = WithRenderTurn(discovered);
                 DeviceSession? existing;
                 lock (_lock) _bySerial.TryGetValue(found.Serial, out existing);
                 var info = existing is null ? found : WithFpsCap(found, existing.Session.PanelDeviceId, existing);
@@ -1170,11 +1171,33 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             }
             if (transport is IOrientablePanelTransport orientable)
             {
-                orientable.BindOrientation(() =>
+                // Read from the frame thread and the touch reader; the pair is swapped as a whole.
+                var gate = new object();
+                var known = (Rotation: 0, Mirror: false);
+                (int Rotation, bool Mirror) ReadKnown()
                 {
-                    var rec = _registry.Get(panelId);
-                    return (rec?.Flip180 ?? false, rec?.Mirror ?? false);
-                });
+                    // A failed or empty read keeps the last answer rather than reading as an upright, unmirrored mount.
+                    try
+                    {
+                        if (_registry.Get(panelId) is { } rec)
+                        {
+                            lock (gate)
+                            {
+                                known = (rec.Rotation ?? 0, rec.Mirror ?? false);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        ServiceLog.Warn($"[streamed-panel] orientation read failed for '{panelId}': {ex.GetType().Name}: {ex.Message}");
+                    }
+                    lock (gate)
+                    {
+                        return known;
+                    }
+                }
+                ReadKnown();
+                orientable.BindOrientation(ReadKnown);
             }
             // The backlight is a device command, so the transport writes it rather than
             // filtering frames with it. Null is passed through: a record that carries no
@@ -1322,11 +1345,52 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             : new StreamedPanelDeviceInfo { Serial = info.Serial, Profile = info.Profile with { Fps = fps }, AdoptsFamilyRecords = info.AdoptsFamilyRecords };
     }
 
+    /// <summary>
+    /// A panel whose record is turned a quarter renders at the swapped size, and the transport turns the
+    /// frame back to the glass's layout. Folding that into the profile makes it a profile change, so the
+    /// session is re-minted the way a renegotiated 8.8 is: new session id, overlay respawn at the new size.
+    /// The glass itself is not touched.
+    /// </summary>
+    private StreamedPanelDeviceInfo WithRenderTurn(StreamedPanelDeviceInfo info)
+    {
+        var profile = info.Profile;
+        if (!profile.SupportsRenderTurn || profile.RenderTurned || profile.CssWidth == profile.CssHeight)
+        {
+            return info;
+        }
+        // A live session already knows its record; the per-serial file is read only for a device with none yet.
+        string? panelId;
+        lock (_lock)
+        {
+            panelId = _bySerial.TryGetValue(info.Serial, out var live) ? live.Session.PanelDeviceId : null;
+        }
+        if (panelId is null)
+        {
+            if (!_store.Load().TryGetValue(info.Serial, out var stored) || string.IsNullOrEmpty(stored.PanelDeviceId))
+            {
+                return info;
+            }
+            panelId = stored.PanelDeviceId;
+        }
+        var record = _registry.Get(panelId);
+        if (record is null || !PanelLayoutSlots.TurnsRender(record))
+        {
+            return info;
+        }
+        return new StreamedPanelDeviceInfo
+        {
+            Serial = info.Serial,
+            AdoptsFamilyRecords = info.AdoptsFamilyRecords,
+            Profile = profile with { CssWidth = profile.CssHeight, CssHeight = profile.CssWidth, RenderTurned = true },
+        };
+    }
+
     internal static bool ProfilesEqual(StreamedPanelProfile a, StreamedPanelProfile b)
         => string.Equals(a.Kind, b.Kind, StringComparison.Ordinal)
            && string.Equals(a.Surface, b.Surface, StringComparison.Ordinal)
            && a.CssWidth == b.CssWidth
            && a.CssHeight == b.CssHeight
+           && a.RenderTurned == b.RenderTurned
            && a.Dpr.Equals(b.Dpr)
            && a.Fps == b.Fps
            && a.BitrateKbps == b.BitrateKbps

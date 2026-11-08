@@ -3376,6 +3376,11 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     /// <summary>RF payloads handed to the TX over the last <see cref="AirRateWindowMs"/>; drops older entries.</summary>
+    internal int RecentAirSends()
+    {
+        lock (_lock) return RecentAirSendsLocked();
+    }
+
     private int RecentAirSendsLocked()
     {
         var cutoff = _nowMs() - AirRateWindowMs;

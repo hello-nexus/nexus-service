@@ -69,7 +69,9 @@ public sealed class Slv3LcdScreens : IFanLcdScreens
 
     public bool PushPanelFrame(string serial, byte[] jpeg) => _panelOwnership.Push(serial, jpeg, () => PushImage(serial, jpeg));
 
-    public string PanelFamily => "lianli-wireless-lcd";
+    public const string PanelFamilyId = "lianli-wireless-lcd";
+
+    public string PanelFamily => PanelFamilyId;
 
     /// <summary>
     /// The cooler-LCD panel rate. The overlay sends a frame when the layout repaints, so an
