@@ -1,3 +1,4 @@
+using Nexus.Service.Common;
 using Nexus.Service.Gallery;
 using Nexus.Service.Media;
 using Nexus.Service.Models.Gallery;
@@ -305,7 +306,7 @@ public sealed class GalleryLibraryTests : IDisposable
         Assert.True(first.Truncated);
         Assert.Equal(GalleryLibrary.MaxItems, first.Items.Count);
         var names = first.Items.Select(i => i.Name).ToList();
-        Assert.Equal(names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase), names);
+        Assert.Equal(names.OrderBy(n => n, NaturalStringComparer.Instance), names);
         Assert.Equal(first.Items.Select(i => i.Id), second.Items.Select(i => i.Id));
     }
 
