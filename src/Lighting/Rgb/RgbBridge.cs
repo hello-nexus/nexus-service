@@ -223,6 +223,17 @@ public sealed class RgbBridge : IDisposable
     private readonly ConcurrentDictionary<int, RgbColor[]> _lastPushed = new();
     private readonly ConcurrentDictionary<int, long> _lastPushTicks = new();
     private const long HeartbeatMs = 1000;
+
+    // Diagnostics for a static scene being disturbed: the last content seen per
+    // physical device and when it last changed. A change after StaticDisturbMs
+    // of stillness logs once, so an animated scene (never still that long) stays silent.
+    private const long StaticDisturbMs = 10_000;
+    private const long DiagCauseWindowMs = 5_000;
+    private readonly ConcurrentDictionary<int, (RgbColor[] Colors, long StableSinceMs)> _diagPrev = new();
+    private readonly ConcurrentDictionary<int, string> _diagCause = new();
+    private readonly ConcurrentDictionary<int, string> _diagNames = new();
+    private volatile string _diagGlobalCause = "";
+    private long _diagGlobalCauseMs;
     // Physical indices whose per-LED mode saves to device memory: no heartbeat, push on change only. Replaced wholesale on device-set change.
     private volatile HashSet<int> _physSaveOnly = new();
     // Stable id -> default cap for devices that blank on every write; a LightingMaxRates entry wins. Replaced wholesale with _physStableIds.
@@ -706,6 +717,7 @@ public sealed class RgbBridge : IDisposable
 
         // This path wrote black outside OnFrame's bookkeeping; drop the
         // baselines so the first frame after resume always reaches hardware.
+        NoteGlobalCause("blackout-resume");
         _lastPushed.Clear();
         _lastPushTicks.Clear();
         return new BlackoutReport(pushed, known, unsettled ? BlackoutSkip.Unsettled : BlackoutSkip.None);
@@ -1927,8 +1939,51 @@ public sealed class RgbBridge : IDisposable
     /// <summary>Drops the dedup baseline so the next frame always pushes, e.g. when a device re-enters control.</summary>
     internal void ForgetBaseline(int physIdx)
     {
+        _diagCause[physIdx] = "forget-baseline";
         _lastPushed.TryRemove(physIdx, out _);
         _lastPushTicks.TryRemove(physIdx, out _);
+    }
+
+    private void NoteGlobalCause(string cause)
+    {
+        _diagGlobalCause = cause;
+        Interlocked.Exchange(ref _diagGlobalCauseMs, Environment.TickCount64);
+    }
+
+    private void NoteStaticDisturbance(int physIdx, RgbColor[] buf, long now)
+    {
+        if (!_diagPrev.TryGetValue(physIdx, out var prev) || prev.Colors.Length != buf.Length)
+        {
+            _diagPrev[physIdx] = (buf.ToArray(), now);
+            return;
+        }
+        var first = -1;
+        for (var i = 0; i < buf.Length; i++)
+        {
+            if (buf[i].R != prev.Colors[i].R || buf[i].G != prev.Colors[i].G || buf[i].B != prev.Colors[i].B)
+            {
+                first = i;
+                break;
+            }
+        }
+        if (first < 0) return;
+
+        var stillMs = now - prev.StableSinceMs;
+        if (stillMs >= StaticDisturbMs)
+        {
+            if (!_diagCause.TryRemove(physIdx, out var cause))
+            {
+                cause = Environment.TickCount64 - Interlocked.Read(ref _diagGlobalCauseMs) < DiagCauseWindowMs
+                    ? _diagGlobalCause
+                    : "frame-change";
+            }
+            var o = prev.Colors[first];
+            var n = buf[first];
+            var name = _diagNames.GetValueOrDefault(physIdx, "?");
+            ServiceLog.Info($"[rgb-bridge] static frame disturbed: '{name}' still {stillMs / 1000}s, led {first}: {o.R},{o.G},{o.B} -> {n.R},{n.G},{n.B}, cause={cause}");
+        }
+        buf.AsSpan().CopyTo(prev.Colors);
+        _diagPrev[physIdx] = (prev.Colors, now);
     }
 
     /// <summary>True when this device's bytes differ from the last push, or the
@@ -1962,6 +2017,7 @@ public sealed class RgbBridge : IDisposable
         buf.AsSpan().CopyTo(copy);
         _lastPushed[physIdx] = copy;
         _lastPushTicks[physIdx] = now;
+        NoteStaticDisturbance(physIdx, buf, now);
         return true;
     }
 
@@ -1998,10 +2054,12 @@ public sealed class RgbBridge : IDisposable
     internal void SyncPhysicalBuffers(IReadOnlyList<RgbDevice> devices)
     {
         // Indices are being re-derived, so every dedup baseline is suspect.
+        NoteGlobalCause("device-resync");
         _lastPushed.Clear();
         _lastPushTicks.Clear();
         _pushLimiter.Reset();
         var stableIds = new Dictionary<int, string>();
+        _diagNames.Clear();
         var saveOnly = new HashSet<int>();
         var defaultRates = new Dictionary<string, int>();
         foreach (var d in devices)
@@ -2009,6 +2067,7 @@ public sealed class RgbBridge : IDisposable
             if (d.LedCount > 0)
             {
                 stableIds[d.Address] = d.StableId;
+                _diagNames[d.Address] = d.Name;
                 if (d.IsSaveOnly)
                 {
                     saveOnly.Add(d.Address);

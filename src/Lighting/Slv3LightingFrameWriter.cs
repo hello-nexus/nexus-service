@@ -9,6 +9,7 @@ using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Lighting;
@@ -76,6 +77,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // Per-fan tick of the last RGB push. Intermediate frames are dropped, not
     // queued - the next eligible tick sends whatever is current.
     private readonly Dictionary<string, long> _lastPushTicks = new();
+
+    // Upload diagnostics: the last live frame sent per chain (for the diff) and
+    // the last log line time plus lines held back since, so an animated effect
+    // costs one line per chain per UploadLogGapMs.
+    private const long UploadLogGapMs = 10_000;
+    private readonly Dictionary<string, RgbColor[]> _diagFrames = new();
+    private readonly Dictionary<string, (long Ms, int Suppressed)> _uploadLog = new();
 
     public Slv3LightingFrameWriter(
         LightingEngine engine, Slv3Hub hub, IConfigStore store, Np50IdentifyTracker identify, Slv3LightingDeviceProvider provider,
@@ -240,6 +248,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
             if (_hub.SendRgbFrame(macHex, frameSpan, PassThroughBrightnessPercent, IntervalMs, out var sentEffectIndexHex))
             {
+                var liveReason = string.IsNullOrEmpty(last.EffectIndexHex) ? "no-baseline" : last.Hash != hash ? "hash-change" : "drift-resend";
+                _diagFrames.TryGetValue(macHex, out var previousFrame);
+                LogUpload(macHex, "live", liveReason, last.Hash, hash, last.EffectIndexHex, sentEffectIndexHex, confirmed, previousFrame, frameSpan);
+                _diagFrames[macHex] = frameSpan.ToArray();
                 _lastSent[macHex] = (hash, sentEffectIndexHex);
                 _lastPushTicks[macHex] = nowTicks;
             }
@@ -567,6 +579,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadPayload = payload;
                 st.UploadLedCount = ledCount;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
+                LogUpload(macHex, "window", "window-upload", 0, 0, null, null, null, null, default);
                 st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, WindowIntervalTicks, PassThroughBrightnessPercent));
                 return true;
             }
@@ -613,6 +626,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         if (_hub.SendRgbFrame(macHex, colors, PassThroughBrightnessPercent, IntervalMs, out var effectIndexHex))
         {
+            LogUpload(macHex, "freeze", "freeze-static", 0, ComputeHash(colors), null, effectIndexHex, null, null, default);
             _lastSent[macHex] = (ComputeHash(colors), effectIndexHex);
             _lastPushTicks[macHex] = _nowTicks();
         }
@@ -922,6 +936,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (_hub.SendRgbAnimation(
                 macHex, animation.Frames, ledCount, animation.FrameCount, animation.IntervalMs, brightnessPercent, out var sentEffectIndexHex))
         {
+            var presetReason = string.IsNullOrEmpty(last.EffectIndexHex) ? "no-baseline" : last.Hash != sig ? "hash-change" : "drift-resend";
+            LogUpload(macHex, "preset", presetReason, last.Hash, sig, last.EffectIndexHex, sentEffectIndexHex, confirmed, null, default);
             _lastSent[macHex] = (sig, sentEffectIndexHex);
         }
         return true;
@@ -1002,6 +1018,48 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
         }
         return "";
+    }
+
+    // One line per effect upload, at most one per chain per UploadLogGapMs; the
+    // next line after a gap reports how many were held back. Diff is the first
+    // differing LED of a live-frame change, when the previous frame is known.
+    private void LogUpload(
+        string macHex, string path, string reason, int oldHash, int newHash, string? sentBefore, string? sent,
+        string? echoed, RgbColor[]? previous, ReadOnlySpan<RgbColor> frame)
+    {
+        var nowMs = _nowTicks() / TimeSpan.TicksPerMillisecond;
+        _uploadLog.TryGetValue(macHex, out var state);
+        if (state.Ms != 0 && nowMs - state.Ms < UploadLogGapMs)
+        {
+            _uploadLog[macHex] = (state.Ms, state.Suppressed + 1);
+            return;
+        }
+
+        var line = $"[lianli-wireless-lighting-writer] {macHex} upload path={path} reason={reason} hash={oldHash:x8}->{newHash:x8}";
+        if (reason == "drift-resend")
+        {
+            line += $" echoed={echoed} sent_before={sentBefore} sent={sent}";
+        }
+        else if (sent is not null)
+        {
+            line += $" sent={sent}";
+        }
+        if (reason == "hash-change" && previous is not null && previous.Length == frame.Length)
+        {
+            for (var i = 0; i < frame.Length; i++)
+            {
+                var o = previous[i];
+                var n = frame[i];
+                if (o.R != n.R || o.G != n.G || o.B != n.B)
+                {
+                    line += $" first_diff=led {i}: {o.R},{o.G},{o.B} -> {n.R},{n.G},{n.B}";
+                    break;
+                }
+            }
+        }
+        if (state.Suppressed > 0) line += $" suppressed={state.Suppressed}";
+        ServiceLog.Info(line);
+        _uploadLog[macHex] = (Math.Max(nowMs, 1), 0);
     }
 
     private static int ComputeHash(ReadOnlySpan<RgbColor> leds)
