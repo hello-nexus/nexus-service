@@ -39,8 +39,8 @@ public sealed class KrakenHub : IDisposable
     // wait is a small multiple of the vendor app's start-to-bulk gap, and a miss only moves on. The
     // cooler never answers the end command, so the frame does not wait for one.
     private const int CamStartReplyMs = 5;
-    // How long a non-frame write waits for an open frame; a frame is well inside this.
-    private const int CamWriteWaitMs = 40;
+    /// <summary>How long a non-frame write waits for an open frame; a frame is well inside the default.</summary>
+    internal int CamWriteWaitMs { get; set; } = 40;
 
     // Bulk pixel data goes out in chunks; 64 KiB measured ~13 MB/s on the bench unit.
     private const int BulkChunkBytes = 64 * 1024;
@@ -317,6 +317,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_fade is not { } fade)
             {
                 return;
@@ -347,6 +348,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_fade is not { } fade || !_isConnected || _device == null)
             {
                 _fade = null;
@@ -537,9 +539,19 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     private bool WriteLocked(byte[] report)
     {
-        AwaitFrameClosedLocked();
+        if (_camFrameOpen)
+        {
+            // Every entry point that writes waits for the frame first (AwaitFrameClosedLocked); this
+            // counts the writes that got out anyway, which are only ones past the wait bound.
+            Interlocked.Increment(ref _nonFrameWritesDuringFrame);
+        }
         return WriteFrameLocked(report);
     }
+
+    private int _nonFrameWritesDuringFrame;
+
+    /// <summary>Tests read how many non-frame writes went out between a frame's start and end.</summary>
+    internal int NonFrameWritesDuringFrame => Volatile.Read(ref _nonFrameWritesDuringFrame);
 
     // The writes of a 2023 Kraken frame itself, which must not wait for the frame they belong to.
     private bool WriteFrameLocked(byte[] report)
@@ -554,10 +566,12 @@ public sealed class KrakenHub : IDisposable
     }
 
     // On a 2023 Kraken every HID write that is not part of a frame goes out between frames, never
-    // between a frame's start and end commands, as the vendor app does. A writer waits here for the
-    // frame to close; the wait releases _lock so the frame can finish. If the frame outlasts the
-    // bound the write goes out anyway, since a keepalive or fan write is worth more than one frame.
-    // Caller holds _lock.
+    // between a frame's start and end commands, as the vendor app does. A public entry point that
+    // writes and takes only _lock calls this once, first thing after taking it and before reading
+    // any state, because the wait releases _lock so the frame can finish and state may change
+    // meanwhile. Entry points that take _lcdTransferLock first need no call, as the sender holds it
+    // across the frame. If the frame outlasts the bound the write goes out anyway, since a
+    // keepalive or fan write is worth more than one frame. Caller holds _lock.
     private void AwaitFrameClosedLocked()
     {
         if (!_camFrameOpen)
@@ -632,6 +646,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_device == null)
             {
                 return false;
@@ -829,6 +844,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_device == null)
             {
                 return false;
@@ -953,6 +969,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             var channel = _useNewSpeedChannels
                 ? (pump ? KrakenProtocol.PumpChannel : KrakenProtocol.FanChannel)
                 : (pump ? KrakenProtocol.LegacyPumpChannel : KrakenProtocol.LegacyFanChannel);
@@ -1029,6 +1046,7 @@ public sealed class KrakenHub : IDisposable
         }
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_device == null)
             {
                 return false;
@@ -1084,6 +1102,7 @@ public sealed class KrakenHub : IDisposable
         var report = KrakenProtocol.EncodeColors(channelId, mode, speed, rgbColors, forward);
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             return WriteLocked(report);
         }
     }
@@ -1097,6 +1116,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             switch (_model.Lighting)
             {
                 case KrakenLightingProtocol.ChannelReport:
@@ -1783,6 +1803,10 @@ public sealed class KrakenHub : IDisposable
         {
             lock (_lock)
             {
+                if (cam)
+                {
+                    YieldToWritersLocked();
+                }
                 if (_device == null || _lcd == null || wire == null || header == null)
                 {
                     return false;
@@ -1808,7 +1832,6 @@ public sealed class KrakenHub : IDisposable
                 }
                 if (cam)
                 {
-                    YieldToWritersLocked();
                     // A reply left from an earlier frame must not answer this frame's start.
                     DrainLocked();
                     _camFrameOpen = true;
@@ -2505,6 +2528,8 @@ public sealed class KrakenHub : IDisposable
                 return;
             }
             _disposed = true;
+            _camFrameOpen = false;
+            Monitor.PulseAll(_lock);
             _isConnected = false;
             _fade = null;
             _snapshot = KrakenSnapshot.Empty;

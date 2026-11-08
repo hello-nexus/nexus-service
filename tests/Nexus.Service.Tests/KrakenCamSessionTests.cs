@@ -23,7 +23,8 @@ public class KrakenCamSessionTests
         public Rig(int productId)
         {
             var model = KrakenModel.Find(productId)!;
-            Hub = new KrakenHub(new Factory(Bulk)) { Clock = () => Now, CamSenderThread = false };
+            // The wait bound is large so a loaded machine cannot expire it; the timeout test lowers it.
+            Hub = new KrakenHub(new Factory(Bulk)) { Clock = () => Now, CamSenderThread = false, CamWriteWaitMs = 10_000 };
             Hub.FadeRunner.AutoRun = false;
             Hub.DelayMs = ms => Delays.Add((ms, Device.Writes.Count));
             Device.BulkCount = () => Bulk.Writes.Count;
@@ -567,7 +568,84 @@ public class KrakenCamSessionTests
         var ids = rig.Ids();
         Assert.Equal(new[] { "3601", "3602" }, ids.Take(2).ToArray());
         Assert.True(ids.Length > 2, $"{name} wrote nothing after the frame");
+        Assert.Equal(0, rig.Hub.NonFrameWritesDuringFrame);
     }
+
+    [Fact]
+    public async System.Threading.Tasks.Task A_writer_still_writes_once_the_wait_bound_expires_on_a_frame_that_stays_open()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        rig.Hub.CamWriteWaitMs = 20;
+        rig.Now += 100_000;
+        System.Threading.Tasks.Task? writer = null;
+        rig.Bulk.OnWrite = () =>
+        {
+            if (writer != null)
+            {
+                return;
+            }
+            writer = System.Threading.Tasks.Task.Factory.StartNew(() => rig.Hub.Poll(), System.Threading.Tasks.TaskCreationOptions.LongRunning);
+            WaitFor(() => writer.IsCompleted);
+        };
+
+        Assert.True(rig.Push(rig.Frame()));
+        await writer!.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(rig.Hub.NonFrameWritesDuringFrame > 0);
+        var ids = rig.Ids();
+        Assert.Equal("3601", ids[0]);
+        Assert.NotEqual("3602", ids[1]);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task A_fade_step_waiting_on_an_open_frame_does_not_overwrite_a_backlight_set_meanwhile()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
+        var lockState = new Nexus.Service.Lighting.LcdLockState();
+        rig.Hub.BindLockSleep(lockState, () => true);
+        lockState.Set(true);
+        rig.Now += 60_000;
+        while (rig.Hub.StepFade())
+        {
+            rig.Now += 100;
+        }
+        lockState.Set(false);
+        rig.Now += 100;
+        System.Threading.Tasks.Task? step = null;
+        System.Threading.Tasks.Task? set = null;
+        rig.Bulk.OnWrite = () =>
+        {
+            if (step != null)
+            {
+                return;
+            }
+            step = System.Threading.Tasks.Task.Factory.StartNew(() => rig.Hub.StepFade(), System.Threading.Tasks.TaskCreationOptions.LongRunning);
+            WaitFor(() => rig.Hub.CamWritersWaiting == 1);
+            set = System.Threading.Tasks.Task.Factory.StartNew(() => rig.Hub.SetLcdBacklight(30, 0), System.Threading.Tasks.TaskCreationOptions.LongRunning);
+        };
+
+        Assert.True(rig.Push(rig.Frame()));
+        Assert.NotNull(step);
+        await step!.WaitAsync(TimeSpan.FromSeconds(10));
+        await set!.WaitAsync(TimeSpan.FromSeconds(10));
+        rig.Now += 60_000;
+        while (rig.Hub.StepFade())
+        {
+            rig.Now += 100;
+        }
+
+        var last = rig.Device.Writes.Last(w => w[0] == 0x30 && w[1] == 0x02);
+        Assert.Equal(KrakenProtocol.EncodeSetBacklight(30, 0, true).AsSpan(0, KrakenProtocol.ReportLength).ToArray(), last.AsSpan(0, KrakenProtocol.ReportLength).ToArray());
+        Assert.Equal(30, rig.Hub.Snapshot.LcdBrightness);
+        Assert.Equal(0, rig.Hub.NonFrameWritesDuringFrame);
+    }
+
+    // The sender stops by itself at this many frames, so a failed assertion cannot leave it spinning.
+    private const int MaxBackToBackFrames = 1000;
 
     [Fact]
     public async System.Threading.Tasks.Task With_frames_sent_back_to_back_a_waiting_writer_still_gets_in_between_frames()
@@ -576,11 +654,12 @@ public class KrakenCamSessionTests
         rig.OpenStream();
         rig.ForgetOpeningFrame();
         rig.Bulk.OnWrite = null;
+        rig.Bulk.Retain = false;
         using var stop = new System.Threading.CancellationTokenSource();
         // Dedicated threads, so a saturated thread pool can neither starve the writers nor outlive the test.
         var sender = System.Threading.Tasks.Task.Factory.StartNew(() =>
         {
-            while (!stop.IsCancellationRequested)
+            for (var frames = 0; frames < MaxBackToBackFrames && !stop.IsCancellationRequested; frames++)
             {
                 rig.Push(rig.Frame());
             }
@@ -963,9 +1042,15 @@ public class KrakenCamSessionTests
         // Runs on each bulk write, so a test can act while a frame is between its start and end commands.
         public Action? OnWrite { get; set; }
 
+        // Off for a test that sends many frames, whose payloads would otherwise pile up.
+        public bool Retain { get; set; } = true;
+
         public bool Write(ReadOnlySpan<byte> data)
         {
-            Writes.Enqueue(data.ToArray());
+            if (Retain)
+            {
+                Writes.Enqueue(data.ToArray());
+            }
             OnWrite?.Invoke();
             return true;
         }
