@@ -33,6 +33,7 @@ public class DesktopModeExitTests
         public bool WriteOk = true;
         public long Now;
         public int Writes;
+        public int Exited;
         public byte[]? LastReport;
         public Action? OnDelay;
         public DesktopModeExit Exit;
@@ -47,7 +48,8 @@ public class DesktopModeExitTests
                     Now += ms;
                     OnDelay?.Invoke();
                     return Task.CompletedTask;
-                });
+                },
+                exited: _ => Exited++);
         }
 
         public Task Poll() => Exit.PollAsync(CancellationToken.None);
@@ -150,6 +152,7 @@ public class DesktopModeExitTests
         Assert.Equal(1, rig.Writes);
         Assert.Equal(DesktopModeTable.ExitReport(513), rig.LastReport);
         Assert.Equal(4, polls);
+        Assert.Equal(1, rig.Exited);
     }
 
     [Fact]
@@ -172,6 +175,7 @@ public class DesktopModeExitTests
         await rig.Poll();
 
         Assert.InRange(rig.Now, DesktopModeExit.ArrivalWaitMs, DesktopModeExit.ArrivalWaitMs + DesktopModeExit.ArrivalPollMs);
+        Assert.Equal(0, rig.Exited);
         rig.Now += 60_000;
         await rig.Poll();
         Assert.Equal(1, rig.Writes);

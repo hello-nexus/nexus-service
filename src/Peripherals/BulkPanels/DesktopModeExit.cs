@@ -68,6 +68,7 @@ public sealed class DesktopModeExit
     private readonly Func<DesktopModeRow, string> _parents;
     private readonly Func<long> _now;
     private readonly Func<int, CancellationToken, Task> _delay;
+    private readonly Action<DesktopModeRow> _exited;
     private readonly Dictionary<string, RowState> _states = new();
 
     public DesktopModeExit(
@@ -77,7 +78,8 @@ public sealed class DesktopModeExit
         Func<string, bool> nexusControlOn,
         Func<DesktopModeRow, string>? parents = null,
         Func<long>? now = null,
-        Func<int, CancellationToken, Task>? delay = null)
+        Func<int, CancellationToken, Task>? delay = null,
+        Action<DesktopModeRow>? exited = null)
     {
         _hid = hid;
         _presence = presence;
@@ -86,6 +88,7 @@ public sealed class DesktopModeExit
         _parents = parents ?? (_ => "");
         _now = now ?? (() => Environment.TickCount64);
         _delay = delay ?? ((ms, ct) => Task.Delay(ms, ct));
+        _exited = exited ?? (_ => { });
     }
 
     /// <summary>Attempts made, for tests.</summary>
@@ -230,6 +233,7 @@ public sealed class DesktopModeExit
                 {
                     line.Append(CultureInfo.InvariantCulture, $" normal identity back in {_now() - started} ms");
                     warn = false;
+                    _exited(row);
                     return true;
                 }
                 if (_now() - started >= ArrivalWaitMs)

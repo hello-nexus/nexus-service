@@ -78,6 +78,29 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
 
     public bool GeometryStale => ResumePending && !VideoOwnsGlass && _now() >= Volatile.Read(ref _settledAt);
 
+    /// <summary>How long a reboot request waits for a session; past it a later connect is not rebooted.</summary>
+    internal const long RebootRequestMs = 60_000;
+
+    private long _rebootRequestedAt = long.MinValue;
+
+    /// <summary>A display back from desktop mode keeps its own screen under the frames until a reboot (seen on hardware); the next session reboots it once.</summary>
+    public void RequestReboot()
+    {
+        Volatile.Write(ref _rebootRequestedAt, _now());
+        ServiceLog.Info($"[{HandlerId}] back from desktop mode; rebooting the display once connected");
+    }
+
+    private bool RebootRequested
+    {
+        get
+        {
+            var at = Volatile.Read(ref _rebootRequestedAt);
+            return at != long.MinValue && _now() - at < RebootRequestMs;
+        }
+    }
+
+    public bool RebootWanted => RebootRequested && Volatile.Read(ref _sessionUp);
+
     /// <summary>Set at shutdown once the glass is let go: no reconnect may take it back.</summary>
     public void Retire() => _retired = true;
 
@@ -241,7 +264,8 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         }
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
-        if (_sessionUp && OfflineModeSource?.Invoke() == true)
+        var reboot = _sessionUp && RebootRequested;
+        if (_sessionUp && !reboot && OfflineModeSource?.Invoke() == true)
         {
             // L-Connect's exit sends StopPlay alone (captured), and a reboot resets the glass's clock to its default.
             pipe.Write(HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp(), HydroShift2Protocol.ClockOfflineOn));
@@ -251,6 +275,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
             pipe.Write(HydroShift2Protocol.EncodeCommand(
                 HydroShift2CurveProtocol.CommandReboot, ReadOnlySpan<byte>.Empty, NextTimestamp()));
             Volatile.Write(ref _settledAt, _now() + BootSettleMs);
+            Volatile.Write(ref _rebootRequestedAt, long.MinValue);
         }
         _sessionUp = false;
         _jpeg?.Dispose();

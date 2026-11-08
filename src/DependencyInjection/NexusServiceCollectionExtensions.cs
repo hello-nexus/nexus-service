@@ -2163,7 +2163,8 @@ public static class NexusServiceCollectionExtensions
                 var gate = sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>();
                 return gate.IsChosenOn(handler) || gate.HeldForMonitor(handler);
             },
-            Nexus.Service.Peripherals.BulkPanels.DesktopModeExit.DescribeParents));
+            Nexus.Service.Peripherals.BulkPanels.DesktopModeExit.DescribeParents,
+            exited: _ => driver.RequestReboot()));
         services.AddHostedService<Nexus.Service.Peripherals.BulkPanels.DesktopModeExitWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>());
