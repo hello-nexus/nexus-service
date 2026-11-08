@@ -19,6 +19,7 @@ internal sealed class LhmWalkWatch
     private long _walkStartMs;
     private long _lastEndMs;
     private int _stale;
+    private readonly object _transition = new();
 
     internal LhmWalkWatch(Func<long>? nowMs = null)
     {
@@ -52,23 +53,35 @@ internal sealed class LhmWalkWatch
         }
     }
 
-    internal void BeginWalk() => Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
+    internal void BeginWalk()
+    {
+        lock (_transition)
+        {
+            Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
+        }
+    }
 
     /// <summary>Returns true when this completion ends a stale period.</summary>
     internal bool EndWalk()
     {
-        Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
-        Interlocked.Exchange(ref _walkStartMs, 0);
-        return Interlocked.Exchange(ref _stale, 0) != 0;
+        lock (_transition)
+        {
+            Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
+            Interlocked.Exchange(ref _walkStartMs, 0);
+            return Interlocked.Exchange(ref _stale, 0) != 0;
+        }
     }
 
     /// <summary>Returns true exactly once per stall: the first check that finds the walk past the limit.</summary>
     internal bool CheckStalled(out TimeSpan age)
     {
-        age = CurrentWalkAge ?? TimeSpan.Zero;
-        return age > StallLimit && Interlocked.Exchange(ref _stale, 1) == 0;
+        lock (_transition)
+        {
+            age = CurrentWalkAge ?? TimeSpan.Zero;
+            return age > StallLimit && Interlocked.Exchange(ref _stale, 1) == 0;
+        }
     }
 
-    /// <summary>The reading to publish: null while stale, which the consumers already render as a missing sensor.</summary>
+    /// <summary>The reading to publish: null while stale. Consumers that cannot carry a null (HardwareSensor.Value) fall to zero once the hold window lapses.</summary>
     internal float? Read(float? raw) => IsStale ? null : raw;
 }

@@ -229,23 +229,31 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 {
                     return;
                 }
-                // Page reset runs while the real driver is still seated.
-                if (!decision.Wanted)
+                _walkWatch.BeginWalk();
+                try
                 {
-                    ResetLocked(SpdLiveResetBudget);
+                    // Page reset runs while the real driver is still seated.
+                    if (!decision.Wanted)
+                    {
+                        ResetLocked(SpdLiveResetBudget);
+                    }
+                    // Group first (cancels its retry task, closes its DIMMs), then
+                    // the driver swap. Re-enabling probes eight addresses
+                    // synchronously under the lock.
+                    _computer.IsMemoryEnabled = false;
+                    // Detach, never UnloadDriver: Unload disposes the PawnIO modules,
+                    // and the closed group's SPDAccessor finalizers reset the DIMM
+                    // page through them later, dereferencing the disposed module on
+                    // the finalizer thread and terminating the process. The old
+                    // modules stay open until the next re-enable re-detects buses.
+                    DriverManager.Driver = decision.Wanted ? null : NoSpdDriver.Instance;
+                    _computer.IsMemoryEnabled = true;
+                    _spdActive = decision.Wanted;
                 }
-                // Group first (cancels its retry task, closes its DIMMs), then
-                // the driver swap. Re-enabling probes eight addresses
-                // synchronously under the lock.
-                _computer.IsMemoryEnabled = false;
-                // Detach, never UnloadDriver: Unload disposes the PawnIO modules,
-                // and the closed group's SPDAccessor finalizers reset the DIMM
-                // page through them later, dereferencing the disposed module on
-                // the finalizer thread and terminating the process. The old
-                // modules stay open until the next re-enable re-detects buses.
-                DriverManager.Driver = decision.Wanted ? null : NoSpdDriver.Instance;
-                _computer.IsMemoryEnabled = true;
-                _spdActive = decision.Wanted;
+                finally
+                {
+                    _walkWatch.EndWalk();
+                }
             }
             Console.WriteLine(decision.Wanted
                 ? $"[lhm] DIMM SPD polling on: {decision.Reason}"

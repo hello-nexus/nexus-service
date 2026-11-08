@@ -252,6 +252,11 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         IProgress<FanCalibrationProgress> progress,
         CancellationToken ct)
     {
+        if (LhmWalkWatch.Shared.IsStale)
+        {
+            ServiceLog.Warn("[fan-control] calibration skipped: sensor readings are stale");
+            return Array.Empty<FanCalibration>();
+        }
         var mappings = EnsureDiscovered();
         var toCalibrate = fanIds.Count == 0
             ? mappings
@@ -271,6 +276,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                         () => ReadCalibrationRpm(m),
                         progress,
                         ct);
+                }
+                catch (CalibrationStaleReadException)
+                {
+                    // A 0 RPM taken from stale data would save the fan as Unresponsive.
+                    ServiceLog.Warn($"[fan-control] calibration of {m.Id} aborted: sensor readings went stale");
+                    return null;
                 }
                 catch (CalibrationWriteRefusedException)
                 {
@@ -364,6 +375,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private sealed class CalibrationWriteRefusedException : Exception;
 
+    private sealed class CalibrationStaleReadException : Exception;
+
     private static bool WriteDuty(ChannelMapping mapping, float duty)
     {
         if (mapping.AmdFan is { } amd) return amd.SetDuty((int)MathF.Round(duty));
@@ -388,7 +401,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private int ReadCalibrationRpm(ChannelMapping mapping)
     {
         _lhm.Update(SensorRefresh.Fast);
-        return (int)(LhmWalkWatch.Shared.Read(mapping.FanSensor.Value) ?? 0f);
+        if (LhmWalkWatch.Shared.IsStale) throw new CalibrationStaleReadException();
+        return (int)(mapping.FanSensor.Value ?? 0f);
     }
 
     // ── ICoolingProvider ──
