@@ -454,7 +454,8 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     if (_kraken is not null && _lhm.IsHubDriven(hw))
                     {
                         // Session min and max belong to one connection.
-                        if (System.Threading.Interlocked.Exchange(ref _krakenRangeDetaches, _kraken.Detaches) != _kraken.Detaches)
+                        var detaches = _kraken.Detaches;
+                        if (System.Threading.Interlocked.Exchange(ref _krakenRangeDetaches, detaches) != detaches)
                         {
                             _krakenRange.Clear();
                         }

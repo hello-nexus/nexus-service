@@ -17,6 +17,8 @@ internal sealed class KrakenCadence : IDisposable
     internal const long PeriodUs = 37_800;
     internal const long MinGapUs = 36_900;
     private const long ReanchorSlackUs = 1_000;
+    // A sleep can wake late, so the coarse wait ends this far before the deadline and the spin takes the rest.
+    private const long CoarseWaitLatenessMs = 1;
 
     private readonly Func<long> _now;
     private readonly Func<long, bool> _waitUntil;
@@ -76,7 +78,7 @@ internal sealed class KrakenCadence : IDisposable
 
     private static bool SleepThenSpin(CancellationToken ct, long deadline)
     {
-        var coarse = Stopwatch.Frequency * HighResolutionTicker.SpinMarginMs / 1000;
+        var coarse = Stopwatch.Frequency * CoarseWaitLatenessMs / 1000;
         while (true)
         {
             if (ct.IsCancellationRequested)

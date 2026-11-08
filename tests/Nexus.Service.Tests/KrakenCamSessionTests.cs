@@ -533,21 +533,93 @@ public class KrakenCamSessionTests
         rig.Hub.ReleaseStream();
     }
 
-    [Fact]
-    public void A_poll_never_writes_between_a_frames_start_and_end_and_still_runs_after_it()
+    public static IEnumerable<object[]> NonFrameWriters() => new[]
+    {
+        new object[] { "poll", (Action<KrakenHub>)(h => h.Poll()) },
+        new object[] { "lighting", (Action<KrakenHub>)(h => h.SetLighting(0, KrakenColorMode.Fixed, KrakenAnimationSpeed.Normal, new byte[] { 1, 2, 3 })) },
+        new object[] { "pump curve", (Action<KrakenHub>)(h => h.SetPumpDuty(50)) },
+        new object[] { "fan curve", (Action<KrakenHub>)(h => h.SetFanDuty(50)) },
+    };
+
+    [Theory]
+    [MemberData(nameof(NonFrameWriters))]
+    public async System.Threading.Tasks.Task A_non_frame_write_made_during_an_open_frame_lands_after_the_frame_ends(string name, Action<KrakenHub> write)
     {
         var rig = new Rig(0x300E);
         rig.OpenStream();
         rig.ForgetOpeningFrame();
         rig.Now += 100_000;
-        rig.Bulk.OnWrite = () => Assert.True(rig.Hub.Poll());
+        System.Threading.Tasks.Task? writer = null;
+        rig.Bulk.OnWrite = () =>
+        {
+            if (writer != null)
+            {
+                return;
+            }
+            writer = System.Threading.Tasks.Task.Factory.StartNew(() => write(rig.Hub), System.Threading.Tasks.TaskCreationOptions.LongRunning);
+            WaitFor(() => rig.Hub.CamWritersWaiting == 1);
+        };
 
         Assert.True(rig.Push(rig.Frame()));
+        Assert.NotNull(writer);
+        await writer!.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.Equal(new[] { "3601", "3602" }, rig.Ids());
+        var ids = rig.Ids();
+        Assert.Equal(new[] { "3601", "3602" }, ids.Take(2).ToArray());
+        Assert.True(ids.Length > 2, $"{name} wrote nothing after the frame");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task With_frames_sent_back_to_back_a_waiting_writer_still_gets_in_between_frames()
+    {
+        var rig = new Rig(0x300E);
+        rig.OpenStream();
+        rig.ForgetOpeningFrame();
         rig.Bulk.OnWrite = null;
-        Assert.True(rig.Hub.Poll());
-        Assert.True(rig.Ids().Length > 2, "the poll after the frame still sends its keepalive or status request");
+        using var stop = new System.Threading.CancellationTokenSource();
+        // Dedicated threads, so a saturated thread pool can neither starve the writers nor outlive the test.
+        var sender = System.Threading.Tasks.Task.Factory.StartNew(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                rig.Push(rig.Frame());
+            }
+        }, System.Threading.Tasks.TaskCreationOptions.LongRunning);
+        var written = 0;
+        try
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                var writer = System.Threading.Tasks.Task.Factory.StartNew(
+                    () => rig.Hub.SetLighting(0, KrakenColorMode.Fixed, KrakenAnimationSpeed.Normal, new byte[] { 1, 2, 3 }),
+                    System.Threading.Tasks.TaskCreationOptions.LongRunning);
+                await writer.WaitAsync(TimeSpan.FromSeconds(10));
+                written++;
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            await sender.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal(5, written);
+        var open = false;
+        foreach (var id in rig.Ids())
+        {
+            if (id == "3601")
+            {
+                open = true;
+            }
+            else if (id == "3602")
+            {
+                open = false;
+            }
+            else
+            {
+                Assert.False(open, $"{id} was written between a frame's start and end");
+            }
+        }
     }
 
     [Fact]

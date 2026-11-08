@@ -162,7 +162,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
     internal bool IsHubDriven(IHardware hw) =>
         hw.HardwareType == HardwareType.Cooler
-        && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name, _computer.Hardware.Count(h => h.HardwareType == HardwareType.Cooler && h.Name == hw.Name));
+        && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name, 1)
+        && _computer.Hardware.Count(h => h.HardwareType == HardwareType.Cooler && h.Name == hw.Name) == 1;
 
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
