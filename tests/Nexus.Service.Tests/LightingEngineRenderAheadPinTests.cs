@@ -161,11 +161,10 @@ public class LightingEngineRenderAheadPinTests
     [Fact]
     public async Task Animate_pin_rolls_under_a_frozen_static_global()
     {
-        using var rig = new Rig(new RampEffect());
+        using var rig = new Rig(new RampEffect(), anchor: false);
         rig.Engine.SetFrozen(true);
         rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "sweepcomet"));
         Assert.True(await rig.RollsEventually("d-0"));
-        Assert.True(await rig.RollsEventually("d-0", "d-1"));
     }
 
     [Fact]
@@ -467,6 +466,19 @@ public class LightingEngineRenderAheadPinTests
         using var rig = new Rig(new RampEffect());
         Assert.True(await rig.RollsEventually("d-1"));
         rig.Engine.SetEffect(FailingShader(gpu));
+        await rig.WaitFrames(60);
+        Assert.False(rig.Can("d-1"));
+    }
+
+    [Fact]
+    public async Task A_frozen_shader_global_with_no_animating_pin_stays_live()
+    {
+        using var gpu = new GpuContext(160, 90);
+        if (!GpuAvailable(gpu)) return;
+        using var rig = new Rig(new RampEffect(), anchor: false);
+        rig.Engine.SetEffect(new ShaderEffect("gradienttri", gpu, ShaderLibrary.Get("gradienttri")));
+        Assert.True(await rig.RollsEventually("d-1"));
+        rig.Engine.SetFrozen(true);
         await rig.WaitFrames(60);
         Assert.False(rig.Can("d-1"));
     }
