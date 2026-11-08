@@ -46,6 +46,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Task _openTask;
     private readonly object _updateLock = new();
     private readonly object _readerLock = new();
+    private readonly LhmWalkWatch _walkWatch = LhmWalkWatch.Shared;
+    private Timer? _walkTimer;
+    private static readonly TimeSpan WalkWatchPeriod = TimeSpan.FromSeconds(5);
     private long _lastUpdateTicks;
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
@@ -148,6 +151,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 PawnIoBootGate.SignalLhmOpened();
             }
         });
+        _ = _openTask.ContinueWith(_ => StartWalkWatch(), TaskScheduler.Default);
         _gate.Changed += OnControlGateChanged;
         _config.OnChanged += OnConfigChanged;
         // A toggle between the reads above and these subscriptions would otherwise
@@ -156,6 +160,24 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     }
 
     public Computer Instance => _computer;
+
+    private void StartWalkWatch()
+    {
+        if (_disposed || _testHost)
+        {
+            return;
+        }
+        _walkTimer = new Timer(_ => CheckWalkAge(), null, WalkWatchPeriod, WalkWatchPeriod);
+    }
+
+    private void CheckWalkAge()
+    {
+        if (_walkWatch.CheckStalled(out var age))
+        {
+            ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s; sensor readings reported as missing until it completes");
+            _walkWatch.RaiseStalled(age);
+        }
+    }
 
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
@@ -345,6 +367,15 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         var smartDemand = SmartPollDemand.Capture(_gates, settings, SmartLiveConsumers.Any(_hub));
         _smartActive.Observe(smartDemand.IsActive(StorageIdentifiers()));
 
+        // A wedged walk holds the lock; callers then return the (stale-marked) cache instead of piling up behind it.
+        if (_walkWatch.IsStale)
+        {
+            if (!Monitor.TryEnter(_updateLock))
+            {
+                return;
+            }
+            Monitor.Exit(_updateLock);
+        }
         lock (_updateLock)
         {
             var now = Environment.TickCount64;
@@ -359,19 +390,30 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             // is ~188ms on a 12-core part - 57% of the whole walk, all of it
             // sleeping. Holding 1ms resolution across the walk turns each of
             // those into ~1-2ms.
-            using (WindowsTimerResolution.Elevate())
+            _walkWatch.BeginWalk();
+            try
             {
-                foreach (var hw in _computer.Hardware)
+                using (WindowsTimerResolution.Elevate())
                 {
-                    // StorageDevice keeps its skip counter per instance and reads the static
-                    // at the top of its own Update, so setting it here is per-drive. Throughput
-                    // and free space are on separate paths and still refresh every walk.
-                    if (hw.HardwareType == HardwareType.Storage)
-                        StorageDevice.SmartUpdateCycleCount = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
+                    foreach (var hw in _computer.Hardware)
+                    {
+                        // StorageDevice keeps its skip counter per instance and reads the static
+                        // at the top of its own Update, so setting it here is per-drive. Throughput
+                        // and free space are on separate paths and still refresh every walk.
+                        if (hw.HardwareType == HardwareType.Storage)
+                            StorageDevice.SmartUpdateCycleCount = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
 
-                    TryUpdate(hw);
-                    foreach (var sub in hw.SubHardware)
-                        TryUpdate(sub);
+                        TryUpdate(hw);
+                        foreach (var sub in hw.SubHardware)
+                            TryUpdate(sub);
+                    }
+                }
+            }
+            finally
+            {
+                if (_walkWatch.EndWalk())
+                {
+                    ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
                 }
             }
         }
@@ -470,6 +512,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     {
         _gate.Changed -= OnControlGateChanged;
         _config.OnChanged -= OnConfigChanged;
+        _walkTimer?.Dispose();
         // Wait for the background open to finish before Close(): LHM's
         // Computer.Close() isn't documented thread-safe against an in-flight
         // Open(), and Dispose() is only called at service shutdown so the

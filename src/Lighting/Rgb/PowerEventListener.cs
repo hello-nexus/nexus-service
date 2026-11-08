@@ -79,6 +79,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         // follows the blackout: the pump waits only for its first attempt, capped.
         if (e.Mode == PowerModes.Suspend)
         {
+            ServiceLog.Info($"[resume] suspend: devices={_bridge.Devices.Count}, smbus mutex={RgbBridge.ProbeSmbusMutex()}, {RgbBridge.LhmWalkSummary()}");
             _blackout.OnSuspending();
             // The SaveCfg sequence runs on a hub background task; this pump waits only for its first
             // attempt, hard-capped by the hub, so a stuck USB write cannot hold it.
@@ -88,6 +89,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         else if (e.Mode == PowerModes.Resume)
         {
             ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
+            ServiceLog.Info($"[resume] resumed: devices before restart={_bridge.Devices.Count}, smbus mutex={RgbBridge.ProbeSmbusMutex()}, {RgbBridge.LhmWalkSummary()}");
             _blackout.OnResumed();
             _bridge.OnSystemResume();
             _lianLi?.OnSystemResumed();
