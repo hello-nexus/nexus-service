@@ -462,4 +462,49 @@ public class RgbBridgeWatchdogTests : IDisposable
         Advance(TimeSpan.FromMinutes(5));
         await PollAndExpectNoBounceAsync(0);
     }
+
+    [Fact]
+    public async Task A_stalled_LHM_walk_with_the_smbus_mutex_held_restarts_the_daemon()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _bridge.SmbusMutexProbe = () => "held";
+
+        _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
+
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task A_stalled_LHM_walk_with_the_smbus_mutex_free_leaves_the_daemon_alone()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _bridge.SmbusMutexProbe = () => "free";
+
+        _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
+
+        await Task.Delay(300);
+        Assert.Equal(0, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task LHM_stall_restarts_share_the_bounded_watchdog_budget()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _bridge.SmbusMutexProbe = () => "held";
+
+        for (var n = 1; n <= 3; n++)
+        {
+            Advance(TimeSpan.FromSeconds(100));
+            _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
+            Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == n && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        }
+
+        Advance(TimeSpan.FromSeconds(100));
+        _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
+        await Task.Delay(300);
+        Assert.Equal(3, _controller.Count("disconnect"));
+    }
 }

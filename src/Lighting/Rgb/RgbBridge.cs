@@ -9,6 +9,7 @@ using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Lighting.Rgb;
 
@@ -317,6 +318,7 @@ public sealed class RgbBridge : IDisposable
         _controller.DetectionStateChanged += OnDetectionStateChanged;
         _controller.DetectionProgress += OnDetectionProgress;
         _controller.WriteRejected += OnWriteRejected;
+        LhmWalkWatch.Shared.Stalled += OnLhmWalkStalled;
         // Last: the handler runs on the caller's thread and reads this instance.
         if (controlGate is { } gate)
         {
@@ -1005,6 +1007,10 @@ public sealed class RgbBridge : IDisposable
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         // A finished pass is the truth for this daemon, even an empty one.
+        if (Volatile.Read(ref _expectedDevices) > 0)
+        {
+            ServiceLog.Info($"[resume] detection pass finished; {Volatile.Read(ref _expectedDevices)} devices were known before the restart");
+        }
         DisarmSettleStall();
         string? deferred;
         bool deferredDetectors;
@@ -1193,6 +1199,41 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    /// <summary>Walk age for the [resume] lines: the running walk if any, else time since the last one.</summary>
+    internal static string LhmWalkSummary()
+    {
+        var watch = LhmWalkWatch.Shared;
+        if (watch.CurrentWalkAge is { } running)
+        {
+            return $"lhm walk running {running.TotalSeconds:F0}s, stale={watch.IsStale}";
+        }
+        return watch.SinceLastWalk is { } since ? $"lhm last walk {since.TotalSeconds:F0}s ago, stale={watch.IsStale}" : "lhm no walk yet";
+    }
+
+    internal Func<string> SmbusMutexProbe { get; set; } = ProbeSmbusMutex;
+
+    /// <summary>A wedged LHM walk may hold the SMBus mutex the daemon's DIMM detection waits on; a daemon-held mutex is released by restarting it.</summary>
+    internal void OnLhmWalkStalled(TimeSpan age)
+    {
+        if (!IsActive)
+        {
+            return;
+        }
+        var mutex = SmbusMutexProbe();
+        if (mutex != "held")
+        {
+            ServiceLog.Info($"[resume] LHM walk stalled {age.TotalSeconds:F0}s, smbus mutex={mutex}; daemon left running");
+            return;
+        }
+        if (!TryClaimWatchdogBounce(NowTicks(), out _))
+        {
+            ServiceLog.Warn($"[resume] LHM walk stalled {age.TotalSeconds:F0}s with the smbus mutex held; no daemon restart budget left");
+            return;
+        }
+        ServiceLog.Warn($"[resume] LHM walk stalled {age.TotalSeconds:F0}s with the smbus mutex held; restarting the daemon in case it is the holder");
+        BounceSubprocess("lhm-stall");
+    }
+
     private void DisarmSettleStall()
     {
         Volatile.Write(ref _expectedDevices, 0);
@@ -1220,9 +1261,9 @@ public sealed class RgbBridge : IDisposable
             return false;
         }
         var attempt = Interlocked.Increment(ref _settleStallBounces);
-        ServiceLog.Warn($"[rgb-bridge] daemon never settled after restart (attempt {attempt}, gate={gate}, daemon up {sinceSpawn.TotalSeconds:F0}s, "
+        ServiceLog.Warn($"[resume] daemon never settled after restart (attempt {attempt}, gate={gate}, daemon up {sinceSpawn.TotalSeconds:F0}s, "
             + $"0 controllers listed, {expected} known before the restart, detection started seen={Volatile.Read(ref _detectionStartedSeen) != 0}, "
-            + $"smbus mutex={ProbeSmbusMutex()}); restarting it");
+            + $"smbus mutex={SmbusMutexProbe()}, {LhmWalkSummary()}); restarting it");
         BounceSubprocess("settle-stall");
         return true;
     }
@@ -1258,7 +1299,7 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>Who holds the SMBus mutex the daemon's DIMM detection waits on without a timeout: held (by another process or thread), free, or n/a.</summary>
-    private static string ProbeSmbusMutex()
+    internal static string ProbeSmbusMutex()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -1548,6 +1589,11 @@ public sealed class RgbBridge : IDisposable
                 _committedAddresses = addresses;
                 if (addresses.Length > 0)
                 {
+                    if (Volatile.Read(ref _expectedDevices) > 0)
+                    {
+                        ServiceLog.Info($"[resume] daemon settled with {addresses.Length} devices ({Volatile.Read(ref _expectedDevices)} before the restart, "
+                            + $"settle-stall restarts used {Volatile.Read(ref _settleStallBounces)}): recovered");
+                    }
                     DisarmSettleStall();
                 }
                 // Ids are never reused within a daemon run, so ones gone from the list are dead.
@@ -3021,6 +3067,7 @@ public sealed class RgbBridge : IDisposable
         _controller.DetectionStateChanged -= OnDetectionStateChanged;
         _controller.DetectionProgress -= OnDetectionProgress;
         _controller.WriteRejected -= OnWriteRejected;
+        LhmWalkWatch.Shared.Stalled -= OnLhmWalkStalled;
         lock (_lock)
         {
             if (_disposed)

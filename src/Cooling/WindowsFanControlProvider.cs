@@ -115,7 +115,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 Id = m.Id,
                 Name = m.Name,
                 DutyPercent = (int)(m.ControlSensor.Value ?? 0f),
-                Rpm = (int)(m.FanSensor.Value ?? 0f),
+                Rpm = (int)(LhmWalkWatch.Shared.Read(m.FanSensor.Value) ?? 0f),
                 Mode = mode,
                 RpmSensorId = m.FanSensorId,
                 IsGpu = m.IsGpu,
@@ -168,7 +168,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             var sensor = FindSensorById(hw, sensorId);
             if (sensor is null) continue;
 
-            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : sensor.Value;
+            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : LhmWalkWatch.Shared.Read(sensor.Value);
         }
 
         return null;
@@ -388,7 +388,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private int ReadCalibrationRpm(ChannelMapping mapping)
     {
         _lhm.Update(SensorRefresh.Fast);
-        return (int)(mapping.FanSensor.Value ?? 0f);
+        return (int)(LhmWalkWatch.Shared.Read(mapping.FanSensor.Value) ?? 0f);
     }
 
     // ── ICoolingProvider ──
@@ -627,7 +627,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         foreach (var sensor in hw.Sensors)
         {
             if (sensor.SensorType != SensorType.Temperature) continue;
-            var value = sensor.Value ?? 0f;
+            var value = LhmWalkWatch.Shared.Read(sensor.Value) ?? 0f;
             // Skip disconnected/disabled channels (e.g. unpopulated DIMM SPD
             // temps read 0 / ~0.25°C) so they never become curve inputs -
             // same gate every platform's provider applies. See TemperatureSourceFilter.
