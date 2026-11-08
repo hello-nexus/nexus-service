@@ -157,6 +157,29 @@ public class LightingEngineRenderAheadPinTests
         Assert.True(rig.Can("d-0", "d-1"));
     }
 
+    // A global Static look freezes the canvas, but a zone pinned to an animate source still changes every frame.
+    [Fact]
+    public async Task Animate_pin_rolls_under_a_frozen_static_global()
+    {
+        using var rig = new Rig(new RampEffect());
+        rig.Engine.SetFrozen(true);
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "sweepcomet"));
+        Assert.True(await rig.RollsEventually("d-0"));
+        Assert.True(await rig.RollsEventually("d-0", "d-1"));
+    }
+
+    [Fact]
+    public async Task Frozen_global_with_no_animating_pin_stays_live()
+    {
+        using var rig = new Rig(new RampEffect(), anchor: false);
+        rig.Engine.SetFrozen(true);
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Static, "red"));
+        await rig.WaitFrames(40);
+        Assert.False(rig.Can("d-0"));
+        Assert.False(rig.Can("d-0", "d-1"));
+        Assert.False(rig.Can("d-1"));
+    }
+
     [Theory]
     [InlineData(DevicePinKinds.Mirror)]
     [InlineData(DevicePinKinds.Media)]

@@ -1222,13 +1222,13 @@ public sealed partial class LightingEngine : IDisposable
     /// True when every requested zone shows a pure function of time: its own static pin, its own animate pin on a
     /// shader that reads no audio, or a time-pure global effect when it follows the global. A zone that follows a
     /// global that reads audio, mirrors the screen or plays media, or is pinned to such a source, forces the live
-    /// path. Also false while paused, frozen, blacked out, ramping, in an LED editor overlay, key-reactive, or inside
-    /// the settle window of a change to anything the window shows.
+    /// path. Also false while paused, blacked out, frozen with no animating pin, ramping, in an LED editor overlay,
+    /// key-reactive, or inside the settle window of a change to anything the window shows.
     /// </summary>
     public bool CanRenderAhead(IReadOnlyList<string> deviceIds)
     {
         var current = _currentEffect;
-        if (current is null || _studioOverlay is not null || _paused || _frozen || _blackout || _wakeDurationMs > 0)
+        if (current is null || _studioOverlay is not null || _paused || _blackout || _wakeDurationMs > 0)
         {
             return false;
         }
@@ -1277,7 +1277,8 @@ public sealed partial class LightingEngine : IDisposable
             settledAfter = Math.Max(settledAfter, Volatile.Read(ref _aheadParamsChangedMs));
         }
         // Without a shader or an animating pin the content is constant, and the live path sends nothing for it.
-        if (!animates && !(needsGlobal && current is Gpu.ShaderEffect))
+        // A frozen global is constant, so only an animating pin gives a window something to play.
+        if (!animates && (_frozen || !(needsGlobal && current is Gpu.ShaderEffect)))
         {
             return false;
         }
