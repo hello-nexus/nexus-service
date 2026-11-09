@@ -297,6 +297,136 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
     }
 
+    [Theory]
+    [InlineData(0xA103)]
+    [InlineData(0xA105)]
+    public void Sl_v2_merged_runway_sends_order_quantities_then_channel_0_and_writes_no_other_port(int pid)
+    {
+        AttachMerged(pid, "runway");
+
+        _writer.Tick();
+
+        Assert.Equal(7, Calls.Count);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 }, Calls[0].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x03, 0x00, 0x00, 0x00 }, Calls[1].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x13, 0x00, 0x00, 0x00 }, Calls[2].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x22, 0x00, 0x00, 0x00 }, Calls[3].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x30, 0x00, 0x00, 0x00 }, Calls[4].Bytes);
+        var colour = Calls[5];
+        Assert.Equal(HubTransportSpy.CallKind.OutputReport, colour.Kind);
+        Assert.Equal(0x30, colour.Bytes[1]);
+        // wire R,B,G: six fans of four slots, red then cyan-blue palette, slots 2-3 black
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0, 0, 0, 0, 0, 0 }, colour.Bytes[2..14]);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x2B, 0x00, 0x00, 0x00, 0x00 }, Calls[6].Bytes);
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] is 0x34 or 0x32);
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] is 0x11 or 0x12 or 0x13);
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60);
+    }
+
+    [Theory]
+    [InlineData("meteor", 0x2A)]
+    [InlineData("runway", 0x2B)]
+    [InlineData("tide", 0x2C)]
+    [InlineData("mixing", 0x2D)]
+    [InlineData("stackMultiColor", 0x2E)]
+    public void Sl_v2_merged_effects_commit_their_merged_byte_on_channel_0(string mode, byte expected)
+    {
+        AttachMerged(0xA103, mode);
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, expected, 0x00, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_merged_commit_carries_speed_direction_and_brightness()
+    {
+        AttachMerged(0xA103, "stackMultiColor");
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Speed = 4;
+            s.Devices.LianLiLighting.Direction = 1;
+            s.Devices.LianLiLighting.Brightness = 2;
+        });
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x2E, 0xFE, 0x01, 0x02, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_merged_animation_follows_the_saved_port_order()
+    {
+        AttachMerged(0xA103, "tide");
+        _store.Update(s => s.Devices.LianLiLighting.MergeOrder = new List<int> { 3, 2, 1, 0 });
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_turning_merge_off_recommits_every_port_without_a_merge_off_command()
+    {
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.Merge = false);
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] is 0x34 or 0x63);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1C);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x11 && c.Bytes[2] == 0x1C);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x12 && c.Bytes[2] == 0x1C);
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_merge_on_a_mode_without_a_merged_variant_commits_per_port()
+    {
+        AttachMerged(0xA103, "staggered");
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x63);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x18);
+    }
+
+    [Fact]
+    public void Sl_v2_static_scales_its_colours_by_the_brightness_step()
+    {
+        AttachMerged(0xA103, "static");
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Merge = false;
+            s.Devices.LianLiLighting.Colors = new List<string> { "#FF8040" };
+            s.Devices.LianLiLighting.Brightness = 2;
+        });
+
+        _writer.Tick();
+
+        var colour = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x30).Bytes;
+        // 50 percent, rounded down, on the R,B,G wire
+        Assert.Equal(new byte[] { 0x7F, 0x20, 0x40 }, colour[2..5]);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x02);
+    }
+
+    [Theory]
+    [InlineData(0x00, 200)]
+    [InlineData(0x01, 150)]
+    [InlineData(0x02, 100)]
+    [InlineData(0x03, 50)]
+    [InlineData(0x08, 0)]
+    public void Brightness_scaling_follows_the_hardware_steps(byte brightnessByte, byte expected)
+    {
+        var colours = new byte[] { 200 };
+
+        LianLiLightingFrameWriter.ScaleByBrightness(colours, brightnessByte);
+
+        Assert.Equal(expected, colours[0]);
+    }
+
     // ── Per-port and per-ring looks ──
 
     private static LianLiEffectSettings Effect(string mode, params string[] colors) =>

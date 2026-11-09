@@ -318,7 +318,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _pendingFirmwareSig = null;
             _commitRetry.Reset();
             // A merged firmware effect outlives per-channel custom commits too.
-            if (!_customMergeCleared && profile.SupportsMerge && _hub.SendStopMerge())
+            if (!_customMergeCleared && profile.ExplicitMergeControl && _hub.SendStopMerge())
             {
                 Thread.Sleep(MergeOffSettleMs);
                 _customMergeCleared = true;
@@ -577,7 +577,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         Dictionary<string, LightingDevicePreference> prefs)
     {
         // Per-channel commits do not exit a merged effect; only merge-off does (the identity merge order does not).
-        if (profile.SupportsMerge)
+        if (profile.ExplicitMergeControl)
         {
             if (!_hub.SendStopMerge()) return false;
             Thread.Sleep(MergeOffSettleMs);
@@ -609,6 +609,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     var speedByte = LianLiLightingModes.SpeedCodes[Math.Clamp(effect.Speed, 0, 4)];
                     var dirByte = LianLiLightingModes.DirectionByte(effect.Direction);
                     var brightnessByte = DeviceBrightnessByte(device, effect.Brightness, globalBrightness, disabled);
+                    if (profile.ScalesStaticColors && effectByte == LianLiProtocol.EffectStatic)
+                    {
+                        ScaleByBrightness(_channelBuf.AsSpan(0, byteCount), brightnessByte);
+                    }
                     if (profile.StartActionPerFrame)
                     {
                         if (!_hub.SendStartAction(ch / profile.ChannelsPerPort, numFans)) return false;
@@ -668,7 +672,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SetQuantity(p, LianLiZoneSupport.ClampFans(fans.GetFans(p), profile))) return false;
             Settle();
         }
-        for (var ch = LianLiProtocol.PortCount * profile.ChannelsPerPort - 1; ch >= 1; ch--)
+        for (var ch = LianLiProtocol.PortCount * profile.ChannelsPerPort - 1; profile.ExplicitMergeControl && ch >= 1; ch--)
         {
             var off = LianLiLightingModes.BrightnessCodes[0];
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectMergeIdle, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
@@ -719,6 +723,17 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // Segment 0 is the inner (or only) ring, so its count divides by that per-fan value.
         var fans = device.Structure.Segments[0].LedCount / profile.InnerLedsPerFan;
         return Math.Clamp(fans, 1, profile.MaxFans);
+    }
+
+    // Scales every colour byte by the step the brightness byte names, rounding down.
+    internal static void ScaleByBrightness(Span<byte> colors, byte brightnessByte)
+    {
+        var step = Array.IndexOf(LianLiLightingModes.BrightnessCodes, brightnessByte);
+        var factor = Math.Clamp(step, 0, 4) * 25 / 100.0;
+        for (var i = 0; i < colors.Length; i++)
+        {
+            colors[i] = (byte)Math.Floor(colors[i] * factor);
+        }
     }
 
     private static byte DeviceBrightnessByte(
