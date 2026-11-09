@@ -579,6 +579,37 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
+    public void ScanCeiling_StopsCollecting_AndReportsTruncated()
+    {
+        var dir = MakeDir("many", 30);
+        var lib = new GalleryLibrary(_rootDir) { ScanCeiling = 10 };
+        lib.AddReference(dir, GallerySourceKinds.Folder);
+        lib.AddReference(WriteImage("later.png"), GallerySourceKinds.File);
+
+        var result = lib.Enumerate();
+
+        Assert.True(result.Truncated);
+        Assert.Equal(10, result.Items.Count);
+        Assert.DoesNotContain(result.Items, i => i.Name == "later.png");
+        var names = result.Items.Select(i => i.Name).ToList();
+        Assert.Equal(names.OrderBy(n => n, NaturalStringComparer.Instance), names);
+    }
+
+    [Fact]
+    public void ScanCeiling_ExactlyAtCeilingIsNotTruncated()
+    {
+        var dir = MakeDir("ten", 10);
+        File.WriteAllText(Path.Combine(dir, "notes.txt"), "not media");
+        var lib = new GalleryLibrary(_rootDir) { ScanCeiling = 10 };
+        lib.AddReference(dir, GallerySourceKinds.Folder);
+
+        var result = lib.Enumerate();
+
+        Assert.False(result.Truncated);
+        Assert.Equal(10, result.Items.Count);
+    }
+
+    [Fact]
     public void Cap_ExcludedItemsTakeNoSlots()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems + 1);

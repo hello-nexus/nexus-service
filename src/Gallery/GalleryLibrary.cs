@@ -1,11 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Enumeration;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.IO.Enumeration;
 using System.Text.Json;
 using Nexus.Service.Common;
 using Nexus.Service.Media;
@@ -30,6 +30,9 @@ public sealed class GalleryLibrary
     // many items in sort order are kept. Excluded files and duplicates of
     // earlier sources do not count.
     public const int MaxItems = 5000;
+    // Bounds the walk-then-sort: past this many eligible files the scan
+    // stops and the sort covers only what it collected.
+    public const int MaxScanItems = MaxItems * 10;
     public const int MaxPlaylists = 50;
     public const int MaxPlaylistNameLength = 48;
     // Per id list on one playlist, so a runaway client cannot grow
@@ -82,6 +85,9 @@ public sealed class GalleryLibrary
 
     public string RootDir { get; }
 
+    /// <summary>Tests lower it to exercise the ceiling without writing 50k files.</summary>
+    internal int ScanCeiling { get; init; } = MaxScanItems;
+
     public static bool IsImageFile(string path)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
@@ -95,6 +101,24 @@ public sealed class GalleryLibrary
     }
 
     public static bool IsMediaFile(string path) => IsImageFile(path) || IsVideoFile(path);
+
+    private static bool IsMediaName(ReadOnlySpan<char> name)
+    {
+        var ext = Path.GetExtension(name);
+        foreach (var known in ImageExtensions)
+        {
+            if (ext.Equals(known, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        foreach (var known in VideoExtensions)
+        {
+            if (ext.Equals(known, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Stable item id: first 16 hex chars of SHA-256 of the canonical path.
@@ -409,9 +433,9 @@ public sealed class GalleryLibrary
 
     /// <summary>
     /// <see cref="EnumerateItems"/> plus whether the global cap dropped items.
-    /// Every eligible file of every source is walked and sorted first, then the
-    /// first <see cref="MaxItems"/> in sort order are kept, so the cap drops the
-    /// tail of the sorted list.
+    /// Every eligible file of every source, up to <see cref="MaxScanItems"/>, is
+    /// walked and sorted first, then the first <see cref="MaxItems"/> in sort
+    /// order are kept, so the cap drops the tail of the sorted list.
     /// </summary>
     public GalleryEnumeration Enumerate()
     {
@@ -432,15 +456,16 @@ public sealed class GalleryLibrary
         var candidates = new List<Candidate>();
         // First source to reach a file owns it; excluded files never enter.
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ceilingHit = false;
 
-        for (var index = 0; index < sources.Count; index++)
+        for (var index = 0; index < sources.Count && !ceilingHit; index++)
         {
             var source = sources[index];
             if (source.Kind == GallerySourceKinds.Folder)
             {
                 // Recursive: users point at e.g. a Pictures root whose images
                 // live in subfolders. A folder whose walk fails contributes
-                // nothing, as before.
+                // nothing.
                 var excluded = new HashSet<string>(source.Excluded, StringComparer.Ordinal);
                 var found = new List<Candidate>();
                 var foundIds = new HashSet<string>(StringComparer.Ordinal);
@@ -453,22 +478,24 @@ public sealed class GalleryLibrary
                         (ref FileSystemEntry e) => (e.ToSpecifiedFullPath(), wantModified ? EntryModifiedTicks(ref e) : 0),
                         FolderScanOptions)
                     {
-                        ShouldIncludePredicate = (ref FileSystemEntry e) => !e.IsDirectory,
+                        ShouldIncludePredicate = (ref FileSystemEntry e) => !e.IsDirectory && IsMediaName(e.FileName),
                     };
                     foreach (var (file, fileModified) in walk)
                     {
-                        if (!IsMediaFile(file))
-                        {
-                            continue;
-                        }
-
                         var full = Path.GetFullPath(file);
                         var id = ItemIdForPath(full);
-                        if (excluded.Contains(id) || seen.Contains(id) || !foundIds.Add(id))
+                        if (excluded.Contains(id) || seen.Contains(id) || foundIds.Contains(id))
                         {
                             continue;
                         }
 
+                        if (candidates.Count + found.Count >= ScanCeiling)
+                        {
+                            ceilingHit = true;
+                            break;
+                        }
+
+                        foundIds.Add(id);
                         found.Add(new Candidate(full, id, source.Id, Path.GetFileName(full), fileModified, index));
                     }
                 }
@@ -484,19 +511,26 @@ public sealed class GalleryLibrary
             {
                 var full = Path.GetFullPath(source.Path);
                 var id = ItemIdForPath(full);
-                if (!seen.Add(id))
+                if (seen.Contains(id))
                 {
                     continue;
                 }
 
+                if (candidates.Count >= ScanCeiling)
+                {
+                    ceilingHit = true;
+                    break;
+                }
+
+                seen.Add(id);
                 var name = string.IsNullOrEmpty(source.Name) ? Path.GetFileName(full) : source.Name;
                 candidates.Add(new Candidate(full, id, source.Id, name, wantModified ? FileModifiedTicks(full) : 0, index));
             }
         }
 
         candidates.Sort(Comparer(sources, sort));
-        var truncated = candidates.Count > MaxItems;
-        var kept = truncated ? candidates.GetRange(0, MaxItems) : candidates;
+        var truncated = ceilingHit || candidates.Count > MaxItems;
+        var kept = candidates.Count > MaxItems ? candidates.GetRange(0, MaxItems) : candidates;
 
         var items = new List<GalleryItem>(kept.Count);
         var paths = new Dictionary<string, string>(kept.Count);
