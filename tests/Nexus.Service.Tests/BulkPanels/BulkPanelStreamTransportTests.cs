@@ -58,6 +58,69 @@ public class BulkPanelStreamTransportTests
     }
 
     [Fact]
+    public void Page_touch_reaches_the_sink_as_fractions_of_the_frame()
+    {
+        var pipe = new RecordingPipe();
+        using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial");
+        var contacts = new ConcurrentQueue<PanelTouchContact>();
+        transport.BindTouch(contacts.Enqueue);
+        transport.Open();
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Down, 0, 10));
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Up, 0, 10));
+
+        Assert.True(SpinWait.SpinUntil(() => contacts.Count >= 2, 5000));
+        Assert.Equal(new[]
+        {
+            new PanelTouchContact(1, TouchPhase.Down, 10.5 / 1120, 539.5 / 540),
+            new PanelTouchContact(1, TouchPhase.Up, 10.5 / 1120, 539.5 / 540),
+        }, contacts.Take(2));
+    }
+
+    [Fact]
+    public void The_secondary_monitor_takes_touch_from_the_page_and_hands_it_back()
+    {
+        var pipe = new RecordingPipe();
+        using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
+        Assert.True(hub.Attach(pipe, null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        var contacts = new ConcurrentQueue<PanelTouchContact>();
+        transport.BindTouch(contacts.Enqueue);
+        bool wanted = true;
+        transport.BindSecondaryMonitor(() => wanted);
+        transport.Open();
+
+        transport.ApplySecondaryMonitor();
+        Assert.True(SpinWait.SpinUntil(() => transport.SecondaryMonitorState == SecondaryMonitorStates.Active, 5000));
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Down, 0, 10));
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Up, 0, 10));
+        Assert.True(SpinWait.SpinUntil(() => host.Monitor!.Touches.Count >= 2, 5000));
+        Assert.Empty(contacts);
+
+        wanted = false;
+        transport.ApplySecondaryMonitor();
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Down, 0, 10));
+        Assert.True(SpinWait.SpinUntil(() => !contacts.IsEmpty, 5000));
+        Assert.Equal(2, host.Monitor!.Touches.Count);
+    }
+
+    [Fact]
+    public void Discovery_advertises_touch_only_for_glass_that_reports_it()
+    {
+        using var zm = new BulkPanelHub(new ZMatricesPanelDriver(ZMatricesModel.MaxE87));
+        zm.Attach(new RecordingPipe(), null);
+        using var plain = new BulkPanelHub(new UndimmableDriver());
+        plain.Attach(new RecordingPipe(), null);
+
+        var profile = new BulkPanelDiscovery(zm).Discover().Single().Profile;
+        Assert.True(profile.SupportsTouch);
+        Assert.True(profile.BuildCapabilities().Touch);
+        Assert.False(new BulkPanelDiscovery(plain).Discover().Single().Profile.BuildCapabilities().Touch);
+    }
+
+    [Fact]
     public void Secondary_monitor_streams_the_desktop_and_injects_touch()
     {
         var pipe = new RecordingPipe();

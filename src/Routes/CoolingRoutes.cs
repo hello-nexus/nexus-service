@@ -462,23 +462,48 @@ public static class CoolingRoutes
             };
         }).AllowPanel();
 
-        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IConfigStore store) =>
+        app.MapPost("/cooling/presets", (CreateCoolingPresetBody body, IFanControlProvider f, IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = "Preset name required" });
             }
-            if (store.Load().Cooling.Presets.Count >= CoolingPresets.Cap)
+            if (body.Fresh && !gates.Cooling)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Cooling });
+            }
+            var cooling = store.Load().Cooling;
+            if (cooling.Presets.Count >= CoolingPresets.Cap)
             {
                 return Results.BadRequest(new CreateCoolingPresetResponse { Error = true, Msg = $"Preset cap of {CoolingPresets.Cap} reached" });
             }
-            var created = CoolingPresets.Capture(Guid.NewGuid().ToString("n"), name, store);
+            // With no preset active, fresh would discard the only copy of the live configuration.
+            var fresh = body.Fresh && cooling.Presets.Exists(p => p.Id == cooling.ActivePresetId);
+            var id = Guid.NewGuid().ToString("n");
+            var created = fresh ? CoolingPresets.CreateFresh(id, name) : CoolingPresets.Capture(id, name, store);
             store.Update(s =>
             {
+                if (fresh && s.Cooling.Presets.Find(p => p.Id == s.Cooling.ActivePresetId) is { } outgoing)
+                {
+                    CoolingPresets.CaptureInto(outgoing, s.Cooling);
+                }
                 s.Cooling.Presets.Add(created);
-                s.Cooling.ActivePresetId = created.Id;
+                // Fresh leaves the active id to Activate, which sets it once the defaults are applied.
+                if (!fresh)
+                {
+                    s.Cooling.ActivePresetId = created.Id;
+                }
             });
+            if (fresh)
+            {
+                // The live fans still follow the old configuration; replay the defaults so the active preset matches them.
+                if (!CoolingPresets.Activate(created.Id, store, f))
+                {
+                    return Results.NotFound(new ApiResponse { Error = true, Msg = "Preset not found" });
+                }
+                PanelTopics.BroadcastCooling(hub);
+            }
             return Results.Ok(new CreateCoolingPresetResponse { Preset = ToPresetDto(created), ActiveId = created.Id });
         }).AllowPanel();
 

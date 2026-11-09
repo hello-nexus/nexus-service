@@ -244,6 +244,8 @@ public static class LightingDevicesCatalog
         Native("HYTE",    "Y70 Touch",              "case",     "0x3402", "0x0C00", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C01", screen: true, rgb: false),
         Native("HYTE",    "Y70 Touch Infinite",     "case",     "0x3402", "0x0C02", screen: true, rgb: false),
+        // hidden: pre-release, out of the Supported Devices list until launch.
+        Native("HYTE",    "Y70 GT",                 "case",     "0x3402", "0x0C06", screen: true, hidden: true),
         Native("HYTE",    "Y70 Touch GW",           "case",     "-",      "-",      screen: true, rgb: false),
         Native("HYTE",    "Y70 Ina Touch",          "case",     "-",      "-",      screen: true, rgb: false),
 
@@ -333,8 +335,9 @@ public static class LightingDevicesCatalog
         Native("NZXT",    "Kraken X3",              "aio",      "0x1E71", "0x2007"),
         Native("NZXT",    "Kraken X3 RGB",          "aio",      "0x1E71", "0x2014"),
 
-        // ZMatrices LCD AIOs - PID from src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
+        // ZMatrices LCDs - PIDs from ZMatricesModel in src/Peripherals/BulkPanels/ZMatricesPanelDriver.cs.
         Native("Aftershock", "Glacier Matrix 360",  "aio",      "0x38C1", "0x0026", screen: true, rgb: false),
+        Native("ZMatrices",  "MAX E87",             "light",    "0x38C1", "0x0032", screen: true, rgb: false),
 
         // JPEG-over-HID cooler LCDs - PIDs from src/Peripherals/JpegPanels/JpegPanelModel.cs.
         // Screen only: Nexus drives the glass on these, not their RGB, except the HydroShift
@@ -385,7 +388,7 @@ public static class LightingDevicesCatalog
     };
 
     private static SupportedDeviceDto Native(
-        string vendor, string model, string category, string vid, string pid, bool screen = false, bool rgb = true) => new()
+        string vendor, string model, string category, string vid, string pid, bool screen = false, bool rgb = true, bool hidden = false) => new()
     {
         Vendor = vendor,
         Model = model,
@@ -394,6 +397,7 @@ public static class LightingDevicesCatalog
         ProductId = pid,
         Capabilities = BuildCapabilities(rgb, screen),
         Source = "nexus",
+        Hidden = hidden,
     };
 
     /// <summary>

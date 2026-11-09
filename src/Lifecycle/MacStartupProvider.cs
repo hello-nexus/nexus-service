@@ -79,9 +79,9 @@ public sealed class MacStartupProvider : IStartupProvider
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/nexus-service.log</string>
+    <string>{Diagnostics.SupportBundleExtras.LaunchdStdoutPath}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/nexus-service.err</string>
+    <string>{Diagnostics.SupportBundleExtras.LaunchdStderrPath}</string>
 </dict>
 </plist>";
 

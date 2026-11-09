@@ -91,11 +91,13 @@ public class BulkPanelConnectionWorkerTests
         try
         {
             Assert.True(await Eventually(() => hub.OpenAccessDenied));
+            Assert.True(hub.OpenFailed);
             Assert.False(hub.IsConnected);
 
             pipes.Deny = false;
             Assert.True(await Eventually(() => hub.IsConnected));
             Assert.False(hub.OpenAccessDenied);
+            Assert.False(hub.OpenFailed);
         }
         finally
         {

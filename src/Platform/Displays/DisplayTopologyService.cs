@@ -271,6 +271,7 @@ public sealed class DisplayTopologyService : IDisposable
     {
         HashSet<string>? ids = null;
         var y70DisplayId = "";
+        var bestY70Rank = int.MaxValue;
         var ddcOnlyVariant = "";
         var primaryId = "";
         var ownedId = "";
@@ -282,7 +283,12 @@ public sealed class DisplayTopologyService : IDisposable
                 ids.Add(info.Id);
                 if (primaryId.Length == 0 && info.IsPrimary) primaryId = info.Id;
                 if (ownedId.Length == 0 && IsOwnedVirtualDisplay(info)) ownedId = info.Id;
-                if (y70DisplayId.Length == 0 && IsY70Display(info.RawHardwareId)) y70DisplayId = info.Id;
+                var y70Rank = Y70DisplayProtocol.PanelRank(info.RawHardwareId);
+                if (y70Rank >= 0 && y70Rank < bestY70Rank)
+                {
+                    bestY70Rank = y70Rank;
+                    y70DisplayId = info.Id;
+                }
                 if (ddcOnlyVariant.Length == 0)
                     ddcOnlyVariant = Y70DisplayProtocol.DdcOnlyVariantForHardwareId(info.RawHardwareId);
             }

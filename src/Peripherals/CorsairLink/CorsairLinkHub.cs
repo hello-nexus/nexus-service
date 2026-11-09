@@ -330,9 +330,22 @@ public sealed class CorsairLinkHub : IDisposable
         if (refused) TraceNote("software mode refused");
         _softwareMode = true;
 
+        // A timed-out reply arrives late and would answer the firmware read, shifting every later reply by one.
+        for (var i = 0; softwareN <= 0 && i < 2 && !ForeignHostSeen && _owedReplies[CorsairLinkProtocol.CmdSoftwareMode[0]] > 0; i++)
+        {
+            if (ReadStrippedLocked(ReadTimeoutMs) <= 0) break;
+            if (_read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdSoftwareMode[0]) TraceNote("drained late software-mode reply");
+        }
+
         TraceNote("step=firmware");
         var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
-        if (fw >= 8)
+        // A stray reply answered the read and the firmware major gates the port mapping. The real reply may already be queued behind it, so read that first; ask again only when nothing is queued.
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] != CorsairLinkProtocol.CmdGetFirmware[0])
+        {
+            var queued = ReadStrippedLocked(ReadTimeoutMs);
+            fw = queued > 0 ? queued : Transfer(CorsairLinkProtocol.CmdGetFirmware);
+        }
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdGetFirmware[0])
         {
             State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
             _firmwareMajor = _read[4];
@@ -765,10 +778,10 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     // Bare interrupt-IN read with no command write, report-id stripped like Transfer.
-    private int ReadStrippedLocked()
+    private int ReadStrippedLocked(int timeoutMs = ResyncReadTimeoutMs)
     {
         if (_device == null) return -1;
-        var n = _device.Read(_readRaw, ResyncReadTimeoutMs);
+        var n = _device.Read(_readRaw, timeoutMs);
         if (n <= 0) return n;
         if (_trace != null) TraceNote(_traceQuiet ? $"drain n={n}" : $"drain n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);

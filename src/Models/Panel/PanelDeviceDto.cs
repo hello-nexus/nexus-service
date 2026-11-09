@@ -155,17 +155,51 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }
+    /// <summary>
+    /// Storage slot for the layout of a glass mounted at 90 or 270 whose render size swaps (a non-square pushed-frame
+    /// panel). <see cref="Layout"/>, <see cref="WidgetSize"/> and <see cref="GridSlots"/> stay the 0/180 slot, byte for
+    /// byte what earlier builds stored. Persisted only: a response clone carries the slot for the record's current
+    /// rotation in <see cref="Layout"/> and leaves these null.
+    /// </summary>
+    public PanelLayoutDto? PortraitLayout { get; set; }
+    /// <summary>The 90/270 slot's <see cref="WidgetSize"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
+    public string? PortraitWidgetSize { get; set; }
+    /// <summary>The 90/270 slot's <see cref="GridSlots"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
+    public int? PortraitGridSlots { get; set; }
+    /// <summary>
+    /// Persisted only. Set on a record whose glass has its own portrait mode (the 8.8 inch strip) once its layout is
+    /// stored per orientation, so the schema 32 migration never copies a layout it has already placed.
+    /// </summary>
+    public bool? LayoutSlots { get; set; }
+    /// <summary>
+    /// Response-only: the size in CSS pixels this panel renders at for its current rotation, on glass that takes
+    /// quarter turns. A non-square pushed-frame panel swaps width and height at 90 and 270 while
+    /// <see cref="PanelDeviceCapabilities.CssWidth"/> and CssHeight keep the glass's native size. Null where the
+    /// glass takes no quarter turn; read the capabilities then. Never persisted.
+    /// </summary>
+    public int? RenderWidth { get; set; }
+    /// <summary>Response-only, see <see cref="RenderWidth"/>.</summary>
+    public int? RenderHeight { get; set; }
     /// <summary>Downgrade guard. When non-null it replaces <see cref="Enabled"/> (see <see cref="Nexus.Service.Panel.PanelHosting"/>)
     /// and <see cref="Enabled"/> is stored false, so a build that predates it hosts no kiosk for this record. Persisted only.</summary>
     public bool? Hosted { get; set; }
     /// <summary>Legacy desktop widgets waiting for the panel's own web client to place them on the grid
     /// (planDesktopImport), which then clears it through <see cref="PanelDevicePatch.ClearDesktopImport"/>.</summary>
     public DesktopImportDto? DesktopImport { get; set; }
-    /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
-    /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
+    /// <summary>How the glass is mounted: clockwise degrees, one of 0/90/180/270, within
+    /// <see cref="SupportedRotations"/>. A cooler LCD's pump head rotates with the tubing. Applied
+    /// by the transport (the panel's own firmware turn where it has one), not the renderer, so the
+    /// editor and previews stay upright. Null = 0. Responses always carry a number.</summary>
+    public int? Rotation { get; set; }
+    /// <summary>
+    /// Response-only: the rotations this glass takes, from its surface and size. Never persisted
+    /// (null on stored records).
+    /// </summary>
+    public IReadOnlyList<int>? SupportedRotations { get; set; }
+    /// <summary>Read from settings written by a build that predates <see cref="Rotation"/>, then
+    /// folded into it by PanelRotationMigration and written no more. Never present in a response.</summary>
     public bool? Flip180 { get; set; }
-    /// <summary>Mirror the pushed frame horizontally; with <see cref="Flip180"/> that is a
-    /// vertical flip. Null = off.</summary>
+    /// <summary>Mirror the pushed frame horizontally before it is rotated. Null = off.</summary>
     public bool? Mirror { get; set; }
     /// <summary>Backlight percent 0-100 for a cooler LCD whose panel takes a brightness
     /// command. Null = the panel's default. Ignored by surfaces that cannot dim.</summary>
@@ -180,12 +214,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
     /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
     public bool? SecondaryMonitor { get; set; }
-    /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
-    /// capabilities carry SupportsPortrait; null = landscape.</summary>
+    /// <summary>Legacy, as <see cref="Flip180"/>: the strip's portrait mode is now <see cref="Rotation"/> of 90 or 270.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
-    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
-    public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap for this device: a streamed display's session rate and secondary-monitor pacing, or how often a display-bound panel page draws. Null = the device's own rate.</summary>
     public int? FpsCap { get; set; }
     /// <summary>"large", "midlarge", "medium", "small", "compact" or "xsmall"; null = the panel's
@@ -300,6 +330,12 @@ public interface IPanelPersonalization
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
     string? WidgetSize { get; set; }
     int? GridSlots { get; set; }
+    /// <summary>The layout for a glass turned a quarter whose render size swaps; <see cref="Layout"/> is the other slot.</summary>
+    PanelLayoutDto? PortraitLayout { get; set; }
+    string? PortraitWidgetSize { get; set; }
+    int? PortraitGridSlots { get; set; }
+    /// <summary>The 8.8 inch strip's layout in this payload is stored per orientation; absent on one an older build saved.</summary>
+    bool? LayoutSlots { get; set; }
 }
 
 /// <summary>
@@ -346,6 +382,10 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
     public int? GridSlots { get; set; }
+    public PanelLayoutDto? PortraitLayout { get; set; }
+    public string? PortraitWidgetSize { get; set; }
+    public int? PortraitGridSlots { get; set; }
+    public bool? LayoutSlots { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
@@ -368,6 +408,8 @@ public sealed class PanelPresetsResponse
 public sealed class PanelPresetNameBody
 {
     public string Name { get; set; } = "";
+    /// <summary>Create the preset with the clean-install starter layout instead of snapshotting the live one. Only the create routes read it.</summary>
+    public bool Fresh { get; set; }
 }
 
 /// <summary>
@@ -403,10 +445,8 @@ public sealed class PanelDeviceCapabilities
     public bool? SupportsBrightness { get; set; }
     /// <summary>The service can turn this panel into a Windows secondary monitor.</summary>
     public bool? SupportsSecondaryMonitor { get; set; }
-    /// <summary>The glass can be mounted either way up and the record's Portrait picks the render shape.</summary>
+    /// <summary>The glass can be mounted either way up and the record's Rotation of 90 or 270 picks the tall render shape.</summary>
     public bool? SupportsPortrait { get; set; }
-    /// <summary>The stream can render below native and scale back up, so the record's HighResolution applies.</summary>
-    public bool? SupportsRenderScale { get; set; }
 }
 
 /// <summary>
@@ -490,11 +530,11 @@ public sealed class PanelDevicePatch
     public int? GridSlots { get; set; }
     /// <summary>True drops the record's pending <see cref="PanelDeviceRecord.DesktopImport"/>; sent with the planned Layout and GridSlots.</summary>
     public bool? ClearDesktopImport { get; set; }
-    /// <summary>Turn the pushed frame 180 degrees; a cooler LCD's pump head rotates with the
-    /// tubing. Applied in the transport, not the renderer. Pushed-frame panels only; null = off.</summary>
+    /// <summary>Clockwise degrees, 0/90/180/270; anything outside the record's SupportedRotations is rejected with a 400. Null = leave it.</summary>
+    public int? Rotation { get; set; }
+    /// <summary>Legacy alias kept for one release: true is rotation 180, false is 0 (keeping a portrait turn). Ignored when <see cref="Rotation"/> is sent.</summary>
     public bool? Flip180 { get; set; }
-    /// <summary>Mirror the pushed frame horizontally; with <see cref="Flip180"/> that is a
-    /// vertical flip. Null = off.</summary>
+    /// <summary>Mirror the pushed frame horizontally before it is rotated. Null = off.</summary>
     public bool? Mirror { get; set; }
     /// <summary>Backlight percent 0-100 for a cooler LCD whose panel takes a brightness
     /// command. Null = the panel's default. Ignored by surfaces that cannot dim.</summary>
@@ -505,11 +545,9 @@ public sealed class PanelDevicePatch
     /// <summary>Windows drives this glass as a secondary monitor instead of Nexus content.
     /// Pushed-frame panels whose capabilities carry SupportsSecondaryMonitor; null = off.</summary>
     public bool? SecondaryMonitor { get; set; }
-    /// <summary>The glass is mounted on its short side, so the panel renders tall. Panels whose
-    /// capabilities carry SupportsPortrait; null = landscape.</summary>
+    /// <summary>Legacy alias kept for one release: true is rotation 90 (270 with a half turn already set) on panels whose capabilities carry SupportsPortrait. Ignored when <see cref="Rotation"/> is sent.</summary>
     public bool? Portrait { get; set; }
-    /// <summary>Render at the glass's native resolution instead of a lower one. Panels whose
-    /// capabilities carry SupportsRenderScale; null = lower (high performance).</summary>
+    /// <summary>Ignored: every streamed panel renders at native resolution.</summary>
     public bool? HighResolution { get; set; }
     /// <summary>Frame rate cap in fps, clamped to PanelDeviceRegistry.MaxFpsCap; 0 or less clears it (the device's own rate). Null = leave it.</summary>
     public int? FpsCap { get; set; }

@@ -799,6 +799,22 @@ public class GlacialLcdScreenTests
     }
 
     [Theory]
+    [InlineData("Temperature", 43.5f, "44.0℃")]
+    [InlineData("Temperature", 43.4f, "43.0℃")]
+    [InlineData("Load", 42.4f, "42%")]
+    [InlineData("Power", 125.5f, "126W")]
+    [InlineData("Frequency", 59.5f, "60Hz")]
+    [InlineData("Flow", 99.6f, "100L/h")]
+    [InlineData("Noise", 31.4f, "31dBA")]
+    [InlineData("Voltage", 0.85f, "0.850↊")]
+    [InlineData("Current", 1.5f, "1.500A")]
+    [InlineData("FrameTime", 16.66f, "16.7ms")]
+    public void Whole_numbers_round_the_rounded_types_and_keep_the_precise_ones(string type, float value, string expected)
+    {
+        Assert.Equal(expected, GlacialLcdScreen.FormatValue(type, value, wholeNumbers: true));
+    }
+
+    [Theory]
     // Glyph forms the vendor app sent in the captures.
     [InlineData("Fan", 630f, "630↌")]
     [InlineData("Clock", 3600f, "3.600㎓")]
@@ -809,6 +825,9 @@ public class GlacialLcdScreenTests
     [InlineData("Power", 125.46f, "125.5W")]
     [InlineData("Current", 1.5f, "1.500A")]
     [InlineData("Frequency", 60f, "60Hz")]
+    [InlineData("Flow", 12.34f, "12L/h")]
+    [InlineData("Noise", 31.25f, "31.3dBA")]
+    [InlineData("FrameTime", 16.66f, "16.7ms")]
     [InlineData("Throughput", 1536f, "1.5KB/s")]
     [InlineData("Rate", 5242880f, "5.00MB/s")]
     [InlineData("Data", 12.345f, "12.35GB")]

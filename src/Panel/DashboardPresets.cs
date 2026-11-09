@@ -40,13 +40,17 @@ public static class DashboardPresets
         return true;
     }
 
-    /// <summary>Saves the live layout as a new active preset; false at <see cref="Cap"/>.</summary>
-    public static bool Create(PanelSettings panel, string name)
+    /// <summary>Saves the live layout as a new active preset, or with <paramref name="fresh"/> the clean-install starter dashboard, which also replaces the live layout; false at <see cref="Cap"/>.</summary>
+    public static bool Create(PanelSettings panel, string name, bool fresh = false)
     {
         panel.DashboardPresets ??= new List<DashboardPreset>();
         if (panel.DashboardPresets.Count >= Cap)
             return false;
+        // With no preset active, fresh would discard the only copy of the live layout.
+        fresh &= panel.DashboardPresets.Exists(p => p.Id == panel.DashboardActivePresetId);
         CaptureActive(panel);
+        if (fresh)
+            panel.DashboardLayout = PanelLayoutDefaults.ForSurface(PanelSurfaces.Desktop);
         var preset = new DashboardPreset { Id = NewId(), Name = name, Layout = PanelPresets.CloneLayout(panel.DashboardLayout) };
         panel.DashboardPresets.Add(preset);
         panel.DashboardActivePresetId = preset.Id;

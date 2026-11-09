@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
@@ -15,20 +14,22 @@ namespace Nexus.Service.Panel.Streams;
 internal sealed class SecondaryMonitorFeed : IDisposable
 {
     private const int FrameWaitMs = 1000;
-    private const int InputReadMs = 250;
     private const int JoinMs = 3000;
     private const int CapReadMs = 500;
 
     private readonly IVirtualMonitorHost _host;
     private readonly BulkPanelHub _hub;
     private readonly Func<byte[], bool> _push;
-    private readonly Func<(bool Flip180, bool Mirror)> _orientation;
+    private readonly Func<(int Rotation, bool Mirror)> _orientation;
     private readonly Action _stateChanged;
     private readonly Func<int?>? _fpsCap;
+    // The size the pushed frames have when the transport renders turned; 0 reads the glass's size at start.
+    private readonly int _frameWidth;
+    private readonly int _frameHeight;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _monitorLock = new();
     private readonly Thread _frames;
-    private Thread? _touch;
+    private BulkPanelTouchReader? _touch;
     private IVirtualMonitor? _monitor;
     private volatile string _state = SecondaryMonitorStates.Starting;
     private volatile bool _finished;
@@ -37,11 +38,15 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         IVirtualMonitorHost host,
         BulkPanelHub hub,
         Func<byte[], bool> push,
-        Func<(bool Flip180, bool Mirror)> orientation,
+        Func<(int Rotation, bool Mirror)> orientation,
         Action stateChanged,
-        Func<int?>? fpsCap = null)
+        Func<int?>? fpsCap = null,
+        int frameWidth = 0,
+        int frameHeight = 0)
     {
         _fpsCap = fpsCap;
+        _frameWidth = frameWidth;
+        _frameHeight = frameHeight;
         _host = host;
         _hub = hub;
         _push = push;
@@ -87,8 +92,8 @@ internal sealed class SecondaryMonitorFeed : IDisposable
 
     private void PumpFrames()
     {
-        int width = _hub.Width;
-        int height = _hub.Height;
+        int width = _frameWidth > 0 ? _frameWidth : _hub.Width;
+        int height = _frameHeight > 0 ? _frameHeight : _hub.Height;
         var monitor = _host.Create(width, height, _hub.Driver.Dpi, _cts.Token, out var failure);
         if (monitor is null)
         {
@@ -107,7 +112,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         }
         if (_hub.Driver.HasTouch)
         {
-            _touch = new Thread(() => RunTouchGuarded(monitor, width, height)) { IsBackground = true, Name = $"secondary-monitor-touch-{_hub.Driver.HandlerId}" };
+            _touch = new BulkPanelTouchReader(_hub, _hub.Width, _hub.Height, width, height, _orientation, injection => SafeInject(monitor, injection), "secondary-monitor-touch", _cts.Token);
             _touch.Start();
         }
 
@@ -182,77 +187,6 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         return Stopwatch.Frequency / Math.Max(1, StreamFpsCap.Effective(_hub.Driver.Fps, cap));
     }
 
-    private void RunTouchGuarded(IVirtualMonitor monitor, int width, int height)
-    {
-        try
-        {
-            RunTouch(monitor, width, height);
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Error($"[{_hub.Driver.HandlerId}] touch reader stopped: {ex.GetType().Name}: {ex.Message}");
-        }
-    }
-
-    private void RunTouch(IVirtualMonitor monitor, int width, int height)
-    {
-        var parser = new ZMatricesTouchParser();
-        var reports = new List<ZMatricesTouchReport>();
-        var tracker = new TouchContactTracker();
-        var injections = new List<TouchContactTracker.Injection>();
-        var buffer = new byte[64];
-        bool logged = false;
-        while (!_cts.IsCancellationRequested)
-        {
-            int read = _hub.ReadInput(buffer, InputReadMs);
-            if (read < 0)
-            {
-                if (_cts.Token.WaitHandle.WaitOne(500))
-                {
-                    break;
-                }
-                continue;
-            }
-            if (read == 0)
-            {
-                continue;
-            }
-            reports.Clear();
-            parser.Feed(buffer.AsSpan(0, read), reports);
-            foreach (var report in reports)
-            {
-                bool mapped = ZMatricesTouchParser.TryMapToFrame(report, width, height, out int x, out int y);
-                // The frame on the glass was turned for the mount; undo that to land on the desktop.
-                var (flip180, mirror) = _orientation();
-                if (flip180)
-                {
-                    (x, y) = (width - 1 - x, height - 1 - y);
-                }
-                if (mirror)
-                {
-                    x = width - 1 - x;
-                }
-                injections.Clear();
-                tracker.Apply(report.TrackId, report.Phase, x, y, mapped, injections);
-                foreach (var injection in injections)
-                {
-                    bool ok = SafeInject(monitor, injection);
-                    if (!logged)
-                    {
-                        logged = true;
-                        ServiceLog.Info($"[{_hub.Driver.HandlerId}] first touch {injection.Phase} at {injection.X},{injection.Y} injected={ok}");
-                    }
-                }
-            }
-        }
-        injections.Clear();
-        tracker.ReleaseAll(injections);
-        foreach (var injection in injections)
-        {
-            SafeInject(monitor, injection);
-        }
-    }
-
     // The helper pipe can break under us (logoff, helper restart); an escaped exception on
     // this raw thread would end the service.
     private bool SafeInject(IVirtualMonitor monitor, TouchContactTracker.Injection injection)
@@ -275,7 +209,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         {
             _frames.Join(JoinMs);
         }
-        _touch?.Join(JoinMs);
+        _touch?.Dispose();
         IVirtualMonitor? monitor;
         lock (_monitorLock)
         {

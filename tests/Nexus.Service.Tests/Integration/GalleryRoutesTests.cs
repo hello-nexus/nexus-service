@@ -105,7 +105,7 @@ public sealed class GalleryRoutesTests : IDisposable
         var pairing = _factory.Services.GetRequiredService<PanelPhonePairingService>();
         pairing.CreatePairQr();
         var pairToken = pairing.GetOutstandingPairTokens()[0].Token;
-        var claim = pairing.ClaimCore(pairToken, "Test Phone", "TestUA", "192.168.1.50", "itest-device",
+        var claim = pairing.ClaimCoreApproved(pairToken, "Test Phone", "TestUA", "192.168.1.50", "itest-device",
             overRelay: false, claimedOverHttps: true);
         Assert.True(claim.Ok, claim.Error);
 

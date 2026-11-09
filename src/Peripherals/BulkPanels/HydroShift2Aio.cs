@@ -32,6 +32,19 @@ public sealed class HydroShift2Aio : BackgroundService
     private const int RingRetryMs = 5000;
     private const int RingRetryMaxMs = 40_000;
 
+    /// <summary>
+    /// At a cold boot the firmware draws its coolant overlay after the connect-time wipe, so the
+    /// wipe is sent once more this long after the unit is first read.
+    /// </summary>
+    internal const int ConnectRewipeMs = 5000;
+
+    /// <summary>A unit that lost power in sleep reboots to its own screen behind an open pipe, so the wipe is sent again once it has settled.</summary>
+    internal const int ResumeRewipeMs = 12_000;
+
+    /// <summary>An unanswered scheduled wipe is retried this many times, spaced past the stall it causes.</summary>
+    internal const int RewipeRetries = 3;
+    internal const int RewipeRetryMs = RingRetryMs;
+
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
     private readonly Func<string?, bool> _wirelessOwns;
@@ -58,6 +71,11 @@ public sealed class HydroShift2Aio : BackgroundService
     private bool _wasAvailable;
     private bool _driving;
     private volatile bool _overlayClear;
+    private bool _rewipeArmed = true;
+    private long _rewipeAt;
+    private int _rewipeRetriesLeft;
+    private volatile bool _resumed;
+    private long _ringResendAt;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
@@ -85,6 +103,9 @@ public sealed class HydroShift2Aio : BackgroundService
 
     /// <summary>Wipes what the firmware drew over the glass once the unit is read, unless it shows its own screen by then.</summary>
     public void ClearScreenOverlay() => _overlayClear = true;
+
+    /// <summary>Called on a system resume; the loop wipes the overlay again and re-sends the ring once the unit has settled.</summary>
+    public void OnSystemResumed() => _resumed = true;
 
     /// <summary>Connected over USB and not handed to the wireless link.</summary>
     public bool IsAvailable => _hub.IsConnected && !_wirelessOwns(Params?.Mac);
@@ -177,6 +198,11 @@ public sealed class HydroShift2Aio : BackgroundService
             _ringRetryMs = 0;
             _wirelessHeld = false;
             _overlayClear = false;
+            _rewipeArmed = true;
+            _rewipeAt = 0;
+            _rewipeRetriesLeft = 0;
+            _resumed = false;
+            _ringResendAt = 0;
             _ownScreen = null;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
@@ -212,6 +238,20 @@ public sealed class HydroShift2Aio : BackgroundService
         if (Params is { } current)
         {
             var own = ShowsOwnScreen;
+            if (_rewipeArmed)
+            {
+                _rewipeArmed = false;
+                _rewipeAt = now + ConnectRewipeMs;
+                _rewipeRetriesLeft = RewipeRetries;
+            }
+            if (_resumed)
+            {
+                _resumed = false;
+                _rewipeAt = now + ResumeRewipeMs;
+                _rewipeRetriesLeft = RewipeRetries;
+                _ringResendAt = now + ResumeRewipeMs;
+                ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] resumed; wiping the firmware overlay again once the display settles");
+            }
             if (own != _ownScreen)
             {
                 // Nexus widgets taking the glass back wipe the AIO's screen; after a connect the handshake already did.
@@ -222,12 +262,36 @@ public sealed class HydroShift2Aio : BackgroundService
                 _ownScreen = own;
                 RaiseScreenOwnerChanged(current.Mac, own);
             }
-            if (_overlayClear)
+            var rewipe = _rewipeAt != 0 && now >= _rewipeAt;
+            if (rewipe)
+            {
+                _rewipeAt = 0;
+            }
+            if (_overlayClear || rewipe)
             {
                 _overlayClear = false;
-                if (!own)
+                var attempted = false;
+                if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
                 {
-                    _hub.Exchange(pipe => _driver.ClearOverlay(pipe), false);
+                    ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay wipe unanswered");
+                    if (_ringResendAt != 0)
+                    {
+                        // An upload right behind an unanswered wipe would eat the spacing its retry relies on.
+                        _ringResendAt = Math.Max(_ringResendAt, now + RewipeRetryMs);
+                    }
+                    if (rewipe && _rewipeRetriesLeft > 0)
+                    {
+                        _rewipeRetriesLeft--;
+                        _rewipeAt = now + RewipeRetryMs;
+                    }
+                }
+            }
+            if (_ringResendAt != 0 && now >= _ringResendAt && _rewipeAt == 0)
+            {
+                _ringResendAt = 0;
+                lock (_lock)
+                {
+                    _ringDirty = _ring is not null;
                 }
             }
         }

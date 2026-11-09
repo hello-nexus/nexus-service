@@ -357,6 +357,20 @@ public static class PanelRoutes
             return Results.Json(record, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
+        // Live slider step: puts the level on the backlight with no record write or broadcast, so a
+        // drag stays cheap. The record POST commits the final value; a drag nobody finishes is
+        // written to the record by the coordinator's idle sweep.
+        app.MapPost("/panel/devices/{id}/backlight-preview", (string id, PanelDevicePatch body, PanelDeviceRegistry registry, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
+        {
+            var record = registry.Get(id);
+            if (record is null)
+                return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (record.Capabilities?.SupportsBrightness != true || !body.LcdBrightness.HasValue)
+                return Results.Json(ApiResponse.Fail("backlight_not_supported"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            streams.PreviewBrightness(id, body.LcdBrightness.Value);
+            return Results.Ok(ApiResponse.Ok("previewed"));
+        }).AllowPanel();
+
         app.MapPost("/panel/devices/{id}", (string id, PanelDevicePatch body, HttpContext ctx, PanelDeviceRegistry registry, MultiplexHub hub, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, Nexus.Service.Deck.ListedAppIds listed, Nexus.Service.Telemetry.ITelemetry telemetry) =>
         {
             // A panel session may rearrange or remove the deck keys it has, but
@@ -364,7 +378,11 @@ public static class PanelRoutes
             // plays an audio file is desktop-only: PanelDeckRoutes executes those
             // in the user's session on the panel's behalf.
             if (body.Layout is not null && !HasServiceToken(ctx, tokens)
-                && Nexus.Service.Deck.DeckLayoutPolicy.IntroducesPrivilegedActions(body.Layout, registry.Get(id)?.Layout, listed.Snapshot()))
+                && Nexus.Service.Deck.DeckLayoutPolicy.IntroducesPrivilegedActions(
+                    body.Layout,
+                    // A patch that also turns the glass lands in the other orientation's slot, which this layout is not compared against.
+                    body.Rotation.HasValue || body.Flip180.HasValue || body.Portrait.HasValue ? null : registry.Get(id)?.Layout,
+                    listed.Snapshot()))
             {
                 return Results.Json(ApiResponse.Fail("deck_action_requires_desktop"), AppJsonContext.Default.ApiResponse, statusCode: 403);
             }
@@ -374,25 +392,42 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            var layoutBefore = body.Layout is null ? null : registry.Get(id)?.Layout;
-            var updated = registry.Patch(id, body);
+            if ((body.Rotation.HasValue || body.Flip180.HasValue || body.Portrait.HasValue)
+                && registry.Get(id) is { } rotating
+                && !PanelRotation.TryResolve(rotating, body, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_rotation"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            var before = registry.Get(id);
+            var layoutsBefore = body.Layout is null ? null : registry.StoredLayouts(id);
+            var updated = body.LcdBrightness.HasValue
+                ? streams.CommitBrightness(id, () => registry.Patch(id, body))
+                : registry.Patch(id, body);
             if (updated is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
             // Registry mutations go through _store.Update -> OnChanged ->
             // ProfileManager.MarkDirty, so a look edit reaches the active
             // profile's Panels data on the next flush with no explicit pulse.
-            if (body.LcdBrightness.HasValue)
-                streams.ApplyBrightness(updated.Id);
             if (body.SecondaryMonitor.HasValue)
             {
                 streams.ApplySecondaryMonitor(updated.Id);
                 streams.Wake();
             }
-            if (body.HighResolution.HasValue || body.FpsCap.HasValue)
+            // A glass turned into or out of the quarter class renders at another size: the next discovery pass re-mints its session.
+            if (body.FpsCap.HasValue
+                || (before is not null && PanelLayoutSlots.UsesPortraitSlot(before) != PanelLayoutSlots.UsesPortraitSlot(updated)))
+            {
                 streams.Wake();
+            }
             BroadcastDeviceChanged(hub, id);
             if (body.Layout is not null)
-                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, layoutBefore, updated.Layout);
+            {
+                // Compared slot to slot: a patch that also turns the glass lands in the other slot.
+                var slotBefore = layoutsBefore is { } stored
+                    ? (PanelLayoutSlots.UsesPortraitSlot(updated) ? stored.Portrait : stored.Landscape)
+                    : null;
+                Nexus.Service.Telemetry.AppLifecycleTelemetry.LayoutChanged(telemetry, slotBefore, updated.Layout);
+            }
             return Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         }).AllowPanel();
 
@@ -406,16 +441,18 @@ public static class PanelRoutes
             return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
         });
 
-        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry) =>
+        app.MapPost("/panel/devices/{id}/presets", (string id, PanelPresetNameBody body, PanelDeviceRegistry registry, MultiplexHub hub) =>
         {
             var name = (body.Name ?? "").Trim();
             if (name.Length == 0)
                 return Results.BadRequest(ApiResponse.Fail("preset name required"));
-            var presets = registry.CreatePreset(id, name, out var capped);
+            var presets = registry.CreatePreset(id, name, out var capped, body.Fresh);
             if (capped)
                 return Results.BadRequest(ApiResponse.Fail($"Preset cap of {PanelPresets.Cap} reached"));
             if (presets is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            if (body.Fresh)
+                BroadcastDeviceChanged(hub, id);
             return Results.Json(presets, AppJsonContext.Default.PanelPresetsResponse);
         });
 
@@ -555,7 +592,11 @@ public static class PanelRoutes
             try
             {
                 ResetPersonalization(registry, bgLibrary, id);
-                registry.ResetHardwareSettings(id);
+                var streams = sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+                if (streams is null)
+                    registry.ResetHardwareSettings(id);
+                else
+                    streams.CommitBrightness(id, () => registry.ResetHardwareSettings(id));
                 registry.Patch(id, new PanelDevicePatch { RestrictedMode = false });
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
                 RestoreQSeriesDisplayDefaults(store, sp);
@@ -574,7 +615,10 @@ public static class PanelRoutes
         {
             if (!HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
-            var record = registry.ResetHardwareSettings(id);
+            var resetStreams = sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>();
+            var record = resetStreams is null
+                ? registry.ResetHardwareSettings(id)
+                : resetStreams.CommitBrightness(id, () => registry.ResetHardwareSettings(id));
             if (record is null)
                 return Results.NotFound(ApiResponse.Fail("device not found"));
             sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.ApplySecondaryMonitor(id);
@@ -654,12 +698,13 @@ public static class PanelRoutes
                 : Results.Json(updated, AppJsonContext.Default.PanelDeviceRecord);
         });
 
-        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRemover remover, TokenService tokens) =>
+        app.MapDelete("/panel/devices/{id}", (string id, HttpContext ctx, PanelDeviceRemover remover, TokenService tokens, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams) =>
         {
             if (!HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             if (!remover.Remove(id))
                 return Results.NotFound(ApiResponse.Fail("device not found"));
+            streams.ClearBrightnessPreview(id);
             return Results.Ok(ApiResponse.Ok("removed"));
         });
     }
