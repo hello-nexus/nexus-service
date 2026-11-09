@@ -471,6 +471,7 @@ public class LianLiLightingFrameWriterTests
     [InlineData(0x02, 100)]
     [InlineData(0x03, 50)]
     [InlineData(0x08, 0)]
+    [InlineData(0x55, 200)]
     public void Brightness_scaling_follows_the_hardware_steps(byte brightnessByte, byte expected)
     {
         var colours = new byte[] { 200 };
