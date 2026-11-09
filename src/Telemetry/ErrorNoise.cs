@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 
 namespace Nexus.Service.Telemetry;
 
@@ -34,13 +35,14 @@ internal static class ErrorNoise
     /// <summary>
     /// Kestrel logs at Error when a client leaves mid-response. A download cut short of its Content-Length counts only
     /// when the request's client had already aborted (<paramref name="clientAborted"/>), so a handler that truncates a
-    /// response still reports. A TLS write to a connection the peer already closed carries no request.
+    /// response still reports. A TLS write to a connection the peer already closed carries no request. Socket buffer
+    /// exhaustion is host-wide and not actionable, except at Critical, where it can mean a dead listener.
     /// </summary>
-    internal static bool IsKestrelClientDisconnect(string category, Exception ex, bool clientAborted)
+    internal static bool IsKestrelClientDisconnect(string category, Exception ex, bool clientAborted, LogLevel level = LogLevel.Error)
     {
         if (!category.StartsWith(KestrelCategory, StringComparison.Ordinal))
             return false;
-        if (IsNoBufferSpace(ex))
+        if (level < LogLevel.Critical && IsNoBufferSpace(ex))
             return true;
         return ex switch
         {
@@ -50,12 +52,12 @@ internal static class ErrorNoise
         };
     }
 
-    /// <summary>WSAENOBUFS (10055): the OS ran out of socket buffer space, a host-wide condition Nexus cannot act on.</summary>
+    /// <summary>The OS ran out of socket buffer space (WSAENOBUFS).</summary>
     private static bool IsNoBufferSpace(Exception? ex)
     {
         for (var e = ex; e is not null; e = e.InnerException)
         {
-            if (e is SocketException { SocketErrorCode: SocketError.NoBufferSpaceAvailable } or SocketException { NativeErrorCode: 10055 })
+            if (e is SocketException { SocketErrorCode: SocketError.NoBufferSpaceAvailable })
                 return true;
         }
         return false;

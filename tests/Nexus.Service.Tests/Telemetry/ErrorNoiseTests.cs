@@ -59,6 +59,7 @@ public class ErrorNoiseTests
         var sock = new System.Net.Sockets.SocketException(10055);
         Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel, sock, clientAborted: false));
         Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new IOException("write failed", sock), clientAborted: false));
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, sock, clientAborted: false, Microsoft.Extensions.Logging.LogLevel.Critical));
         Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new System.Net.Sockets.SocketException(10054), clientAborted: false));
         Assert.False(ErrorNoise.IsKestrelClientDisconnect("Nexus.Service.Routes", sock, clientAborted: false));
     }

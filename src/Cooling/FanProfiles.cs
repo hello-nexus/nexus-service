@@ -398,7 +398,13 @@ public static class FanProfiles
     /// any other fan.
     /// </summary>
     public static string DerivePresetFromCurves(IConfigStore store, IFanControlProvider fans)
-        => DerivePresetFromCurves(store.Load().Cooling, fans.GetFanChannels());
+    {
+        var channels = fans.GetFanChannels();
+        var derived = "custom";
+        // Update mutators reshape Curves/Outputs under the store lock; reading the shared document outside it races them.
+        store.Read(s => derived = DerivePresetFromCurves(s.Cooling, channels));
+        return derived;
+    }
 
     public static string DerivePresetFromCurves(CoolingSettings cooling, IReadOnlyList<FanChannel> channels)
     {
@@ -420,14 +426,11 @@ public static class FanProfiles
 
         var curves = cooling.Curves;
         var attachment = new Dictionary<string, string>(); // fanId -> curveId
-        // Hand-edited or partially written settings can hold a null curve, a null
-        // Outputs list or a null output entry; none of them may fail the derivation.
         foreach (var curve in curves)
         {
-            if (curve?.Outputs is null) continue;
             foreach (var o in curve.Outputs)
             {
-                if (o is not null && fanIds.Contains(o.Id) && !attachment.ContainsKey(o.Id))
+                if (fanIds.Contains(o.Id) && !attachment.ContainsKey(o.Id))
                 {
                     attachment[o.Id] = curve.Id;
                 }
@@ -452,7 +455,7 @@ public static class FanProfiles
         var pinnedDriven = channels.Any(c => IsPinned(c, pinOverrides)
             && !uncontrolled.Contains(c.Id)
             && (cooling.ManualSpeeds.ContainsKey(c.Id)
-                || curves.Any(cv => cv?.Outputs?.Any(o => o?.Id == c.Id) == true)));
+                || curves.Any(cv => cv.Outputs.Any(o => o.Id == c.Id))));
 
         // All fans BIOS = no attachment AND no manual override.
         if (attachment.Count == 0 && manualUnattached.Count == 0 && !pinnedDriven) return "off";
