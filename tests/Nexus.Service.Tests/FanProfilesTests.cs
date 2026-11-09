@@ -381,7 +381,7 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
-    public void DerivePresetFromCurves_ReadsUnderTheStoreLockWhileCurvesAreEdited()
+    public async Task DerivePresetFromCurves_ReadsUnderTheStoreLockWhileCurvesAreEdited()
     {
         FanProfiles.Apply("balanced", _fans, _store);
         using var stop = new CancellationTokenSource();
@@ -407,7 +407,7 @@ public class FanProfilesTests : IDisposable
         finally
         {
             stop.Cancel();
-            writer.GetAwaiter().GetResult();
+            await writer;
         }
     }
 
