@@ -152,17 +152,9 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     private int Scaled(string panelDeviceId, int slider) => ScheduleFollow?.Scale(FollowKey(panelDeviceId), slider) ?? slider;
 
-    // A level read back from the panel may be the cap, not the slider; this is the slider it implies.
-    private int Unscaled(string panelDeviceId, int shown)
-    {
-        // The schedule caps the slider: a level at the cap says only that the slider was at or above it.
-        var cap = ScheduleFollow?.Multiplier(FollowKey(panelDeviceId)) ?? 1.0;
-        return cap < 1.0 && shown >= (int)Math.Round(cap * 100) ? 100 : shown;
-    }
-
-    /// <summary>The level the panel last showed (never a dark one), for a panel with no recorded slider; null when unknown.</summary>
+    /// <summary>The level the panel last showed (never a dark one), only while no slider is recorded: with one, the glass may hold a capped level and is not the user's.</summary>
     public int? HardwareLevel(string panelDeviceId) =>
-        DimmableTransport(panelDeviceId)?.CurrentBrightness is > 0 and var current ? current : null;
+        Slider(panelDeviceId) is null && DimmableTransport(panelDeviceId)?.CurrentBrightness is > 0 and var current ? current : null;
 
     /// <summary>Records the user's slider for a panel without applying it.</summary>
     public void RememberSlider(string panelDeviceId, int percent) =>
@@ -351,13 +343,14 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             return UnlockDefaultBrightness;
         }
         var transport = DimmableTransport(panelDeviceId);
+        // With no recorded slider the schedule has never scaled this panel, so the glass level is the user's.
         if (transport?.CurrentBrightness is > 0 and var current)
         {
-            return Unscaled(panelDeviceId, current);
+            return current;
         }
         if (transport?.PreviousBrightness is > 0 and var previous)
         {
-            return Unscaled(panelDeviceId, previous);
+            return previous;
         }
         return UnlockDefaultBrightness;
     }
@@ -366,6 +359,13 @@ public sealed class StreamedPanelCoordinator : BackgroundService
     {
         lock (_markerGate)
         {
+            // A marker is the user's level for a panel with no slider. Cleared while the schedule caps it, the
+            // glass then holds the capped level, so the marker becomes the slider before it goes.
+            if (level is null && ScheduleFollow?.Multiplier(FollowKey(panelDeviceId)) < 1.0
+                && _registry.Get(panelDeviceId) is { LcdBrightness: null, LockRestoreBrightness: int restore })
+            {
+                _registry.Patch(panelDeviceId, new PanelDevicePatch { LcdBrightness = restore });
+            }
             _registry.SetLockRestoreBrightness(panelDeviceId, level);
         }
     }

@@ -262,7 +262,7 @@ public sealed class ScheduleFollowWorkerTests
         await worker.TickAsync(12_000, false, default);
         Assert.Equal(new[] { 50, 80 }, surface.Writes);
         surface.WriteOk = true;
-        await worker.TickAsync(15_500, false, default);
+        await worker.TickAsync(20_500, false, default);
         Assert.Equal(new[] { 50, 80, 80 }, surface.Writes);
 
         await worker.TickAsync(30_000, false, default);
@@ -277,12 +277,14 @@ public sealed class ScheduleFollowWorkerTests
         await worker.TickAsync(10_000, false, default);
         surface.WriteOk = true;
         await worker.TickAsync(14_500, false, default);
+        Assert.Equal(new[] { 50 }, surface.Writes);
+        await worker.TickAsync(18_500, false, default);
 
         Assert.Equal(new[] { 50, 50 }, surface.Writes);
     }
 
     [Fact]
-    public async Task A_device_that_left_mid_restore_no_longer_keeps_the_tick_alive()
+    public async Task A_device_that_left_capped_is_written_once_when_it_returns_after_the_cap_lifted()
     {
         var (worker, _, surface, _, store) = Make(true, 50);
         await worker.TickAsync(10_000, false, default);
@@ -290,10 +292,95 @@ public sealed class ScheduleFollowWorkerTests
         store.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
 
         await worker.TickAsync(20_000, false, default);
+        Assert.Equal(new[] { 50 }, surface.Writes);
         surface.Present = true;
         await worker.TickAsync(30_000, false, default);
+        await worker.TickAsync(40_000, false, default);
 
-        Assert.Equal(new[] { 50 }, surface.Writes);
+        Assert.Equal(new[] { 50, 80 }, surface.Writes);
+    }
+
+    [Fact]
+    public async Task A_device_unfollowed_while_away_is_restored_on_return()
+    {
+        var (worker, _, surface, _, store) = Make(true, 50);
+        await worker.TickAsync(10_000, false, default);
+        surface.Present = false;
+        await worker.TickAsync(20_000, false, default);
+        store.Update(s => s.Devices.ScheduleFollowing.Remove("mon1"));
+        surface.Present = true;
+
+        await worker.TickAsync(30_000, false, default);
+
+        Assert.Equal(new[] { 50, 80 }, surface.Writes);
+        await worker.TickAsync(40_000, false, default);
+        Assert.Equal(new[] { 50, 80 }, surface.Writes);
+    }
+
+    [Fact]
+    public async Task A_surface_that_rejects_every_write_backs_off_and_stops_when_settled()
+    {
+        var (worker, _, surface, _, store) = Make(true, 50);
+        surface.WriteOk = false;
+
+        for (var t = 10_000L; t <= 70_000; t += 1_000)
+        {
+            await worker.TickAsync(t, false, default);
+        }
+        Assert.InRange(surface.Writes.Count, 2, 6);
+
+        store.Update(s => s.Lighting.BrightnessSchedule.Points = new() { new() { Hour = 0, Brightness = 100 }, new() { Hour = 12, Brightness = 100 } });
+        var before = surface.Writes.Count;
+        for (var t = 80_000L; t <= 200_000; t += 1_000)
+        {
+            await worker.TickAsync(t, false, default);
+        }
+        Assert.Equal(before, surface.Writes.Count);
+    }
+
+    [Fact]
+    public async Task A_store_read_that_throws_never_escapes_the_change_event()
+    {
+        var inner = new InMemoryConfigStore();
+        var store = new ThrowingReadStore(inner);
+        var worker = new ScheduleFollowWorker(new ScheduleFollowState(store, () => Noon), store, new FakeY70(), new[] { new FakeSurface() });
+        using var cts = new CancellationTokenSource();
+        await worker.StartAsync(cts.Token);
+        var later = 0;
+        inner.OnChanged += () => later++;
+        store.ThrowOnRead = true;
+
+        var ex = Record.Exception(() => inner.Update(s => s.Devices.ScheduleFollowing.Add("mon1")));
+
+        Assert.Null(ex);
+        Assert.Equal(1, later);
+        cts.Cancel();
+        await worker.StopAsync(default);
+    }
+
+    private sealed class ThrowingReadStore : IConfigStore
+    {
+        private readonly InMemoryConfigStore _inner;
+        public bool ThrowOnRead { get; set; }
+        public ThrowingReadStore(InMemoryConfigStore inner) => _inner = inner;
+        public string SettingsPath => _inner.SettingsPath;
+        public NexusSettings Load() => _inner.Load();
+        public void Update(Action<NexusSettings> mutator) => _inner.Update(mutator);
+        public void Read(Action<NexusSettings> reader)
+        {
+            if (ThrowOnRead)
+            {
+                throw new InvalidOperationException("Collection was modified");
+            }
+            reader(_inner.Load());
+        }
+        public void Reload() => _inner.Reload();
+        public void FlushNow() => _inner.FlushNow();
+        public event Action? OnChanged
+        {
+            add => _inner.OnChanged += value;
+            remove => _inner.OnChanged -= value;
+        }
     }
 
     [Fact]

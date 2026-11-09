@@ -1020,10 +1020,8 @@ public sealed partial class Slv3Hub : IDisposable
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
-        // The schedule cap reads settings, so it is resolved here with the screens, never under the hub lock.
-        var aioScaled = aioScreens is { Count: > 0 } && ScheduleScale is { } scale
-            ? aioScreens.ToDictionary(p => p.Key, p => scale(p.Key, p.Value.Brightness), StringComparer.Ordinal)
-            : null;
+        // The schedule cap reads settings, so it is resolved here for every bound AIO, never under the hub lock.
+        var aioScaled = aio ? ScaleAios(BoundAioKeys(), aioScreens) : null;
         var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
@@ -1034,6 +1032,33 @@ public sealed partial class Slv3Hub : IDisposable
         {
             FlushOwned();
         }
+    }
+
+    private List<string> BoundAioKeys()
+    {
+        lock (_lock)
+        {
+            return _lastFanRecords
+                .Where(r => r.IsHydroShift && IsBoundToUsLocked(r))
+                .Select(r => Convert.ToHexString(r.Mac))
+                .ToList();
+        }
+    }
+
+    /// <summary>The schedule-scaled screen brightness per bound AIO; one with no saved screen scales the default.</summary>
+    internal Dictionary<string, int>? ScaleAios(IReadOnlyList<string> boundKeys, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        if (ScheduleScale is not { } scale || boundKeys.Count == 0)
+        {
+            return null;
+        }
+        var scaled = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var key in boundKeys)
+        {
+            var slider = screens is not null && screens.TryGetValue(key, out var screen) ? screen.Brightness : Slv3AioScreen.Default.Brightness;
+            scaled[key] = scale(key, slider);
+        }
+        return scaled;
     }
 
     private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, IReadOnlyDictionary<string, int>? aioScaled, Slv3FlexLcdFrame? flexLcd)

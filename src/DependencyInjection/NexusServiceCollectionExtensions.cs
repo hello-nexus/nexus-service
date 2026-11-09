@@ -2330,7 +2330,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface(
             sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayBrightnessController>(),
-            store: sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+            store: sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            registry: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            state: sp.GetRequiredService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>()));
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.XeneonScheduleSurface(
             sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.XeneonEdge.XeneonEdgeOrientationWorker>(),

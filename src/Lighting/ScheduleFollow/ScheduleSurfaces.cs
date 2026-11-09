@@ -22,13 +22,17 @@ public sealed class DdcScheduleSurface : IScheduleSurface
     private readonly DisplayBrightnessController _displays;
     private readonly Func<long> _clock;
     private readonly IConfigStore? _store;
+    private readonly PanelDeviceRegistry? _registry;
+    private readonly ScheduleFollowState? _state;
     private long _lastScanMs = long.MinValue / 2;
     private List<string> _present = new();
 
-    public DdcScheduleSurface(DisplayBrightnessController displays, Func<long>? clock = null, IConfigStore? store = null)
+    public DdcScheduleSurface(DisplayBrightnessController displays, Func<long>? clock = null, IConfigStore? store = null, PanelDeviceRegistry? registry = null, ScheduleFollowState? state = null)
     {
+        _state = state;
         _displays = displays;
         _store = store;
+        _registry = registry;
         _clock = clock ?? (() => Environment.TickCount64);
     }
 
@@ -36,8 +40,9 @@ public sealed class DdcScheduleSurface : IScheduleSurface
 
     public IReadOnlyList<string> PresentKeys()
     {
-        // Enumerating monitors is a DDC round trip each; skip it while no display id is followed.
-        if (_store is not null && !_store.Load().Devices.ScheduleFollowing.Any(ScheduleFollowKeys.IsDisplayId))
+        // Enumerating monitors is a DDC round trip each; skip it while no monitor is followed (the Xeneon has its own surface).
+        if (_store is not null
+            && !_store.Load().Devices.ScheduleFollowing.Concat(_state?.RestoreOnSight ?? Array.Empty<string>()).Any(k => ScheduleFollowKeys.IsDisplayId(k) && !IsXeneon(k)))
         {
             return _present;
         }
@@ -56,9 +61,13 @@ public sealed class DdcScheduleSurface : IScheduleSurface
         return _present;
     }
 
+    private bool IsXeneon(string id) => _registry is not null && _registry.List().Any(r =>
+        string.Equals(r.DisplayId, id, StringComparison.Ordinal)
+        && string.Equals(r.Capabilities?.Family, KnownPanelDisplays.XeneonEdgeFamily, StringComparison.Ordinal));
+
     public int? Slider(string key) => _displays.GetSlider(key);
     public void RememberSlider(string key, int percent) => _displays.RememberSlider(key, percent);
-    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult(_displays.GetBrightness(key));
+    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult(_displays.GetHardwareBrightness(key));
 
     public async Task<bool> WriteAsync(string key, int level, CancellationToken ct) =>
         (await _displays.ApplyLevelAsync(key, level, ct).ConfigureAwait(false)).Status == DisplayBrightnessWriteStatuses.Applied;

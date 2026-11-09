@@ -73,6 +73,10 @@ public sealed class DisplayBrightnessController
         return IsY70(id) ? _y70!.GetBrightness() : ShownSlider(id, _provider.GetBrightness(id));
     }
 
+    /// <summary>The level the monitor reports, even while the schedule dims it (<see cref="GetBrightness"/> shows the slider then).</summary>
+    public int? GetHardwareBrightness(string id) =>
+        IsXeneonEdge(id) || DdcDisabled().Contains(id) || IsY70(id) ? null : _provider.GetBrightness(id);
+
     /// <summary>While the schedule dims a display the hardware reads the scaled value; the slider the user set is what they see.</summary>
     private int? ShownSlider(string id, int? hardware) =>
         _follow is not null && _follow.Multiplier(id) < 1.0 && GetSlider(id) is { } slider ? slider : hardware;

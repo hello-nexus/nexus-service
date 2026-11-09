@@ -29,11 +29,18 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private readonly Dictionary<string, IScheduleSurface> _present = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int?> _written = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _writtenAt = new(StringComparer.Ordinal);
-    // Keys whose last write failed; they stay unsettled until a write lands.
-    private readonly HashSet<string> _retry = new(StringComparer.Ordinal);
+    // Keys whose last write failed; they stay unsettled until a write lands. Repeated failures back the retry off.
+    private readonly Dictionary<string, int> _failures = new(StringComparer.Ordinal);
+    private const long MaxRetryGapMs = 60_000;
+    // Keys that left while off their slider (kept in the state): the level is unknown on return, so one write is forced then.
+    // They do not keep the tick going; while any exist, presence is looked at on a slow cadence only.
+    private const long SightCheckGapMs = 5_000;
+    private long _lastSightCheckMs = long.MinValue / 2;
+    // Failed hardware reads for a seed, per key, and when the last was tried; a few misses and the stored slider stands.
+    private readonly Dictionary<string, (int Tries, long AtMs)> _seedMisses = new(StringComparer.Ordinal);
+    private const int MaxSeedMisses = 3;
     // Followed keys whose slider was taken from the hardware (or trusted at startup); an opt-in seeds it afresh.
     private readonly HashSet<string> _seeded = new(StringComparer.Ordinal);
-    private bool _seedInit;
     private int _pendingTick;
     private int _lastSignature;
 
@@ -48,6 +55,9 @@ public sealed class ScheduleFollowWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _stop = stoppingToken;
+        // Devices already followed at startup keep their remembered slider; the hardware may still hold a capped level.
+        _seeded.UnionWith(_store.Load().Devices.ScheduleFollowing);
+        _lastSignature = InputSignatureOf(_store);
         _store.OnChanged += OnStoreChanged;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         try
@@ -97,19 +107,38 @@ public sealed class ScheduleFollowWorker : BackgroundService
     /// <summary>A settings write (schedule on or off, curve, a follow switch) is acted on at once, not at the next tick.</summary>
     internal Task OnSettingsChangedAsync() => TickAsync(Environment.TickCount64, userTriggered: true, _stop);
 
+    private static int InputSignatureOf(IConfigStore store)
+    {
+        var signature = 0;
+        store.Read(s => signature = InputSignature(s));
+        return signature;
+    }
+
     private void OnStoreChanged()
     {
-        // Only the inputs the follow reads start a tick; at most one is pending.
-        var signature = InputSignature(_store.Load());
-        if (signature == _lastSignature)
+        // Never throws: a throwing handler would skip every later OnChanged subscriber.
+        try
         {
-            return;
+            // Only the inputs the follow reads start a tick; at most one is pending.
+            var signature = InputSignatureOf(_store);
+            if (Interlocked.Exchange(ref _lastSignature, signature) == signature)
+            {
+                return;
+            }
+            if (Interlocked.Exchange(ref _pendingTick, 1) == 1)
+            {
+                return;
+            }
+            StartSettingsTick();
         }
-        _lastSignature = signature;
-        if (Interlocked.Exchange(ref _pendingTick, 1) == 1)
+        catch (Exception ex)
         {
-            return;
+            ServiceLog.Warn($"[schedule-follow] settings change ignored: {ex.Message}");
         }
+    }
+
+    private void StartSettingsTick()
+    {
         _ = Task.Run(async () =>
         {
             try
@@ -177,15 +206,15 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private async Task TickSurfacesAsync(NexusSettings settings, bool scheduleOn, long nowMs, bool userTriggered, CancellationToken ct)
     {
         // A device still off its slider keeps getting ticks until it lands.
-        var moving = _retry.Count > 0 || _written.Values.Any(v => v is not null);
+        var moving = _failures.Count > 0 || _written.Values.Any(v => v is not null);
         if (!moving && (!scheduleOn || settings.Devices.ScheduleFollowing.Count == 0))
         {
-            return;
-        }
-        if (!_seedInit)
-        {
-            _seedInit = true;
-            _seeded.UnionWith(settings.Devices.ScheduleFollowing);
+            var lookForReturns = _state.RestoreOnSight.Count > 0 && (userTriggered || nowMs - _lastSightCheckMs >= SightCheckGapMs);
+            if (!lookForReturns)
+            {
+                return;
+            }
+            _lastSightCheckMs = nowMs;
         }
         _present.Clear();
         foreach (var surface in _surfaces)
@@ -196,12 +225,16 @@ public sealed class ScheduleFollowWorker : BackgroundService
                 _present[key] = surface;
             }
         }
-        // A device that left has nothing to restore and must not keep the tick alive.
-        foreach (var gone in _written.Keys.Concat(_retry).Where(k => !_present.ContainsKey(k)).ToList())
+        // A device that left must not keep the tick alive, but one that left off its slider is written once when it returns.
+        foreach (var gone in _written.Keys.Concat(_failures.Keys).Where(k => !_present.ContainsKey(k)).ToList())
         {
+            if (_written.GetValueOrDefault(gone) is not null || _failures.ContainsKey(gone))
+            {
+                _state.RequireRestore(gone);
+            }
             _written.Remove(gone);
             _writtenAt.Remove(gone);
-            _retry.Remove(gone);
+            _failures.Remove(gone);
         }
         foreach (var (key, surface) in _present)
         {
@@ -219,32 +252,48 @@ public sealed class ScheduleFollowWorker : BackgroundService
         {
             _seeded.Remove(key);
         }
-        if (written is null && cap >= 1.0 && !follows)
+        var force = _state.NeedsRestore(key);
+        if (written is null && cap >= 1.0 && !follows && !force)
         {
-            _retry.Remove(key);
+            _failures.Remove(key);
             return;
         }
         var slider = surface.Slider(key);
         // Opting in re-reads the hardware, which is still the user's level, so a change made on the
-        // device itself is not lost; with no remembered slider it is taken once.
-        var seed = follows && written is null && _seeded.Add(key);
+        // device itself is not lost; with no remembered slider it is taken once. A device back from an
+        // absence may still hold a capped level, so it is never read as the slider.
+        var seed = follows && written is null && !force && !_seeded.Contains(key) && SeedDue(key, surface, nowMs);
         if (slider is null || seed)
         {
             if (await surface.ReadHardwareAsync(key, ct).ConfigureAwait(false) is { } hardware)
             {
                 surface.RememberSlider(key, hardware);
                 slider = hardware;
+                _seeded.Add(key);
+                _seedMisses.Remove(key);
             }
-            else if (slider is null)
+            else
             {
-                return;
+                NoteSeedMiss(key, nowMs);
+                if (slider is null)
+                {
+                    return;
+                }
             }
         }
         var settled = cap >= 1.0;
         var shown = ScheduleFollowMath.Scale(slider.Value, cap);
-        var gapOpen = userTriggered || nowMs - _writtenAt.GetValueOrDefault(key, long.MinValue / 2) >= surface.MinWriteGapMs;
-        if (shown == (written ?? slider.Value))
+        // Each failed write doubles the gap, up to a minute; a settings change skips the gap.
+        var ceiling = Math.Max(MaxRetryGapMs, surface.MinWriteGapMs);
+        var gap = surface.MinWriteGapMs;
+        for (var i = _failures.GetValueOrDefault(key); i > 0 && gap < ceiling; i--)
         {
+            gap = Math.Min(gap * 2, ceiling);
+        }
+        var gapOpen = userTriggered || nowMs - _writtenAt.GetValueOrDefault(key, long.MinValue / 2) >= gap;
+        if (shown == (written ?? slider.Value) && !force)
+        {
+            _failures.Remove(key);
             if (shown == slider.Value && settled)
             {
                 _written[key] = null;
@@ -259,11 +308,27 @@ public sealed class ScheduleFollowWorker : BackgroundService
         _writtenAt[key] = nowMs;
         if (!ok)
         {
-            _retry.Add(key);
+            _failures[key] = _failures.GetValueOrDefault(key) + 1;
             return;
         }
-        _retry.Remove(key);
+        _failures.Remove(key);
+        _state.RestoreDone(key);
         _written[key] = shown == slider.Value && settled ? null : shown;
+    }
+
+    private bool SeedDue(string key, IScheduleSurface surface, long nowMs) =>
+        !_seedMisses.TryGetValue(key, out var miss) || (miss.Tries < MaxSeedMisses && nowMs - miss.AtMs >= surface.MinWriteGapMs);
+
+    // After a few unreadable attempts the stored slider stands, so a surface that cannot be read is not polled forever.
+    private void NoteSeedMiss(string key, long nowMs)
+    {
+        var tries = _seedMisses.GetValueOrDefault(key).Tries + 1;
+        _seedMisses[key] = (tries, nowMs);
+        if (tries >= MaxSeedMisses)
+        {
+            _seeded.Add(key);
+            _seedMisses.Remove(key);
+        }
     }
 }
 

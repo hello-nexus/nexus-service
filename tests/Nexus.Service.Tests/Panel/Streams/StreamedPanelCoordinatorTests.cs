@@ -1575,6 +1575,41 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task A_panel_slept_by_a_lock_before_it_had_a_slider_keeps_its_level_as_the_slider_while_capped()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        transport.Applied = 70;
+        var noon = new DateTime(2026, 6, 21, 12, 0, 0);
+        var key = StreamedPanelCoordinator.FollowKey(panelId);
+        _config.Update(s =>
+        {
+            s.Lighting.BrightnessSchedule = new()
+            {
+                Enabled = true,
+                SunShift = false,
+                Points = new() { new() { Hour = 0, Brightness = 50 }, new() { Hour = 12, Brightness = 50 } },
+            };
+            s.Devices.ScheduleFollowing.Add(key);
+        });
+        coordinator.ScheduleFollow = new Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState(_config, () => noon);
+        var surface = new Nexus.Service.Lighting.ScheduleFollow.PanelLcdScheduleSurface(coordinator);
+
+        _lock.Set(true);
+        Advance(coordinator, 5000);
+        Assert.Equal(70, _registry.Get(panelId)!.LockRestoreBrightness);
+        _lock.Set(false);
+        Advance(coordinator, 5000);
+
+        Assert.Equal(50, transport.Applied);
+        Assert.Equal(70, _registry.Get(panelId)!.LcdBrightness);
+        Assert.Null(await surface.ReadHardwareAsync(key, default));
+
+        _config.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
+        coordinator.ApplyBrightness(panelId);
+        Assert.Equal(70, transport.Applied);
+    }
+
+    [Fact]
     public void A_lock_whose_unlock_ran_before_its_marker_write_leaves_no_marker_and_no_dark_glass()
     {
         var (coordinator, panelId, transport) = DimmablePanel(stored: null);
