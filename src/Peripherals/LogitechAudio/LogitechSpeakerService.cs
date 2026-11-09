@@ -504,16 +504,21 @@ public sealed class LogitechSpeakerService : BackgroundService
                         var renamed = $"{preset.Name} {n}";
                         taken.Add(renamed);
                         renames.Add($"{preset.Name} -> {renamed}");
-                        if (string.Equals(s.EqPreset, preset.Name, StringComparison.OrdinalIgnoreCase))
-                        {
-                            s.EqPreset = renamed;
-                        }
                         preset.Name = renamed;
                     }
                 });
-                ServiceLog.Info($"[logitech-speaker] renamed custom presets that clashed with built-in names: {string.Join(", ", renames)}");
+                if (renames.Count > 0)
+                {
+                    ServiceLog.Info($"[logitech-speaker] renamed custom presets that clashed with built-in names: {string.Join(", ", renames)}");
+                }
             }
-            _presetNamesChecked = true;
+            lock (_lock)
+            {
+                if (!_simulated)
+                {
+                    _presetNamesChecked = true;
+                }
+            }
         }
     }
 
