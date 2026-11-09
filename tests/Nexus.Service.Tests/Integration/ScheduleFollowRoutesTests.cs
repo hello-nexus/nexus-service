@@ -75,13 +75,16 @@ public sealed class ScheduleFollowRoutesTests : IClassFixture<StubDeviceHostFact
         Assert.DoesNotContain("y70", Store.Load().Devices.ScheduleFollowing);
     }
 
-    [Fact]
-    public async Task Post_accepts_an_id_the_service_has_not_seen_and_lists_it_as_following()
+    [Theory]
+    [InlineData("panel-lcd:abc")]
+    [InlineData("slv3-aio:AABBCCDDEEFF")]
+    [InlineData("not-a-device")]
+    public async Task Post_refuses_a_key_the_service_does_not_know(string key)
     {
-        await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"panel-lcd:abc","follows":true}"""));
+        var response = await _client.PostAsync("/lighting/brightness-schedule/devices", Json($$"""{"key":"{{key}}","follows":true}"""));
 
-        using var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync());
-        Assert.True(Find(doc.RootElement, "panel-lcd:abc").GetProperty("follows").GetBoolean());
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.DoesNotContain(key, Store.Load().Devices.ScheduleFollowing);
     }
 
     [Theory]

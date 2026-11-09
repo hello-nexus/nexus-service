@@ -85,6 +85,33 @@ public static class LightingRoutes
         };
     }
 
+    private const int MaxScheduleFollowing = 64;
+
+    private static bool IsKnownFollowKey(string key, Nexus.Service.Persistence.NexusSettings settings,
+        Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow, Nexus.Service.Platform.Displays.DisplayBrightnessController displays,
+        Nexus.Service.Panel.PanelDeviceRegistry registry)
+    {
+        const string slv3 = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix;
+        const string panel = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix;
+        if (key is Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70
+            or Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd
+            or Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd)
+        {
+            return true;
+        }
+        if (key.StartsWith(slv3, StringComparison.Ordinal))
+        {
+            return settings.Devices.LianLiWireless.AioScreens.ContainsKey(key.Substring(slv3.Length)) || follow.TrackedKeys.Contains(key);
+        }
+        if (key.StartsWith(panel, StringComparison.Ordinal))
+        {
+            return registry.Get(key.Substring(panel.Length)) is not null;
+        }
+        return follow.TrackedKeys.Contains(key)
+            || registry.List().Any(r => string.Equals(r.DisplayId, key, StringComparison.Ordinal))
+            || displays.ListDisplays().Displays.Any(d => string.Equals(d.Id, key, StringComparison.Ordinal));
+    }
+
     private static Models.Lighting.ScheduleFollowDevicesResponse BuildFollowDevices(
         Nexus.Service.Persistence.NexusSettings settings, Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
         Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
@@ -487,22 +514,39 @@ public static class LightingRoutes
             Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub,
             Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
             Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels,
-            Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken) =>
+            Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken,
+            Nexus.Service.Platform.Displays.DisplayBrightnessController displays,
+            Nexus.Service.Panel.PanelDeviceRegistry registry) =>
         {
             var key = (body.Key ?? "").Trim();
             if (key.Length == 0 || key.Length > 200)
             {
                 return Results.BadRequest(ApiResponse.Fail("key is required"));
             }
+            // Un-following is always allowed, so a stale entry can be cleaned up.
+            if (body.Follows && !IsKnownFollowKey(key, store.Load(), follow, displays, registry))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown device key"));
+            }
+            var tooMany = false;
             store.Update(s =>
             {
                 var list = s.Devices.ScheduleFollowing;
                 list.RemoveAll(x => string.Equals(x, key, StringComparison.Ordinal));
                 if (body.Follows)
                 {
+                    if (list.Count >= MaxScheduleFollowing)
+                    {
+                        tooMany = true;
+                        return;
+                    }
                     list.Add(key);
                 }
             });
+            if (tooMany)
+            {
+                return Results.BadRequest(ApiResponse.Fail("too many followed devices"));
+            }
             PanelTopics.BroadcastLighting(hub);
             var device = BuildFollowDevices(store.Load(), follow, panels, kraken).Devices.FirstOrDefault(d => d.Key == key)
                 ?? new Models.Lighting.ScheduleFollowDeviceDto { Key = key, Follows = body.Follows };

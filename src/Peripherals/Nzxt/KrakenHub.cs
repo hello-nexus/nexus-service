@@ -241,14 +241,22 @@ public sealed class KrakenHub : IDisposable
     private Func<int, int>? _scale;
     private Func<int?>? _loadSlider;
     private Action<int>? _saveSlider;
+    private Func<bool>? _follows;
 
-    /// <summary>Wires the brightness schedule: the scale to the cooler's level, and where the user's own slider is remembered, since the cooler reads back only the scaled value.</summary>
-    public void BindSchedule(Func<int, int> scale, Func<int?> loadSlider, Action<int> saveSlider)
+    /// <summary>Wires the brightness schedule: the scale to the cooler's level, where the user's own slider is remembered (the cooler reads back only the scaled value), and whether the cooler follows the schedule.</summary>
+    public void BindSchedule(Func<int, int> scale, Func<int?> loadSlider, Action<int> saveSlider, Func<bool>? follows = null)
     {
         _scale = scale;
         _loadSlider = loadSlider;
         _saveSlider = saveSlider;
+        _follows = follows;
     }
+
+    /// <summary>The user's slider as remembered by the schedule binding, or null.</summary>
+    public int? RememberedSlider => _loadSlider?.Invoke();
+
+    /// <summary>Records the user's slider without touching the cooler.</summary>
+    public void RememberSlider(int percent) => _saveSlider?.Invoke(Math.Clamp(percent, 0, 100));
 
     private int Scaled(int slider) => _scale?.Invoke(slider) ?? slider;
 
@@ -706,6 +714,7 @@ public sealed class KrakenHub : IDisposable
                 : ReadLightingChannelsLocked();
 
             int brightness = 0;
+            int? resyncLevel = null;
             int orientation = 0;
             var mode = KrakenDisplayMode.Liquid;
             if (_model.HasLcd)
@@ -715,10 +724,11 @@ public sealed class KrakenHub : IDisposable
                 if (lcdInfo.HasValue)
                 {
                     brightness = lcdInfo.Value.BrightnessPercent;
-                    // The cooler reads back what was written, which is the scaled level: when the
-                    // remembered slider scales to exactly that, the slider is the user's value.
-                    if (_loadSlider?.Invoke() is { } remembered && Scaled(remembered) == brightness)
+                    // The cooler reads back what was written, which may be a capped level. While following, the
+                    // remembered slider is the user's value; otherwise only when it scales to exactly the reading.
+                    if (_loadSlider?.Invoke() is { } remembered && (_follows?.Invoke() == true || Scaled(remembered) == brightness))
                     {
+                        resyncLevel = Scaled(remembered) != brightness ? remembered : null;
                         brightness = remembered;
                     }
                     orientation = lcdInfo.Value.OrientationQuarterTurns;
@@ -802,6 +812,11 @@ public sealed class KrakenHub : IDisposable
                     : $"[lcd-lock] kraken LCD restored to {brightness}% after reconnect");
             }
             _lockRestorePending = restoreFailed;
+            if (resyncLevel is { } resync && !sleepNow && !restore)
+            {
+                // The cooler kept a stale capped level across the reconnect.
+                WriteLocked(BacklightReport(Scaled(resync), orientation));
+            }
 
             _isConnected = true;
             return true;

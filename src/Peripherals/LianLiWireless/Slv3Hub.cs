@@ -120,7 +120,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
-    /// <summary>Brightness schedule: the level for a screen's MAC key and stored slider. The slider stays the user's; only the byte on the wire is scaled.</summary>
+    /// <summary>Brightness schedule: the level for a screen's MAC key and stored slider. The slider stays the user's; only the byte on the wire is scaled. Called outside the hub lock.</summary>
     public Func<string, int, int>? ScheduleScale { get; set; }
 
     /// <summary>
@@ -1020,11 +1020,15 @@ public sealed partial class Slv3Hub : IDisposable
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        // The schedule cap reads settings, so it is resolved here with the screens, never under the hub lock.
+        var aioScaled = aioScreens is { Count: > 0 } && ScheduleScale is { } scale
+            ? aioScreens.ToDictionary(p => p.Key, p => scale(p.Key, p.Value.Brightness), StringComparer.Ordinal)
+            : null;
         var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
         {
-            return DriveLocked(aioSensors, aioScreens, flexLcd);
+            return DriveLocked(aioSensors, aioScreens, aioScaled, flexLcd);
         }
         finally
         {
@@ -1032,7 +1036,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, Slv3FlexLcdFrame? flexLcd)
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, IReadOnlyDictionary<string, int>? aioScaled, Slv3FlexLcdFrame? flexLcd)
     {
         lock (_lock)
         {
@@ -1047,7 +1051,7 @@ public sealed partial class Slv3Hub : IDisposable
                     return true;
                 }
                 SyncPwmLocked();
-                SyncAioLocked(aioSensors, aioScreens);
+                SyncAioLocked(aioSensors, aioScreens, aioScaled);
                 RefreshMasterMacLocked();
                 SendClockHeartbeatLocked(SyncFlexLcdLocked(flexLcd, _nowMs()));
                 RunSaveCfgScheduleLocked();
@@ -1745,7 +1749,7 @@ public sealed partial class Slv3Hub : IDisposable
     // echoes its cmdSeq, and the param block (pump timer plus LCD settings and
     // readings) goes out every DriveTick. The block always carries a pump timer,
     // so a screen-only AIO gets the default pump speed.
-    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens, IReadOnlyDictionary<string, int>? scaled)
     {
         if (_aioControl.Count == 0 && (screens is null || screens.Count == 0))
         {
@@ -1811,9 +1815,9 @@ public sealed partial class Slv3Hub : IDisposable
             // stays at the user's value then, the same condition the web uses to hide this toggle.
             var panelOwnsGlass = UsbPanelOwnsGlass(key, shown.NexusWidgets);
             var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !panelOwnsGlass;
-            // The streamed panel's own record follows the schedule when it owns the glass.
-            var scaled = !panelOwnsGlass && ScheduleScale is { } scale ? (byte)scale(key, shown.Brightness) : shown.Brightness;
-            shown = shown with { Brightness = AioLockBrightness(key, scaled, sleeping) };
+            // One screen can carry two schedule keys (this one and its streamed panel's); the panel's applies while it owns the glass.
+            var level = !panelOwnsGlass && scaled is not null && scaled.TryGetValue(key, out var capped) ? (byte)capped : shown.Brightness;
+            shown = shown with { Brightness = AioLockBrightness(key, level, sleeping) };
             var block = Slv3Protocol.BuildAioParamBlock(
                 sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
                 shown,

@@ -145,7 +145,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         });
     }
 
-    // Takes no coordinator lock; see IsLockSleeping.
     /// <summary>Brightness schedule; set by DI. The record, preview and lock-restore values stay the user's slider, only what reaches the panel is scaled.</summary>
     public Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? ScheduleFollow { get; set; }
 
@@ -160,6 +159,14 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         var cap = ScheduleFollow?.Multiplier(FollowKey(panelDeviceId)) ?? 1.0;
         return cap < 1.0 && shown >= (int)Math.Round(cap * 100) ? 100 : shown;
     }
+
+    /// <summary>The level the panel last showed (never a dark one), for a panel with no recorded slider; null when unknown.</summary>
+    public int? HardwareLevel(string panelDeviceId) =>
+        DimmableTransport(panelDeviceId)?.CurrentBrightness is > 0 and var current ? current : null;
+
+    /// <summary>Records the user's slider for a panel without applying it.</summary>
+    public void RememberSlider(string panelDeviceId, int percent) =>
+        _registry.Patch(panelDeviceId, new PanelDevicePatch { LcdBrightness = percent });
 
     /// <summary>The user's slider for a streamed panel, null when none is recorded.</summary>
     public int? Slider(string panelDeviceId)
@@ -180,6 +187,7 @@ public sealed class StreamedPanelCoordinator : BackgroundService
         }
     }
 
+    // Takes no coordinator lock; see IsLockSleeping.
     private int? EffectiveBrightness(string panelDeviceId)
     {
         // A fade in flight answers with its stepped level; a finished one falls through to the
@@ -399,7 +407,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
                     var level = CaptureRestoreLevel(id);
                     // The level to come back to is fixed here, before the first step: an up-fade
                     // caught mid-way reverses from where it is, never from an intermediate level.
-                    var record = _registry.Get(id);
                     var remembered = Slider(id) is int sliderNow ? Scaled(id, sliderNow) : Scaled(id, level ?? UnlockDefaultBrightness);
                     var from = ActiveFade(id) is { Down: false } rising ? rising.LevelAt(_nowMs()) : remembered;
                     WriteMarkerForLock(id, level, epoch);
@@ -429,7 +436,6 @@ public sealed class StreamedPanelCoordinator : BackgroundService
             // Only panels this lock slept come back; one it left alone is not touched.
             foreach (var id in woken)
             {
-                var record = _registry.Get(id);
                 var target = Slider(id) is int sliderOnWake ? Scaled(id, sliderOnWake) : (int?)null;
                 var current = DimmableTransport(id)?.CurrentBrightness;
                 // Up from 0, or from wherever a fade down was caught; a panel the lock never dimmed

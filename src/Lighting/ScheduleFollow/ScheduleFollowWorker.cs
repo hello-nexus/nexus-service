@@ -11,11 +11,9 @@ using Nexus.Service.Platform;
 namespace Nexus.Service.Lighting.ScheduleFollow;
 
 /// <summary>
-/// The one tick behind every device that follows the brightness schedule. Each second it reads
-/// the caps in <see cref="ScheduleFollowState"/> and pushes the changed levels:
-/// the Y70 through its provider, DDC monitors through the display controller (whole-percent
-/// changes only, spaced out to spare slow monitors and their NVRAM), and the other surfaces through <see cref="IScheduleSurface"/>. The Corsair LCD worker
-/// reads its cap on its own loop. Idle (schedule off, nothing ramping) it only reads settings.
+/// Pushes the schedule cap in <see cref="ScheduleFollowState"/> to every device that follows it: the Y70
+/// through its provider, everything else through <see cref="IScheduleSurface"/>. The timer tick spaces writes
+/// per device; a relevant settings change writes at once. The Corsair LCD worker reads its cap on its own loop.
 /// </summary>
 public sealed class ScheduleFollowWorker : BackgroundService
 {
@@ -31,6 +29,13 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private readonly Dictionary<string, IScheduleSurface> _present = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int?> _written = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _writtenAt = new(StringComparer.Ordinal);
+    // Keys whose last write failed; they stay unsettled until a write lands.
+    private readonly HashSet<string> _retry = new(StringComparer.Ordinal);
+    // Followed keys whose slider was taken from the hardware (or trusted at startup); an opt-in seeds it afresh.
+    private readonly HashSet<string> _seeded = new(StringComparer.Ordinal);
+    private bool _seedInit;
+    private int _pendingTick;
+    private int _lastSignature;
 
     public ScheduleFollowWorker(ScheduleFollowState state, IConfigStore store, IY70Provider y70, IEnumerable<IScheduleSurface> surfaces)
     {
@@ -74,6 +79,10 @@ public sealed class ScheduleFollowWorker : BackgroundService
         await _tickGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (userTriggered)
+            {
+                Volatile.Write(ref _pendingTick, 0);
+            }
             var settings = _store.Load();
             var scheduleOn = settings.Lighting.BrightnessSchedule is { Enabled: true };
             TickY70(settings);
@@ -90,6 +99,17 @@ public sealed class ScheduleFollowWorker : BackgroundService
 
     private void OnStoreChanged()
     {
+        // Only the inputs the follow reads start a tick; at most one is pending.
+        var signature = InputSignature(_store.Load());
+        if (signature == _lastSignature)
+        {
+            return;
+        }
+        _lastSignature = signature;
+        if (Interlocked.Exchange(ref _pendingTick, 1) == 1)
+        {
+            return;
+        }
         _ = Task.Run(async () =>
         {
             try
@@ -101,6 +121,34 @@ public sealed class ScheduleFollowWorker : BackgroundService
                 ServiceLog.Warn($"[schedule-follow] settings tick failed: {ex.Message}");
             }
         });
+    }
+
+    private static int InputSignature(NexusSettings settings)
+    {
+        var hash = new HashCode();
+        var schedule = settings.Lighting.BrightnessSchedule;
+        hash.Add(schedule?.Enabled);
+        hash.Add(schedule?.LightingFollows);
+        hash.Add(schedule?.SunShift);
+        hash.Add(schedule?.SunNight);
+        hash.Add(schedule?.SunDay);
+        hash.Add(schedule?.SunLocation?.GetHashCode());
+        foreach (var point in schedule?.Points ?? new())
+        {
+            hash.Add(point.Hour);
+            hash.Add(point.Brightness);
+        }
+        foreach (var key in settings.Devices.ScheduleFollowing)
+        {
+            hash.Add(key, StringComparer.Ordinal);
+        }
+        foreach (var (key, value) in settings.Devices.DisplaySliderBrightness.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            hash.Add(key, StringComparer.Ordinal);
+            hash.Add(value);
+        }
+        hash.Add(settings.Y70.Brightness);
+        return hash.ToHashCode();
     }
 
     public override void Dispose()
@@ -129,10 +177,15 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private async Task TickSurfacesAsync(NexusSettings settings, bool scheduleOn, long nowMs, bool userTriggered, CancellationToken ct)
     {
         // A device still off its slider keeps getting ticks until it lands.
-        var moving = _written.Values.Any(v => v is not null);
+        var moving = _retry.Count > 0 || _written.Values.Any(v => v is not null);
         if (!moving && (!scheduleOn || settings.Devices.ScheduleFollowing.Count == 0))
         {
             return;
+        }
+        if (!_seedInit)
+        {
+            _seedInit = true;
+            _seeded.UnionWith(settings.Devices.ScheduleFollowing);
         }
         _present.Clear();
         foreach (var surface in _surfaces)
@@ -142,6 +195,13 @@ public sealed class ScheduleFollowWorker : BackgroundService
                 _state.Track(key);
                 _present[key] = surface;
             }
+        }
+        // A device that left has nothing to restore and must not keep the tick alive.
+        foreach (var gone in _written.Keys.Concat(_retry).Where(k => !_present.ContainsKey(k)).ToList())
+        {
+            _written.Remove(gone);
+            _writtenAt.Remove(gone);
+            _retry.Remove(gone);
         }
         foreach (var (key, surface) in _present)
         {
@@ -154,25 +214,36 @@ public sealed class ScheduleFollowWorker : BackgroundService
         var cap = _state.Target(settings, key);
         _written.TryGetValue(key, out var written);
         // A device the user never opted in is not touched at all, not even to read it.
-        if (written is null && cap >= 1.0 && !_state.Follows(settings, key))
+        var follows = _state.Follows(settings, key);
+        if (!follows)
         {
+            _seeded.Remove(key);
+        }
+        if (written is null && cap >= 1.0 && !follows)
+        {
+            _retry.Remove(key);
             return;
         }
         var slider = surface.Slider(key);
-        if (slider is null)
+        // Opting in re-reads the hardware, which is still the user's level, so a change made on the
+        // device itself is not lost; with no remembered slider it is taken once.
+        var seed = follows && written is null && _seeded.Add(key);
+        if (slider is null || seed)
         {
-            // No remembered slider: the hardware value is the user's, taken once.
-            if (await surface.ReadHardwareAsync(key, ct).ConfigureAwait(false) is not { } hardware)
+            if (await surface.ReadHardwareAsync(key, ct).ConfigureAwait(false) is { } hardware)
+            {
+                surface.RememberSlider(key, hardware);
+                slider = hardware;
+            }
+            else if (slider is null)
             {
                 return;
             }
-            surface.RememberSlider(key, hardware);
-            slider = hardware;
         }
         var settled = cap >= 1.0;
         var shown = ScheduleFollowMath.Scale(slider.Value, cap);
         var gapOpen = userTriggered || nowMs - _writtenAt.GetValueOrDefault(key, long.MinValue / 2) >= surface.MinWriteGapMs;
-        if (shown == (written ?? slider.Value) || !gapOpen)
+        if (shown == (written ?? slider.Value))
         {
             if (shown == slider.Value && settled)
             {
@@ -180,9 +251,19 @@ public sealed class ScheduleFollowWorker : BackgroundService
             }
             return;
         }
+        if (!gapOpen)
+        {
+            return;
+        }
         var ok = await surface.WriteAsync(key, shown, ct).ConfigureAwait(false);
         _writtenAt[key] = nowMs;
-        _written[key] = ok && !(shown == slider.Value && settled) ? shown : null;
+        if (!ok)
+        {
+            _retry.Add(key);
+            return;
+        }
+        _retry.Remove(key);
+        _written[key] = shown == slider.Value && settled ? null : shown;
     }
 }
 

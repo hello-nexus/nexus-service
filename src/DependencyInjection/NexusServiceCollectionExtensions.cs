@@ -801,7 +801,8 @@ public static class NexusServiceCollectionExtensions
             hub.BindSchedule(
                 slider => follow.Scale(key, slider),
                 () => store.Load().Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
-                level => store.Update(st => st.Devices.DisplaySliderBrightness[key] = level));
+                level => store.Update(st => st.Devices.DisplaySliderBrightness[key] = level),
+                () => follow.Follows(store.Load(), key));
         }
         if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
         {
@@ -2327,7 +2328,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
-        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface, Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface>();
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayBrightnessController>(),
+            store: sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.XeneonScheduleSurface(
             sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
             sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.XeneonEdge.XeneonEdgeOrientationWorker>(),

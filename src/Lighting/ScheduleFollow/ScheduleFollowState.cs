@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Threading;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting.ScheduleFollow;
@@ -16,7 +15,13 @@ public static class ScheduleFollowKeys
     public const string PanelLcdPrefix = "panel-lcd:";
     /// <summary>Followed by "slv3-aio:" plus the upper-case hex MAC of a HydroShift II screen.</summary>
     public const string Slv3AioPrefix = "slv3-aio:";
-    /// <summary>The Xeneon Edge is a display: its key is its display id, like any monitor.</summary>
+
+    /// <summary>True for a key that names a display (a monitor or the Xeneon Edge) rather than a fixed device or a prefixed one.</summary>
+    public static bool IsDisplayId(string key) =>
+        key.Length > 0
+        && key is not (Y70 or CorsairLcd or KrakenLcd)
+        && !key.StartsWith(PanelLcdPrefix, StringComparison.Ordinal)
+        && !key.StartsWith(Slv3AioPrefix, StringComparison.Ordinal);
 }
 
 /// <summary>Pure follow math, kept apart from the state so it tests without a store.</summary>
@@ -35,7 +40,7 @@ public static class ScheduleFollowMath
 /// <summary>
 /// The schedule cap (0..1) of each followed device, read live from the settings and the clock, so a settings
 /// change shows in the next read with no tick between. Writers use <see cref="Scale"/> to limit the user's slider to
-/// the cap; the stored slider is never touched. The curve itself interpolates over time, so the cap needs no ramp.
+/// the cap; the stored slider is never touched.
 /// </summary>
 public sealed class ScheduleFollowState
 {

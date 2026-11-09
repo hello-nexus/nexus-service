@@ -380,16 +380,17 @@ public class ScreenSyncOptions
     public string SelectionMode { get; set; } = "app";
 }
 
-/// <summary>One device's place in the brightness schedule. Key is the surface's stable id: "y70",
-/// "corsair-lcd", or a display id. LevelPercent is the schedule multiplier on the device right now
-/// (100 while it does not follow); AppliedPercent is min(slider, level), null when the slider is unknown.</summary>
+/// <summary>One device's place in the brightness schedule. Key is the surface's stable id: "y70", "corsair-lcd",
+/// "nzxt-kraken-lcd", "panel-lcd:" plus a panel device id, "slv3-aio:" plus a MAC, or a display id.
+/// LevelPercent is the schedule cap on the device right now (100 while it does not follow);
+/// AppliedPercent is min(slider, level), null when the slider is unknown.</summary>
 public sealed class ScheduleFollowDeviceDto
 {
     public string Key { get; set; } = "";
     public bool Follows { get; set; }
     public int LevelPercent { get; set; } = 100;
 
-    /// <summary>The current ramped schedule cap, percent; null when the schedule is off or the device does not follow.</summary>
+    /// <summary>The schedule cap while the schedule is on and the device follows (equal to <see cref="LevelPercent"/>), else null.</summary>
     public int? CapPercent { get; set; }
     public int? AppliedPercent { get; set; }
 }

@@ -21,12 +21,14 @@ public sealed class DdcScheduleSurface : IScheduleSurface
 
     private readonly DisplayBrightnessController _displays;
     private readonly Func<long> _clock;
+    private readonly IConfigStore? _store;
     private long _lastScanMs = long.MinValue / 2;
     private List<string> _present = new();
 
-    public DdcScheduleSurface(DisplayBrightnessController displays, Func<long>? clock = null)
+    public DdcScheduleSurface(DisplayBrightnessController displays, Func<long>? clock = null, IConfigStore? store = null)
     {
         _displays = displays;
+        _store = store;
         _clock = clock ?? (() => Environment.TickCount64);
     }
 
@@ -34,6 +36,11 @@ public sealed class DdcScheduleSurface : IScheduleSurface
 
     public IReadOnlyList<string> PresentKeys()
     {
+        // Enumerating monitors is a DDC round trip each; skip it while no display id is followed.
+        if (_store is not null && !_store.Load().Devices.ScheduleFollowing.Any(ScheduleFollowKeys.IsDisplayId))
+        {
+            return _present;
+        }
         var now = _clock();
         if (now - _lastScanMs >= ScanGapMs)
         {
@@ -91,7 +98,7 @@ public sealed class XeneonScheduleSurface : IScheduleSurface
         await _xeneon.SetControlAsync(XeneonEdgeControl.Brightness, level, ct).ConfigureAwait(false) is not null;
 }
 
-/// <summary>The Kraken LCD. Its snapshot already holds the user's slider; the hub scales what it writes.</summary>
+/// <summary>The Kraken LCD. The hub scales what it writes; the slider is recorded from its snapshot the first time the device is seen, before any cap.</summary>
 public sealed class KrakenScheduleSurface : IScheduleSurface
 {
     private readonly KrakenHub _hub;
@@ -103,9 +110,9 @@ public sealed class KrakenScheduleSurface : IScheduleSurface
     public IReadOnlyList<string> PresentKeys() =>
         _hub.IsConnected && _hub.HasLcd ? new[] { ScheduleFollowKeys.KrakenLcd } : Array.Empty<string>();
 
-    public int? Slider(string key) => _hub.Snapshot.LcdBrightness;
-    public void RememberSlider(string key, int percent) { }
-    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult<int?>(null);
+    public int? Slider(string key) => _hub.RememberedSlider;
+    public void RememberSlider(string key, int percent) => _hub.RememberSlider(percent);
+    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult<int?>(_hub.Snapshot.LcdBrightness);
     public Task<bool> WriteAsync(string key, int level, CancellationToken ct) => Task.FromResult(_hub.ApplySchedule());
 }
 
@@ -124,7 +131,7 @@ public sealed class PanelLcdScheduleSurface : IScheduleSurface
     private static string Id(string key) => key.Substring(ScheduleFollowKeys.PanelLcdPrefix.Length);
 
     public int? Slider(string key) => _panels.Slider(Id(key));
-    public void RememberSlider(string key, int percent) { }
-    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult<int?>(null);
+    public void RememberSlider(string key, int percent) => _panels.RememberSlider(Id(key), percent);
+    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult(_panels.HardwareLevel(Id(key)));
     public Task<bool> WriteAsync(string key, int level, CancellationToken ct) => Task.FromResult(_panels.ApplyBrightness(Id(key)));
 }

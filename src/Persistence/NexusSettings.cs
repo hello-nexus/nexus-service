@@ -1606,7 +1606,7 @@ public sealed class DevicesSettings
     public List<string> DdcDisabledDisplays { get; set; } = new();
     /// <summary>Brightness-schedule follow opt-ins by device key (the Y70, the Corsair LCD, a display id). A device follows only once its key is listed here, so the default is off. Hardware-tied like <see cref="DdcDisabledDisplays"/>, so not profile-scoped.</summary>
     public List<string> ScheduleFollowing { get; set; } = new();
-    /// <summary>The user's own slider value, percent, per display id. A DDC monitor keeps only its live value in hardware, so the ceiling the schedule scales is remembered here; the schedule never overwrites it.</summary>
+    /// <summary>The user's own slider value, percent, per schedule key: a display id, or a device key such as "nzxt-kraken-lcd". The hardware keeps only the scaled level, so the ceiling the schedule scales is remembered here; the schedule never overwrites it.</summary>
     public Dictionary<string, int> DisplaySliderBrightness { get; set; } = new();
     /// <summary>Ids Nexus stops pushing frames to entirely, so firmware/vendor lighting can take over. Distinct from <see cref="DisabledLightingDevices"/>, which still streams black.</summary>
     public List<string> UncontrolledLightingDevices { get; set; } = new();
