@@ -28,9 +28,10 @@ public static class ScheduleFollowMath
     /// <summary>Per-second change for DDC monitors, slower so a write lands on a small step.</summary>
     public const double SlowRatePerSecond = 0.02;
 
-    /// <summary>The slider is the ceiling: the level it shows is the slider times the multiplier.</summary>
-    public static int Scale(int slider, double multiplier) =>
-        (int)Math.Round(Math.Clamp(slider, 0, 100) * Math.Clamp(multiplier, 0.0, 1.0), MidpointRounding.AwayFromZero);
+    /// <summary>The schedule is a cap, like the lighting master brightness: the level shown is the slider limited to
+    /// the cap, so a slider above the cap changes nothing and one below it applies as set.</summary>
+    public static int Scale(int slider, double cap) =>
+        Math.Min(Math.Clamp(slider, 0, 100), (int)Math.Round(Math.Clamp(cap, 0.0, 1.0) * 100, MidpointRounding.AwayFromZero));
 
     /// <summary>Moves <paramref name="current"/> toward <paramref name="target"/> by at most <paramref name="maxDelta"/>.</summary>
     public static double Ramp(double current, double target, double maxDelta)
@@ -49,8 +50,8 @@ public static class ScheduleFollowMath
 }
 
 /// <summary>
-/// The ramped schedule multiplier of each followed device. Writers read
-/// <see cref="Scale"/> to turn the user's slider into the level to apply; the
+/// The ramped schedule cap (0..1) of each followed device. Writers read
+/// <see cref="Scale"/> to limit the user's slider to the cap, giving the level to apply; the
 /// stored slider is never touched. <see cref="Advance"/> is driven by one worker tick.
 /// </summary>
 public sealed class ScheduleFollowState
@@ -91,7 +92,7 @@ public sealed class ScheduleFollowState
     public IReadOnlyCollection<string> TrackedKeys => (IReadOnlyCollection<string>)_slots.Keys;
 
     public bool Follows(NexusSettings settings, string key) =>
-        !settings.Devices.ScheduleUnfollowed.Contains(key);
+        settings.Devices.ScheduleFollowing.Contains(key);
 
     /// <summary>Current multiplier; 1 for a key never tracked.</summary>
     public double Multiplier(string key) => _slots.TryGetValue(key, out var slot) ? Volatile.Read(ref slot.Multiplier) : 1.0;
@@ -109,17 +110,27 @@ public sealed class ScheduleFollowState
 
     /// <summary>Steps every tracked key toward its target by the elapsed time; the first step of a key snaps, so a restart does not replay a ramp.
     /// Returns the keys whose multiplier changed.</summary>
-    public List<string> Advance(double elapsedSeconds)
+    public List<string> Advance(double elapsedSeconds) => Advance(elapsedSeconds, out _);
+
+    /// <summary>As <see cref="Advance(double)"/>, and reports the keys that went back to the plain slider because the
+    /// schedule was switched off or the device stopped following. That restore never ramps: the cap drops at once.</summary>
+    public List<string> Advance(double elapsedSeconds, out List<string> restored)
     {
+        restored = new List<string>();
         var changed = new List<string>();
         Interlocked.Increment(ref _advances);
         var settings = _store.Load();
         foreach (var (key, slot) in _slots)
         {
             var target = Target(settings, key);
-            var next = slot.Primed
+            var restoring = !(settings.Lighting.BrightnessSchedule is { Enabled: true } && Follows(settings, key));
+            var next = slot.Primed && !restoring
                 ? ScheduleFollowMath.Ramp(slot.Multiplier, target, slot.Rate * Math.Max(elapsedSeconds, 0.0))
                 : target;
+            if (restoring && slot.Multiplier < 1.0)
+            {
+                restored.Add(key);
+            }
             slot.Primed = true;
             if (next != slot.Multiplier)
             {

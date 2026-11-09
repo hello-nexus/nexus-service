@@ -40,7 +40,7 @@ public sealed class ScheduleFollowRoutesTests : IClassFixture<StubDeviceHostFact
     }
 
     [Fact]
-    public async Task Get_lists_the_first_party_devices_following_by_default()
+    public async Task Get_lists_the_first_party_devices_not_following_by_default()
     {
         var res = await _client.GetAsync("/lighting/brightness-schedule/devices");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
@@ -49,39 +49,39 @@ public sealed class ScheduleFollowRoutesTests : IClassFixture<StubDeviceHostFact
         foreach (var key in new[] { "y70", "corsair-lcd", "nzxt-kraken-lcd" })
         {
             var device = Find(doc.RootElement, key);
-            Assert.True(device.GetProperty("follows").GetBoolean());
+            Assert.False(device.GetProperty("follows").GetBoolean());
             Assert.Equal(100, device.GetProperty("levelPercent").GetInt32());
         }
     }
 
     [Fact]
-    public async Task Post_toggles_a_device_and_get_reflects_it()
+    public async Task Post_opts_a_device_in_and_out_and_get_reflects_it()
     {
-        var off = await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"y70","follows":false}"""));
-        Assert.Equal(HttpStatusCode.OK, off.StatusCode);
-        using (var doc = JsonDocument.Parse(await off.Content.ReadAsStringAsync()))
+        var on = await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"y70","follows":true}"""));
+        Assert.Equal(HttpStatusCode.OK, on.StatusCode);
+        using (var doc = JsonDocument.Parse(await on.Content.ReadAsStringAsync()))
         {
             Assert.Equal("y70", doc.RootElement.GetProperty("key").GetString());
-            Assert.False(doc.RootElement.GetProperty("follows").GetBoolean());
+            Assert.True(doc.RootElement.GetProperty("follows").GetBoolean());
         }
-        Assert.Contains("y70", Store.Load().Devices.ScheduleUnfollowed);
+        Assert.Contains("y70", Store.Load().Devices.ScheduleFollowing);
 
         using (var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync()))
         {
-            Assert.False(Find(doc.RootElement, "y70").GetProperty("follows").GetBoolean());
+            Assert.True(Find(doc.RootElement, "y70").GetProperty("follows").GetBoolean());
         }
 
-        await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"y70","follows":true}"""));
-        Assert.DoesNotContain("y70", Store.Load().Devices.ScheduleUnfollowed);
+        await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"y70","follows":false}"""));
+        Assert.DoesNotContain("y70", Store.Load().Devices.ScheduleFollowing);
     }
 
     [Fact]
-    public async Task Post_accepts_an_id_the_service_has_not_seen_and_lists_it_as_unfollowed()
+    public async Task Post_accepts_an_id_the_service_has_not_seen_and_lists_it_as_following()
     {
-        await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"panel-lcd:abc","follows":false}"""));
+        await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"panel-lcd:abc","follows":true}"""));
 
         using var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync());
-        Assert.False(Find(doc.RootElement, "panel-lcd:abc").GetProperty("follows").GetBoolean());
+        Assert.True(Find(doc.RootElement, "panel-lcd:abc").GetProperty("follows").GetBoolean());
     }
 
     [Theory]
@@ -117,6 +117,27 @@ public sealed class ScheduleFollowRoutesTests : IClassFixture<StubDeviceHostFact
         using (var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule")).Content.ReadAsStringAsync()))
         {
             Assert.False(doc.RootElement.GetProperty("lightingFollows").GetBoolean());
+        }
+    }
+
+    [Fact]
+    public async Task Cap_percent_is_null_while_the_schedule_is_off_and_the_level_when_it_is_on()
+    {
+        using (var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync()))
+        {
+            Assert.False(Find(doc.RootElement, "y70").TryGetProperty("capPercent", out var cap) && cap.ValueKind != JsonValueKind.Null);
+        }
+
+        Store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = true, SunShift = false, Points = new() { new() { Hour = 0, Brightness = 100 }, new() { Hour = 12, Brightness = 100 } } });
+        using (var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync()))
+        {
+            Assert.False(Find(doc.RootElement, "y70").TryGetProperty("capPercent", out var notFollowing) && notFollowing.ValueKind != JsonValueKind.Null);
+        }
+
+        Store.Update(s => s.Devices.ScheduleFollowing.Add("y70"));
+        using (var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(100, Find(doc.RootElement, "y70").GetProperty("capPercent").GetInt32());
         }
     }
 }

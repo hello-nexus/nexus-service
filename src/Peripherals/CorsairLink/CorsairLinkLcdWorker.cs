@@ -161,7 +161,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
         }
     }
 
-    /// <summary>The stored slider times the schedule multiplier while this LCD follows the schedule; the stored value stays the user's.</summary>
+    /// <summary>The stored slider capped by the schedule while this LCD follows the schedule; the stored value stays the user's.</summary>
     private byte Shown(byte stored) =>
         _follow is null ? stored : (byte)_follow.Scale(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd, stored);
 

@@ -20,9 +20,15 @@ public sealed class ScheduleFollowTests : IDisposable
         new() { Hour = 12, Brightness = percent },
     };
 
-    private static InMemoryConfigStore StoreWithSchedule(bool enabled, int percent)
+    private static readonly string[] AllKeys = { ScheduleFollowKeys.Y70, ScheduleFollowKeys.CorsairLcd, ScheduleFollowKeys.KrakenLcd, "display1" };
+
+    private static InMemoryConfigStore StoreWithSchedule(bool enabled, int percent, bool optIn = true)
     {
         var store = new InMemoryConfigStore();
+        if (optIn)
+        {
+            store.Update(s => s.Devices.ScheduleFollowing.AddRange(AllKeys));
+        }
         store.Update(s => s.Lighting.BrightnessSchedule = new() { Enabled = enabled, SunShift = false, Points = Flat(percent) });
         return store;
     }
@@ -31,12 +37,13 @@ public sealed class ScheduleFollowTests : IDisposable
 
     [Theory]
     [InlineData(100, 1.0, 100)]
-    [InlineData(80, 0.5, 40)]
-    [InlineData(50, 0.1, 5)]
+    [InlineData(80, 0.5, 50)]
+    [InlineData(30, 0.5, 30)]
+    [InlineData(50, 0.1, 10)]
     [InlineData(70, 0.0, 0)]
     [InlineData(100, 2.0, 100)]
     [InlineData(150, 0.5, 50)]
-    public void Scale_is_the_slider_times_the_level(int slider, double multiplier, int expected) =>
+    public void Scale_is_the_slider_capped_by_the_level(int slider, double multiplier, int expected) =>
         Assert.Equal(expected, ScheduleFollowMath.Scale(slider, multiplier));
 
     [Theory]
@@ -55,13 +62,20 @@ public sealed class ScheduleFollowTests : IDisposable
         Assert.Equal(expected, ScheduleFollowMath.Desired(enabled, follows, level));
 
     [Fact]
-    public void A_device_follows_by_default()
+    public void A_device_does_not_follow_until_the_user_enables_it()
     {
-        var store = StoreWithSchedule(true, 50);
+        var store = StoreWithSchedule(true, 50, optIn: false);
         var state = State(store);
 
-        Assert.True(state.Follows(store.Load(), "any-display"));
+        Assert.False(state.Follows(store.Load(), "any-display"));
+        Assert.False(state.Follows(store.Load(), ScheduleFollowKeys.Y70));
+        state.Advance(1);
+        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
+
+        store.Update(s => s.Devices.ScheduleFollowing.Add(ScheduleFollowKeys.Y70));
+        state.Advance(1);
         Assert.True(state.Follows(store.Load(), ScheduleFollowKeys.Y70));
+        Assert.Equal(1.0 - ScheduleFollowMath.FastRatePerSecond, state.Multiplier(ScheduleFollowKeys.Y70), 6);
     }
 
     [Fact]
@@ -77,7 +91,7 @@ public sealed class ScheduleFollowTests : IDisposable
     }
 
     [Fact]
-    public void First_advance_snaps_to_the_level_and_the_slider_stays_the_ceiling()
+    public void First_advance_snaps_to_the_cap_and_the_slider_stays_the_ceiling()
     {
         var store = StoreWithSchedule(true, 50);
         store.Update(s => s.Y70.Brightness = 80);
@@ -86,7 +100,8 @@ public sealed class ScheduleFollowTests : IDisposable
         state.Advance(1);
 
         Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70));
-        Assert.Equal(40, state.Scale(ScheduleFollowKeys.Y70, store.Load().Y70.Brightness));
+        Assert.Equal(50, state.Scale(ScheduleFollowKeys.Y70, store.Load().Y70.Brightness));
+        Assert.Equal(30, state.Scale(ScheduleFollowKeys.Y70, 30));
         Assert.Equal(80, store.Load().Y70.Brightness);
     }
 
@@ -124,7 +139,7 @@ public sealed class ScheduleFollowTests : IDisposable
         state.Advance(1);
         Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.CorsairLcd));
 
-        store.Update(s => s.Devices.ScheduleUnfollowed.Add(ScheduleFollowKeys.CorsairLcd));
+        store.Update(s => s.Devices.ScheduleFollowing.Remove(ScheduleFollowKeys.CorsairLcd));
         for (var i = 0; i < 20; i++)
         {
             state.Advance(1);
@@ -187,7 +202,7 @@ public sealed class ScheduleFollowTests : IDisposable
         Assert.Null(lighting.BrightnessSchedule.LightingFollows);
         Assert.True(lighting.BrightnessSchedule.LightingFollowsOn);
         Assert.Equal(0.3f, MasterBrightness.Effective(lighting, new DateTime(2026, 6, 21, 12, 0, 0)));
-        Assert.Empty(store.Load().Devices.ScheduleUnfollowed);
+        Assert.Empty(store.Load().Devices.ScheduleFollowing);
     }
 
     [Fact]
@@ -199,7 +214,7 @@ public sealed class ScheduleFollowTests : IDisposable
         store.Update(s =>
         {
             s.Lighting.BrightnessSchedule.LightingFollows = false;
-            s.Devices.ScheduleUnfollowed.Add("display1");
+            s.Devices.ScheduleFollowing.Add("display1");
             s.Devices.DisplaySliderBrightness["display1"] = 70;
         });
         store.FlushNow();
@@ -207,7 +222,43 @@ public sealed class ScheduleFollowTests : IDisposable
         var reloaded = new JsonConfigStore(path).Load();
 
         Assert.False(reloaded.Lighting.BrightnessSchedule.LightingFollowsOn);
-        Assert.Contains("display1", reloaded.Devices.ScheduleUnfollowed);
+        Assert.Contains("display1", reloaded.Devices.ScheduleFollowing);
         Assert.Equal(70, reloaded.Devices.DisplaySliderBrightness["display1"]);
+    }
+
+    [Fact]
+    public void Restoring_to_the_plain_slider_never_ramps()
+    {
+        var store = StoreWithSchedule(true, 20);
+        var state = State(store);
+        state.Advance(1);
+        Assert.Equal(0.2, state.Multiplier(ScheduleFollowKeys.Y70), 6);
+
+        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
+        state.Advance(0, out var restored);
+
+        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
+        Assert.Contains(ScheduleFollowKeys.Y70, restored);
+
+        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = true);
+        store.Update(s => s.Devices.ScheduleFollowing.Remove(ScheduleFollowKeys.Y70));
+        state.Advance(1, out restored);
+        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
+        Assert.DoesNotContain(ScheduleFollowKeys.Y70, restored);
+    }
+
+    [Fact]
+    public void Lighting_cap_drops_the_moment_the_schedule_is_turned_off_or_lighting_stops_following()
+    {
+        var lighting = new LightingSettings { GlobalBrightness = 1f, BrightnessSchedule = new() { Enabled = true, SunShift = false, Points = Flat(30) } };
+        var noon = new DateTime(2026, 6, 21, 12, 0, 0);
+        Assert.Equal(0.3f, MasterBrightness.Effective(lighting, noon));
+
+        lighting.BrightnessSchedule.Enabled = false;
+        Assert.Equal(1f, MasterBrightness.Effective(lighting, noon));
+
+        lighting.BrightnessSchedule.Enabled = true;
+        lighting.BrightnessSchedule.LightingFollows = false;
+        Assert.Equal(1f, MasterBrightness.Effective(lighting, noon));
     }
 }

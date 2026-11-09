@@ -42,6 +42,8 @@ public sealed class ScheduleFollowWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _stop = stoppingToken;
+        _store.OnChanged += OnStoreChanged;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         var last = Environment.TickCount64;
         try
@@ -65,13 +67,53 @@ public sealed class ScheduleFollowWorker : BackgroundService
         }
     }
 
+    private readonly SemaphoreSlim _tickGate = new(1, 1);
+    private CancellationToken _stop;
+
     internal async Task TickAsync(double elapsedSeconds, long nowMs, CancellationToken ct)
     {
-        var settings = _store.Load();
-        var scheduleOn = settings.Lighting.BrightnessSchedule is { Enabled: true };
-        _state.Advance(elapsedSeconds);
-        TickY70(settings);
-        await TickSurfacesAsync(scheduleOn, nowMs, ct).ConfigureAwait(false);
+        await _tickGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var settings = _store.Load();
+            var scheduleOn = settings.Lighting.BrightnessSchedule is { Enabled: true };
+            _state.Advance(elapsedSeconds, out var restored);
+            // Back to the plain slider: the one write that skips the spacing, so the device is not left capped.
+            foreach (var key in restored)
+            {
+                _writtenAt.Remove(key);
+            }
+            TickY70(settings);
+            await TickSurfacesAsync(scheduleOn, nowMs, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _tickGate.Release();
+        }
+    }
+
+    /// <summary>A settings write (schedule off, a follow switch) is acted on at once, not at the next tick.</summary>
+    internal Task OnSettingsChangedAsync() => TickAsync(0, Environment.TickCount64, _stop);
+
+    private void OnStoreChanged()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await OnSettingsChangedAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                ServiceLog.Warn($"[schedule-follow] settings tick failed: {ex.Message}");
+            }
+        });
+    }
+
+    public override void Dispose()
+    {
+        _store.OnChanged -= OnStoreChanged;
+        base.Dispose();
     }
 
     private void TickY70(NexusSettings settings)
@@ -101,7 +143,7 @@ public sealed class ScheduleFollowWorker : BackgroundService
                 moving = true;
             }
         }
-        if (!scheduleOn && !moving)
+        if (!moving && (!scheduleOn || _store.Load().Devices.ScheduleFollowing.Count == 0))
         {
             return;
         }
@@ -123,8 +165,13 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private async Task TickSurfaceKeyAsync(string key, IScheduleSurface surface, long nowMs, CancellationToken ct)
     {
         var multiplier = _state.Multiplier(key);
-        var slider = surface.Slider(key);
         _written.TryGetValue(key, out var written);
+        // A device the user never opted in is not touched at all, not even to read it.
+        if (written is null && multiplier >= 1.0 && !_state.Follows(_store.Load(), key))
+        {
+            return;
+        }
+        var slider = surface.Slider(key);
         if (slider is null || (written is null && multiplier >= 1.0 && _state.Target(_store.Load(), key) < 1.0))
         {
             // About to move this surface off its plain level: the hardware value is the user's, and may

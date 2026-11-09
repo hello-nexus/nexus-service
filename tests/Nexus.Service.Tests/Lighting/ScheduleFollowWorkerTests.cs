@@ -62,6 +62,7 @@ public sealed class ScheduleFollowWorkerTests
     private static (ScheduleFollowWorker Worker, ScheduleFollowState State, FakeSurface Surface, FakeY70 Y70, InMemoryConfigStore Store) Make(bool enabled, int percent)
     {
         var store = Store(enabled, percent);
+        store.Update(s => s.Devices.ScheduleFollowing.AddRange(new[] { ScheduleFollowKeys.Y70, "mon1" }));
         var state = new ScheduleFollowState(store, () => Noon);
         var surface = new FakeSurface();
         var y70 = new FakeY70();
@@ -80,14 +81,14 @@ public sealed class ScheduleFollowWorkerTests
     }
 
     [Fact]
-    public async Task A_surface_that_is_already_dimmed_at_start_is_written_once_at_the_scaled_slider()
+    public async Task A_surface_above_the_cap_at_start_is_written_once_at_the_cap()
     {
         var (worker, _, surface, y70, _) = Make(true, 50);
 
         await worker.TickAsync(1, 10_000, default);
         await worker.TickAsync(1, 11_000, default);
 
-        Assert.Equal(new[] { 40 }, surface.Writes);
+        Assert.Equal(new[] { 50 }, surface.Writes);
         Assert.Equal(1, y70.Reapplied);
     }
 
@@ -139,15 +140,18 @@ public sealed class ScheduleFollowWorkerTests
     }
 
     [Fact]
-    public async Task An_unfollowed_surface_is_left_alone()
+    public async Task A_surface_the_user_never_enabled_is_not_touched()
     {
         var (worker, _, surface, _, store) = Make(true, 50);
-        store.Update(s => s.Devices.ScheduleUnfollowed.Add("mon1"));
+        store.Update(s => s.Devices.ScheduleFollowing.Remove("mon1"));
+        surface.SliderValue = null;
+        surface.Hardware = 60;
 
         await worker.TickAsync(1, 10_000, default);
         await worker.TickAsync(1, 20_000, default);
 
         Assert.Empty(surface.Writes);
+        Assert.Null(surface.SliderValue);
     }
 
     [Fact]
@@ -172,7 +176,7 @@ public sealed class ScheduleFollowWorkerTests
         await worker.TickAsync(1, 11_000, default);
 
         Assert.Equal(60, surface.SliderValue);
-        Assert.Equal(new[] { 30 }, surface.Writes);
+        Assert.Equal(new[] { 50 }, surface.Writes);
     }
 
     [Fact]
@@ -184,5 +188,57 @@ public sealed class ScheduleFollowWorkerTests
         await worker.TickAsync(1, 10_000, default);
 
         Assert.Equal(0, y70.Reapplied);
+    }
+
+    [Fact]
+    public async Task A_slider_below_the_cap_is_never_written_and_one_above_it_changes_nothing()
+    {
+        var (worker, _, surface, _, _) = Make(true, 50);
+        surface.SliderValue = 30;
+
+        await worker.TickAsync(1, 10_000, default);
+        await worker.TickAsync(1, 20_000, default);
+        Assert.Empty(surface.Writes);
+
+        surface.SliderValue = 70;
+        await worker.TickAsync(1, 30_000, default);
+        surface.SliderValue = 100;
+        await worker.TickAsync(1, 40_000, default);
+
+        Assert.Equal(new[] { 50 }, surface.Writes);
+    }
+
+    [Fact]
+    public async Task Turning_the_schedule_off_restores_the_slider_at_once_from_the_settings_change()
+    {
+        var (worker, state, surface, y70, store) = Make(true, 50);
+        await worker.TickAsync(1, 10_000, default);
+        await worker.TickAsync(1, 11_000, default);
+        Assert.Equal(new[] { 50 }, surface.Writes);
+        var reapplied = y70.Reapplied;
+
+        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
+        await worker.OnSettingsChangedAsync();
+
+        Assert.Equal(1.0, state.Multiplier("mon1"));
+        Assert.Equal(new[] { 50, 80 }, surface.Writes);
+        Assert.Equal(reapplied + 1, y70.Reapplied);
+    }
+
+    [Fact]
+    public async Task Switching_a_device_off_restores_only_that_device_at_once()
+    {
+        var (worker, state, surface, y70, store) = Make(true, 50);
+        await worker.TickAsync(1, 10_000, default);
+        await worker.TickAsync(1, 11_000, default);
+        var reapplied = y70.Reapplied;
+
+        store.Update(s => s.Devices.ScheduleFollowing.Remove("mon1"));
+        await worker.OnSettingsChangedAsync();
+
+        Assert.Equal(new[] { 50, 80 }, surface.Writes);
+        Assert.Equal(1.0, state.Multiplier("mon1"));
+        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 9);
+        Assert.Equal(reapplied, y70.Reapplied);
     }
 }

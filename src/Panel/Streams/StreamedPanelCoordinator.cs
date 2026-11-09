@@ -153,11 +153,12 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     private int Scaled(string panelDeviceId, int slider) => ScheduleFollow?.Scale(FollowKey(panelDeviceId), slider) ?? slider;
 
-    // A level read back from the panel carries the multiplier; this is the slider that produced it.
+    // A level read back from the panel may be the cap, not the slider; this is the slider it implies.
     private int Unscaled(string panelDeviceId, int shown)
     {
-        var m = ScheduleFollow?.Multiplier(FollowKey(panelDeviceId)) ?? 1.0;
-        return m is > 0 and < 1 ? Math.Clamp((int)Math.Round(shown / m), 0, 100) : shown;
+        // The schedule caps the slider: a level at the cap says only that the slider was at or above it.
+        var cap = ScheduleFollow?.Multiplier(FollowKey(panelDeviceId)) ?? 1.0;
+        return cap < 1.0 && shown >= (int)Math.Round(cap * 100) ? 100 : shown;
     }
 
     /// <summary>The user's slider for a streamed panel, null when none is recorded.</summary>

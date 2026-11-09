@@ -90,7 +90,7 @@ public static class LightingRoutes
         Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
         var keys = new List<string>(follow.TrackedKeys);
-        foreach (var key in settings.Devices.ScheduleUnfollowed)
+        foreach (var key in settings.Devices.ScheduleFollowing)
         {
             if (!keys.Contains(key))
             {
@@ -112,10 +112,12 @@ public static class LightingRoutes
                 _ => settings.Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
             };
             var multiplier = follow.Multiplier(key);
+            var follows = follow.Follows(settings, key);
             response.Devices.Add(new Models.Lighting.ScheduleFollowDeviceDto
             {
                 Key = key,
-                Follows = follow.Follows(settings, key),
+                Follows = follows,
+                CapPercent = follows && settings.Lighting.BrightnessSchedule is { Enabled: true } ? (int)Math.Round(multiplier * 100) : null,
                 LevelPercent = (int)Math.Round(multiplier * 100),
                 AppliedPercent = slider is { } sl ? Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowMath.Scale(sl, multiplier) : null,
             });
@@ -473,9 +475,9 @@ public static class LightingRoutes
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));
         }).AllowPanel();
-        // Which devices follow the schedule, with the level each wears now. A
-        // device not listed follows (the default); the master switch above is
-        // what turns any following on.
+        // Which devices follow the schedule, with the cap each wears now. A
+        // device follows only once the user opted it in (the default is off);
+        // the master switch above must be on for any following to happen.
         app.MapGet("/lighting/brightness-schedule/devices", (Nexus.Service.Persistence.IConfigStore store,
             Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
             Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels,
@@ -494,9 +496,9 @@ public static class LightingRoutes
             }
             store.Update(s =>
             {
-                var list = s.Devices.ScheduleUnfollowed;
+                var list = s.Devices.ScheduleFollowing;
                 list.RemoveAll(x => string.Equals(x, key, StringComparison.Ordinal));
-                if (!body.Follows)
+                if (body.Follows)
                 {
                     list.Add(key);
                 }

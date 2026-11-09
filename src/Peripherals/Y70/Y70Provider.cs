@@ -53,7 +53,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private readonly HardwarePresence? _presence;
     private readonly Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? _follow;
 
-    /// <summary>The level to put on the glass for a stored slider value: the slider times the schedule multiplier while this panel follows the schedule.</summary>
+    /// <summary>The level to put on the glass for a stored slider value: the slider capped by the schedule while this panel follows the schedule.</summary>
     private int Shown(int slider) => _follow?.Scale(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70, slider) ?? slider;
 
     // A DDC lookup enumerates every display (i2c transactions on Linux), so the heartbeat reuses the last result for a bounded time. A failed write drops a cached hit.
@@ -145,7 +145,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         _store.Update(s => s.Y70.Brightness = pct);
     }
 
-    /// <summary>Re-applies the stored slider through the schedule multiplier; the stored value is untouched. A switched-off screen is left alone.</summary>
+    /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
     public void ReapplyBrightness()
     {
         var y70 = _store.Load().Y70;

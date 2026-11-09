@@ -196,7 +196,7 @@ public class DisplayBrightnessControllerTests
     }
 
     [Fact]
-    public async Task SetBrightnessAsync_WhileFollowing_WritesSliderTimesLevelAndKeepsTheSlider()
+    public async Task SetBrightnessAsync_WhileFollowing_WritesSliderCappedByLevelAndKeepsTheSlider()
     {
         var store = new InMemoryConfigStore();
         store.Update(s => s.Lighting.BrightnessSchedule = new()
@@ -205,6 +205,7 @@ public class DisplayBrightnessControllerTests
             SunShift = false,
             Points = new() { new() { Hour = 0, Brightness = 50 }, new() { Hour = 12, Brightness = 50 } },
         });
+        store.Update(s => s.Devices.ScheduleFollowing.Add("display1"));
         var follow = new Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState(store, () => new DateTime(2026, 6, 21, 12, 0, 0));
         follow.Track("display1", 0.02);
         follow.Advance(1);
@@ -213,11 +214,15 @@ public class DisplayBrightnessControllerTests
 
         await controller.SetBrightnessAsync("display1", 80);
 
-        Assert.Equal(new[] { 40 }, provider.Writes);
+        Assert.Equal(new[] { 50 }, provider.Writes);
+
+        await controller.SetBrightnessAsync("display1", 30);
+        Assert.Equal(new[] { 50, 30 }, provider.Writes);
+        await controller.SetBrightnessAsync("display1", 80);
         Assert.Equal(80, controller.GetSlider("display1"));
         Assert.Equal(80, controller.GetBrightness("display1"));
 
-        store.Update(s => s.Devices.ScheduleUnfollowed.Add("display1"));
+        store.Update(s => s.Devices.ScheduleFollowing.Remove("display1"));
         follow.Advance(100);
         Assert.Equal(80, follow.Scale("display1", controller.GetSlider("display1")!.Value));
     }
