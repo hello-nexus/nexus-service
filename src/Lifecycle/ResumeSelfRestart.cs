@@ -45,7 +45,7 @@ public sealed class ResumeSelfRestart
         {
             return true;
         }
-        ServiceLog.Warn("[resume] service self-restart refused (a firmware update or another restart is in progress)");
+        ServiceLog.Warn("[resume] service self-restart refused (a firmware or service update or another restart is in progress)");
         DeleteFiles();
         return false;
     }

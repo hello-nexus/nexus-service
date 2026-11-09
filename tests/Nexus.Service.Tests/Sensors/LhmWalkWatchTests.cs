@@ -140,18 +140,20 @@ public class LhmWalkWatchTests
         });
         held.Wait();
 
-        var waiter = Task.Run(() =>
+        var got = false;
+        var waiterThread = new Thread(() =>
         {
-            var got = LhmWalkWatch.Acquire(gate, neverWait: false);
+            got = LhmWalkWatch.Acquire(gate, neverWait: false);
             Monitor.Exit(gate);
-            return got;
         });
-        await Task.Delay(150);
-        Assert.False(waiter.IsCompleted);
+        waiterThread.Start();
+        Assert.True(SpinWait.SpinUntil(() => waiterThread.ThreadState.HasFlag(System.Threading.ThreadState.WaitSleepJoin), TimeSpan.FromSeconds(5)));
+        Assert.False(got);
 
         release.Set();
         await walker;
-        Assert.True(await waiter);
+        waiterThread.Join();
+        Assert.True(got);
     }
 
     [Fact]

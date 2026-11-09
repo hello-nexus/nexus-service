@@ -1704,6 +1704,47 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void ContinuousHotStall_KeepsFansAtFullForTheWholeStall_ThenCurvesResumeOnFreshReadings()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        var fresh = true;
+        guard.ReadingsFresh = () => fresh;
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+
+        fresh = false;
+        var drivenAfterFire = -1;
+        for (var i = 0; i < 40; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+            guard.WatchdogCheck(mono[0]);
+            if (drivenAfterFire < 0 && LastDuty(fans, "f1") == 100)
+            {
+                drivenAfterFire = fans.Driven.Count;
+            }
+            if (drivenAfterFire >= 0)
+            {
+                Assert.Equal(100, LastDuty(fans, "f1"));
+                Assert.Equal(100, LastDuty(fans, "f2"));
+            }
+        }
+
+        Assert.True(drivenAfterFire >= 0, "the watchdog never drove cooling mode");
+        Assert.Equal(drivenAfterFire, fans.Driven.Count);
+
+        fresh = true;
+        mono[0] += 1000;
+        e.Tick();
+        guard.TickCompleted();
+
+        Assert.True(fans.Driven.Count > drivenAfterFire, "curves did not resume after fresh readings");
+    }
+
+    [Fact]
     public void Watchdog_StaysQuiet_WhenTicksCompleteOnFreshReadings()
     {
         var (_, fans, store, _) = Build();

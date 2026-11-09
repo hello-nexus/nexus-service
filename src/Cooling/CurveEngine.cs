@@ -260,6 +260,13 @@ public sealed class CurveEngine : BackgroundService
             return;
         }
 
+        // Cached temperatures are not a basis for curve writes: the watchdog's full-speed cooling mode stays in place until the walk delivers fresh readings.
+        if (!_guard.ReadingsFresh())
+        {
+            _step = "waiting for fresh readings";
+            return;
+        }
+
         // The watchdog drove cooling mode from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.
         // After repeated stalls it latches instead and cooling mode holds the fans until it clears.

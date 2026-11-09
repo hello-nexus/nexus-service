@@ -434,7 +434,6 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
                 }
             }
-        
         }
         finally
         {
@@ -443,7 +442,6 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 Monitor.Exit(_updateLock);
             }
         }
-
     }
 
     // One unplugged or busy HID cooler (KrakenV2/V3 throw from Update) must not
@@ -553,6 +551,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
         _disposed = true;
         ResetSpdPages(SpdDisposeBudget);
+        // Close can block on the driver a wedged walk is stuck in, and a service that never stops stays down.
+        if (_walkWatch.IsStale)
+        {
+            ServiceLog.Warn("[resume] LHM walk is wedged; skipping Computer.Close so shutdown completes");
+            return;
+        }
         _computer.Close();
     }
 }
