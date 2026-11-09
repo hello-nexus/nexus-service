@@ -18,6 +18,7 @@ public sealed class DisplayBrightnessController
     private readonly Nexus.Service.Persistence.IConfigStore? _store;
     private readonly DisplayTopologyService? _topology;
     private readonly IY70Provider? _y70;
+    private readonly Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? _follow;
     private readonly ConcurrentDictionary<string, DisplayWriteState> _states = new();
 
     public DisplayBrightnessController(
@@ -25,8 +26,10 @@ public sealed class DisplayBrightnessController
         PanelDeviceRegistry? panelDevices = null,
         Nexus.Service.Persistence.IConfigStore? store = null,
         DisplayTopologyService? topology = null,
-        IY70Provider? y70 = null)
+        IY70Provider? y70 = null,
+        Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? follow = null)
     {
+        _follow = follow;
         _provider = provider;
         _panelDevices = panelDevices;
         _store = store;
@@ -55,6 +58,7 @@ public sealed class DisplayBrightnessController
             }
             if (IsXeneonEdge(display.Id)) SuppressBrightnessControl(display);
             else if (IsY70(display.Id)) RouteThroughY70(display);
+            else if (display.BrightnessControl.Current is { } hw && ShownSlider(display.Id, hw) is { } shown) display.BrightnessControl.Current = shown;
         }
         return new DisplayListResponse
         {
@@ -66,8 +70,12 @@ public sealed class DisplayBrightnessController
     public int? GetBrightness(string id)
     {
         if (IsXeneonEdge(id) || DdcDisabled().Contains(id)) return null;
-        return IsY70(id) ? _y70!.GetBrightness() : _provider.GetBrightness(id);
+        return IsY70(id) ? _y70!.GetBrightness() : ShownSlider(id, _provider.GetBrightness(id));
     }
+
+    /// <summary>While the schedule dims a display the hardware reads the scaled value; the slider the user set is what they see.</summary>
+    private int? ShownSlider(string id, int? hardware) =>
+        _follow is not null && _follow.Multiplier(id) < 1.0 && GetSlider(id) is { } slider ? slider : hardware;
 
     /// <summary>
     /// Turn DDC/CI on or off for one display and persist it. Off means Nexus
@@ -134,6 +142,24 @@ public sealed class DisplayBrightnessController
             };
         }
 
+        // The slider is the ceiling: remember it as the user's value and put the
+        // schedule-scaled level on the monitor while it follows.
+        _store?.Update(s => s.Devices.DisplaySliderBrightness[id] = requested);
+        return await ApplyLevelAsync(id, _follow?.Scale(id, requested) ?? requested, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>The user's remembered slider for a DDC display, or null when none was recorded.</summary>
+    public int? GetSlider(string id) =>
+        _store is not null && _store.Load().Devices.DisplaySliderBrightness.TryGetValue(id, out var v) ? v : null;
+
+    /// <summary>Remembers a slider value read from the hardware, for a display the user has not moved through Nexus.</summary>
+    public void RememberSlider(string id, int percent) =>
+        _store?.Update(s => s.Devices.DisplaySliderBrightness[id] = ClampPercent(percent));
+
+    /// <summary>Writes a level to a DDC display through the per-display coalescing queue without touching the remembered slider.</summary>
+    public async Task<DisplayBrightnessDto> ApplyLevelAsync(string id, int level, CancellationToken cancellationToken = default)
+    {
+        var requested = ClampPercent(level);
         var state = _states.GetOrAdd(id, _ => new DisplayWriteState());
         var waiter = new TaskCompletionSource<DisplayBrightnessDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 

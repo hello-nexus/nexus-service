@@ -2308,6 +2308,8 @@ public static class NexusServiceCollectionExtensions
 #endif
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
+        services.AddHostedService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowWorker>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyService>();
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchRoutingStatus>();
         return services;

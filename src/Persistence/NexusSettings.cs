@@ -932,6 +932,10 @@ public sealed class LightingSettings
 public sealed class BrightnessSchedule
 {
     public bool Enabled { get; set; }
+    /// <summary>Whether the lighting master brightness follows the schedule while it is on. Null (a file from before the setting) reads as true, so existing installs keep capping lighting.</summary>
+    public bool? LightingFollows { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool LightingFollowsOn => LightingFollows ?? true;
     public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
     /// <summary>Generated sun curve replaces <see cref="Points"/> while on; null follows <see cref="SunShiftOn"/>, resolved at read time because profiles and imports skip migrations.</summary>
     public bool? SunShift { get; set; }
@@ -1598,6 +1602,10 @@ public sealed class DevicesSettings
     public List<string>? AreaSamplingDevices { get; set; }
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>
     public List<string> DdcDisabledDisplays { get; set; } = new();
+    /// <summary>Brightness-schedule follow opt-outs by device key (the Y70, the Corsair LCD, a display id). A device absent here follows the schedule, so every device defaults to following. Hardware-tied like <see cref="DdcDisabledDisplays"/>, so not profile-scoped.</summary>
+    public List<string> ScheduleUnfollowed { get; set; } = new();
+    /// <summary>The user's own slider value, percent, per display id. A DDC monitor keeps only its live value in hardware, so the ceiling the schedule scales is remembered here; the schedule never overwrites it.</summary>
+    public Dictionary<string, int> DisplaySliderBrightness { get; set; } = new();
     /// <summary>Ids Nexus stops pushing frames to entirely, so firmware/vendor lighting can take over. Distinct from <see cref="DisabledLightingDevices"/>, which still streams black.</summary>
     public List<string> UncontrolledLightingDevices { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted out of (Nexus Control off). Overrides the brand default; a Hyte/iBUYPOWER handler absent here stays on.</summary>
