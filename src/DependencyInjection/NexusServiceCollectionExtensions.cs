@@ -795,6 +795,14 @@ public static class NexusServiceCollectionExtensions
     private static Nexus.Service.Peripherals.Nzxt.KrakenHub BindKrakenLock(IServiceProvider sp, Nexus.Service.Peripherals.Nzxt.KrakenHub hub)
     {
         var store = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        if (sp.GetService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>() is { } follow)
+        {
+            const string key = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd;
+            hub.BindSchedule(
+                slider => follow.Scale(key, slider),
+                () => store.Load().Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
+                level => store.Update(st => st.Devices.DisplaySliderBrightness[key] = level));
+        }
         if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
         {
             hub.BindLockSleep(
@@ -1248,6 +1256,15 @@ public static class NexusServiceCollectionExtensions
             hub.FlexLcd = () => Nexus.Service.Routes.Slv3FlexLcdRoutes.BuildFrame(
                 store,
                 kind => Nexus.Service.Sensors.SummarySensors.Value(sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(), kind));
+            if (sp.GetService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>() is { } aioFollow)
+            {
+                hub.ScheduleScale = (mac, slider) =>
+                {
+                    var aioKey = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix + mac;
+                    aioFollow.Track(aioKey, Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowMath.FastRatePerSecond, snap: true);
+                    return aioFollow.Scale(aioKey, slider);
+                };
+            }
             hub.AioScreens = () =>
             {
                 var screens = new Dictionary<string, Nexus.Service.Peripherals.LianLiWireless.Slv3AioScreen>(StringComparer.Ordinal);
@@ -2309,6 +2326,15 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface, Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface>();
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.XeneonScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.XeneonEdge.XeneonEdgeOrientationWorker>(),
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.KrakenScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.PanelLcdScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()));
         services.AddHostedService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowWorker>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyService>();
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchRoutingStatus>();
@@ -2797,7 +2823,7 @@ public static class NexusServiceCollectionExtensions
 #endif
             var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
             var configStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
-            return new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
+            var coordinator = new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
                 sp.GetServices<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(),
                 sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
                 sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
@@ -2807,6 +2833,8 @@ public static class NexusServiceCollectionExtensions
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
                 isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
+            coordinator.ScheduleFollow = sp.GetService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
+            return coordinator;
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());

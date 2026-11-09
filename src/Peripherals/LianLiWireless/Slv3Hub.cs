@@ -120,6 +120,9 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
+    /// <summary>Brightness schedule: the level for a screen's MAC key and stored slider. The slider stays the user's; only the byte on the wire is scaled.</summary>
+    public Func<string, int, int>? ScheduleScale { get; set; }
+
     /// <summary>
     /// Raised under the hub lock with an AIO's MAC hex when it acknowledges RF control.
     /// The firmware then draws its own screen over whatever its USB link last showed.
@@ -1806,8 +1809,11 @@ public sealed partial class Slv3Hub : IDisposable
             // With the AIO's USB cable connected and Nexus widgets on, the streamed panel owns the
             // glass and the panel record's own setting is the only one that applies; this byte
             // stays at the user's value then, the same condition the web uses to hide this toggle.
-            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !UsbPanelOwnsGlass(key, shown.NexusWidgets);
-            shown = shown with { Brightness = AioLockBrightness(key, shown.Brightness, sleeping) };
+            var panelOwnsGlass = UsbPanelOwnsGlass(key, shown.NexusWidgets);
+            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !panelOwnsGlass;
+            // The streamed panel's own record follows the schedule when it owns the glass.
+            var scaled = !panelOwnsGlass && ScheduleScale is { } scale ? (byte)scale(key, shown.Brightness) : shown.Brightness;
+            shown = shown with { Brightness = AioLockBrightness(key, scaled, sleeping) };
             var block = Slv3Protocol.BuildAioParamBlock(
                 sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
                 shown,

@@ -11,6 +11,12 @@ public static class ScheduleFollowKeys
 {
     public const string Y70 = "y70";
     public const string CorsairLcd = "corsair-lcd";
+    public const string KrakenLcd = "nzxt-kraken-lcd";
+    /// <summary>Followed by "panel-lcd:" plus the panel device id of a streamed-panel LCD.</summary>
+    public const string PanelLcdPrefix = "panel-lcd:";
+    /// <summary>Followed by "slv3-aio:" plus the upper-case hex MAC of a HydroShift II screen.</summary>
+    public const string Slv3AioPrefix = "slv3-aio:";
+    /// <summary>The Xeneon Edge is a display: its key is its display id, like any monitor.</summary>
 }
 
 /// <summary>Pure follow math, kept apart from the state so it tests without a store.</summary>
@@ -66,12 +72,20 @@ public sealed class ScheduleFollowState
         _clock = clock ?? (() => DateTime.Now);
         Track(ScheduleFollowKeys.Y70, ScheduleFollowMath.FastRatePerSecond);
         Track(ScheduleFollowKeys.CorsairLcd, ScheduleFollowMath.FastRatePerSecond);
+        Track(ScheduleFollowKeys.KrakenLcd, ScheduleFollowMath.FastRatePerSecond);
     }
 
-    /// <summary>Registers a device key; a repeat call keeps the existing slot.</summary>
-    public void Track(string key, double ratePerSecond)
+    private int _advances;
+
+    /// <summary>Registers a device key; a repeat call keeps the existing slot. A key first seen at startup (or with
+    /// <paramref name="snap"/>) takes the current level at once, since its hardware may already wear it; one that
+    /// appears later starts from the plain slider and ramps.</summary>
+    public void Track(string key, double ratePerSecond, bool snap = false)
     {
-        _slots.GetOrAdd(key, _ => new Slot { Rate = ratePerSecond });
+        if (!_slots.ContainsKey(key))
+        {
+            _slots.TryAdd(key, new Slot { Rate = ratePerSecond, Primed = !snap && Volatile.Read(ref _advances) > 1 });
+        }
     }
 
     public IReadOnlyCollection<string> TrackedKeys => (IReadOnlyCollection<string>)_slots.Keys;
@@ -98,6 +112,7 @@ public sealed class ScheduleFollowState
     public List<string> Advance(double elapsedSeconds)
     {
         var changed = new List<string>();
+        Interlocked.Increment(ref _advances);
         var settings = _store.Load();
         foreach (var (key, slot) in _slots)
         {
