@@ -31,6 +31,23 @@ internal sealed class LhmWalkWatch
 
     internal void RaiseStalled(TimeSpan age) => Stalled?.Invoke(age);
 
+    /// <summary>Longest a walk may run before cached readings stop counting as fresh for the thermal watchdog; a healthy walk is far shorter.</summary>
+    internal static readonly TimeSpan FreshLimit = TimeSpan.FromSeconds(2);
+
+    /// <summary>False once the running walk is past <see cref="FreshLimit"/> or has wedged.</summary>
+    internal bool IsFresh => !IsStale && (CurrentWalkAge ?? TimeSpan.Zero) < FreshLimit;
+
+    /// <summary>Takes <paramref name="gate"/>. A reader that must never wait gets false at once when a walk holds it.</summary>
+    internal static bool Acquire(object gate, bool neverWait)
+    {
+        if (neverWait)
+        {
+            return Monitor.TryEnter(gate);
+        }
+        Monitor.Enter(gate);
+        return true;
+    }
+
     internal bool IsStale => Volatile.Read(ref _stale) != 0;
 
     /// <summary>Age of the walk in progress, or null when none is running.</summary>

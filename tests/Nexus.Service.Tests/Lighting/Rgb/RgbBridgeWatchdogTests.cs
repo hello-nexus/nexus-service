@@ -507,4 +507,138 @@ public class RgbBridgeWatchdogTests : IDisposable
         await Task.Delay(300);
         Assert.Equal(3, _controller.Count("disconnect"));
     }
+
+    private List<string> _selfRestarts = new();
+
+    private void WireSelfRestart(string mutex = "held")
+    {
+        _bridge.SmbusMutexProbe = () => mutex;
+        _bridge.SelfRestart = context =>
+        {
+            _selfRestarts.Add(context);
+            return true;
+        };
+    }
+
+    [Fact]
+    public async Task Self_restart_runs_once_when_every_condition_holds()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+
+        Assert.Single(_selfRestarts);
+        Assert.Contains("1 devices known before the suspend", _selfRestarts[0]);
+    }
+
+    [Fact]
+    public async Task Self_restart_is_refused_without_a_resume()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task Self_restart_is_refused_when_the_resume_is_past_the_window()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromMinutes(16));
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task Self_restart_is_refused_when_no_devices_were_known_before_the_resume()
+    {
+        UseFakeClock();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _bridge.Activate();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("getDevices") >= 1, TimeSpan.FromSeconds(10)));
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Theory]
+    [InlineData("free")]
+    [InlineData("absent")]
+    [InlineData("n/a")]
+    public async Task Self_restart_is_refused_unless_the_smbus_mutex_is_held(string mutex)
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart(mutex);
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task Self_restart_is_refused_when_nothing_is_wired()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _bridge.SmbusMutexProbe = () => "held";
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+    }
+
+    [Fact]
+    public async Task Exhausting_the_settle_stall_budget_after_a_resume_restarts_the_service()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+
+        for (var n = 2; n <= 4; n++)
+        {
+            Advance(TimeSpan.FromSeconds(100));
+            await PollAndExpectBounceAsync(n);
+        }
+        Assert.Empty(_selfRestarts);
+
+        Advance(TimeSpan.FromSeconds(100));
+        await PollAndExpectNoBounceAsync(4);
+
+        Assert.Single(_selfRestarts);
+        Assert.Contains("settle-stall budget exhausted", _selfRestarts[0]);
+    }
+
+    [Fact]
+    public async Task Exhausting_the_budget_with_the_mutex_free_does_not_restart_the_service()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        WireSelfRestart("free");
+        await ResumeAndWaitForBounceAsync(1);
+
+        for (var n = 2; n <= 4; n++)
+        {
+            Advance(TimeSpan.FromSeconds(100));
+            await PollAndExpectBounceAsync(n);
+        }
+        Advance(TimeSpan.FromSeconds(100));
+        await PollAndExpectNoBounceAsync(4);
+
+        Assert.Empty(_selfRestarts);
+    }
 }

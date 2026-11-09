@@ -89,6 +89,8 @@ public sealed class RgbBridge : IDisposable
     private static readonly TimeSpan WatchdogWindow = TimeSpan.FromMinutes(10);
     /// <summary>A restarted daemon that still lists no controller this long after spawn, with no detection activity for the quiet window, never finished: devices were present before the restart.</summary>
     private static readonly TimeSpan SettleStallTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>A resume older than this no longer justifies restarting the whole service.</summary>
+    private static readonly TimeSpan SelfRestartWindow = TimeSpan.FromMinutes(15);
     private const string SmbusMutexName = "Global\\Access_SMBUS.HTP.Method";
 
     // Covers the PawnIO install gate LhmComputer waits on plus the open itself.
@@ -131,6 +133,12 @@ public sealed class RgbBridge : IDisposable
     private int _expectedDevices;
     // Settle-stall restarts spent under the current arming of _expectedDevices; Interlocked.
     private int _settleStallBounces;
+    // Resume bookkeeping for the service self-restart; Interlocked.
+    private long _resumeTicks;
+    private int _devicesAtResume;
+    private long _selfRestartResumeTicks;
+    /// <summary>Restarts the service; the argument names what triggered it. Null where self-restart is not wired.</summary>
+    internal Func<string, bool>? SelfRestart { get; set; }
     /// <summary>Clock for the detection-activity and settle-stall gates, replaceable so tests need no wall-clock waits.</summary>
     internal Func<long> NowTicks { get; set; } = () => DateTime.UtcNow.Ticks;
     /// <summary>Test stand-in for both the watchdog's uptime and the reconnect's time since spawn (the process manager is sealed).</summary>
@@ -729,8 +737,15 @@ public sealed class RgbBridge : IDisposable
     /// </summary>
     public void OnSystemResume()
     {
+        int known;
         lock (_lock)
-        { ResetWatchdogLocked(); }
+        {
+            ResetWatchdogLocked();
+            // A second resume before the daemon relisted must not forget the devices the first one knew.
+            known = Math.Max(_devices.Count, Volatile.Read(ref _expectedDevices));
+        }
+        Volatile.Write(ref _devicesAtResume, known);
+        Interlocked.Exchange(ref _resumeTicks, NowTicks());
         BounceSubprocess("system-resume");
     }
 
@@ -1163,8 +1178,12 @@ public sealed class RgbBridge : IDisposable
         }
         Interlocked.Exchange(ref _daemonFailures, 0);
 
-        if (!TryClaimWatchdogBounce(now, out _))
+        if (!TryClaimWatchdogBounce(now, out var gaveUp))
         {
+            if (gaveUp)
+            {
+                MaybeSelfRestart("daemon watchdog budget exhausted");
+            }
             return;
         }
         BounceSubprocess("watchdog");
@@ -1210,6 +1229,30 @@ public sealed class RgbBridge : IDisposable
         return watch.SinceLastWalk is { } since ? $"lhm last walk {since.TotalSeconds:F0}s ago, stale={watch.IsStale}" : "lhm no walk yet";
     }
 
+    /// <summary>
+    /// Every condition must hold: a hook is wired, a resume happened within the window, devices were known
+    /// before it, the SMBus mutex is held, and this resume has not already restarted the service.
+    /// </summary>
+    internal bool MaybeSelfRestart(string source)
+    {
+        var restart = SelfRestart;
+        var resume = Interlocked.Read(ref _resumeTicks);
+        if (restart is null || resume == 0 || NowTicks() - resume > SelfRestartWindow.Ticks)
+        {
+            return false;
+        }
+        var devices = Volatile.Read(ref _devicesAtResume);
+        if (devices <= 0 || SmbusMutexProbe() != "held")
+        {
+            return false;
+        }
+        if (Interlocked.Exchange(ref _selfRestartResumeTicks, resume) == resume)
+        {
+            return false;
+        }
+        return restart($"{source}, {devices} devices known before the suspend, smbus mutex=held, {LhmWalkSummary()}");
+    }
+
     internal Func<string> SmbusMutexProbe { get; set; } = ProbeSmbusMutex;
 
     /// <summary>A wedged LHM walk may hold the SMBus mutex the daemon's DIMM detection waits on; a daemon-held mutex is released by restarting it.</summary>
@@ -1225,9 +1268,13 @@ public sealed class RgbBridge : IDisposable
             ServiceLog.Info($"[resume] LHM walk stalled {age.TotalSeconds:F0}s, smbus mutex={mutex}; daemon left running");
             return;
         }
-        if (!TryClaimWatchdogBounce(NowTicks(), out _))
+        if (!TryClaimWatchdogBounce(NowTicks(), out var gaveUp))
         {
             ServiceLog.Warn($"[resume] LHM walk stalled {age.TotalSeconds:F0}s with the smbus mutex held; no daemon restart budget left");
+            if (gaveUp)
+            {
+                MaybeSelfRestart("LHM stall, daemon restart budget exhausted");
+            }
             return;
         }
         ServiceLog.Warn($"[resume] LHM walk stalled {age.TotalSeconds:F0}s with the smbus mutex held; restarting the daemon in case it is the holder");
@@ -1255,6 +1302,7 @@ public sealed class RgbBridge : IDisposable
         {
             if (gaveUp)
             {
+                MaybeSelfRestart("settle-stall budget exhausted");
                 // Out of restarts: the devices may genuinely be gone, so stop expecting them.
                 DisarmSettleStall();
             }

@@ -1679,6 +1679,51 @@ public class ThermalGuardEngineTests
     }
 
     [Fact]
+    public void Watchdog_StillDrivesCoolingMode_WhenTicksKeepCompletingOnReadingsThatStoppedRefreshing()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        var fresh = true;
+        guard.ReadingsFresh = () => fresh;
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+
+        // Readers no longer block on a wedged walk, so the engine keeps ticking on cached values.
+        fresh = false;
+        for (var i = 0; i < 12; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+        }
+        guard.WatchdogCheck(mono[0]);
+
+        Assert.Equal(100, LastDuty(fans, "f1"));
+        Assert.Equal(100, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void Watchdog_StaysQuiet_WhenTicksCompleteOnFreshReadings()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        guard.ReadingsFresh = () => true;
+        fans.CpuTemp = 85f;
+        for (var i = 0; i < 12; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+        }
+        var before = fans.Driven.Count;
+
+        guard.WatchdogCheck(mono[0]);
+
+        Assert.Equal(before, fans.Driven.Count);
+    }
+
+    [Fact]
     public void StallWhileTheFloorIsDriving_RewritesTheSameDutyOnTheNextTickAfterCoolingMode()
     {
         var (_, fans, store, _) = Build();
