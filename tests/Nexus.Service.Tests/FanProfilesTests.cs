@@ -381,6 +381,37 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
+    public async Task DerivePresetFromCurves_ReadsUnderTheStoreLockWhileCurvesAreEdited()
+    {
+        FanProfiles.Apply("balanced", _fans, _store);
+        using var stop = new CancellationTokenSource();
+        var writer = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                _store.Update(s =>
+                {
+                    var curve = s.Cooling.Curves.First(c => c.Preset == "balanced");
+                    curve.Outputs.RemoveAll(o => o.Id == "fan1");
+                    curve.Outputs.Add(new CurveOutputDocument { Id = "fan1", Type = "Fan" });
+                });
+            }
+        });
+        try
+        {
+            for (var i = 0; i < 3000; i++)
+            {
+                FanProfiles.DerivePresetFromCurves(_store, _fans);
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            await writer;
+        }
+    }
+
+    [Fact]
     public void DerivePresetFromCurves_ReturnsOffWhenNothingAttached()
     {
         FanProfiles.Apply("off", _fans, _store);
