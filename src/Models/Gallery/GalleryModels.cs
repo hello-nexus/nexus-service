@@ -72,6 +72,13 @@ public sealed class GallerySort
     public string Direction { get; set; } = GallerySortDirections.Asc;
 }
 
+public sealed class GallerySortMutationResponse
+{
+    public GallerySort? Sort { get; set; }
+    public bool Error { get; set; }
+    public string Msg { get; set; } = "";
+}
+
 /// <summary>Persistence shape of gallery/sources.json.</summary>
 public sealed class GallerySourcesFile
 {

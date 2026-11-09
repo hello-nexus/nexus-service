@@ -73,11 +73,11 @@ public static class GalleryRoutes
         {
             if (!lib.SetSort(body))
             {
-                return Results.BadRequest();
+                return Results.BadRequest(new GallerySortMutationResponse { Error = true, Msg = "unknown sort key or direction" });
             }
 
             PanelTopics.BroadcastGallery(hub);
-            return Results.Ok(lib.GetSort());
+            return Results.Ok(new GallerySortMutationResponse { Sort = lib.GetSort() });
         });
 
         // Playlist management is desktop-tier like source management. Reads

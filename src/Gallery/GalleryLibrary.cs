@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.IO.Enumeration;
 using System.Text.Json;
 using Nexus.Service.Common;
 using Nexus.Service.Media;
@@ -429,6 +430,9 @@ public sealed class GalleryLibrary
 
         var items = new List<GalleryItem>();
         var paths = new Dictionary<string, string>();
+        // Filled only in modified mode; 0 marks a time that could not be read.
+        var wantModified = sort.By == GallerySortKeys.Modified;
+        var modified = new Dictionary<string, long>(StringComparer.Ordinal);
         var truncated = false;
 
         foreach (var source in sources)
@@ -444,10 +448,19 @@ public sealed class GalleryLibrary
                 // live in subfolders. Excluded files and files an earlier
                 // source already holds take no slot.
                 var excluded = new HashSet<string>(source.Excluded, StringComparer.Ordinal);
-                var picked = new List<(string Full, string Id)>();
+                var picked = new List<(string Full, string Id, long Modified)>();
                 try
                 {
-                    foreach (var file in Directory.EnumerateFiles(source.Path, "*", FolderScanOptions))
+                    // Same walk as Directory.EnumerateFiles; the entry carries the
+                    // write time from the directory read (free on Windows).
+                    var walk = new FileSystemEnumerable<(string Path, long Modified)>(
+                        source.Path,
+                        (ref FileSystemEntry e) => (e.ToSpecifiedFullPath(), wantModified ? EntryModifiedTicks(ref e) : 0),
+                        FolderScanOptions)
+                    {
+                        ShouldIncludePredicate = (ref FileSystemEntry e) => !e.IsDirectory,
+                    };
+                    foreach (var (file, fileModified) in walk)
                     {
                         if (!IsMediaFile(file))
                         {
@@ -467,7 +480,7 @@ public sealed class GalleryLibrary
                             break;
                         }
 
-                        picked.Add((full, id));
+                        picked.Add((full, id, fileModified));
                     }
                 }
                 catch
@@ -476,9 +489,10 @@ public sealed class GalleryLibrary
                 }
 
                 picked.Sort((x, y) => NaturalStringComparer.Instance.Compare(x.Full, y.Full));
-                foreach (var (full, id) in picked)
+                foreach (var (full, id, fileModified) in picked)
                 {
-                    AddItem(full, id, source.Id, name: null);
+                    if (AddItem(full, id, source.Id, name: null) && wantModified)
+                        modified[id] = fileModified;
                 }
             }
             else if (File.Exists(source.Path) && IsMediaFile(source.Path))
@@ -496,11 +510,12 @@ public sealed class GalleryLibrary
                     continue;
                 }
 
-                AddItem(full, id, source.Id, source.Name);
+                if (AddItem(full, id, source.Id, source.Name) && wantModified)
+                    modified[id] = FileModifiedTicks(full);
             }
         }
 
-        SortItems(items, paths, sources, sort);
+        SortItems(items, paths, modified, sources, sort);
 
         lock (_lock)
         {
@@ -518,27 +533,59 @@ public sealed class GalleryLibrary
 
         return new GalleryEnumeration(items, truncated, sort);
 
-        void AddItem(string full, string id, string sourceId, string? name)
+        bool AddItem(string full, string id, string sourceId, string? name)
         {
-            if (paths.TryAdd(id, full))
+            if (!paths.TryAdd(id, full))
+                return false;
+
+            items.Add(new GalleryItem
             {
-                items.Add(new GalleryItem
-                {
-                    Id = id,
-                    Name = string.IsNullOrEmpty(name) ? Path.GetFileName(full) : name,
-                    SourceId = sourceId,
-                    Kind = IsVideoFile(full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
-                });
-            }
+                Id = id,
+                Name = string.IsNullOrEmpty(name) ? Path.GetFileName(full) : name,
+                SourceId = sourceId,
+                Kind = IsVideoFile(full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
+            });
+            return true;
+        }
+    }
+
+    // A missing file reads as the FILETIME epoch rather than throwing.
+    private static readonly long FileTimeEpochTicks = DateTime.FromFileTimeUtc(0).Ticks;
+
+    private static long KnownTicks(long ticks) => ticks > FileTimeEpochTicks ? ticks : 0;
+
+    // A dropped share or removed drive must not fail the whole enumeration.
+    private static long EntryModifiedTicks(ref FileSystemEntry e)
+    {
+        try
+        {
+            return KnownTicks(e.LastWriteTimeUtc.UtcTicks);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    internal static long FileModifiedTicks(string path)
+    {
+        try
+        {
+            return KnownTicks(File.GetLastWriteTimeUtc(path).Ticks);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return 0;
         }
     }
 
     /// <summary>
     /// Orders the whole list. Ties fall back to natural name ascending, then to
-    /// the full path, so the order is total. A source with no add time (0) sorts
-    /// after every dated one in both directions, in persisted source order.
+    /// the full path, so the order is total. An unknown time (0) sorts after
+    /// every known one in both directions: a source with no add time in
+    /// persisted source order, a file whose write time could not be read by name.
     /// </summary>
-    private static void SortItems(List<GalleryItem> items, Dictionary<string, string> paths, List<GallerySource> sources, GallerySort sort)
+    private static void SortItems(List<GalleryItem> items, Dictionary<string, string> paths, Dictionary<string, long> modified, List<GallerySource> sources, GallerySort sort)
     {
         var sign = sort.Direction == GallerySortDirections.Desc ? -1 : 1;
         var natural = NaturalStringComparer.Instance;
@@ -552,10 +599,13 @@ public sealed class GalleryLibrary
         switch (sort.By)
         {
             case GallerySortKeys.Modified:
-                var modified = items.ToDictionary(i => i.Id, i => File.GetLastWriteTimeUtc(paths[i.Id]).Ticks, StringComparer.Ordinal);
                 compare = (x, y) =>
                 {
-                    var c = modified[x.Id].CompareTo(modified[y.Id]) * sign;
+                    var mx = modified[x.Id];
+                    var my = modified[y.Id];
+                    if ((mx == 0) != (my == 0))
+                        return mx == 0 ? 1 : -1;
+                    var c = mx.CompareTo(my) * sign;
                     return c != 0 ? c : ByName(x, y);
                 };
                 break;

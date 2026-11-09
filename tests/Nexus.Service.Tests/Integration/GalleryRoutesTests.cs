@@ -390,8 +390,15 @@ public sealed class GalleryRoutesTests : IDisposable
         Assert.Equal(new[] { "b.jpg", "a.png" }, items!.Items.Select(i => i.Name).ToArray());
         Assert.Equal(GallerySortDirections.Desc, items.Sort.Direction);
 
+        var saved = await ReadAs(put, AppJsonContext.Default.GallerySortMutationResponse);
+        Assert.False(saved!.Error);
+        Assert.Equal(GallerySortDirections.Desc, saved.Sort!.Direction);
+
         var bad = await client.PutAsJsonAsync("/gallery/sort", new GallerySort { By = "size", Direction = GallerySortDirections.Asc });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        var refused = await ReadAs(bad, AppJsonContext.Default.GallerySortMutationResponse);
+        Assert.True(refused!.Error);
+        Assert.False(string.IsNullOrEmpty(refused.Msg));
     }
 
     [Fact]

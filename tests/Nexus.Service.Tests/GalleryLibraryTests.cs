@@ -380,6 +380,47 @@ public sealed class GalleryLibraryTests : IDisposable
         Assert.Equal(new[] { "1.png", "2.png", "10.png" }, Names(lib));
     }
 
+    [Fact]
+    public void Sort_Modified_DanglingLinkDoesNotFailEnumeration()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var time = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(WriteImage("b.png"), time.AddDays(1));
+        File.SetLastWriteTimeUtc(WriteImage("a.png"), time);
+        File.CreateSymbolicLink(Path.Combine(_photosDir, "gone.png"), Path.Combine(_tempDir, "missing.png"));
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Desc));
+
+        var names = Names(lib);
+        Assert.Equal(new[] { "b.png", "a.png" }, names.Where(n => n != "gone.png").ToArray());
+        Assert.Contains("gone.png", names);
+    }
+
+    [Fact]
+    public void FileModifiedTicks_UnreadableOrMissingIsUnknown()
+    {
+        Assert.Equal(0, GalleryLibrary.FileModifiedTicks(Path.Combine(_tempDir, "missing.png")));
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var locked = Path.Combine(_tempDir, "locked");
+        Directory.CreateDirectory(locked);
+        var inside = Path.Combine(locked, "a.png");
+        File.WriteAllBytes(inside, new byte[] { 1 });
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+        try
+        {
+            Assert.Equal(0, GalleryLibrary.FileModifiedTicks(inside));
+        }
+        finally
+        {
+            File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     private GalleryLibrary LibraryWithDatedSources(long firstAdded, long secondAdded, long fileAdded)
     {
         var first = Path.Combine(_tempDir, "first");
