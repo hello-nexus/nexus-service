@@ -85,7 +85,7 @@ public sealed class GalleryLibrary
 
     public string RootDir { get; }
 
-    /// <summary>Tests lower it to exercise the ceiling without writing 50k files.</summary>
+    /// <summary>Tests lower it to exercise the ceiling without writing a full ceiling's worth of files.</summary>
     internal int ScanCeiling { get; init; } = MaxScanItems;
 
     public static bool IsImageFile(string path)
