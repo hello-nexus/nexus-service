@@ -171,4 +171,38 @@ public class LhmWalkWatchTests
         watch.EndWalk();
         Assert.True(watch.IsFresh);
     }
+
+    [Fact]
+    public async Task Close_is_skipped_while_a_walk_holds_the_gate_past_the_wait()
+    {
+        var gate = new object();
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var walker = Task.Run(() =>
+        {
+            lock (gate)
+            {
+                held.Set();
+                release.Wait();
+            }
+        });
+        held.Wait();
+        var ran = false;
+
+        var result = LhmWalkWatch.TryRunWhenIdle(gate, TimeSpan.FromMilliseconds(50), () => ran = true);
+
+        Assert.False(result);
+        Assert.False(ran);
+        release.Set();
+        await walker;
+    }
+
+    [Fact]
+    public void Close_runs_when_no_walk_is_running()
+    {
+        var ran = false;
+
+        Assert.True(LhmWalkWatch.TryRunWhenIdle(new object(), TimeSpan.FromMilliseconds(50), () => ran = true));
+        Assert.True(ran);
+    }
 }

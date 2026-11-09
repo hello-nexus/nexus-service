@@ -48,6 +48,24 @@ internal sealed class LhmWalkWatch
         return true;
     }
 
+    /// <summary>Runs <paramref name="action"/> under <paramref name="gate"/> only if no walk releases it within <paramref name="wait"/>; false means it was skipped.</summary>
+    internal static bool TryRunWhenIdle(object gate, TimeSpan wait, Action action)
+    {
+        if (!Monitor.TryEnter(gate, wait))
+        {
+            return false;
+        }
+        try
+        {
+            action();
+            return true;
+        }
+        finally
+        {
+            Monitor.Exit(gate);
+        }
+    }
+
     internal bool IsStale => Volatile.Read(ref _stale) != 0;
 
     /// <summary>Age of the walk in progress, or null when none is running.</summary>

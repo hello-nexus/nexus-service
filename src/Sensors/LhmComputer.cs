@@ -267,6 +267,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
+    private static readonly TimeSpan CloseWalkWait = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SpdDisposeBudget = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromMilliseconds(750);
 
@@ -552,12 +553,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         _disposed = true;
         ResetSpdPages(SpdDisposeBudget);
         // Close can block on the driver a wedged walk is stuck in, and a service that never stops stays down.
-        if (_walkWatch.IsStale)
+        if (!LhmWalkWatch.TryRunWhenIdle(_updateLock, CloseWalkWait, _computer.Close))
         {
-            ServiceLog.Warn("[resume] LHM walk is wedged; skipping Computer.Close so shutdown completes");
-            return;
+            ServiceLog.Warn("[resume] LHM walk still running at shutdown; skipping Computer.Close so shutdown completes");
         }
-        _computer.Close();
     }
 }
 
