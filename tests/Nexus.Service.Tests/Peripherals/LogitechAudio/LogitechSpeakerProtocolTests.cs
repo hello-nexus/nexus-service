@@ -90,14 +90,14 @@ public class LogitechSpeakerProtocolTests
         Assert.Equal(names.Count, names.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.Equal(names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase), names);
         Assert.Contains("Bass Boost", names);
-        Assert.Contains("Treble booster", names);
+        Assert.Contains("Treble Booster", names);
         Assert.DoesNotContain("Bass booster", names);
     }
 
     [Fact]
     public void StockPresets_AreWholeDecibels()
     {
-        var ghub = new[] { "Bass Boost", "Cinematic", "Communications", "Flat", "First Person Shooter (FPS)", "Multiplayer Online Battle Arena (MOBA)" };
+        var ghub = LogitechSpeakerProtocol.GHubPresets.Select(p => p.Name).ToList();
         foreach (var (name, bands) in LogitechSpeakerProtocol.BuiltInPresets.Where(p => !ghub.Contains(p.Name)))
         {
             Assert.All(bands, b => Assert.Equal(MathF.Round(b), b));

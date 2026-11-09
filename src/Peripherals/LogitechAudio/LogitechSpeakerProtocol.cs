@@ -129,7 +129,7 @@ public static class LogitechSpeakerProtocol
     /// The presets G HUB ships for the G560 (its device_presets.json, dB per band, <see cref="BandHz"/> order).
     /// Apart from Communications they only cut, unlike the general presets G HUB has for other devices.
     /// </summary>
-    private static readonly (string Name, float[] Bands)[] GHubPresets =
+    internal static readonly (string Name, float[] Bands)[] GHubPresets =
     {
         ("Bass Boost", new float[] { 0, 0, 0, 0, 0, -3, -4, -5, -6, -6 }),
         ("Cinematic", new float[] { -3, -4, -5, -6, -6, -5, -6, 0, 0, 0 }),
@@ -144,12 +144,12 @@ public static class LogitechSpeakerProtocol
     private static readonly (string Name, float[] Bands)[] StockPresets =
     {
         ("Acoustic", new float[] { 3, 3, 2, 0, 1, 1, 2, 3, 3, 2 }),
-        ("Bass reducer", new float[] { -6, -5, -4, -2, 0, 0, 0, 0, 0, 0 }),
+        ("Bass Reducer", new float[] { -6, -5, -4, -2, 0, 0, 0, 0, 0, 0 }),
         ("Classical", new float[] { 3, 3, 2, 2, -1, -1, 0, 2, 3, 3 }),
         ("Dance", new float[] { 6, 5, 2, 0, 0, -3, -4, -3, 0, 0 }),
         ("Deep", new float[] { 3, 3, 2, 1, 0, -1, -3, -5, -7, -9 }),
         ("Electronic", new float[] { 4, 3, 0, -3, -2, 2, 0, 1, 4, 5 }),
-        ("Hip-hop", new float[] { 5, 4, 1, 3, -1, -1, 1, -1, 2, 3 }),
+        ("Hip-Hop", new float[] { 5, 4, 1, 3, -1, -1, 1, -1, 2, 3 }),
         ("Jazz", new float[] { 3, 2, 1, 2, -2, -2, 0, 1, 2, 3 }),
         ("Latin", new float[] { 4, 2, 0, 0, -2, -2, -2, 0, 3, 4 }),
         ("Loudness", new float[] { 6, 5, 2, 0, -2, -2, 0, 1, 4, 5 }),
@@ -158,11 +158,11 @@ public static class LogitechSpeakerProtocol
         ("Pop", new float[] { -2, -1, 0, 2, 4, 4, 2, 0, -1, -2 }),
         ("R&B", new float[] { 5, 4, 3, 1, -2, -2, 1, 2, 2, 3 }),
         ("Rock", new float[] { 4, 3, 2, 0, -2, -2, 0, 2, 3, 4 }),
-        ("Small speakers", new float[] { -12, -10, -7, -4, -1, 0, 0, 0, 0, 0 }),
-        ("Spoken word", new float[] { -10, -8, -4, -1, 2, 4, 4, 3, 0, -4 }),
-        ("Treble booster", new float[] { 0, 0, 0, 0, 0, 0, 2, 4, 5, 6 }),
-        ("Treble reducer", new float[] { 0, 0, 0, 0, 0, 0, -2, -4, -6, -8 }),
-        ("Vocal booster", new float[] { -3, -3, -2, 0, 3, 5, 5, 3, 0, -2 }),
+        ("Small Speakers", new float[] { -12, -10, -7, -4, -1, 0, 0, 0, 0, 0 }),
+        ("Spoken Word", new float[] { -10, -8, -4, -1, 2, 4, 4, 3, 0, -4 }),
+        ("Treble Booster", new float[] { 0, 0, 0, 0, 0, 0, 2, 4, 5, 6 }),
+        ("Treble Reducer", new float[] { 0, 0, 0, 0, 0, 0, -2, -4, -6, -8 }),
+        ("Vocal Booster", new float[] { -3, -3, -2, 0, 3, 5, 5, 3, 0, -2 }),
     };
 
     /// <summary>G HUB's G560 presets and the stock ones, alphabetical; names are unique case-insensitively.</summary>

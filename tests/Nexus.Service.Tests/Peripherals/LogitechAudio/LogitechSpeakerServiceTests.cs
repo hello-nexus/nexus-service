@@ -195,7 +195,7 @@ public class LogitechSpeakerServiceTests
         var write = Assert.Single(_apo.Writes);
         Assert.Equal(LogitechSpeakerProtocol.EqAdvanced, write.SelectedEq);
         Assert.Equal(LogitechSpeakerProtocol.BuiltInPresets.First(p => p.Name == "Bass Boost").Bands, write.AdvancedBands);
-        Assert.Equal("bass boost", _store.Settings.LogitechSpeaker.EqPreset);
+        Assert.Equal("Bass Boost", _store.Settings.LogitechSpeaker.EqPreset);
     }
 
     [Fact]
@@ -334,6 +334,28 @@ public class LogitechSpeakerServiceTests
         Assert.True(Service().SetEq(null, null, "jazz").Ok);
 
         Assert.Equal(LogitechSpeakerProtocol.BuiltInPresets.First(p => p.Name == "Jazz").Bands, Assert.Single(_apo.Writes).AdvancedBands);
+        Assert.Equal("Jazz", _store.Settings.LogitechSpeaker.EqPreset);
+        Assert.Equal("Jazz", Service().GetState().Preset);
+    }
+
+    [Fact]
+    public void CustomPresetsClashingWithBuiltIns_AreRenamedOnce_KeepingTheirBands()
+    {
+        var bands = new List<float> { 1, 2, 3, 4, 5, 6, 5, 4, 3, 2 };
+        var custom = _store.Settings.LogitechSpeaker.CustomPresets;
+        custom.Add(new LogitechEqPreset { Name = "jazz", Bands = bands });
+        custom.Add(new LogitechEqPreset { Name = "Flat", Bands = new List<float>(new float[10]) });
+        custom.Add(new LogitechEqPreset { Name = "Flat 2", Bands = new List<float>(new float[10]) });
+        var service = Service();
+
+        var presets = service.GetState().Presets;
+
+        Assert.Equal(presets.Count, presets.Select(p => p.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(new[] { "jazz 2", "Flat 3", "Flat 2" }, custom.Select(p => p.Name));
+        Assert.Equal(bands, custom[0].Bands);
+        Assert.Equal(bands.ToArray(), presets.First(p => p.Name == "jazz 2").Bands);
+        Assert.True(service.SetEq(null, null, "jazz 2").Ok);
+        Assert.Equal(bands.ToArray(), _apo.Writes.Last().AdvancedBands);
     }
 
     [Fact]
@@ -456,7 +478,7 @@ public class LogitechSpeakerServiceTests
         var mine = Assert.Single(_store.Settings.LogitechSpeaker.CustomPresets);
         Assert.Equal("mine", mine.Name);
         Assert.True(service.SetEq(null, null, "MINE").Ok);
-        Assert.Equal("MINE", _store.Settings.LogitechSpeaker.EqPreset);
+        Assert.Equal("mine", _store.Settings.LogitechSpeaker.EqPreset);
 
         Assert.True(service.DeletePreset("Mine").Ok);
         Assert.Empty(_store.Settings.LogitechSpeaker.CustomPresets);
