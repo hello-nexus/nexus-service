@@ -1182,7 +1182,7 @@ public sealed class RgbBridge : IDisposable
         {
             if (gaveUp)
             {
-                MaybeSelfRestart("daemon watchdog budget exhausted");
+                ScheduleSelfRestart("daemon watchdog budget exhausted");
             }
             return;
         }
@@ -1242,7 +1242,7 @@ public sealed class RgbBridge : IDisposable
             return false;
         }
         var devices = Volatile.Read(ref _devicesAtResume);
-        if (devices <= 0 || SmbusMutexProbe() != "held")
+        if (devices <= 0 || !MutexHeldAcrossSamples())
         {
             return false;
         }
@@ -1252,6 +1252,28 @@ public sealed class RgbBridge : IDisposable
         }
         return restart($"{source}, {devices} devices known before the suspend, smbus mutex=held, {LhmWalkSummary()}");
     }
+
+    internal int SelfRestartMutexSamples { get; set; } = 4;
+    internal TimeSpan SelfRestartSampleSpacing { get; set; } = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>A monitoring tool can hold the mutex for a moment; only a hold that outlasts every sample justifies a restart.</summary>
+    private bool MutexHeldAcrossSamples()
+    {
+        for (var i = 0; i < SelfRestartMutexSamples; i++)
+        {
+            if (i > 0 && SelfRestartSampleSpacing > TimeSpan.Zero)
+            {
+                Thread.Sleep(SelfRestartSampleSpacing);
+            }
+            if (SmbusMutexProbe() != "held")
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source));
 
     internal Func<string> SmbusMutexProbe { get; set; } = ProbeSmbusMutex;
 
@@ -1273,7 +1295,7 @@ public sealed class RgbBridge : IDisposable
             ServiceLog.Warn($"[resume] LHM walk stalled {age.TotalSeconds:F0}s with the smbus mutex held; no daemon restart budget left");
             if (gaveUp)
             {
-                MaybeSelfRestart("LHM stall, daemon restart budget exhausted");
+                ScheduleSelfRestart("LHM stall, daemon restart budget exhausted");
             }
             return;
         }
@@ -1302,7 +1324,7 @@ public sealed class RgbBridge : IDisposable
         {
             if (gaveUp)
             {
-                MaybeSelfRestart("settle-stall budget exhausted");
+                ScheduleSelfRestart("settle-stall budget exhausted");
                 // Out of restarts: the devices may genuinely be gone, so stop expecting them.
                 DisarmSettleStall();
             }

@@ -771,19 +771,16 @@ public static class NexusServiceCollectionExtensions
             {
                 var lifetime = sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>();
                 var flasher = sp.GetRequiredService<Nexus.Service.Devices.Firmware.FirmwareFlasher>();
+                var updates = sp.GetRequiredService<Nexus.Service.Update.UpdateService>();
                 return new Nexus.Service.Lifecycle.ResumeSelfRestart(
                     System.IO.Path.Combine(Nexus.Service.Persistence.JsonConfigStore.ResolveDataDirectory(), "resume-self-restart.stamp"),
                     () =>
                     {
-                        if (flasher.IsFlashing || !Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
+                        if (flasher.IsFlashing || updates.IsInstalling || !Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
                         {
                             return false;
                         }
-                        _ = Task.Run(async () =>
-                        {
-                            await Task.Delay(200).ConfigureAwait(false);
-                            lifetime.StopApplication();
-                        });
+                        _ = Task.Run(lifetime.StopApplication);
                         return true;
                     });
             });

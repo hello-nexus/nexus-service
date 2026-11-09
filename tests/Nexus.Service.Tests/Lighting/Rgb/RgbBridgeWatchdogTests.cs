@@ -513,6 +513,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     private void WireSelfRestart(string mutex = "held")
     {
         _bridge.SmbusMutexProbe = () => mutex;
+        _bridge.SelfRestartSampleSpacing = TimeSpan.Zero;
         _bridge.SelfRestart = context =>
         {
             _selfRestarts.Add(context);
@@ -640,5 +641,35 @@ public class RgbBridgeWatchdogTests : IDisposable
         await PollAndExpectNoBounceAsync(4);
 
         Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task Self_restart_is_refused_when_the_mutex_is_held_only_briefly()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+        var samples = new Queue<string>(new[] { "held", "held", "free", "held" });
+        _bridge.SmbusMutexProbe = () => samples.Count > 0 ? samples.Dequeue() : "held";
+        await ResumeAndWaitForBounceAsync(1);
+        samples = new Queue<string>(new[] { "held", "held", "free", "held" });
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task A_refused_sample_run_does_not_spend_the_once_per_resume_claim()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+        _bridge.SmbusMutexProbe = () => "free";
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+
+        _bridge.SmbusMutexProbe = () => "held";
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
     }
 }

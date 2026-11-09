@@ -68,6 +68,9 @@ public sealed class UpdateService : BackgroundService
 
     // Gate: 0 = idle, 1 = in progress.
     private int _installing;
+
+    /// <summary>True while an install or background stage holds the install gate.</summary>
+    public bool IsInstalling => Volatile.Read(ref _installing) != 0;
     private CancellationTokenSource? _installCts;
 
     // A background auto-stage (download/always) holds _installing while it
