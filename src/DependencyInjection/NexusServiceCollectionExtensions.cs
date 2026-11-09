@@ -1847,6 +1847,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NollieHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.AsiahorseUmbraHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.TryxHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LogitechSpeakerHandler>();
         // Registered as itself (not just IDeviceHandler) - StreamDeckRoutes.cs
         // injects the concrete type directly for GetWarning's detectedDevices.
         services.AddSingleton<Nexus.Service.Devices.Handlers.StreamDeckHandler>();
@@ -2610,6 +2611,32 @@ public static class NexusServiceCollectionExtensions
             Nexus.Service.Widgets.AppActions.OpenUrlActions.RegisterAll(registry);
             return registry;
         });
+#if WINDOWS
+        // Logitech speaker acoustics (G560): G HUB's EQ, DTS surround and channel volumes
+        // through Logitech's speaker effect, the subwoofer level over HID++.
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.WindowsLogitechSpeakerApo>();
+        services.AddSingleton(sp =>
+            new Nexus.Service.Peripherals.LogitechAudio.HidppSpeakerBass(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()));
+#endif
+#if DEV_TOOLS
+        services.AddSingleton(sp => new Nexus.Service.Dev.LogitechSpeakerSim(
+#if WINDOWS
+            sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.WindowsLogitechSpeakerApo>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.HidppSpeakerBass>()));
+#else
+            null,
+            null));
+#endif
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerApo>(sp => sp.GetRequiredService<Nexus.Service.Dev.LogitechSpeakerSim>());
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerBass>(sp => sp.GetRequiredService<Nexus.Service.Dev.LogitechSpeakerSim>());
+#elif WINDOWS
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerApo>(sp => sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.WindowsLogitechSpeakerApo>());
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerBass>(sp => sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.HidppSpeakerBass>());
+#endif
+#if WINDOWS || DEV_TOOLS
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.LogitechSpeakerService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.LogitechSpeakerService>());
+#endif
         services.AddSingleton<Nexus.Service.Widgets.AppDispatchRateLimiter>();
         services.AddSingleton(sp => Nexus.Service.Widgets.AppDataStoreWiring.Create(
             sp.GetRequiredService<ProfileManager>(),
