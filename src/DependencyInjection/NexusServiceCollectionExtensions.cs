@@ -802,7 +802,7 @@ public static class NexusServiceCollectionExtensions
                 slider => follow.Scale(key, slider),
                 () => store.Load().Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
                 level => store.Update(st => st.Devices.DisplaySliderBrightness[key] = level),
-                () => follow.Follows(store.Load(), key));
+                () => follow.Follows(store.Load(), key) || follow.NeedsRestore(key));
         }
         if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
         {

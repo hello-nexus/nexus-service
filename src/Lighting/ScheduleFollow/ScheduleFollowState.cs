@@ -60,13 +60,29 @@ public sealed class ScheduleFollowState
     /// <summary>Registers a device key so the devices list reports it; a repeat call is a no-op.</summary>
     public void Track(string key) => _keys.TryAdd(key, 0);
 
-    private readonly ConcurrentDictionary<string, byte> _restoreOnSight = new(StringComparer.Ordinal);
+    private const long RestoreOnSightTtlMs = 24L * 60 * 60 * 1000;
+    private readonly ConcurrentDictionary<string, long> _restoreOnSight = new(StringComparer.Ordinal);
 
-    /// <summary>Keys of devices that left while off their slider; each needs one write when it is seen again, so a scan must look for it.</summary>
-    public IReadOnlyCollection<string> RestoreOnSight => (IReadOnlyCollection<string>)_restoreOnSight.Keys;
+    /// <summary>Keys of devices that left while off their slider; each needs one write when it is seen again, so a scan must look for it.
+    /// An entry for a device that never returns lapses after a day.</summary>
+    public IReadOnlyCollection<string> RestoreOnSight
+    {
+        get
+        {
+            var now = Environment.TickCount64;
+            foreach (var (key, at) in _restoreOnSight)
+            {
+                if (now - at >= RestoreOnSightTtlMs)
+                {
+                    _restoreOnSight.TryRemove(key, out _);
+                }
+            }
+            return (IReadOnlyCollection<string>)_restoreOnSight.Keys;
+        }
+    }
 
     public bool NeedsRestore(string key) => _restoreOnSight.ContainsKey(key);
-    public void RequireRestore(string key) => _restoreOnSight.TryAdd(key, 0);
+    public void RequireRestore(string key) => _restoreOnSight.TryAdd(key, Environment.TickCount64);
     public void RestoreDone(string key) => _restoreOnSight.TryRemove(key, out _);
 
     public IReadOnlyCollection<string> TrackedKeys => (IReadOnlyCollection<string>)_keys.Keys;

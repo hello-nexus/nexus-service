@@ -32,6 +32,9 @@ public sealed class ScheduleFollowWorker : BackgroundService
     // Keys whose last write failed; they stay unsettled until a write lands. Repeated failures back the retry off.
     private readonly Dictionary<string, int> _failures = new(StringComparer.Ordinal);
     private const long MaxRetryGapMs = 60_000;
+    // A device that keeps failing at the longest gap is left alone until its inputs change or it reappears.
+    private const int ParkAfterFailures = 10;
+    private readonly HashSet<string> _parked = new(StringComparer.Ordinal);
     // Keys that left while off their slider (kept in the state): the level is unknown on return, so one write is forced then.
     // They do not keep the tick going; while any exist, presence is looked at on a slow cadence only.
     private const long SightCheckGapMs = 5_000;
@@ -92,6 +95,7 @@ public sealed class ScheduleFollowWorker : BackgroundService
             if (userTriggered)
             {
                 Volatile.Write(ref _pendingTick, 0);
+                _parked.Clear();
             }
             var settings = _store.Load();
             var scheduleOn = settings.Lighting.BrightnessSchedule is { Enabled: true };
@@ -206,7 +210,7 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private async Task TickSurfacesAsync(NexusSettings settings, bool scheduleOn, long nowMs, bool userTriggered, CancellationToken ct)
     {
         // A device still off its slider keeps getting ticks until it lands.
-        var moving = _failures.Count > 0 || _written.Values.Any(v => v is not null);
+        var moving = _failures.Keys.Any(k => !_parked.Contains(k)) || _written.Any(p => p.Value is not null && !_parked.Contains(p.Key));
         if (!moving && (!scheduleOn || settings.Devices.ScheduleFollowing.Count == 0))
         {
             var lookForReturns = _state.RestoreOnSight.Count > 0 && (userTriggered || nowMs - _lastSightCheckMs >= SightCheckGapMs);
@@ -235,6 +239,7 @@ public sealed class ScheduleFollowWorker : BackgroundService
             _written.Remove(gone);
             _writtenAt.Remove(gone);
             _failures.Remove(gone);
+            _parked.Remove(gone);
         }
         foreach (var (key, surface) in _present)
         {
@@ -244,6 +249,10 @@ public sealed class ScheduleFollowWorker : BackgroundService
 
     private async Task TickSurfaceKeyAsync(NexusSettings settings, string key, IScheduleSurface surface, long nowMs, bool userTriggered, CancellationToken ct)
     {
+        if (_parked.Contains(key))
+        {
+            return;
+        }
         var cap = _state.Target(settings, key);
         _written.TryGetValue(key, out var written);
         // A device the user never opted in is not touched at all, not even to read it.
@@ -308,7 +317,12 @@ public sealed class ScheduleFollowWorker : BackgroundService
         _writtenAt[key] = nowMs;
         if (!ok)
         {
-            _failures[key] = _failures.GetValueOrDefault(key) + 1;
+            var failed = _failures.GetValueOrDefault(key) + 1;
+            _failures[key] = failed;
+            if (failed >= ParkAfterFailures)
+            {
+                _parked.Add(key);
+            }
             return;
         }
         _failures.Remove(key);

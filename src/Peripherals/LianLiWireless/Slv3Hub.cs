@@ -1021,7 +1021,7 @@ public sealed partial class Slv3Hub : IDisposable
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
         // The schedule cap reads settings, so it is resolved here for every bound AIO, never under the hub lock.
-        var aioScaled = aio ? ScaleAios(BoundAioKeys(), aioScreens) : null;
+        var aioScaled = aio ? ScaleAios(BoundAioKeys(aioScreens), aioScreens) : null;
         var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
@@ -1034,13 +1034,15 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private List<string> BoundAioKeys()
+    // The AIOs SyncAioLocked drives: bound to us, with pump control or a saved screen.
+    private List<string> BoundAioKeys(IReadOnlyDictionary<string, Slv3AioScreen>? screens)
     {
         lock (_lock)
         {
             return _lastFanRecords
                 .Where(r => r.IsHydroShift && IsBoundToUsLocked(r))
                 .Select(r => Convert.ToHexString(r.Mac))
+                .Where(k => _aioControl.ContainsKey(k) || screens?.ContainsKey(k) == true)
                 .ToList();
         }
     }

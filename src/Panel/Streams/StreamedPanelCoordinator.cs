@@ -357,6 +357,8 @@ public sealed class StreamedPanelCoordinator : BackgroundService
 
     private void SetMarker(string panelDeviceId, int? level)
     {
+        // The preview gate comes first, so a user commit cannot land between the check and the patch.
+        lock (_previewGate)
         lock (_markerGate)
         {
             // A marker is the user's level for a panel with no slider. Cleared while the schedule caps it, the

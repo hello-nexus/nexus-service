@@ -18,6 +18,8 @@ public class KrakenScheduleSliderTests
         public int? Remembered;
         public bool Follows = true;
         public double Cap = 1.0;
+        public readonly Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState State =
+            new(new InMemoryConfigStore());
 
         public Rig()
         {
@@ -25,7 +27,7 @@ public class KrakenScheduleSliderTests
                 slider => Math.Min(slider, (int)Math.Round(Cap * 100)),
                 () => Remembered,
                 level => Remembered = level,
-                () => Follows);
+                () => Follows || State.NeedsRestore("nzxt-kraken-lcd"));
         }
 
         public Recorder Connect(int reading)
@@ -58,6 +60,28 @@ public class KrakenScheduleSliderTests
         rig.Connect(reading: 55);
 
         Assert.Equal(55, rig.Hub.Snapshot.LcdBrightness);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task A_cooler_unfollowed_while_away_is_restored_to_the_slider_not_the_capped_reading()
+    {
+        var rig = new Rig { Remembered = 80, Follows = false, Cap = 1.0 };
+        rig.State.RequireRestore("nzxt-kraken-lcd");
+
+        var hid = rig.Connect(reading: 30);
+
+        Assert.Equal(80, rig.Hub.Snapshot.LcdBrightness);
+        Assert.True(hid.Wrote(80));
+
+        var adopted = new Rig { Remembered = 80, Follows = false, Cap = 1.0 };
+        adopted.Connect(reading: 30);
+        Assert.Equal(30, adopted.Hub.Snapshot.LcdBrightness);
+        adopted.State.RequireRestore("nzxt-kraken-lcd");
+        var surface = new Nexus.Service.Lighting.ScheduleFollow.KrakenScheduleSurface(adopted.Hub);
+
+        Assert.True(await surface.WriteAsync("nzxt-kraken-lcd", 80, default));
+
+        Assert.Equal(80, adopted.Hub.Snapshot.LcdBrightness);
     }
 
     [Fact]

@@ -270,6 +270,12 @@ public sealed class KrakenHub : IDisposable
             {
                 return false;
             }
+            // While following (or owed a restore) the remembered slider is the user's level; the snapshot may have
+            // adopted a capped reading at connect.
+            if (_follows?.Invoke() == true && _loadSlider?.Invoke() is { } slider && slider != _snapshot.LcdBrightness)
+            {
+                _snapshot = _snapshot.WithLcd(Math.Clamp(slider, 0, 100), _snapshot.LcdOrientationQuarterTurns);
+            }
             return WriteLocked(BacklightReport(Scaled(_snapshot.LcdBrightness), _snapshot.LcdOrientationQuarterTurns));
         }
     }

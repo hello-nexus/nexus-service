@@ -339,6 +339,27 @@ public sealed class ScheduleFollowWorkerTests
     }
 
     [Fact]
+    public async Task A_device_that_fails_for_good_is_parked_until_the_inputs_change()
+    {
+        var (worker, _, surface, _, store) = Make(true, 50);
+        surface.WriteOk = false;
+        var t = 10_000L;
+        for (var i = 0; i < 40; i++, t += 61_000)
+        {
+            await worker.TickAsync(t, false, default);
+        }
+        Assert.Equal(10, surface.Writes.Count);
+
+        await worker.TickAsync(t += 61_000, false, default);
+        Assert.Equal(10, surface.Writes.Count);
+
+        store.Update(s => s.Lighting.BrightnessSchedule.Points = new() { new() { Hour = 0, Brightness = 40 }, new() { Hour = 12, Brightness = 40 } });
+        surface.WriteOk = true;
+        await worker.TickAsync(t += 1_000, true, default);
+        Assert.Equal(new[] { 40 }, surface.Writes.Skip(10));
+    }
+
+    [Fact]
     public async Task A_store_read_that_throws_never_escapes_the_change_event()
     {
         var inner = new InMemoryConfigStore();
