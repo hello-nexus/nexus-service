@@ -339,6 +339,29 @@ public class LogitechSpeakerServiceTests
     }
 
     [Fact]
+    public void StoredOldCasedPresetName_IsReportedAsTheCanonicalName()
+    {
+        _apo.Bands = LogitechSpeakerProtocol.BuiltInPresets.First(p => p.Name == "Bass Reducer").Bands.ToArray();
+        _store.Settings.LogitechSpeaker.EqPreset = "bass reducer";
+
+        Assert.Equal("Bass Reducer", Service().GetState().Preset);
+    }
+
+    [Fact]
+    public void RenamingAClashingCustomPreset_MovesTheRememberedNameWithIt()
+    {
+        var bands = new List<float> { 1, 2, 3, 4, 5, 6, 5, 4, 3, 2 };
+        _store.Settings.LogitechSpeaker.CustomPresets.Add(new LogitechEqPreset { Name = "jazz", Bands = bands });
+        _store.Settings.LogitechSpeaker.EqPreset = "jazz";
+        _apo.Bands = bands.ToArray();
+
+        var state = Service().GetState();
+
+        Assert.Equal("jazz 2", _store.Settings.LogitechSpeaker.EqPreset);
+        Assert.Equal("jazz 2", state.Preset);
+    }
+
+    [Fact]
     public void CustomPresetsClashingWithBuiltIns_AreRenamedOnce_KeepingTheirBands()
     {
         var bands = new List<float> { 1, 2, 3, 4, 5, 6, 5, 4, 3, 2 };

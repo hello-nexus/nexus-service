@@ -35,6 +35,7 @@ public sealed class LogitechSpeakerService : BackgroundService
     private readonly object _scanLock = new();
     private int _version;
     private int _restoredGeneration;
+    private readonly object _renameLock = new();
     private bool _presetNamesChecked;
     // Settings used while the dev-tools simulator is active, so nothing it does reaches the saved ones.
     private LogitechSpeakerSettings _simSettings = new();
@@ -446,7 +447,7 @@ public sealed class LogitechSpeakerService : BackgroundService
                 return null;
             }
         }
-        return name;
+        return CanonicalPresetName(name);
     }
 
     private string? CanonicalPresetName(string? name)
@@ -470,44 +471,54 @@ public sealed class LogitechSpeakerService : BackgroundService
     // first free "<name> N", so the list, lookup and save paths never see a duplicate.
     private void RenameClashingCustomPresets()
     {
-        lock (_lock)
+        SyncSimulation();
+        lock (_renameLock)
         {
-            if (_simulated || _presetNamesChecked)
+            bool simulated;
+            lock (_lock)
+            {
+                simulated = _simulated;
+            }
+            if (simulated || _presetNamesChecked)
             {
                 return;
             }
+            var clashes = ReadSettings(s => s.CustomPresets.Any(p => IsBuiltInName(p.Name)));
+            if (clashes)
+            {
+                var renames = new List<string>();
+                UpdateSettings(s =>
+                {
+                    var taken = new HashSet<string>(s.CustomPresets.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+                    foreach (var (builtIn, _) in LogitechSpeakerProtocol.BuiltInPresets)
+                    {
+                        taken.Add(builtIn);
+                    }
+                    foreach (var preset in s.CustomPresets.Where(p => IsBuiltInName(p.Name)))
+                    {
+                        var n = 2;
+                        while (taken.Contains($"{preset.Name} {n}"))
+                        {
+                            n++;
+                        }
+                        var renamed = $"{preset.Name} {n}";
+                        taken.Add(renamed);
+                        renames.Add($"{preset.Name} -> {renamed}");
+                        if (string.Equals(s.EqPreset, preset.Name, StringComparison.OrdinalIgnoreCase))
+                        {
+                            s.EqPreset = renamed;
+                        }
+                        preset.Name = renamed;
+                    }
+                });
+                ServiceLog.Info($"[logitech-speaker] renamed custom presets that clashed with built-in names: {string.Join(", ", renames)}");
+            }
             _presetNamesChecked = true;
         }
-        var renames = new List<string>();
-        UpdateSettings(s =>
-        {
-            var taken = new HashSet<string>(s.CustomPresets.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
-            foreach (var (builtIn, _) in LogitechSpeakerProtocol.BuiltInPresets)
-            {
-                taken.Add(builtIn);
-            }
-            foreach (var preset in s.CustomPresets)
-            {
-                if (!LogitechSpeakerProtocol.BuiltInPresets.Any(b => string.Equals(b.Name, preset.Name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    continue;
-                }
-                var n = 2;
-                while (taken.Contains($"{preset.Name} {n}"))
-                {
-                    n++;
-                }
-                var renamed = $"{preset.Name} {n}";
-                taken.Add(renamed);
-                renames.Add($"{preset.Name} -> {renamed}");
-                preset.Name = renamed;
-            }
-        });
-        if (renames.Count > 0)
-        {
-            ServiceLog.Info($"[logitech-speaker] renamed custom presets that clashed with built-in names: {string.Join(", ", renames)}");
-        }
     }
+
+    private static bool IsBuiltInName(string name)
+        => LogitechSpeakerProtocol.BuiltInPresets.Any(b => string.Equals(b.Name, name, StringComparison.OrdinalIgnoreCase));
 
     private float[]? FindPreset(string name)
     {
