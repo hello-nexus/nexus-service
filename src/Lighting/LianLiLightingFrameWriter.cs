@@ -243,6 +243,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 // Leaving ARGB sync, the release left every channel black: re-commit.
                 _lastFirmwareSig = null;
                 _customMergeCleared = false;
+                _mergeExitRetry.Reset();
                 if (!argbSync)
                 {
                     _argbReleasedAtMs = NowMs();
@@ -267,6 +268,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 _argbRecommitsDone++;
                 _lastFirmwareSig = null;
                 _customMergeCleared = false;
+                _mergeExitRetry.Reset();
             }
         }
         if (argbSync)
@@ -326,16 +328,29 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 Thread.Sleep(MergeOffSettleMs);
                 _customMergeCleared = true;
             }
-            else if (_mergeMaybeActive && !profile.ExplicitMergeControl && !_mergeExitRetry.BackingOff(NowMs()))
+            else if (_mergeMaybeActive && !profile.ExplicitMergeControl)
             {
-                if (ExitMergeByPortCommits(profile, null, latch: true))
+                if (_mergeExitRetry.BackingOff(NowMs()))
                 {
-                    NoteSuccess(_mergeExitRetry, "merge exit");
-                    _mergeMaybeActive = false;
+                    _retryPending = true;
                 }
                 else
                 {
-                    NoteFailure(_mergeExitRetry, "merge exit");
+                    var zones = new List<IReadOnlyList<ResolvedZone>>(composed.Count);
+                    foreach (var device in composed)
+                    {
+                        zones.Add(ZoneResolution.Resolve(device.Structure, settings));
+                    }
+                    if (ExitMergeByPortCommits(profile, ParkMask(composed, zones, settings.Devices.UncontrolledLightingDevices, profile, groupless: false), latch: true))
+                    {
+                        NoteSuccess(_mergeExitRetry, "merge exit");
+                        _mergeMaybeActive = false;
+                    }
+                    else
+                    {
+                        NoteFailure(_mergeExitRetry, "merge exit");
+                        _retryPending = true;
+                    }
                 }
             }
             TickCustom(settings, devices, globalBrightness, composed, profile);
@@ -606,19 +621,9 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         else if (_mergeMaybeActive)
         {
-            // The commits below end the merge on every port they reach; park the rest.
-            var park = new bool[LianLiProtocol.PortCount];
-            Array.Fill(park, true);
-            for (var i = 0; i < composed.Count; i++)
-            {
-                if (ZoneResolution.IsFullyUncontrolled(zonesByDevice[i], uncontrolled)) continue;
-                foreach (var channels in composed[i].SegmentChannels)
-                {
-                    foreach (var ch in channels) park[ch / profile.ChannelsPerPort] = false;
-                }
-            }
+            // The commits below end the merge on every port they reach; park ports with no fan group. An uncontrolled port is never written.
+            var park = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: true);
             if (!ExitMergeByPortCommits(profile, park, latch: false)) return false;
-            _mergeMaybeActive = false;
         }
 
         for (var i = 0; i < composed.Count; i++)
@@ -669,6 +674,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // apply, after every port, exactly as L-Connect does.
         if (!_hub.SendFrameSync()) return false;
         Settle();
+        _mergeMaybeActive = false;
+        _mergeExitRetry.Reset();
         return true;
     }
 
@@ -689,6 +696,31 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         if (!_hub.SendFrameSync()) return false;
         Settle();
         return true;
+    }
+
+    /// <summary>Ports to darken on a merge exit: those with no fan group, or those with a controlled one. A fully uncontrolled port is never in the mask.</summary>
+    private static bool[] ParkMask(List<ComposedDevice> composed, List<IReadOnlyList<ResolvedZone>> zonesByDevice, IReadOnlyList<string> uncontrolled, in LianLiFanProfile profile, bool groupless)
+    {
+        var carried = new bool[LianLiProtocol.PortCount];
+        var controlled = new bool[LianLiProtocol.PortCount];
+        for (var i = 0; i < composed.Count; i++)
+        {
+            var free = !ZoneResolution.IsFullyUncontrolled(zonesByDevice[i], uncontrolled);
+            foreach (var channels in composed[i].SegmentChannels)
+            {
+                foreach (var ch in channels)
+                {
+                    carried[ch / profile.ChannelsPerPort] = true;
+                    controlled[ch / profile.ChannelsPerPort] |= free;
+                }
+            }
+        }
+        var mask = new bool[LianLiProtocol.PortCount];
+        for (var p = 0; p < mask.Length; p++)
+        {
+            mask[p] = groupless ? !carried[p] : controlled[p];
+        }
+        return mask;
     }
 
     /// <summary>
