@@ -30,7 +30,6 @@ public sealed class DdcScheduleSurface : IScheduleSurface
         _clock = clock ?? (() => Environment.TickCount64);
     }
 
-    public double RatePerSecond => ScheduleFollowMath.SlowRatePerSecond;
     public long MinWriteGapMs => ScheduleFollowWorker.DdcMinWriteGapMs;
 
     public IReadOnlyList<string> PresentKeys()
@@ -72,7 +71,6 @@ public sealed class XeneonScheduleSurface : IScheduleSurface
         _store = store;
     }
 
-    public double RatePerSecond => ScheduleFollowMath.SlowRatePerSecond;
     public long MinWriteGapMs => ScheduleFollowWorker.DdcMinWriteGapMs;
 
     public IReadOnlyList<string> PresentKeys() => _registry.List()
@@ -100,7 +98,6 @@ public sealed class KrakenScheduleSurface : IScheduleSurface
 
     public KrakenScheduleSurface(KrakenHub hub) => _hub = hub;
 
-    public double RatePerSecond => ScheduleFollowMath.FastRatePerSecond;
     public long MinWriteGapMs => 1000;
 
     public IReadOnlyList<string> PresentKeys() =>
@@ -119,7 +116,6 @@ public sealed class PanelLcdScheduleSurface : IScheduleSurface
 
     public PanelLcdScheduleSurface(StreamedPanelCoordinator panels) => _panels = panels;
 
-    public double RatePerSecond => ScheduleFollowMath.FastRatePerSecond;
     public long MinWriteGapMs => 1000;
 
     public IReadOnlyList<string> PresentKeys() =>

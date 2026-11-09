@@ -47,14 +47,6 @@ public sealed class ScheduleFollowTests : IDisposable
         Assert.Equal(expected, ScheduleFollowMath.Scale(slider, multiplier));
 
     [Theory]
-    [InlineData(1.0, 0.2, 0.1, 0.9)]
-    [InlineData(0.2, 1.0, 0.1, 0.3)]
-    [InlineData(0.5, 0.52, 0.1, 0.52)]
-    [InlineData(0.5, 0.5, 0.1, 0.5)]
-    public void Ramp_moves_by_at_most_the_step(double current, double target, double step, double expected) =>
-        Assert.Equal(expected, ScheduleFollowMath.Ramp(current, target, step), 9);
-
-    [Theory]
     [InlineData(false, true, 0.3, 1.0)]
     [InlineData(true, false, 0.3, 1.0)]
     [InlineData(true, true, 0.3, 0.3)]
@@ -62,106 +54,41 @@ public sealed class ScheduleFollowTests : IDisposable
         Assert.Equal(expected, ScheduleFollowMath.Desired(enabled, follows, level));
 
     [Fact]
-    public void A_device_does_not_follow_until_the_user_enables_it()
+    public void A_device_does_not_follow_until_the_user_enables_it_and_then_wears_the_cap_at_once()
     {
         var store = StoreWithSchedule(true, 50, optIn: false);
         var state = State(store);
 
-        Assert.False(state.Follows(store.Load(), "any-display"));
         Assert.False(state.Follows(store.Load(), ScheduleFollowKeys.Y70));
-        state.Advance(1);
         Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
 
         store.Update(s => s.Devices.ScheduleFollowing.Add(ScheduleFollowKeys.Y70));
-        state.Advance(1);
-        Assert.True(state.Follows(store.Load(), ScheduleFollowKeys.Y70));
-        Assert.Equal(1.0 - ScheduleFollowMath.FastRatePerSecond, state.Multiplier(ScheduleFollowKeys.Y70), 6);
+
+        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 6);
+        Assert.Equal(50, state.Scale(ScheduleFollowKeys.Y70, 80));
+        Assert.Equal(30, state.Scale(ScheduleFollowKeys.Y70, 30));
     }
 
     [Fact]
-    public void Master_off_leaves_every_device_at_its_slider()
+    public void Schedule_switch_follow_switch_and_curve_edit_change_the_cap_with_no_tick_between()
     {
-        var store = StoreWithSchedule(false, 20);
+        var store = StoreWithSchedule(false, 50);
         var state = State(store);
+        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
 
-        state.Advance(1);
+        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = true);
+        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 6);
 
+        store.Update(s => s.Lighting.BrightnessSchedule.Points = Flat(20));
+        Assert.Equal(0.2, state.Multiplier(ScheduleFollowKeys.Y70), 6);
+
+        store.Update(s => s.Devices.ScheduleFollowing.Remove(ScheduleFollowKeys.Y70));
         Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
         Assert.Equal(80, state.Scale(ScheduleFollowKeys.Y70, 80));
-    }
 
-    [Fact]
-    public void First_advance_snaps_to_the_cap_and_the_slider_stays_the_ceiling()
-    {
-        var store = StoreWithSchedule(true, 50);
-        store.Update(s => s.Y70.Brightness = 80);
-        var state = State(store);
-
-        state.Advance(1);
-
-        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70));
-        Assert.Equal(50, state.Scale(ScheduleFollowKeys.Y70, store.Load().Y70.Brightness));
-        Assert.Equal(30, state.Scale(ScheduleFollowKeys.Y70, 30));
-        Assert.Equal(80, store.Load().Y70.Brightness);
-    }
-
-    [Fact]
-    public void Turning_the_schedule_on_ramps_instead_of_stepping_and_turning_it_off_restores_the_slider()
-    {
-        var store = StoreWithSchedule(false, 50);
-        var state = State(store);
-        state.Advance(1);
-
-        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = true);
-        state.Advance(1);
-        Assert.Equal(1.0 - ScheduleFollowMath.FastRatePerSecond, state.Multiplier(ScheduleFollowKeys.Y70), 9);
-
-        for (var i = 0; i < 20; i++)
-        {
-            state.Advance(1);
-        }
-        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 9);
-
+        store.Update(s => s.Devices.ScheduleFollowing.Add(ScheduleFollowKeys.Y70));
         store.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
-        for (var i = 0; i < 20; i++)
-        {
-            state.Advance(1);
-        }
-        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70), 9);
-        Assert.Equal(80, state.Scale(ScheduleFollowKeys.Y70, 80));
-    }
-
-    [Fact]
-    public void A_device_that_stops_following_returns_to_its_slider()
-    {
-        var store = StoreWithSchedule(true, 50);
-        var state = State(store);
-        state.Advance(1);
-        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.CorsairLcd));
-
-        store.Update(s => s.Devices.ScheduleFollowing.Remove(ScheduleFollowKeys.CorsairLcd));
-        for (var i = 0; i < 20; i++)
-        {
-            state.Advance(1);
-        }
-
-        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.CorsairLcd), 9);
-        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 9);
-    }
-
-    [Fact]
-    public void Display_slots_ramp_slower_than_fast_surfaces()
-    {
-        var store = StoreWithSchedule(false, 50);
-        var state = State(store);
-        state.Track("display1", ScheduleFollowMath.SlowRatePerSecond);
-        state.Advance(1);
-        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = true);
-
-        state.Advance(1);
-
-        Assert.Equal(1.0 - ScheduleFollowMath.SlowRatePerSecond, state.Multiplier("display1"), 9);
-        Assert.Equal(1.0 - ScheduleFollowMath.FastRatePerSecond, state.Multiplier(ScheduleFollowKeys.Y70), 9);
+        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
     }
 
     [Fact]
@@ -224,27 +151,6 @@ public sealed class ScheduleFollowTests : IDisposable
         Assert.False(reloaded.Lighting.BrightnessSchedule.LightingFollowsOn);
         Assert.Contains("display1", reloaded.Devices.ScheduleFollowing);
         Assert.Equal(70, reloaded.Devices.DisplaySliderBrightness["display1"]);
-    }
-
-    [Fact]
-    public void Restoring_to_the_plain_slider_never_ramps()
-    {
-        var store = StoreWithSchedule(true, 20);
-        var state = State(store);
-        state.Advance(1);
-        Assert.Equal(0.2, state.Multiplier(ScheduleFollowKeys.Y70), 6);
-
-        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
-        state.Advance(0, out var restored);
-
-        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
-        Assert.Contains(ScheduleFollowKeys.Y70, restored);
-
-        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = true);
-        store.Update(s => s.Devices.ScheduleFollowing.Remove(ScheduleFollowKeys.Y70));
-        state.Advance(1, out restored);
-        Assert.Equal(1.0, state.Multiplier(ScheduleFollowKeys.Y70));
-        Assert.DoesNotContain(ScheduleFollowKeys.Y70, restored);
     }
 
     [Fact]

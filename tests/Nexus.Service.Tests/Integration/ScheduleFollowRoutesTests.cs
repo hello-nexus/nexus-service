@@ -140,4 +140,28 @@ public sealed class ScheduleFollowRoutesTests : IClassFixture<StubDeviceHostFact
             Assert.Equal(100, Find(doc.RootElement, "y70").GetProperty("capPercent").GetInt32());
         }
     }
+
+    [Fact]
+    public async Task Opting_in_reports_the_curve_level_as_the_cap_in_the_answer_and_the_next_get()
+    {
+        Store.Update(s =>
+        {
+            s.Y70.Brightness = 100;
+            s.Lighting.BrightnessSchedule = new() { Enabled = true, SunShift = false, Points = new() { new() { Hour = 0, Brightness = 59 }, new() { Hour = 12, Brightness = 59 } } };
+        });
+
+        var answer = await _client.PostAsync("/lighting/brightness-schedule/devices", Json("""{"key":"y70","follows":true}"""));
+        using (var doc = JsonDocument.Parse(await answer.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(59, doc.RootElement.GetProperty("capPercent").GetInt32());
+            Assert.Equal(59, doc.RootElement.GetProperty("appliedPercent").GetInt32());
+        }
+
+        using (var doc = JsonDocument.Parse(await (await _client.GetAsync("/lighting/brightness-schedule/devices")).Content.ReadAsStringAsync()))
+        {
+            var y70 = Find(doc.RootElement, "y70");
+            Assert.Equal(59, y70.GetProperty("capPercent").GetInt32());
+            Assert.Equal(59, y70.GetProperty("levelPercent").GetInt32());
+        }
+    }
 }

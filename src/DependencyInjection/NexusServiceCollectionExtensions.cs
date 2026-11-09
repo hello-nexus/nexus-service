@@ -1261,7 +1261,7 @@ public static class NexusServiceCollectionExtensions
                 hub.ScheduleScale = (mac, slider) =>
                 {
                     var aioKey = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix + mac;
-                    aioFollow.Track(aioKey, Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowMath.FastRatePerSecond, snap: true);
+                    aioFollow.Track(aioKey);
                     return aioFollow.Scale(aioKey, slider);
                 };
             }

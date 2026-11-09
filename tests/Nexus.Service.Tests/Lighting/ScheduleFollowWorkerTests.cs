@@ -27,7 +27,6 @@ public sealed class ScheduleFollowWorkerTests
         public int? Hardware { get; set; }
         public bool Present { get; set; } = true;
         public List<int> Writes { get; } = new();
-        public double RatePerSecond => 0.05;
         public long MinWriteGapMs { get; set; } = 4000;
         public IReadOnlyList<string> PresentKeys() => Present ? new[] { "mon1" } : Array.Empty<string>();
         public int? Slider(string key) => SliderValue;
@@ -74,146 +73,88 @@ public sealed class ScheduleFollowWorkerTests
     {
         var (worker, _, surface, y70, _) = Make(false, 50);
 
-        await worker.TickAsync(1, 10_000, default);
+        await worker.TickAsync(10_000, false, default);
 
         Assert.Empty(surface.Writes);
         Assert.Equal(0, y70.Reapplied);
     }
 
     [Fact]
-    public async Task A_surface_above_the_cap_at_start_is_written_once_at_the_cap()
+    public async Task A_surface_above_the_cap_is_written_once_at_the_cap()
     {
         var (worker, _, surface, y70, _) = Make(true, 50);
 
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 11_000, default);
+        await worker.TickAsync(10_000, false, default);
+        await worker.TickAsync(11_000, false, default);
 
         Assert.Equal(new[] { 50 }, surface.Writes);
         Assert.Equal(1, y70.Reapplied);
     }
 
     [Fact]
-    public async Task Writes_are_spaced_and_each_one_is_a_new_whole_percent()
+    public async Task Turning_the_schedule_on_applies_the_cap_in_one_step_from_the_settings_change()
     {
-        var (worker, state, surface, _, store) = Make(false, 50);
-        await worker.TickAsync(1, 0, default);
-        state.Advance(0);
+        var (worker, _, surface, y70, store) = Make(false, 50);
+        await worker.TickAsync(1_000, false, default);
+        Assert.Empty(surface.Writes);
+
         store.Update(s => s.Lighting.BrightnessSchedule.Enabled = true);
+        await worker.OnSettingsChangedAsync();
 
-        long now = 10_000;
-        for (var i = 0; i < 12; i++)
-        {
-            await worker.TickAsync(1, now, default);
-            now += 1000;
-        }
-
-        Assert.True(surface.Writes.Count >= 2);
-        Assert.Equal(surface.Writes.Distinct().Count(), surface.Writes.Count);
-        Assert.True(surface.Writes.Count <= 12 / 4 + 1, "no more than one write per gap");
-        Assert.True(surface.Writes.SequenceEqual(surface.Writes.OrderByDescending(x => x)), "steps down monotonically");
+        Assert.Equal(new[] { 50 }, surface.Writes);
+        Assert.Equal(1, y70.Reapplied);
     }
 
     [Fact]
-    public async Task Turning_the_schedule_off_restores_the_slider_and_stops_writing()
-    {
-        var (worker, _, surface, _, store) = Make(true, 50);
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 11_000, default);
-        store.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
-
-        long now = 20_000;
-        for (var i = 0; i < 20; i++)
-        {
-            await worker.TickAsync(1, now, default);
-            now += 4000;
-        }
-        var writes = surface.Writes.Count;
-        for (var i = 0; i < 5; i++)
-        {
-            await worker.TickAsync(1, now, default);
-            now += 4000;
-        }
-
-        Assert.Equal(80, surface.Writes[^1]);
-        Assert.Equal(writes, surface.Writes.Count);
-        Assert.Equal(80, surface.SliderValue);
-    }
-
-    [Fact]
-    public async Task A_surface_the_user_never_enabled_is_not_touched()
+    public async Task Opting_a_device_in_and_editing_the_curve_apply_at_once_past_the_write_gap()
     {
         var (worker, _, surface, _, store) = Make(true, 50);
         store.Update(s => s.Devices.ScheduleFollowing.Remove("mon1"));
-        surface.SliderValue = null;
-        surface.Hardware = 60;
-
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 20_000, default);
-
+        await worker.TickAsync(1_000, false, default);
         Assert.Empty(surface.Writes);
-        Assert.Null(surface.SliderValue);
+
+        store.Update(s => s.Devices.ScheduleFollowing.Add("mon1"));
+        await worker.OnSettingsChangedAsync();
+        store.Update(s => s.Lighting.BrightnessSchedule.Points = new() { new() { Hour = 0, Brightness = 30 }, new() { Hour = 12, Brightness = 30 } });
+        await worker.OnSettingsChangedAsync();
+
+        Assert.Equal(new[] { 50, 30 }, surface.Writes);
     }
 
     [Fact]
-    public async Task A_surface_with_no_slider_and_no_readable_hardware_is_skipped()
+    public async Task Curve_drift_keeps_the_write_gap_and_a_slider_above_the_cap_changes_nothing()
     {
-        var (worker, _, surface, _, _) = Make(true, 50);
-        surface.SliderValue = null;
+        var (worker, _, surface, _, store) = Make(true, 50);
+        await worker.TickAsync(10_000, false, default);
+        store.Update(s => s.Lighting.BrightnessSchedule.Points = new() { new() { Hour = 0, Brightness = 49 }, new() { Hour = 12, Brightness = 49 } });
 
-        await worker.TickAsync(1, 10_000, default);
-
-        Assert.Empty(surface.Writes);
-    }
-
-    [Fact]
-    public async Task An_unknown_slider_is_taken_from_the_hardware_and_remembered()
-    {
-        var (worker, _, surface, _, _) = Make(true, 50);
-        surface.SliderValue = null;
-        surface.Hardware = 60;
-
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 11_000, default);
-
-        Assert.Equal(60, surface.SliderValue);
+        await worker.TickAsync(11_000, false, default);
         Assert.Equal(new[] { 50 }, surface.Writes);
+        await worker.TickAsync(14_500, false, default);
+        Assert.Equal(new[] { 50, 49 }, surface.Writes);
+
+        surface.SliderValue = 100;
+        await worker.TickAsync(30_000, false, default);
+        Assert.Equal(new[] { 50, 49 }, surface.Writes);
     }
 
     [Fact]
-    public async Task The_y70_is_not_reapplied_while_disconnected()
-    {
-        var (worker, _, _, y70, _) = Make(true, 50);
-        y70.Connected = false;
-
-        await worker.TickAsync(1, 10_000, default);
-
-        Assert.Equal(0, y70.Reapplied);
-    }
-
-    [Fact]
-    public async Task A_slider_below_the_cap_is_never_written_and_one_above_it_changes_nothing()
+    public async Task A_slider_below_the_cap_is_never_written_by_the_worker()
     {
         var (worker, _, surface, _, _) = Make(true, 50);
         surface.SliderValue = 30;
 
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 20_000, default);
+        await worker.TickAsync(10_000, false, default);
+        await worker.TickAsync(20_000, false, default);
+
         Assert.Empty(surface.Writes);
-
-        surface.SliderValue = 70;
-        await worker.TickAsync(1, 30_000, default);
-        surface.SliderValue = 100;
-        await worker.TickAsync(1, 40_000, default);
-
-        Assert.Equal(new[] { 50 }, surface.Writes);
     }
 
     [Fact]
     public async Task Turning_the_schedule_off_restores_the_slider_at_once_from_the_settings_change()
     {
         var (worker, state, surface, y70, store) = Make(true, 50);
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 11_000, default);
+        await worker.TickAsync(10_000, false, default);
         Assert.Equal(new[] { 50 }, surface.Writes);
         var reapplied = y70.Reapplied;
 
@@ -229,8 +170,7 @@ public sealed class ScheduleFollowWorkerTests
     public async Task Switching_a_device_off_restores_only_that_device_at_once()
     {
         var (worker, state, surface, y70, store) = Make(true, 50);
-        await worker.TickAsync(1, 10_000, default);
-        await worker.TickAsync(1, 11_000, default);
+        await worker.TickAsync(10_000, false, default);
         var reapplied = y70.Reapplied;
 
         store.Update(s => s.Devices.ScheduleFollowing.Remove("mon1"));
@@ -238,7 +178,57 @@ public sealed class ScheduleFollowWorkerTests
 
         Assert.Equal(new[] { 50, 80 }, surface.Writes);
         Assert.Equal(1.0, state.Multiplier("mon1"));
-        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 9);
+        Assert.Equal(0.5, state.Multiplier(ScheduleFollowKeys.Y70), 6);
         Assert.Equal(reapplied, y70.Reapplied);
+    }
+
+    [Fact]
+    public async Task A_surface_the_user_never_enabled_is_not_touched()
+    {
+        var (worker, _, surface, _, store) = Make(true, 50);
+        store.Update(s => s.Devices.ScheduleFollowing.Remove("mon1"));
+        surface.SliderValue = null;
+        surface.Hardware = 60;
+
+        await worker.TickAsync(10_000, false, default);
+        await worker.TickAsync(20_000, false, default);
+
+        Assert.Empty(surface.Writes);
+        Assert.Null(surface.SliderValue);
+    }
+
+    [Fact]
+    public async Task A_surface_with_no_slider_and_no_readable_hardware_is_skipped()
+    {
+        var (worker, _, surface, _, _) = Make(true, 50);
+        surface.SliderValue = null;
+
+        await worker.TickAsync(10_000, false, default);
+
+        Assert.Empty(surface.Writes);
+    }
+
+    [Fact]
+    public async Task An_unknown_slider_is_taken_from_the_hardware_and_remembered()
+    {
+        var (worker, _, surface, _, _) = Make(true, 50);
+        surface.SliderValue = null;
+        surface.Hardware = 60;
+
+        await worker.TickAsync(10_000, false, default);
+
+        Assert.Equal(60, surface.SliderValue);
+        Assert.Equal(new[] { 50 }, surface.Writes);
+    }
+
+    [Fact]
+    public async Task The_y70_is_not_reapplied_while_disconnected()
+    {
+        var (worker, _, _, y70, _) = Make(true, 50);
+        y70.Connected = false;
+
+        await worker.TickAsync(10_000, false, default);
+
+        Assert.Equal(0, y70.Reapplied);
     }
 }

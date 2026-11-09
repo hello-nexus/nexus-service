@@ -207,8 +207,7 @@ public class DisplayBrightnessControllerTests
         });
         store.Update(s => s.Devices.ScheduleFollowing.Add("display1"));
         var follow = new Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState(store, () => new DateTime(2026, 6, 21, 12, 0, 0));
-        follow.Track("display1", 0.02);
-        follow.Advance(1);
+        follow.Track("display1");
         var provider = new FakeDisplayBrightnessProvider();
         var controller = new DisplayBrightnessController(provider, null, store, null, null, follow);
 
@@ -223,7 +222,6 @@ public class DisplayBrightnessControllerTests
         Assert.Equal(80, controller.GetBrightness("display1"));
 
         store.Update(s => s.Devices.ScheduleFollowing.Remove("display1"));
-        follow.Advance(100);
         Assert.Equal(80, follow.Scale("display1", controller.GetSlider("display1")!.Value));
     }
 
