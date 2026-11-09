@@ -83,7 +83,7 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
 
     private long _rebootRequestedAt = long.MinValue;
 
-    /// <summary>A display back from desktop mode keeps its own screen under the frames until a reboot (seen on hardware); the next session reboots it once.</summary>
+    /// <summary>A display back from desktop mode keeps its own screen under the frames until a reboot; the next session reboots it once.</summary>
     public void RequestReboot()
     {
         Volatile.Write(ref _rebootRequestedAt, _now());
@@ -99,7 +99,21 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         }
     }
 
-    public bool RebootWanted => RebootRequested && Volatile.Read(ref _sessionUp);
+    public bool RebootWanted
+    {
+        get
+        {
+            var wanted = RebootRequested && Volatile.Read(ref _sessionUp);
+            if (wanted)
+            {
+                // The worker acts on this answer, so Disconnect must see the same one when the window lapses in between.
+                Volatile.Write(ref _rebootLatched, true);
+            }
+            return wanted;
+        }
+    }
+
+    private bool _rebootLatched;
 
     /// <summary>Set at shutdown once the glass is let go: no reconnect may take it back.</summary>
     public void Retire() => _retired = true;
@@ -264,7 +278,8 @@ public sealed class HydroShift2CurveLcdDriver : IBulkPanelDriver
         }
         pipe.Write(HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty, NextTimestamp()));
-        var reboot = _sessionUp && RebootRequested;
+        var reboot = _sessionUp && (RebootRequested || Volatile.Read(ref _rebootLatched));
+        Volatile.Write(ref _rebootLatched, false);
         if (_sessionUp && !reboot && OfflineModeSource?.Invoke() == true)
         {
             // L-Connect's exit sends StopPlay alone (captured), and a reboot resets the glass's clock to its default.
