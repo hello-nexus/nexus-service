@@ -81,15 +81,10 @@ public readonly struct LianLiFanProfile
     /// <summary>Firmware has merged effects: channel 0 carries one animation across every port in merge-order sequence.</summary>
     public bool SupportsMerge { get; init; }
 
-    /// <summary>
-    /// Merge is managed around the effect: a merge-off command precedes per-port
-    /// commits and every other channel is parked dark while merged. False when
-    /// the firmware leaves merge on the next per-port commit and the other ports
-    /// are never written during it.
-    /// </summary>
+    /// <summary>Merge-off precedes per-port commits and other channels are parked while merged; false when per-port commits alone exit merge.</summary>
     public bool ExplicitMergeControl { get; init; }
 
-    /// <summary>The Static effect ignores the brightness byte, so its colours are scaled by the brightness step instead.</summary>
+    /// <summary>The Static effect ignores the brightness byte, so its colors are scaled by the brightness step instead.</summary>
     public bool ScalesStaticColors { get; init; }
 
     /// <summary>The ARGB-input layout (every port from LED 0, inner ring then edge per fan) was measured on SL-Infinity only, so only it offers a Nexus card as the input's source.</summary>
