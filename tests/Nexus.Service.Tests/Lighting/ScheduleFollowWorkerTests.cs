@@ -338,25 +338,46 @@ public sealed class ScheduleFollowWorkerTests
         Assert.Equal(before, surface.Writes.Count);
     }
 
-    [Fact]
-    public async Task A_device_that_fails_for_good_is_parked_until_the_inputs_change()
+    private static async Task<long> ParkAsync(ScheduleFollowWorker worker)
     {
-        var (worker, _, surface, _, store) = Make(true, 50);
-        surface.WriteOk = false;
         var t = 10_000L;
-        for (var i = 0; i < 40; i++, t += 61_000)
+        for (var i = 0; i < 10; i++, t += 61_000)
         {
             await worker.TickAsync(t, false, default);
         }
+        return t;
+    }
+
+    [Fact]
+    public async Task A_parked_device_is_retried_each_minute_and_recovers_when_writes_succeed()
+    {
+        var (worker, _, surface, _, _) = Make(true, 50);
+        surface.WriteOk = false;
+        var t = await ParkAsync(worker);
         Assert.Equal(10, surface.Writes.Count);
 
-        await worker.TickAsync(t += 61_000, false, default);
+        surface.WriteOk = true;
+        await worker.TickAsync(t - 61_000 + 10_000, false, default);
         Assert.Equal(10, surface.Writes.Count);
+        await worker.TickAsync(t, false, default);
+        Assert.Equal(11, surface.Writes.Count);
+        await worker.TickAsync(t + 61_000, false, default);
+        Assert.Equal(11, surface.Writes.Count);
+    }
+
+    [Fact]
+    public async Task A_parked_device_is_retried_at_once_when_its_target_changes()
+    {
+        var (worker, _, surface, _, store) = Make(true, 50);
+        surface.WriteOk = false;
+        var t = await ParkAsync(worker);
+        surface.WriteOk = true;
 
         store.Update(s => s.Lighting.BrightnessSchedule.Points = new() { new() { Hour = 0, Brightness = 40 }, new() { Hour = 12, Brightness = 40 } });
-        surface.WriteOk = true;
-        await worker.TickAsync(t += 1_000, true, default);
-        Assert.Equal(new[] { 40 }, surface.Writes.Skip(10));
+        await worker.TickAsync(t - 61_000 + 5_000, false, default);
+
+        Assert.Equal(40, surface.Writes[^1]);
+        Assert.Equal(11, surface.Writes.Count);
     }
 
     [Fact]

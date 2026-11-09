@@ -32,9 +32,11 @@ public sealed class ScheduleFollowWorker : BackgroundService
     // Keys whose last write failed; they stay unsettled until a write lands. Repeated failures back the retry off.
     private readonly Dictionary<string, int> _failures = new(StringComparer.Ordinal);
     private const long MaxRetryGapMs = 60_000;
-    // A device that keeps failing at the longest gap is left alone until its inputs change or it reappears.
+    // A device that keeps failing at the longest gap is parked: retried once a minute, or at once when its target changes.
+    // Parked keys do not keep the tick going; the slow wake covers them.
     private const int ParkAfterFailures = 10;
-    private readonly HashSet<string> _parked = new(StringComparer.Ordinal);
+    private const long ParkRetryMs = 60_000;
+    private readonly Dictionary<string, (long AtMs, int Shown)> _parked = new(StringComparer.Ordinal);
     // Keys that left while off their slider (kept in the state): the level is unknown on return, so one write is forced then.
     // They do not keep the tick going; while any exist, presence is looked at on a slow cadence only.
     private const long SightCheckGapMs = 5_000;
@@ -95,6 +97,10 @@ public sealed class ScheduleFollowWorker : BackgroundService
             if (userTriggered)
             {
                 Volatile.Write(ref _pendingTick, 0);
+                foreach (var key in _parked.Keys)
+                {
+                    _failures.Remove(key);
+                }
                 _parked.Clear();
             }
             var settings = _store.Load();
@@ -210,10 +216,10 @@ public sealed class ScheduleFollowWorker : BackgroundService
     private async Task TickSurfacesAsync(NexusSettings settings, bool scheduleOn, long nowMs, bool userTriggered, CancellationToken ct)
     {
         // A device still off its slider keeps getting ticks until it lands.
-        var moving = _failures.Keys.Any(k => !_parked.Contains(k)) || _written.Any(p => p.Value is not null && !_parked.Contains(p.Key));
+        var moving = _failures.Keys.Any(k => !_parked.ContainsKey(k)) || _written.Any(p => p.Value is not null && !_parked.ContainsKey(p.Key));
         if (!moving && (!scheduleOn || settings.Devices.ScheduleFollowing.Count == 0))
         {
-            var lookForReturns = _state.RestoreOnSight.Count > 0 && (userTriggered || nowMs - _lastSightCheckMs >= SightCheckGapMs);
+            var lookForReturns = (_state.RestoreOnSight.Count > 0 || _parked.Count > 0) && (userTriggered || nowMs - _lastSightCheckMs >= SightCheckGapMs);
             if (!lookForReturns)
             {
                 return;
@@ -249,11 +255,24 @@ public sealed class ScheduleFollowWorker : BackgroundService
 
     private async Task TickSurfaceKeyAsync(NexusSettings settings, string key, IScheduleSurface surface, long nowMs, bool userTriggered, CancellationToken ct)
     {
-        if (_parked.Contains(key))
-        {
-            return;
-        }
         var cap = _state.Target(settings, key);
+        if (_parked.TryGetValue(key, out var park))
+        {
+            var target = surface.Slider(key) is { } parkedSlider ? ScheduleFollowMath.Scale(parkedSlider, cap) : -1;
+            if (target == park.Shown && nowMs - park.AtMs < ParkRetryMs)
+            {
+                return;
+            }
+            _parked.Remove(key);
+            if (target != park.Shown)
+            {
+                _failures.Remove(key);
+            }
+            else
+            {
+                _failures[key] = ParkAfterFailures - 1;
+            }
+        }
         _written.TryGetValue(key, out var written);
         // A device the user never opted in is not touched at all, not even to read it.
         var follows = _state.Follows(settings, key);
@@ -321,7 +340,7 @@ public sealed class ScheduleFollowWorker : BackgroundService
             _failures[key] = failed;
             if (failed >= ParkAfterFailures)
             {
-                _parked.Add(key);
+                _parked[key] = (nowMs, shown);
             }
             return;
         }
