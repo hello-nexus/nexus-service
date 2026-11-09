@@ -113,8 +113,9 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
     private bool _customMergeCleared;
-    // The last firmware commit was a merged effect; a hub without a merge-off command exits it by per-port commits.
-    private bool _mergeCommitted;
+    // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
+    private bool _mergeMaybeActive;
+    private readonly RetryWindow _mergeExitRetry = new();
     private int _resumeEpochSeen;
     private long _lastCustomFrameMs = long.MinValue / 2;
 
@@ -325,9 +326,17 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 Thread.Sleep(MergeOffSettleMs);
                 _customMergeCleared = true;
             }
-            else if (_mergeCommitted && !profile.ExplicitMergeControl && ExitMergeByPortCommits(profile))
+            else if (_mergeMaybeActive && !profile.ExplicitMergeControl && !_mergeExitRetry.BackingOff(NowMs()))
             {
-                _mergeCommitted = false;
+                if (ExitMergeByPortCommits(profile, null, latch: true))
+                {
+                    NoteSuccess(_mergeExitRetry, "merge exit");
+                    _mergeMaybeActive = false;
+                }
+                else
+                {
+                    NoteFailure(_mergeExitRetry, "merge exit");
+                }
             }
             TickCustom(settings, devices, globalBrightness, composed, profile);
             return;
@@ -376,12 +385,15 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
+        if (merged)
+        {
+            _mergeMaybeActive = true;
+        }
         var committed = merged
             ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans, settings.Devices.LightingDevicePrefs)
             : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
         if (committed)
         {
-            _mergeCommitted = merged;
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
         }
@@ -404,7 +416,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
         _argbSyncRetry.Reset();
         _customMergeCleared = false;
-        _mergeCommitted = false;
+        _mergeMaybeActive = false;
+        _mergeExitRetry.Reset();
         _initRetry.Reset();
         _commitRetry.Reset();
     }
@@ -478,6 +491,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     /// <summary>Attach-time commands; returns false on the first rejected write so the caller retries the whole sequence.</summary>
     private bool InitialiseHub(in LianLiFanProfile profile, LianLiSettings fans)
     {
+        _mergeMaybeActive = profile.SupportsMerge && !profile.ExplicitMergeControl;
         if (profile.ClearMergeOnAttach)
         {
             if (!_hub.SendStopMerge()) return false;
@@ -590,11 +604,21 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendStopMerge()) return false;
             Thread.Sleep(MergeOffSettleMs);
         }
-        else if (_mergeCommitted)
+        else if (_mergeMaybeActive)
         {
-            // Ports left uncontrolled get no commit below, so exit the merge on every port first.
-            if (!ExitMergeByPortCommits(profile)) return false;
-            _mergeCommitted = false;
+            // The commits below end the merge on every port they reach; park the rest.
+            var park = new bool[LianLiProtocol.PortCount];
+            Array.Fill(park, true);
+            for (var i = 0; i < composed.Count; i++)
+            {
+                if (ZoneResolution.IsFullyUncontrolled(zonesByDevice[i], uncontrolled)) continue;
+                foreach (var channels in composed[i].SegmentChannels)
+                {
+                    foreach (var ch in channels) park[ch / profile.ChannelsPerPort] = false;
+                }
+            }
+            if (!ExitMergeByPortCommits(profile, park, latch: false)) return false;
+            _mergeMaybeActive = false;
         }
 
         for (var i = 0; i < composed.Count; i++)
@@ -648,15 +672,20 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return true;
     }
 
-    /// <summary>A dark per-port commit on every port plus the frame latch: the only way off a merged effect on a hub without a merge-off command.</summary>
-    private bool ExitMergeByPortCommits(in LianLiFanProfile profile)
+    /// <summary>Darkens ports with a zeroed color buffer and a Static commit, the only way off a merged effect on a hub without a merge-off command; Static ignores the brightness byte.</summary>
+    private bool ExitMergeByPortCommits(in LianLiFanProfile profile, bool[]? parkPort, bool latch)
     {
         for (var p = 0; p < LianLiProtocol.PortCount; p++)
         {
-            var off = LianLiLightingModes.BrightnessCodes[0];
-            if (!_hub.SendModeCommit(p * profile.ChannelsPerPort, LianLiProtocol.EffectStatic, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
+            if (parkPort is not null && !parkPort[p]) continue;
+            var ch = p * profile.ChannelsPerPort;
+            Array.Clear(_channelBuf);
+            if (!_hub.SendColorData(ch, _channelBuf.AsSpan(0, profile.MaxFans * profile.LedsPerFanForChannel(ch) * 3))) return false;
+            Settle();
+            if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectStatic, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, LianLiLightingModes.BrightnessCodes[0])) return false;
             Settle();
         }
+        if (!latch) return true;
         if (!_hub.SendFrameSync()) return false;
         Settle();
         return true;
