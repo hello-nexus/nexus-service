@@ -11250,6 +11250,28 @@
         }
       }
     },
+    "/gallery/sort": {
+      "put": {
+        "tags": [
+          "Nexus"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GallerySort"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/gallery/playlists": {
       "post": {
         "tags": [
@@ -19151,6 +19173,9 @@
             "items": {
               "$ref": "#/components/schemas/GalleryPlaylist"
             }
+          },
+          "sort": {
+            "$ref": "#/components/schemas/GallerySort"
           }
         }
       },
@@ -19254,6 +19279,17 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "GallerySort": {
+        "type": "object",
+        "properties": {
+          "by": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
           }
         }
       },

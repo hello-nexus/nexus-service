@@ -60,6 +60,7 @@ public sealed class GalleryLibrary
     private readonly object _lock = new();
     private List<GallerySource>? _sources;
     private List<GalleryPlaylist> _playlists = new();
+    private GallerySort _sort = new();
     private Dictionary<string, string> _itemPaths = new();
     // Bumped on every source mutation. EnumerateItems snapshots it and only
     // swaps its map in if no mutation happened mid-scan, so a slow scan can't
@@ -203,6 +204,37 @@ public sealed class GalleryLibrary
             return true;
         }
     }
+
+    public GallerySort GetSort()
+    {
+        lock (_lock)
+        {
+            LoadSources();
+            return CloneSort(_sort);
+        }
+    }
+
+    /// <summary>False when either field is not a known value; nothing is stored then.</summary>
+    public bool SetSort(GallerySort sort)
+    {
+        if (!IsValidSort(sort))
+            return false;
+
+        lock (_lock)
+        {
+            var sources = LoadSources();
+            _sort = CloneSort(sort);
+            SaveSources(sources);
+            return true;
+        }
+    }
+
+    private static bool IsValidSort(GallerySort? sort) =>
+        sort is not null
+        && sort.By is GallerySortKeys.Name or GallerySortKeys.Modified or GallerySortKeys.Added
+        && sort.Direction is GallerySortDirections.Asc or GallerySortDirections.Desc;
+
+    private static GallerySort CloneSort(GallerySort s) => new() { By = s.By, Direction = s.Direction };
 
     public List<GalleryPlaylist> ListPlaylists()
     {
@@ -368,8 +400,8 @@ public sealed class GalleryLibrary
     }
 
     /// <summary>
-    /// Flatten all sources to the ordered item list (source order, then file
-    /// name). Duplicate paths across sources collapse to the first occurrence.
+    /// Flatten all sources to the item list in the stored <see cref="GallerySort"/>
+    /// order. Duplicate paths across sources collapse to the first occurrence.
     /// Refreshes the id → path map used by <see cref="ResolveItemPath"/>.
     /// </summary>
     public List<GalleryItem> EnumerateItems() => Enumerate().Items;
@@ -377,12 +409,13 @@ public sealed class GalleryLibrary
     /// <summary>
     /// <see cref="EnumerateItems"/> plus whether the global cap dropped items.
     /// Sources are walked in persisted order and the walk stops once the cap is
-    /// exceeded; only the files kept from a folder are sorted, so the subset
-    /// kept from an over-cap folder is arbitrary but stable.
+    /// exceeded; only the kept items are sorted, so the subset kept from an
+    /// over-cap folder is arbitrary but stable.
     /// </summary>
     public GalleryEnumeration Enumerate()
     {
         List<GallerySource> sources;
+        GallerySort sort;
         long generation;
         lock (_lock)
         {
@@ -390,6 +423,7 @@ public sealed class GalleryLibrary
             // the lock for seconds while ExcludeItem/RestoreExclusions mutate
             // the cached sources' lists under it.
             sources = LoadSources().Select(CloneSource).ToList();
+            sort = CloneSort(_sort);
             generation = _generation;
         }
 
@@ -466,6 +500,8 @@ public sealed class GalleryLibrary
             }
         }
 
+        SortItems(items, paths, sources, sort);
+
         lock (_lock)
         {
             // A mutation mid-scan means this map may contain items from a
@@ -480,7 +516,7 @@ public sealed class GalleryLibrary
             }
         }
 
-        return new GalleryEnumeration(items, truncated);
+        return new GalleryEnumeration(items, truncated, sort);
 
         void AddItem(string full, string id, string sourceId, string? name)
         {
@@ -495,6 +531,60 @@ public sealed class GalleryLibrary
                 });
             }
         }
+    }
+
+    /// <summary>
+    /// Orders the whole list. Ties fall back to natural name ascending, then to
+    /// the full path, so the order is total. A source with no add time (0) sorts
+    /// after every dated one in both directions, in persisted source order.
+    /// </summary>
+    private static void SortItems(List<GalleryItem> items, Dictionary<string, string> paths, List<GallerySource> sources, GallerySort sort)
+    {
+        var sign = sort.Direction == GallerySortDirections.Desc ? -1 : 1;
+        var natural = NaturalStringComparer.Instance;
+        int ByName(GalleryItem x, GalleryItem y)
+        {
+            var c = natural.Compare(x.Name, y.Name);
+            return c != 0 ? c : natural.Compare(paths[x.Id], paths[y.Id]);
+        }
+
+        Comparison<GalleryItem> compare;
+        switch (sort.By)
+        {
+            case GallerySortKeys.Modified:
+                var modified = items.ToDictionary(i => i.Id, i => File.GetLastWriteTimeUtc(paths[i.Id]).Ticks, StringComparer.Ordinal);
+                compare = (x, y) =>
+                {
+                    var c = modified[x.Id].CompareTo(modified[y.Id]) * sign;
+                    return c != 0 ? c : ByName(x, y);
+                };
+                break;
+            case GallerySortKeys.Added:
+                var rank = new Dictionary<string, (bool Unknown, long AddedAt, int Index)>(StringComparer.Ordinal);
+                for (var n = 0; n < sources.Count; n++)
+                {
+                    var added = sources[n].AddedAtUnixMs;
+                    rank.TryAdd(sources[n].Id, (added <= 0, added, n));
+                }
+
+                compare = (x, y) =>
+                {
+                    var rx = rank[x.SourceId];
+                    var ry = rank[y.SourceId];
+                    if (rx.Unknown != ry.Unknown)
+                        return rx.Unknown ? 1 : -1;
+                    var c = rx.Unknown
+                        ? rx.Index.CompareTo(ry.Index)
+                        : rx.AddedAt.CompareTo(ry.AddedAt) * sign;
+                    return c != 0 ? c : ByName(x, y);
+                };
+                break;
+            default:
+                compare = (x, y) => ByName(x, y) * sign;
+                break;
+        }
+
+        items.Sort(compare);
     }
 
     /// <summary>
@@ -576,6 +666,7 @@ public sealed class GalleryLibrary
                     return p;
                 })
                 .ToList() ?? new List<GalleryPlaylist>();
+            _sort = IsValidSort(parsed?.Sort) ? CloneSort(parsed!.Sort!) : new GallerySort();
             // Pre-exclusions builds stored uploaded copies as a distinct kind;
             // they're plain file references now (upload support is gone).
             foreach (var s in _sources)
@@ -591,6 +682,7 @@ public sealed class GalleryLibrary
             // Missing or corrupt file: start empty rather than failing boot.
             _sources = new List<GallerySource>();
             _playlists = new List<GalleryPlaylist>();
+            _sort = new GallerySort();
         }
 
         return _sources;
@@ -600,7 +692,7 @@ public sealed class GalleryLibrary
     {
         _sources = sources;
         Directory.CreateDirectory(RootDir);
-        var json = JsonSerializer.Serialize(new GallerySourcesFile { Sources = sources, Playlists = _playlists }, AppJsonContext.Default.GallerySourcesFile);
+        var json = JsonSerializer.Serialize(new GallerySourcesFile { Sources = sources, Playlists = _playlists, Sort = _sort }, AppJsonContext.Default.GallerySourcesFile);
         AtomicJsonFile.Write(Path.Combine(RootDir, SourcesFileName), json);
     }
 
@@ -612,4 +704,4 @@ public sealed class GalleryLibrary
 }
 
 /// <summary>Result of <see cref="GalleryLibrary.Enumerate"/>.</summary>
-public sealed record GalleryEnumeration(List<GalleryItem> Items, bool Truncated);
+public sealed record GalleryEnumeration(List<GalleryItem> Items, bool Truncated, GallerySort Sort);

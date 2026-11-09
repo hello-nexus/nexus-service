@@ -541,6 +541,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Gallery.GalleryItem))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Gallery.GalleryItem>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Gallery.GalleryItemsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Gallery.GallerySort))]
 [JsonSerializable(typeof(Nexus.Service.Models.Gallery.GalleryPickBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Gallery.GalleryPickResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Gallery.GalleryExcludeBody))]
