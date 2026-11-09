@@ -1588,7 +1588,13 @@ public static class NexusServiceCollectionExtensions
                     listedWhileWithheld: bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver);
             });
             services.AddSingleton<IDeviceHandler>(
-                _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));
+                _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(
+                    bulkPanelHub,
+                    bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver
+                        ? new[] { new Nexus.Service.Devices.UsbId(
+                            Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveProtocol.BoardVendorId,
+                            Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveProtocol.BoardProductId) }
+                        : null));
             if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver hydroShift2)
             {
                 AddHydroShift2Aio(services, bulkPanelHub, hydroShift2);
@@ -2162,6 +2168,23 @@ public static class NexusServiceCollectionExtensions
             return player;
         });
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>());
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.BulkPanels.DesktopModeExit(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            () =>
+            {
+                var detector = sp.GetRequiredService<Nexus.Service.Conflicts.IConflictDetector>();
+                var running = detector.IsAppRunning("lian-li-l-connect");
+                return detector.DetectionReady ? running : null;
+            },
+            handler =>
+            {
+                var gate = sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>();
+                return gate.IsChosenOn(handler) || gate.HeldForMonitor(handler);
+            },
+            Nexus.Service.Peripherals.BulkPanels.DesktopModeExit.DescribeParents,
+            exited: _ => driver.RequestReboot()));
+        services.AddHostedService<Nexus.Service.Peripherals.BulkPanels.DesktopModeExitWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>());
         services.AddSingleton<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>();
