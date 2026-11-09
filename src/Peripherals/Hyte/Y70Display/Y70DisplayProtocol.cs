@@ -163,33 +163,45 @@ public static class Y70DisplayProtocol
 
     private const byte OpLighting = 0xEE;
 
-    /// <summary>Backlight grid dimensions: columns along X, rows along Y.</summary>
+    /// <summary>
+    /// Backlight grid dimensions: the panel stands portrait, so the grid is
+    /// tall and narrow, columns along X and rows along Y.
+    /// </summary>
     public const int BacklightColumns = 5;
     public const int BacklightRows = 7;
-    public const int BacklightLedCount = BacklightColumns * BacklightRows;
+    public const int BacklightLedCount = 35;
 
     /// <summary>Streaming frame header, followed by one GRB triple per LED.</summary>
     public static readonly byte[] BacklightHeader = { Frame0, OpLighting, 0x01, 0x01, 0x00, 0x00, 0x00 };
 
     /// <summary>
-    /// Wire order of the backlight as (column, row) pairs: columns walked right
-    /// to left, even columns top to bottom and odd columns bottom to top
-    /// (serpentine). Index i of a streamed frame is this array's i-th cell.
+    /// Wire index of each backlight cell, indexed [column][row] with column 0
+    /// at the left and row 0 at the top. Camera-verified on hardware. Every
+    /// consumer reads this table.
     /// </summary>
-    public static readonly (int Column, int Row)[] BacklightWireOrder = BuildBacklightWireOrder();
-
-    private static (int Column, int Row)[] BuildBacklightWireOrder()
+    public static readonly int[][] BacklightWireIndexByCell =
     {
-        var order = new (int, int)[BacklightLedCount];
-        var n = 0;
-        for (var x = BacklightColumns - 1; x >= 0; x--)
+        new[] { 28, 29, 30, 31, 32, 33, 34 },
+        new[] { 27, 26, 25, 24, 23, 22, 21 },
+        new[] { 14, 15, 16, 17, 18, 19, 20 },
+        new[] { 13, 12, 11, 10, 9, 8, 7 },
+        new[] { 0, 1, 2, 3, 4, 5, 6 },
+    };
+
+    /// <summary>The (column, row) cell of each wire index, derived from <see cref="BacklightWireIndexByCell"/>.</summary>
+    public static readonly (int Column, int Row)[] BacklightCellByWireIndex = BuildCellByWireIndex();
+
+    private static (int Column, int Row)[] BuildCellByWireIndex()
+    {
+        var cells = new (int, int)[BacklightLedCount];
+        for (var c = 0; c < BacklightColumns; c++)
         {
-            for (var y = 0; y < BacklightRows; y++)
+            for (var r = 0; r < BacklightRows; r++)
             {
-                order[n++] = (x, x % 2 == 0 ? y : BacklightRows - 1 - y);
+                cells[BacklightWireIndexByCell[c][r]] = (c, r);
             }
         }
-        return order;
+        return cells;
     }
 
     /// <summary>

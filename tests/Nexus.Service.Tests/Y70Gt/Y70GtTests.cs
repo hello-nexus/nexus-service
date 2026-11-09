@@ -47,25 +47,25 @@ public class Y70GtTests
     [InlineData(7, 3, 6)]
     [InlineData(13, 3, 0)]
     [InlineData(14, 2, 0)]
+    [InlineData(20, 2, 6)]
     [InlineData(21, 1, 6)]
+    [InlineData(27, 1, 0)]
     [InlineData(28, 0, 0)]
     [InlineData(34, 0, 6)]
-    public void Backlight_wire_order_is_serpentine_from_the_right_column(int index, int column, int row)
+    public void Backlight_table_places_wire_indices_on_the_camera_verified_cells(int index, int column, int row)
     {
-        Assert.Equal((column, row), Y70DisplayProtocol.BacklightWireOrder[index]);
+        Assert.Equal(index, Y70DisplayProtocol.BacklightWireIndexByCell[column][row]);
+        Assert.Equal((column, row), Y70DisplayProtocol.BacklightCellByWireIndex[index]);
     }
 
     [Fact]
-    public void Backlight_wire_order_visits_every_cell_of_the_grid_once()
+    public void Backlight_table_is_five_columns_by_seven_rows_covering_each_index_once()
     {
-        var order = Y70DisplayProtocol.BacklightWireOrder;
-        Assert.Equal(35, order.Length);
-        Assert.Equal(35, order.Distinct().Count());
-        Assert.All(order, c =>
-        {
-            Assert.InRange(c.Column, 0, 4);
-            Assert.InRange(c.Row, 0, 6);
-        });
+        Assert.Equal(35, Y70DisplayProtocol.BacklightLedCount);
+        Assert.Equal(5, Y70DisplayProtocol.BacklightWireIndexByCell.Length);
+        Assert.All(Y70DisplayProtocol.BacklightWireIndexByCell, col => Assert.Equal(7, col.Length));
+        Assert.Equal(Enumerable.Range(0, 35), Y70DisplayProtocol.BacklightWireIndexByCell.SelectMany(c => c).OrderBy(i => i));
+        Assert.Equal(new[] { 28, 29, 30, 31, 32, 33, 34 }, Y70DisplayProtocol.BacklightWireIndexByCell[0]);
     }
 
     [Fact]
@@ -113,6 +113,90 @@ public class Y70GtTests
         Assert.False(truly.HasBacklight);
         Assert.False(truly.WriteBacklight(new byte[105]));
         Assert.Empty(trulyPort.Writes);
+    }
+
+    [Fact]
+    public void Hub_binds_touch_and_gt_when_both_are_discovered()
+    {
+        var hub = BothHub(true, true, out var touch, out var gt);
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        Assert.Equal(Y70DisplayProtocol.VariantTouch, hub.Variant);
+        Assert.True(hub.IsConnected);
+        Assert.True(hub.HasBacklight);
+        Assert.Equal("y70:GTSER", hub.BacklightDeviceId);
+        Assert.True(hub.WriteBacklight(new byte[105]));
+        Assert.Single(gt.Writes);
+        Assert.Empty(touch.Writes);
+    }
+
+    [Fact]
+    public void Hub_binds_gt_only_as_primary()
+    {
+        var hub = BothHub(false, true, out _, out var gt);
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        Assert.Equal(Y70DisplayProtocol.VariantGt, hub.Variant);
+        Assert.Equal(hub.DeviceId, hub.BacklightDeviceId);
+        Assert.True(hub.WriteBacklight(new byte[105]));
+        Assert.Single(gt.Writes);
+    }
+
+    [Fact]
+    public void Hub_binds_touch_only_without_backlight()
+    {
+        var hub = BothHub(true, false, out var touch, out _);
+        Assert.True(hub.EnsureConnected());
+        Assert.False(hub.EnsureBacklightConnected());
+        Assert.True(hub.IsConnected);
+        Assert.False(hub.HasBacklight);
+        Assert.Equal("", hub.BacklightDeviceId);
+        Assert.False(hub.WriteBacklight(new byte[105]));
+        Assert.Empty(touch.Writes);
+    }
+
+    [Fact]
+    public void Ensure_connected_skips_the_gt_port_already_held_beside_the_primary()
+    {
+        var opens = new List<string>();
+        var ports = new List<Y70DisplayPort>
+        {
+            new() { PortName = "COM3", Serial = "TOUCH", Variant = Y70DisplayProtocol.VariantTouch },
+            new() { PortName = "COM7", Serial = "GTSER", Variant = Y70DisplayProtocol.VariantGt },
+        };
+        var primary = new FakeTransport();
+        var hub = new Y70DisplayHub(new ListDiscovery(ports), p => { opens.Add(p.PortName); return p.PortName == "COM3" ? primary : new FakeTransport(); });
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        Assert.Equal(new[] { "COM3", "COM7" }, opens);
+
+        // Primary drops on its own; reconnect must not reopen the held GT port.
+        // Enumeration order can change between scans: the held GT port now comes first.
+        primary.Open = false;
+        ports.Reverse();
+        Assert.True(hub.EnsureConnected());
+        Assert.Equal(new[] { "COM3", "COM7", "COM3" }, opens);
+        Assert.Equal(Y70DisplayProtocol.VariantTouch, hub.Variant);
+        Assert.True(hub.HasBacklight);
+    }
+
+    private static Y70DisplayHub BothHub(bool touchPresent, bool gtPresent, out FakeTransport touch, out FakeTransport gt)
+    {
+        var tt = new FakeTransport();
+        var gg = new FakeTransport();
+        touch = tt;
+        gt = gg;
+        var ports = new List<Y70DisplayPort>();
+        if (touchPresent) ports.Add(new Y70DisplayPort { PortName = "COM3", Serial = "TOUCH", Variant = Y70DisplayProtocol.VariantTouch });
+        if (gtPresent) ports.Add(new Y70DisplayPort { PortName = "COM7", Serial = "GTSER", Variant = Y70DisplayProtocol.VariantGt });
+        return new Y70DisplayHub(new ListDiscovery(ports), p => p.PortName == "COM7" ? gg : tt);
+    }
+
+    private sealed class ListDiscovery : IY70DisplayPortDiscovery
+    {
+        private readonly IReadOnlyList<Y70DisplayPort> _ports;
+        public ListDiscovery(IReadOnlyList<Y70DisplayPort> ports) => _ports = ports;
+        public IReadOnlyList<Y70DisplayPort> Discover() => _ports;
     }
 
     [Fact]
@@ -178,11 +262,12 @@ public class Y70GtTests
         Assert.Equal(35, frame.LedCount);
         Assert.NotNull(frame.LedU);
         Assert.NotNull(frame.LedV);
-        // Index 0 is column 4, row 0; index 7 is column 3, row 6.
+        // Index 0 is the top of the right column; index 28 the top of the left column; index 34 its bottom.
         Assert.Equal(4.5f / 5f, frame.LedU![0], 4);
         Assert.Equal(0.5f / 7f, frame.LedV![0], 4);
-        Assert.Equal(3.5f / 5f, frame.LedU[7], 4);
-        Assert.Equal(6.5f / 7f, frame.LedV[7], 4);
+        Assert.Equal(0.5f / 5f, frame.LedU[28], 4);
+        Assert.Equal(0.5f / 7f, frame.LedV[28], 4);
+        Assert.Equal(6.5f / 7f, frame.LedV[34], 4);
     }
 
     [Fact]
@@ -226,7 +311,8 @@ public class Y70GtTests
     private sealed class FakeTransport : INp50Transport
     {
         public readonly List<byte[]> Writes = new();
-        public bool IsOpen => true;
+        public bool Open = true;
+        public bool IsOpen => Open;
         public string Serial => "GTTEST1";
         public void Write(ReadOnlySpan<byte> data) => Writes.Add(data.ToArray());
         public void DiscardInput() { }

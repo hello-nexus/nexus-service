@@ -106,6 +106,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(AstralSettings))]
 [JsonSerializable(typeof(AstralCalibration))]
 [JsonSerializable(typeof(Dictionary<string, AstralCalibration>))]
+[JsonSerializable(typeof(LogitechSpeakerSettings))]
+[JsonSerializable(typeof(LogitechEqPreset))]
 [JsonSerializable(typeof(PanelPhonePushTarget))]
 [JsonSerializable(typeof(PanelLayoutsDefaults))]
 [JsonSerializable(typeof(PanelLayoutDefault))]

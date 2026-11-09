@@ -1,5 +1,5 @@
 {
-  "count": 2033,
+  "count": 2034,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -1720,6 +1720,14 @@
       "controller": "AsusMonitorController",
       "kind": "hid",
       "type": "monitor"
+    },
+    {
+      "name": "ASUS Super IO RGB",
+      "vid": null,
+      "pid": null,
+      "controller": "AsusSuperIORGBController",
+      "kind": "generic",
+      "type": "motherboard"
     },
     {
       "name": "ASUS TUF Laptop",

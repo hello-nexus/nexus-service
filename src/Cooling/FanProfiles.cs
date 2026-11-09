@@ -398,7 +398,13 @@ public static class FanProfiles
     /// any other fan.
     /// </summary>
     public static string DerivePresetFromCurves(IConfigStore store, IFanControlProvider fans)
-        => DerivePresetFromCurves(store.Load().Cooling, fans.GetFanChannels());
+    {
+        var channels = fans.GetFanChannels();
+        var derived = "custom";
+        // Update mutators reshape Curves/Outputs under the store lock; reading the shared document outside it races them.
+        store.Read(s => derived = DerivePresetFromCurves(s.Cooling, channels));
+        return derived;
+    }
 
     public static string DerivePresetFromCurves(CoolingSettings cooling, IReadOnlyList<FanChannel> channels)
     {

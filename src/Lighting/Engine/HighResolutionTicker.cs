@@ -17,6 +17,7 @@ internal sealed partial class HighResolutionTicker : IDisposable
 {
     private const uint CreateWaitableTimerHighResolution = 0x2;
     private const uint TimerAllAccess = 0x1F0003;
+    internal const long SpinMarginMs = 1;
 
     private readonly TimerHandle _timer;
     private readonly CancellationToken _ct;
@@ -64,6 +65,34 @@ internal sealed partial class HighResolutionTicker : IDisposable
         catch (ObjectDisposedException)
         {
             // Engine Dispose tears down the token source without joining the loop.
+            return false;
+        }
+        return !_ct.IsCancellationRequested;
+    }
+
+    /// <summary>
+    /// Blocks until a Stopwatch timestamp: the timer covers the bulk of the wait and a short spin
+    /// takes the last stretch, because a timer wake can land late. False once cancelled.
+    /// </summary>
+    public bool WaitUntil(long deadlineTimestamp)
+    {
+        var margin = Stopwatch.Frequency * SpinMarginMs / 1000;
+        var due = -((deadlineTimestamp - margin - Stopwatch.GetTimestamp()) * 10_000_000 / Stopwatch.Frequency);
+        try
+        {
+            if (_ct.IsCancellationRequested) return false;
+            if (due < 0 && SetWaitableTimer(_timer.SafeWaitHandle, ref due, 0, 0, 0, false))
+            {
+                WaitHandle.WaitAny(_wake ??= new[] { _timer, _ct.WaitHandle });
+            }
+            while (Stopwatch.GetTimestamp() < deadlineTimestamp)
+            {
+                if (_ct.IsCancellationRequested) return false;
+                Thread.SpinWait(20);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
             return false;
         }
         return !_ct.IsCancellationRequested;
