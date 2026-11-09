@@ -113,6 +113,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
     private bool _customMergeCleared;
+    // The last firmware commit was a merged effect; a hub without a merge-off command exits it by per-port commits.
+    private bool _mergeCommitted;
     private int _resumeEpochSeen;
     private long _lastCustomFrameMs = long.MinValue / 2;
 
@@ -323,6 +325,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                 Thread.Sleep(MergeOffSettleMs);
                 _customMergeCleared = true;
             }
+            else if (_mergeCommitted && !profile.ExplicitMergeControl && ExitMergeByPortCommits(profile))
+            {
+                _mergeCommitted = false;
+            }
             TickCustom(settings, devices, globalBrightness, composed, profile);
             return;
         }
@@ -375,6 +381,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
         if (committed)
         {
+            _mergeCommitted = merged;
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
         }
@@ -397,6 +404,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
         _argbSyncRetry.Reset();
         _customMergeCleared = false;
+        _mergeCommitted = false;
         _initRetry.Reset();
         _commitRetry.Reset();
     }
@@ -582,6 +590,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (!_hub.SendStopMerge()) return false;
             Thread.Sleep(MergeOffSettleMs);
         }
+        else if (_mergeCommitted)
+        {
+            // Ports left uncontrolled get no commit below, so exit the merge on every port first.
+            if (!ExitMergeByPortCommits(profile)) return false;
+            _mergeCommitted = false;
+        }
 
         for (var i = 0; i < composed.Count; i++)
         {
@@ -634,10 +648,24 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return true;
     }
 
+    /// <summary>A dark per-port commit on every port plus the frame latch: the only way off a merged effect on a hub without a merge-off command.</summary>
+    private bool ExitMergeByPortCommits(in LianLiFanProfile profile)
+    {
+        for (var p = 0; p < LianLiProtocol.PortCount; p++)
+        {
+            var off = LianLiLightingModes.BrightnessCodes[0];
+            if (!_hub.SendModeCommit(p * profile.ChannelsPerPort, LianLiProtocol.EffectStatic, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, off)) return false;
+            Settle();
+        }
+        if (!_hub.SendFrameSync()) return false;
+        Settle();
+        return true;
+    }
+
     /// <summary>
     /// One animation across every port. Firmware sequence: port order, each
-    /// port's fan count, every channel but 0 parked dark, then the palette and
-    /// merged effect on channel 0, with no frame sync after. Returns false on
+    /// port's fan count, other channels parked dark where the firmware needs it,
+    /// then the palette and merged effect on channel 0, with no frame sync after. Returns false on
     /// the first rejected write.
     /// </summary>
     private bool CommitMergedMode(
@@ -725,11 +753,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         return Math.Clamp(fans, 1, profile.MaxFans);
     }
 
-    // Scales every colour byte by the step the brightness byte names, rounding down.
     internal static void ScaleByBrightness(Span<byte> colors, byte brightnessByte)
     {
         var step = Array.IndexOf(LianLiLightingModes.BrightnessCodes, brightnessByte);
-        var factor = Math.Clamp(step, 0, 4) * 25 / 100.0;
+        var factor = step < 0 ? 1.0 : step / (double)(LianLiLightingModes.BrightnessCodes.Length - 1);
         for (var i = 0; i < colors.Length; i++)
         {
             colors[i] = (byte)Math.Floor(colors[i] * factor);
