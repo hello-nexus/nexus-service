@@ -464,7 +464,10 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.Coolers.Add(cooler);
                     break;
                 }
+                // Inline power meters (WireView Pro II) share the PSU group: same
+                // per-rail voltage/current/power shape, no separate wire type.
                 case HardwareType.Psu:
+                case HardwareType.PowerMonitor:
                     extras.Psus.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Storage:

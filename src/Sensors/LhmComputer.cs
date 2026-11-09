@@ -117,6 +117,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             IsNetworkEnabled = true,
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
+            // Opens STM32 CDC COM ports (VID 0483, PID 5740) and probes for a
+            // WireView Pro II; a port that does not answer is closed again.
+            IsPowerMonitorEnabled = true,
         };
         _openTask = Task.Run(async () =>
         {
