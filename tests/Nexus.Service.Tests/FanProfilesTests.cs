@@ -381,6 +381,18 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
+    public void DerivePresetFromCurves_ToleratesNullCurveOutputsFromPersistedSettings()
+    {
+        var cooling = new CoolingSettings();
+        cooling.FanPinOverrides["fan2"] = true;
+        cooling.Curves.Add(new CurveDocument { Id = "null-entry", Outputs = new List<CurveOutputDocument> { null!, new() { Id = "fan2", Type = "Fan" } } });
+        cooling.Curves.Add(new CurveDocument { Id = "null-list", Outputs = null! });
+        cooling.Curves.Add(null!);
+
+        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(cooling, _fans.GetFanChannels()));
+    }
+
+    [Fact]
     public void DerivePresetFromCurves_ReturnsOffWhenNothingAttached()
     {
         FanProfiles.Apply("off", _fans, _store);

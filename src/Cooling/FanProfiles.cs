@@ -420,11 +420,14 @@ public static class FanProfiles
 
         var curves = cooling.Curves;
         var attachment = new Dictionary<string, string>(); // fanId -> curveId
+        // Hand-edited or partially written settings can hold a null curve, a null
+        // Outputs list or a null output entry; none of them may fail the derivation.
         foreach (var curve in curves)
         {
+            if (curve?.Outputs is null) continue;
             foreach (var o in curve.Outputs)
             {
-                if (fanIds.Contains(o.Id) && !attachment.ContainsKey(o.Id))
+                if (o is not null && fanIds.Contains(o.Id) && !attachment.ContainsKey(o.Id))
                 {
                     attachment[o.Id] = curve.Id;
                 }
@@ -449,7 +452,7 @@ public static class FanProfiles
         var pinnedDriven = channels.Any(c => IsPinned(c, pinOverrides)
             && !uncontrolled.Contains(c.Id)
             && (cooling.ManualSpeeds.ContainsKey(c.Id)
-                || curves.Any(cv => cv.Outputs.Any(o => o.Id == c.Id))));
+                || curves.Any(cv => cv?.Outputs?.Any(o => o?.Id == c.Id) == true)));
 
         // All fans BIOS = no attachment AND no manual override.
         if (attachment.Count == 0 && manualUnattached.Count == 0 && !pinnedDriven) return "off";

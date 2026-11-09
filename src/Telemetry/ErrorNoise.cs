@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Net.Sockets;
 
 namespace Nexus.Service.Telemetry;
 
@@ -39,11 +40,24 @@ internal static class ErrorNoise
     {
         if (!category.StartsWith(KestrelCategory, StringComparison.Ordinal))
             return false;
+        if (IsNoBufferSpace(ex))
+            return true;
         return ex switch
         {
             InvalidOperationException => clientAborted && IsCutShortResponse(ex),
             System.IO.IOException => ex.Message.StartsWith("The encryption operation failed", StringComparison.Ordinal),
             _ => false,
         };
+    }
+
+    /// <summary>WSAENOBUFS (10055): the OS ran out of socket buffer space, a host-wide condition Nexus cannot act on.</summary>
+    private static bool IsNoBufferSpace(Exception? ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is SocketException { SocketErrorCode: SocketError.NoBufferSpaceAvailable } or SocketException { NativeErrorCode: 10055 })
+                return true;
+        }
+        return false;
     }
 }
