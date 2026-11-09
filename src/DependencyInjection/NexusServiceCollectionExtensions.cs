@@ -765,7 +765,30 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService<Nexus.Service.Lighting.IdleDim.IdleDimHost>();
 
         if (OperatingSystem.IsWindows())
+        {
+            // Windows only: the trigger needs the SMBus mutex, which the probe reports as n/a elsewhere.
+            services.AddSingleton(sp =>
+            {
+                var lifetime = sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>();
+                var flasher = sp.GetRequiredService<Nexus.Service.Devices.Firmware.FirmwareFlasher>();
+                return new Nexus.Service.Lifecycle.ResumeSelfRestart(
+                    System.IO.Path.Combine(Nexus.Service.Persistence.JsonConfigStore.ResolveDataDirectory(), "resume-self-restart.stamp"),
+                    () =>
+                    {
+                        if (flasher.IsFlashing || !Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
+                        {
+                            return false;
+                        }
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(200).ConfigureAwait(false);
+                            lifetime.StopApplication();
+                        });
+                        return true;
+                    });
+            });
             services.AddHostedService<Nexus.Service.Lighting.Rgb.PowerEventListener>();
+        }
 
         // Session-lock blanking. One hosted service on every desktop platform;
         // which source it uses is a compile-time branch inside it.

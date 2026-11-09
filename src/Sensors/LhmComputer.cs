@@ -46,6 +46,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Task _openTask;
     private readonly object _updateLock = new();
     private readonly object _readerLock = new();
+    // Separate from _updateLock so a reader asking a cached answer never waits behind a hardware walk.
+    private readonly object _rotationalLock = new();
     private readonly LhmWalkWatch _walkWatch = LhmWalkWatch.Shared;
     private Timer? _walkTimer;
     private static readonly TimeSpan WalkWatchPeriod = TimeSpan.FromSeconds(5);
@@ -383,17 +385,17 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         var smartDemand = SmartPollDemand.Capture(_gates, settings, SmartLiveConsumers.Any(_hub));
         _smartActive.Observe(smartDemand.IsActive(StorageIdentifiers()));
 
-        // A wedged walk holds the lock; callers then return the (stale-marked) cache instead of piling up behind it.
-        if (_walkWatch.IsStale)
+        // Normal readers never wait on a walk: while one runs they get the cached values. Forced and fast
+        // readers need fresh data and wait, unless the walk is stale (wedged), when nobody waits.
+        var held = false;
+        try
         {
-            if (!Monitor.TryEnter(_updateLock))
+            held = LhmWalkWatch.Acquire(_updateLock, refresh == SensorRefresh.Normal || _walkWatch.IsStale);
+            if (!held)
             {
                 return;
             }
-            Monitor.Exit(_updateLock);
-        }
-        lock (_updateLock)
-        {
+
             var now = Environment.TickCount64;
             if (refresh != SensorRefresh.Force && now - _lastUpdateTicks < floorMs)
             {
@@ -432,7 +434,16 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
                 }
             }
+        
         }
+        finally
+        {
+            if (held)
+            {
+                Monitor.Exit(_updateLock);
+            }
+        }
+
     }
 
     // One unplugged or busy HID cooler (KrakenV2/V3 throw from Update) must not
@@ -517,7 +528,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     public bool? IsRotational(IHardware hw)
     {
         var identifier = hw.Identifier.ToString();
-        lock (_updateLock)
+        lock (_rotationalLock)
         {
             if (_rotational.TryGetValue(identifier, out var cached)) return cached;
             bool? value = null;
