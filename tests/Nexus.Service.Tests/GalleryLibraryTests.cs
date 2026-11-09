@@ -216,7 +216,7 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
-    public void Cap_IsGlobalAcrossSources_LaterSourcesSkippedWhenFull()
+    public void Cap_IsGlobalAcrossSources_DropsTheTailOfTheSortOrder()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems - 10);
         var sub = Path.Combine(big, "sub");
@@ -234,11 +234,16 @@ public sealed class GalleryLibraryTests : IDisposable
 
         var result = lib.Enumerate();
 
-        // The parent folder and its subfolder together exceed the cap, so
-        // the parent fills it and the later sources are never reached.
+        // big/ sorts before other/, so by name ascending the cap drops other/.
         Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
         Assert.True(result.Truncated);
         Assert.DoesNotContain(result.Items, i => i.Name.StartsWith("o", StringComparison.Ordinal));
+
+        // Descending puts other/ first, so it is kept and big/'s tail goes.
+        lib.SetSort(Sort(GallerySortKeys.Name, GallerySortDirections.Desc));
+        var descending = lib.Enumerate();
+        Assert.True(descending.Truncated);
+        Assert.Equal(5, descending.Items.Count(i => i.Name.StartsWith("o", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -294,7 +299,7 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
-    public void Cap_OverCapFolderYieldsSortedStableSubset()
+    public void Cap_OverCapFolderKeepsTheFirstItemsInSortOrder()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems + 25);
         var lib = NewLibrary();
@@ -304,9 +309,8 @@ public sealed class GalleryLibraryTests : IDisposable
         var second = new GalleryLibrary(_rootDir).Enumerate();
 
         Assert.True(first.Truncated);
-        Assert.Equal(GalleryLibrary.MaxItems, first.Items.Count);
-        var names = first.Items.Select(i => i.Name).ToList();
-        Assert.Equal(names.OrderBy(n => n, NaturalStringComparer.Instance), names);
+        var expected = Enumerable.Range(0, GalleryLibrary.MaxItems + 25).Select(i => $"img{i:D5}.png").ToList();
+        Assert.Equal(expected.Take(GalleryLibrary.MaxItems), first.Items.Select(i => i.Name));
         Assert.Equal(first.Items.Select(i => i.Id), second.Items.Select(i => i.Id));
     }
 
@@ -317,7 +321,7 @@ public sealed class GalleryLibraryTests : IDisposable
     private static GallerySort Sort(string by, string direction) => new() { By = by, Direction = direction };
 
     [Fact]
-    public void Sort_DefaultsToNameAscending_AcrossSources()
+    public void Sort_DefaultsToNameAscending_ByFullPathAcrossSources()
     {
         var other = Path.Combine(_tempDir, "other");
         Directory.CreateDirectory(other);
@@ -330,7 +334,53 @@ public sealed class GalleryLibraryTests : IDisposable
 
         Assert.Equal(GallerySortKeys.Name, lib.GetSort().By);
         Assert.Equal(GallerySortDirections.Asc, lib.GetSort().Direction);
-        Assert.Equal(new[] { "b2.png", "b10.png", "c.png" }, Names(lib));
+        // other/ sorts before photos/, so its b10 leads.
+        Assert.Equal(new[] { "b10.png", "b2.png", "c.png" }, Names(lib));
+    }
+
+    [Theory]
+    [InlineData(GallerySortDirections.Asc, new[] { "Trip/001.png", "Trip/002.png", "Wedding/001.png", "Wedding/002.png" })]
+    [InlineData(GallerySortDirections.Desc, new[] { "Wedding/002.png", "Wedding/001.png", "Trip/002.png", "Trip/001.png" })]
+    public void Sort_Name_KeepsSubfoldersGrouped(string direction, string[] expected)
+    {
+        foreach (var rel in new[] { "Wedding/002.png", "Trip/001.png", "Wedding/001.png", "Trip/002.png" })
+        {
+            Directory.CreateDirectory(Path.Combine(_photosDir, Path.GetDirectoryName(rel)!));
+            File.WriteAllBytes(Path.Combine(_photosDir, rel), new byte[] { 1 });
+        }
+
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Name, direction));
+
+        var order = lib.EnumerateItems()
+            .Select(i => Path.GetRelativePath(_photosDir, lib.ResolveItemPath(i.Id)!).Replace('\\', '/'))
+            .ToArray();
+        Assert.Equal(expected, order);
+    }
+
+    [Fact]
+    public void Sort_Modified_IsAppliedBeforeTheCap()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems + 1);
+        var newest = Path.Combine(big, "img00000.png");
+        var baseTime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var file in Directory.EnumerateFiles(big))
+        {
+            File.SetLastWriteTimeUtc(file, baseTime);
+        }
+
+        File.SetLastWriteTimeUtc(newest, baseTime.AddDays(1));
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Asc));
+
+        var result = lib.Enumerate();
+
+        // Oldest first: the one newer file is the tail the cap drops.
+        Assert.True(result.Truncated);
+        Assert.DoesNotContain(result.Items, i => i.Name == "img00000.png");
+        Assert.Null(lib.ResolveItemPath(GalleryLibrary.ItemIdForPath(newest)));
     }
 
     [Fact]
@@ -515,18 +565,17 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
-    public void Sort_OverCap_KeepsTheSamePickedSet()
+    public void Sort_OverCap_DescendingKeepsTheOtherEnd()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems + 25);
         var lib = NewLibrary();
         lib.AddReference(big, GallerySourceKinds.Folder);
-        var ascending = lib.EnumerateItems().Select(i => i.Id).ToList();
-
         lib.SetSort(Sort(GallerySortKeys.Name, GallerySortDirections.Desc));
-        var descending = lib.EnumerateItems().Select(i => i.Id).ToList();
 
-        Assert.Equal(ascending.OrderBy(id => id, StringComparer.Ordinal), descending.OrderBy(id => id, StringComparer.Ordinal));
-        Assert.Equal(Enumerable.Reverse(ascending), descending);
+        var names = lib.EnumerateItems().Select(i => i.Name).ToList();
+
+        var expected = Enumerable.Range(25, GalleryLibrary.MaxItems).Reverse().Select(i => $"img{i:D5}.png");
+        Assert.Equal(expected, names);
     }
 
     [Fact]

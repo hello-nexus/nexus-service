@@ -26,9 +26,9 @@ namespace Nexus.Service.Gallery;
 public sealed class GalleryLibrary
 {
     private const string SourcesFileName = "sources.json";
-    // One cap across every source (folders and single files). The walk stops
-    // at the first countable item past it; excluded files and duplicates of
-    // earlier sources are not countable.
+    // One cap across every source (folders and single files): the first this
+    // many items in sort order are kept. Excluded files and duplicates of
+    // earlier sources do not count.
     public const int MaxItems = 5000;
     public const int MaxPlaylists = 50;
     public const int MaxPlaylistNameLength = 48;
@@ -409,9 +409,9 @@ public sealed class GalleryLibrary
 
     /// <summary>
     /// <see cref="EnumerateItems"/> plus whether the global cap dropped items.
-    /// Sources are walked in persisted order and the walk stops once the cap is
-    /// exceeded; only the kept items are sorted, so the subset kept from an
-    /// over-cap folder is arbitrary but stable.
+    /// Every eligible file of every source is walked and sorted first, then the
+    /// first <see cref="MaxItems"/> in sort order are kept, so the cap drops the
+    /// tail of the sorted list.
     /// </summary>
     public GalleryEnumeration Enumerate()
     {
@@ -428,27 +428,22 @@ public sealed class GalleryLibrary
             generation = _generation;
         }
 
-        var items = new List<GalleryItem>();
-        var paths = new Dictionary<string, string>();
-        // Filled only in modified mode; 0 marks a time that could not be read.
         var wantModified = sort.By == GallerySortKeys.Modified;
-        var modified = new Dictionary<string, long>(StringComparer.Ordinal);
-        var truncated = false;
+        var candidates = new List<Candidate>();
+        // First source to reach a file owns it; excluded files never enter.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var source in sources)
+        for (var index = 0; index < sources.Count; index++)
         {
-            if (truncated)
-            {
-                break;
-            }
-
+            var source = sources[index];
             if (source.Kind == GallerySourceKinds.Folder)
             {
                 // Recursive: users point at e.g. a Pictures root whose images
-                // live in subfolders. Excluded files and files an earlier
-                // source already holds take no slot.
+                // live in subfolders. A folder whose walk fails contributes
+                // nothing, as before.
                 var excluded = new HashSet<string>(source.Excluded, StringComparer.Ordinal);
-                var picked = new List<(string Full, string Id, long Modified)>();
+                var found = new List<Candidate>();
+                var foundIds = new HashSet<string>(StringComparer.Ordinal);
                 try
                 {
                     // Same walk as Directory.EnumerateFiles; the entry carries the
@@ -469,18 +464,12 @@ public sealed class GalleryLibrary
 
                         var full = Path.GetFullPath(file);
                         var id = ItemIdForPath(full);
-                        if (excluded.Contains(id) || paths.ContainsKey(id))
+                        if (excluded.Contains(id) || seen.Contains(id) || !foundIds.Add(id))
                         {
                             continue;
                         }
 
-                        if (items.Count + picked.Count >= MaxItems)
-                        {
-                            truncated = true;
-                            break;
-                        }
-
-                        picked.Add((full, id, fileModified));
+                        found.Add(new Candidate(full, id, source.Id, Path.GetFileName(full), fileModified, index));
                     }
                 }
                 catch
@@ -488,34 +477,40 @@ public sealed class GalleryLibrary
                     continue;
                 }
 
-                picked.Sort((x, y) => NaturalStringComparer.Instance.Compare(x.Full, y.Full));
-                foreach (var (full, id, fileModified) in picked)
-                {
-                    if (AddItem(full, id, source.Id, name: null) && wantModified)
-                        modified[id] = fileModified;
-                }
+                seen.UnionWith(foundIds);
+                candidates.AddRange(found);
             }
             else if (File.Exists(source.Path) && IsMediaFile(source.Path))
             {
                 var full = Path.GetFullPath(source.Path);
                 var id = ItemIdForPath(full);
-                if (paths.ContainsKey(id))
+                if (!seen.Add(id))
                 {
                     continue;
                 }
 
-                if (items.Count >= MaxItems)
-                {
-                    truncated = true;
-                    continue;
-                }
-
-                if (AddItem(full, id, source.Id, source.Name) && wantModified)
-                    modified[id] = FileModifiedTicks(full);
+                var name = string.IsNullOrEmpty(source.Name) ? Path.GetFileName(full) : source.Name;
+                candidates.Add(new Candidate(full, id, source.Id, name, wantModified ? FileModifiedTicks(full) : 0, index));
             }
         }
 
-        SortItems(items, paths, modified, sources, sort);
+        candidates.Sort(Comparer(sources, sort));
+        var truncated = candidates.Count > MaxItems;
+        var kept = truncated ? candidates.GetRange(0, MaxItems) : candidates;
+
+        var items = new List<GalleryItem>(kept.Count);
+        var paths = new Dictionary<string, string>(kept.Count);
+        foreach (var c in kept)
+        {
+            paths[c.Id] = c.Full;
+            items.Add(new GalleryItem
+            {
+                Id = c.Id,
+                Name = c.Name,
+                SourceId = c.SourceId,
+                Kind = IsVideoFile(c.Full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
+            });
+        }
 
         lock (_lock)
         {
@@ -532,22 +527,11 @@ public sealed class GalleryLibrary
         }
 
         return new GalleryEnumeration(items, truncated, sort);
-
-        bool AddItem(string full, string id, string sourceId, string? name)
-        {
-            if (!paths.TryAdd(id, full))
-                return false;
-
-            items.Add(new GalleryItem
-            {
-                Id = id,
-                Name = string.IsNullOrEmpty(name) ? Path.GetFileName(full) : name,
-                SourceId = sourceId,
-                Kind = IsVideoFile(full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
-            });
-            return true;
-        }
     }
+
+    /// <param name="Modified">Write-time ticks; 0 when unread or unreadable.</param>
+    /// <param name="SourceIndex">Position of the owning source in persisted order.</param>
+    private readonly record struct Candidate(string Full, string Id, string SourceId, string Name, long Modified, int SourceIndex);
 
     // A missing file reads as the FILETIME epoch rather than throwing.
     private static readonly long FileTimeEpochTicks = DateTime.FromFileTimeUtc(0).Ticks;
@@ -580,61 +564,42 @@ public sealed class GalleryLibrary
     }
 
     /// <summary>
-    /// Orders the whole list. Ties fall back to natural name ascending, then to
-    /// the full path, so the order is total. An unknown time (0) sorts after
-    /// every known one in both directions: a source with no add time in
-    /// persisted source order, a file whose write time could not be read by name.
+    /// Name order is the natural order of the full path, so subfolders stay
+    /// grouped; date modes break ties with it ascending. An unknown time (0)
+    /// sorts after every known one in both directions: a source with no add
+    /// time in persisted source order, a file with no readable write time by path.
     /// </summary>
-    private static void SortItems(List<GalleryItem> items, Dictionary<string, string> paths, Dictionary<string, long> modified, List<GallerySource> sources, GallerySort sort)
+    private static Comparison<Candidate> Comparer(List<GallerySource> sources, GallerySort sort)
     {
         var sign = sort.Direction == GallerySortDirections.Desc ? -1 : 1;
         var natural = NaturalStringComparer.Instance;
-        int ByName(GalleryItem x, GalleryItem y)
-        {
-            var c = natural.Compare(x.Name, y.Name);
-            return c != 0 ? c : natural.Compare(paths[x.Id], paths[y.Id]);
-        }
 
-        Comparison<GalleryItem> compare;
         switch (sort.By)
         {
             case GallerySortKeys.Modified:
-                compare = (x, y) =>
+                return (x, y) =>
                 {
-                    var mx = modified[x.Id];
-                    var my = modified[y.Id];
-                    if ((mx == 0) != (my == 0))
-                        return mx == 0 ? 1 : -1;
-                    var c = mx.CompareTo(my) * sign;
-                    return c != 0 ? c : ByName(x, y);
+                    if ((x.Modified == 0) != (y.Modified == 0))
+                        return x.Modified == 0 ? 1 : -1;
+                    var c = x.Modified.CompareTo(y.Modified) * sign;
+                    return c != 0 ? c : natural.Compare(x.Full, y.Full);
                 };
-                break;
             case GallerySortKeys.Added:
-                var rank = new Dictionary<string, (bool Unknown, long AddedAt, int Index)>(StringComparer.Ordinal);
-                for (var n = 0; n < sources.Count; n++)
+                var added = sources.Select(s => s.AddedAtUnixMs).ToArray();
+                return (x, y) =>
                 {
-                    var added = sources[n].AddedAtUnixMs;
-                    rank.TryAdd(sources[n].Id, (added <= 0, added, n));
-                }
-
-                compare = (x, y) =>
-                {
-                    var rx = rank[x.SourceId];
-                    var ry = rank[y.SourceId];
-                    if (rx.Unknown != ry.Unknown)
-                        return rx.Unknown ? 1 : -1;
-                    var c = rx.Unknown
-                        ? rx.Index.CompareTo(ry.Index)
-                        : rx.AddedAt.CompareTo(ry.AddedAt) * sign;
-                    return c != 0 ? c : ByName(x, y);
+                    var ax = added[x.SourceIndex];
+                    var ay = added[y.SourceIndex];
+                    if ((ax <= 0) != (ay <= 0))
+                        return ax <= 0 ? 1 : -1;
+                    var c = ax <= 0
+                        ? x.SourceIndex.CompareTo(y.SourceIndex)
+                        : ax.CompareTo(ay) * sign;
+                    return c != 0 ? c : natural.Compare(x.Full, y.Full);
                 };
-                break;
             default:
-                compare = (x, y) => ByName(x, y) * sign;
-                break;
+                return (x, y) => natural.Compare(x.Full, y.Full) * sign;
         }
-
-        items.Sort(compare);
     }
 
     /// <summary>
