@@ -98,6 +98,22 @@ internal sealed class LhmWalkWatch
     /// <summary>The item the running walk is inside and how long it has been there, or null.</summary>
     internal (string Item, TimeSpan Age)? CurrentItem => Volatile.Read(ref _item) is { } at ? (at.Item, TimeSpan.FromMilliseconds(_nowMs() - at.StartMs)) : null;
 
+    /// <summary>True when the walk is stale, or has sat in one memory item or the SPD gate rebuild for <paramref name="limit"/>: a wedge, not a normal read.</summary>
+    internal bool WedgedInSmbusItem(TimeSpan limit)
+    {
+        if (CurrentWalkAge is null)
+        {
+            return false;
+        }
+        if (IsStale)
+        {
+            return true;
+        }
+        var at = Volatile.Read(ref _item);
+        return at is not null && (at.Item.StartsWith("/memory", StringComparison.Ordinal) || at.Item == "spd-gate")
+            && TimeSpan.FromMilliseconds(_nowMs() - at.StartMs) >= limit;
+    }
+
     /// <summary>True while our own walk could be holding the SMBus mutex: a walk is running and it is in a memory item, the SPD gate rebuild, or between items.</summary>
     internal bool MaySelfHoldSmbus()
     {
