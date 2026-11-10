@@ -158,7 +158,7 @@ public sealed class Np50HeartbeatWorker : BackgroundService
         // slider move.
         if (_gates.Cooling)
         {
-            _hub.ReassertLegacyDutyIfDue(Environment.TickCount64);
+            _hub.ReassertLegacyDutyIfDue();
         }
 
         // Pull per-port info every tick. With no fans attached the hub returns
