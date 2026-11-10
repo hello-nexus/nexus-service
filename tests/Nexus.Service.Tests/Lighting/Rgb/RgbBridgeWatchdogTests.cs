@@ -601,7 +601,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task Exhausting_the_settle_stall_budget_after_a_resume_restarts_the_service()
+    public async Task A_first_settle_failure_with_the_mutex_held_restarts_the_service_without_a_daemon_restart()
     {
         UseFakeClock();
         await ActivateAndSettleAsync();
@@ -609,18 +609,68 @@ public class RgbBridgeWatchdogTests : IDisposable
         WireSelfRestart();
         await ResumeAndWaitForBounceAsync(1);
 
-        for (var n = 2; n <= 4; n++)
-        {
-            Advance(TimeSpan.FromSeconds(100));
-            await PollAndExpectBounceAsync(n);
-        }
-        Assert.Empty(_selfRestarts);
+        Advance(TimeSpan.FromSeconds(30));
+        await PollAndExpectNoBounceAsync(1);
 
-        Advance(TimeSpan.FromSeconds(100));
-        await PollAndExpectNoBounceAsync(4);
+        Assert.True(await WaitUntilAsync(() => _selfRestarts.Count == 1, TimeSpan.FromSeconds(5)));
+        Assert.Contains("mutex held on the first settle check", _selfRestarts[0]);
+        Assert.Equal(1, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task A_hold_that_sampling_refuses_falls_back_to_the_daemon_restart()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+        var calls = 0;
+        _bridge.SmbusMutexProbe = () => ++calls == 1 ? "held" : "free";
+
+        Advance(TimeSpan.FromSeconds(30));
+        await _bridge.PollOnceAsync();
+        Assert.True(await WaitUntilAsync(() => Volatile.Read(ref calls) >= 2 && !_bridge.SelfRestartSampling, TimeSpan.FromSeconds(5)));
+        Advance(TimeSpan.FromSeconds(1));
+        await PollAndExpectBounceAsync(2);
+
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task A_self_restart_the_service_refuses_falls_back_to_the_daemon_restart()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        WireSelfRestart();
+        var asked = 0;
+        _bridge.SelfRestart = _ =>
+        {
+            Interlocked.Increment(ref asked);
+            return false;
+        };
+        await ResumeAndWaitForBounceAsync(1);
+
+        Advance(TimeSpan.FromSeconds(30));
+        await _bridge.PollOnceAsync();
+        Assert.True(await WaitUntilAsync(() => Volatile.Read(ref asked) == 1 && !_bridge.SelfRestartSampling, TimeSpan.FromSeconds(5)));
+        Advance(TimeSpan.FromSeconds(1));
+        await PollAndExpectBounceAsync(2);
+    }
+
+    [Fact]
+    public async Task Exhausting_the_daemon_watchdog_budget_with_the_mutex_held_still_restarts_the_service_once()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.True(_bridge.MaybeSelfRestart("daemon watchdog budget exhausted"));
+        Assert.False(_bridge.MaybeSelfRestart("daemon watchdog budget exhausted"));
 
         Assert.Single(_selfRestarts);
-        Assert.Contains("settle-stall budget exhausted", _selfRestarts[0]);
     }
 
     [Fact]

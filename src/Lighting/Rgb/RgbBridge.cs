@@ -137,6 +137,10 @@ public sealed class RgbBridge : IDisposable
     private long _resumeTicks;
     private int _devicesAtResume;
     private long _selfRestartResumeTicks;
+    private long _selfRestartRefusedResume;
+    private long _heldDiagResume;
+    private int _selfRestartSampling;
+    internal bool SelfRestartSampling => Volatile.Read(ref _selfRestartSampling) != 0;
     /// <summary>Restarts the service; the argument names what triggered it. Null where self-restart is not wired.</summary>
     internal Func<string, bool>? SelfRestart { get; set; }
     /// <summary>Clock for the detection-activity and settle-stall gates, replaceable so tests need no wall-clock waits.</summary>
@@ -1224,7 +1228,8 @@ public sealed class RgbBridge : IDisposable
         var watch = LhmWalkWatch.Shared;
         if (watch.CurrentWalkAge is { } running)
         {
-            return $"lhm walk running {running.TotalSeconds:F0}s, stale={watch.IsStale}";
+            var item = watch.CurrentItem is { } at ? $", inside {at.Item} for {at.Age.TotalSeconds:F0}s" : "";
+            return $"lhm walk running {running.TotalSeconds:F0}s{item}, stale={watch.IsStale}";
         }
         return watch.SinceLastWalk is { } since ? $"lhm last walk {since.TotalSeconds:F0}s ago, stale={watch.IsStale}" : "lhm no walk yet";
     }
@@ -1235,14 +1240,7 @@ public sealed class RgbBridge : IDisposable
     /// </summary>
     internal bool MaybeSelfRestart(string source)
     {
-        var restart = SelfRestart;
-        var resume = Interlocked.Read(ref _resumeTicks);
-        if (restart is null || resume == 0 || NowTicks() - resume > SelfRestartWindow.Ticks)
-        {
-            return false;
-        }
-        var devices = Volatile.Read(ref _devicesAtResume);
-        if (devices <= 0 || !MutexHeldAcrossSamples())
+        if (!SelfRestartPreconditions(out var restart, out var resume, out var devices) || !MutexHeldAcrossSamples(resume))
         {
             return false;
         }
@@ -1253,24 +1251,76 @@ public sealed class RgbBridge : IDisposable
         return restart($"{source}, {devices} devices known before the suspend, smbus mutex=held, {LhmWalkSummary()}");
     }
 
+    private bool SelfRestartPreconditions(out Func<string, bool> restart, out long resume, out int devices)
+    {
+        restart = SelfRestart!;
+        resume = Interlocked.Read(ref _resumeTicks);
+        devices = Volatile.Read(ref _devicesAtResume);
+        return SelfRestart is not null && resume != 0 && NowTicks() - resume <= SelfRestartWindow.Ticks && devices > 0;
+    }
+
+    /// <summary>
+    /// First settle failure with the mutex held: a daemon restart has never released a held mutex, so restart the service now.
+    /// True means a self-restart is being decided and the daemon restart is skipped; sampling that refuses hands the
+    /// resume back to the daemon-restart path.
+    /// </summary>
+    private bool EarlySelfRestart()
+    {
+        if (!SelfRestartPreconditions(out _, out var resume, out _)
+            || Interlocked.Read(ref _selfRestartRefusedResume) == resume
+            || SmbusMutexProbe() != "held")
+        {
+            return false;
+        }
+        if (Interlocked.CompareExchange(ref _selfRestartSampling, 1, 0) != 0)
+        {
+            return true;
+        }
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (!MaybeSelfRestart("settle-stall, mutex held on the first settle check"))
+                {
+                    Interlocked.Exchange(ref _selfRestartRefusedResume, resume);
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _selfRestartSampling, 0);
+            }
+        });
+        return true;
+    }
+
     internal int SelfRestartMutexSamples { get; set; } = 4;
     internal TimeSpan SelfRestartSampleSpacing { get; set; } = TimeSpan.FromMilliseconds(1500);
 
     /// <summary>A monitoring tool can hold the mutex for a moment; only a hold that outlasts every sample justifies a restart.</summary>
-    private bool MutexHeldAcrossSamples()
+    private bool MutexHeldAcrossSamples(long resume)
     {
+        var seen = new List<string>();
+        var heldAll = true;
         for (var i = 0; i < SelfRestartMutexSamples; i++)
         {
             if (i > 0 && SelfRestartSampleSpacing > TimeSpan.Zero)
             {
                 Thread.Sleep(SelfRestartSampleSpacing);
             }
-            if (SmbusMutexProbe() != "held")
+            var state = SmbusMutexProbe();
+            // Only our own LHM walk (and the SPD gate rebuild) can be inside SMBus code in this process, and the mutex is not ownable by name from here.
+            seen.Add(LhmWalkWatch.Shared.CurrentWalkAge is null ? $"{state}+lhm-idle" : $"{state}+lhm-walk");
+            if (state != "held")
             {
-                return false;
+                heldAll = false;
+                break;
             }
         }
-        return true;
+        if (Interlocked.Exchange(ref _heldDiagResume, resume) != resume)
+        {
+            ServiceLog.Info($"[resume] smbus mutex samples after resume: {string.Join(",", seen)}; {LhmWalkSummary()}; holder process is not obtainable in-process");
+        }
+        return heldAll;
     }
 
     private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source));
@@ -1319,6 +1369,10 @@ public sealed class RgbBridge : IDisposable
         if (!SettleStallDue(out var expected, out var sinceSpawn, out var gate))
         {
             return false;
+        }
+        if (EarlySelfRestart())
+        {
+            return true;
         }
         if (!TryClaimWatchdogBounce(NowTicks(), out var gaveUp))
         {
