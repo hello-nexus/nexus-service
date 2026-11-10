@@ -35,7 +35,8 @@ public class LhmComponentIdentifiersTests
     [InlineData(false, true, -100.5f, true)]
     [InlineData(false, true, -99.9f, false)]
     [InlineData(false, true, 41.5f, false)]
-    [InlineData(false, true, null, false)]
+    [InlineData(false, true, null, true)]
+    [InlineData(false, false, null, true)]
     [InlineData(false, false, -100f, false)]
     public void HidePowerMonitorSensor_drops_control_and_absent_probe_only(bool isControl, bool isTemperature, float? value, bool expected)
     {

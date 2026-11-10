@@ -128,7 +128,7 @@ public static class SensorSnapshotResolver
         if (!string.IsNullOrEmpty(sensorId))
         {
             var match = FindById(list, sensorId)
-                ?? FindByName(list, sensorId)
+                ?? (category == "psu" ? FindByNameExcludingPowerMonitor(list, sensorId) : FindByName(list, sensorId))
                 ?? FindByFanHeaderName(list, sensorId, sources.FanHeaderNames);
             if (match is not null)
             {
@@ -178,6 +178,18 @@ public static class SensorSnapshotResolver
         for (var i = 0; i < list.Count; i++)
         {
             if (!LhmComponentIdentifiers.IsPowerMonitor(list[i].Id))
+            {
+                return list[i];
+            }
+        }
+        return null;
+    }
+
+    private static HardwareSensor? FindByNameExcludingPowerMonitor(IReadOnlyList<HardwareSensor> list, string name)
+    {
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (list[i].Name == name && !LhmComponentIdentifiers.IsPowerMonitor(list[i].Id))
             {
                 return list[i];
             }

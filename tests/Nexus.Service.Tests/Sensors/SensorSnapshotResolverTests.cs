@@ -475,6 +475,9 @@ public class SensorSnapshotResolverTests
         Assert.Null(SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", ""));
         Assert.Null(SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", "stale"));
         Assert.Equal(120f, SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", "/gpu-powermonitor/COM3/power/6")!.Value);
+
+        var wireNamed = new StubSensors { Psus = { Component("/gpu-powermonitor/COM3", MakeSensor("/gpu-powermonitor/COM3/power/6", "Total Power", "Power", 120f)) } };
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(wireNamed, "psu", "Total Power"));
     }
 
     [Fact]

@@ -21,15 +21,14 @@ internal static class LhmComponentIdentifiers
     // back out of ISensorProvider.GetStorageComponents.
     private const string SmartStorageIdPrefix = "smart/";
 
-    // LHM's PowerMonitorGroup nodes (WireView Pro II) use the identifier "/gpu-powermonitor/{port}".
     private const string PowerMonitorIdPrefix = "/gpu-powermonitor/";
 
     internal static bool IsPowerMonitor(string identifier) =>
         identifier.StartsWith(PowerMonitorIdPrefix, StringComparison.OrdinalIgnoreCase);
 
-    // The WireView reports an unplugged external probe as -100 C (raw -1000 tenths), and its Control sensor is the fan duty, which Nexus never drives.
+    // No value yet (before the first walk) is hidden so Hold never publishes 0. The WireView reports an unplugged external probe as -100 C (raw -1000 tenths), and its Control sensor is the fan duty, which Nexus never drives.
     internal static bool HidePowerMonitorSensor(bool isControl, bool isTemperature, float? value) =>
-        isControl || (isTemperature && value is <= -100f);
+        isControl || value is null || (isTemperature && value is <= -100f);
 
     internal static bool IsDimmModule(string hardwareIdentifier) =>
         hardwareIdentifier.StartsWith(DimmIdentifierPrefix, StringComparison.Ordinal);

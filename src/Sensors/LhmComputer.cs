@@ -58,7 +58,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
-    private volatile bool _powerMonitorsSeen;
+    private volatile bool _opened;
     private volatile bool _disposed;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
@@ -89,7 +89,6 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // RAM-usage sensors and skips the DIMM path.
         var startup = SpdReadPolicy.Decide(_gate.IsEnabled(SmbusDramHandler.HandlerId), config.Load().ReadRamTemperatures, currentlyActive: false);
         _settingSeen = config.Load().ReadRamTemperatures;
-        _powerMonitorsSeen = config.Load().PowerMonitorsEnabled;
         // The integration-test host builds the real graph; it must never probe
         // the SMBus or open the hardware tree beside the installed service.
         var spdDisabled = !startup.Wanted || _testHost;
@@ -119,8 +118,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             IsNetworkEnabled = true,
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
-            // Probes every serial port for a WireView Pro II, so it is gated by the PowerMonitorsEnabled setting.
-            IsPowerMonitorEnabled = _powerMonitorsSeen,
+            // Opens matching STM32 serial ports to probe for a WireView Pro II.
+            IsPowerMonitorEnabled = config.Load().PowerMonitorsEnabled,
         };
         _openTask = Task.Run(async () =>
         {
@@ -142,6 +141,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 if (!_testHost)
                 {
                     _computer.Open();
+                    _opened = true;
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
                 }
             }
@@ -188,14 +188,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             _settingSeen = setting;
             ScheduleSpdApply();
         }
-        if (snapshot.PowerMonitorsEnabled != _powerMonitorsSeen)
-        {
-            _powerMonitorsSeen = snapshot.PowerMonitorsEnabled;
-            _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
-        }
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
     }
 
-    /// <summary>Adds or removes LHM's power monitor group on the open Computer; adding probes serial ports synchronously, so it runs under the update lock.</summary>
+    /// <summary>Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.</summary>
     private void ApplyPowerMonitors()
     {
         if (_testHost)
@@ -214,7 +210,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 }
                 _computer.IsPowerMonitorEnabled = want;
             }
-            Console.WriteLine($"[lhm] power monitors {(want ? "on" : "off")}");
+            Console.WriteLine(_opened
+                ? $"[lhm] power monitors {(want ? "on" : "off")}"
+                : $"[lhm] power monitors setting stored: {(want ? "on" : "off")}");
         }
         catch (Exception ex)
         {
