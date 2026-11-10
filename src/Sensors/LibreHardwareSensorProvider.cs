@@ -531,6 +531,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
             var value = Hold.Resolve(key, s.Value, now, out var missed);
+            var stale = !missed && (s.Value is not { } raw || !float.IsFinite(raw));
             if (missed && isGpu)
             {
                 var hwKey = hw.Identifier.ToString();
@@ -561,6 +562,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     FormattedMax = LhmDataSensors.Format(max, unit),
                     FormattedMin = LhmDataSensors.Format(min, unit),
                     Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                    Stale = stale,
                 };
             }
             return new HardwareSensor
@@ -576,6 +578,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 FormattedMax = FormatValue(max, s.SensorType),
                 FormattedMin = FormatValue(min, s.SensorType),
                 Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                Stale = stale,
             };
         }).ToList();
     }

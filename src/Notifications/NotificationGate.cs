@@ -59,12 +59,13 @@ public static class NotificationGate
     /// it itself. Never sends: a caller that both reads false and sends would
     /// deliver twice.
     /// </summary>
-    public static bool TryHold(Func<Task> send, out Task held)
+    public static bool TryHold(Func<Task> send, out Task held, bool urgent = false)
     {
         held = Task.CompletedTask;
         lock (Lock)
         {
-            if (Reasons.Count == 0)
+            // An urgent notice outranks a focus mode, but never the onboarding modal that owns focus.
+            if (Reasons.Count == 0 || (urgent && !Reasons.Contains(ReasonOnboarding)))
             {
                 return false;
             }
@@ -75,13 +76,13 @@ public static class NotificationGate
     }
 
     /// <summary>Sync wrapper for callers whose native send is not awaitable.</summary>
-    public static bool TryHold(Action send, out Task held) =>
-        TryHold(() => { send(); return Task.CompletedTask; }, out held);
+    public static bool TryHold(Action send, out Task held, bool urgent = false) =>
+        TryHold(() => { send(); return Task.CompletedTask; }, out held, urgent);
 
     /// <summary>Sends now, or queues for release while any reason is held.</summary>
-    public static void SendOrHold(Action send)
+    public static void SendOrHold(Action send, bool urgent = false)
     {
-        if (!TryHold(send, out _)) send();
+        if (!TryHold(send, out _, urgent)) send();
     }
 
     /// <summary>Clears one reason and, once none remain, flushes anything held, oldest first.</summary>

@@ -491,6 +491,16 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.SmartHealthMonitor>());
 
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsHealthModel>();
+        services.AddSingleton(sp =>
+        {
+            var engine = new Nexus.Service.Diagnostics.Alerts.SensorAlertEngine(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>());
+            // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
+            engine.NoticeSink = (notice, ignoreMaster) => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().Raise(notice, ignoreMaster);
+            return engine;
+        });
+        services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());
 

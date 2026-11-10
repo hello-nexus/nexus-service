@@ -58,6 +58,8 @@ public static class DiagnosticsHealthRoutes
 
     public static void MapDiagnosticsHealthEndpoints(this WebApplication app)
     {
+        app.MapDiagnosticsAlertEndpoints();
+
         app.MapGet("/diagnostics/health", (string? refresh, DiagnosticsHealthModel model, FeatureGates gates) =>
             gates.Diagnostics
                 ? model.BuildHealth(IsRefresh(refresh))

@@ -131,6 +131,18 @@ public static class PanelTopics
         _ = hub.BroadcastTopicAsync(SystemCase, env);
     }
 
+    /// <summary>Sensor threshold alert states, carried inline; sent on state transitions and rule changes only, never per evaluation tick.</summary>
+    public const string SensorAlerts = "diagnostics/alerts";
+
+    public static void BroadcastSensorAlerts(MultiplexHub hub, System.Collections.Generic.List<Diagnostics.Alerts.SensorAlertState> states)
+    {
+        if (!hub.TopicHasSubscribers(SensorAlerts))
+            return;
+        var frame = new Diagnostics.Alerts.SensorAlertsFrame { States = states };
+        var env = WsEnvelope.Build(SensorAlerts, frame, AppJsonContext.Default.SensorAlertsFrame);
+        _ = hub.BroadcastTopicAsync(SensorAlerts, env);
+    }
+
     public static void BroadcastCloudAccounts(MultiplexHub hub)
     {
         if (!hub.TopicHasSubscribers(CloudAccounts))

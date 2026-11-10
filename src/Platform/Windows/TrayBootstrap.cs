@@ -187,7 +187,7 @@ internal static class TrayBootstrap
         var diagAlerts = app.Services.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         diagAlerts.AlertNeedsAttention += notice =>
         {
-            try { Nexus.Service.Notifications.NotificationGate.SendOrHold(() => TrayIcon.ShowNoticeBalloon(notice.Title, notice.Text, null, Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind))); }
+            try { Nexus.Service.Notifications.NotificationGate.SendOrHold(() => TrayIcon.ShowNoticeBalloon(notice.Title, notice.Text, null, Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind)), notice.Urgent); }
             catch { /* best-effort */ }
         };
     }

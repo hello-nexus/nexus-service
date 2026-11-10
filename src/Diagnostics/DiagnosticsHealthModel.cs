@@ -73,6 +73,7 @@ public sealed class DiagnosticsHealthModel
     private readonly ISensorProvider _sensors;
     private readonly IMetricsHistoryStore _tempStore;
     private readonly IConfigStore _store;
+    private readonly Alerts.SensorAlertEngine? _alerts;
 
     private readonly object _gate = new();
     private DiagnosticsHealthResponse? _cached;
@@ -93,8 +94,10 @@ public sealed class DiagnosticsHealthModel
         PnpProblemScanner pnp,
         ISensorProvider sensors,
         IMetricsHistoryStore tempStore,
-        IConfigStore store)
+        IConfigStore store,
+        Alerts.SensorAlertEngine? alerts = null)
     {
+        _alerts = alerts;
         _smart = smart;
         _cooling = cooling;
         _gpu = gpu;
@@ -172,7 +175,30 @@ public sealed class DiagnosticsHealthModel
     public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
 #endif
 
+    /// <summary>The cached module health plus the live sensor alert components. The alerts sit outside the 30 s cache so a raise or acknowledge shows on the next read.</summary>
     private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
+    {
+        var health = BuildCachedHealth(forceRefresh);
+        if (_alerts is null)
+        {
+            return health;
+        }
+        var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+        var extra = _alerts.HealthComponents().Where(c => !ignored.Contains(c.Id, StringComparer.Ordinal)).ToList();
+        if (extra.Count == 0)
+        {
+            return health;
+        }
+        var components = health.Components.Concat(extra).ToList();
+        return health with
+        {
+            Supported = true,
+            Components = components,
+            Overall = WorstStatus(components.Select(c => c.Status)),
+        };
+    }
+
+    private DiagnosticsHealthResponse BuildCachedHealth(bool forceRefresh)
     {
         lock (_gate)
         {

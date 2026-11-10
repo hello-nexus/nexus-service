@@ -14,8 +14,8 @@ namespace Nexus.Service.Diagnostics;
 /// needs attention. Consumed the same way as
 /// <see cref="Nexus.Service.Transfer.TransferAttentionNotice"/>: platform
 /// bootstraps subscribe and surface a tray balloon / native banner.</summary>
-/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to.</summary>
-public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null);
+/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to. Urgent notices pass a focus-mode hold in <see cref="Nexus.Service.Notifications.NotificationGate"/> and wait only for onboarding.</summary>
+public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null, bool Urgent = false);
 
 /// <summary>
 /// Polls <see cref="DiagnosticsHealthModel"/> every 5 minutes (first check 2
@@ -204,6 +204,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         "system" => "/system/diagnostics/system",
         // GPU throttling is reported on the cooling tab.
         "cooling" or "gpu" or "thermalGuard" => "/system/diagnostics/cooling",
+        "sensorAlert" => "/system/diagnostics/settings",
         "astral" or "astralCountdown" => "/system/device/curated-asus-astral",
         _ => null,
     };
