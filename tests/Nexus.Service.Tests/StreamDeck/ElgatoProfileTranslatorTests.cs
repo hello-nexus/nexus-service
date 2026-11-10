@@ -240,7 +240,6 @@ public sealed class ElgatoProfileTranslatorTests : IDisposable
     [InlineData("/intelcpu/0", "cpu")]
     [InlineData("/gpu-nvidia/0", "gpu")]
     [InlineData("/GPU/nvidia/0", "gpu")]
-    [InlineData("/gpu-powermonitor/COM3", "psu")]
     [InlineData("/ram/0", "memory")]
     [InlineData("/nvme/0", "storage")]
     [InlineData("/hdd/0", "storage")]
@@ -260,6 +259,15 @@ public sealed class ElgatoProfileTranslatorTests : IDisposable
         Assert.Equal("", slot.Action.Sensor);
         Assert.Equal("line", slot.Action.Style);
         Assert.Contains(report.Unmapped, e => e.Reason == "monitoringSensor");
+    }
+
+    [Fact]
+    public void Translate_Lhm_PowerMonitorUidIsStoredAsSensorId()
+    {
+        var (config, _) = TranslateSingleLhmSlot(new { sensorUid = "/gpu-powermonitor/COM3", min = 10, max = 90 });
+        var slot = config.Pages[0].Slots[0];
+        Assert.Equal("psu", slot.Action!.Category);
+        Assert.Equal("/gpu-powermonitor/COM3", slot.Action.Sensor);
     }
 
     /// <summary>
