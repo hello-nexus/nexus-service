@@ -127,6 +127,26 @@ public class Np50LegacyDutyTests
     }
 
     [Fact]
+    public void Reassert_waits_for_a_later_tick_after_a_mode_frame()
+    {
+        var (hub, t) = NewHub();
+        var now = 1_000_000L;
+        hub.Clock = () => now;
+        var provider = new Np50CoolingProvider(hub);
+        provider.SetFanSpeed(LegacyId, 42);
+        hub.State.HubInfo.CoolingMode = "Software";
+        now += 60_000;
+        hub.SetCoolingMode(Np50Protocol.ModeSoftware);
+        t.Clear();
+
+        Assert.False(hub.ReassertLegacyDutyIfDue());
+        Assert.Empty(t.Snapshot());
+
+        now += 1_000;
+        Assert.True(hub.ReassertLegacyDutyIfDue());
+    }
+
+    [Fact]
     public void Heartbeat_does_not_reassert_after_the_fan_is_released()
     {
         var (hub, t) = NewHub();

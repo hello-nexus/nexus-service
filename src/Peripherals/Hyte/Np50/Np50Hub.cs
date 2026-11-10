@@ -178,8 +178,8 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         {
             try { _transport?.Dispose(); } catch { /* best effort */ }
             _transport = null;
-            // The reported mode is stale once the port is gone; the default makes
-            // the first legacy write after reconnect send the mode frame.
+            // The reported mode is stale once the port is gone; resetting it
+            // ensures a stale "Software" never suppresses a mode resend after reconnect.
             State.HubInfo.CoolingMode = "Motherboard";
         }
     }
@@ -269,6 +269,7 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     // ── Writes ──
 
     private const long ModeResendMinMs = 2_000;
+    private const long ModeSettleMs = 1_000;
     private long _lastModeSendMs = long.MinValue / 2;
 
     /// <summary>
@@ -344,6 +345,8 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
             if (State.HubInfo.CoolingMode is not ("Software" or "Unknown")) return false;
             var nowMs = Clock();
             if (nowMs - _lastLegacyDutyMs < LegacyDutyReassertMs) return false;
+            // A mode frame just went out; the duty follows on a later tick, not back to back.
+            if (nowMs - Volatile.Read(ref _lastModeSendMs) < ModeSettleMs) return false;
             _lastLegacyDutyMs = nowMs;
             return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(duty));
         }
