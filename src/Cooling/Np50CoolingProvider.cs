@@ -323,7 +323,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         var isLegacy = channelId.EndsWith(":legacy", StringComparison.Ordinal);
         var modeSent = !isLegacy
             || _hub.DesiredCoolingMode != Np50Protocol.ModeSoftware
-            || _hub.State.HubInfo.CoolingMode != "Software";
+            || _hub.SoftwareModeResendDue();
         if (modeSent)
         {
             _hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
