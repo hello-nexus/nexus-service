@@ -139,6 +139,7 @@ public sealed class RgbBridge : IDisposable
     private long _selfRestartResumeTicks;
     private long _selfRestartRefusedResume;
     private long _heldDiagResume;
+    private long _quiesceProbeResume;
     private int _selfRestartSampling;
     internal bool SelfRestartSampling => Volatile.Read(ref _selfRestartSampling) != 0;
     /// <summary>Restarts the service; the argument names what triggered it. Null where self-restart is not wired.</summary>
@@ -1348,7 +1349,7 @@ public sealed class RgbBridge : IDisposable
             }
         }
         var decided = heldAll && counted >= (idleOnly ? SelfRestartMinCounted : SelfRestartMutexSamples);
-        if (decided)
+        if (decided && Interlocked.Exchange(ref _quiesceProbeResume, resume) != resume)
         {
             ProbeHolderByQuiesce();
         }
@@ -1371,8 +1372,14 @@ public sealed class RgbBridge : IDisposable
             waited += step;
         }
         var state = SmbusMutexProbe();
-        ServiceLog.Info($"[resume] smbus mutex after pausing our DIMM reads: {state}; holder is {(state == "held" ? "not our DIMM reads" : "our DIMM reads or a transient")}");
+        var stuck = WalkWatch.InSmbusItem() ? WalkWatch.CurrentItem : null;
+        HolderProbeResult = stuck is { } at
+            ? $"{state}; inconclusive, the walk was still inside {at.Item} after {waited.TotalSeconds:F1}s"
+            : $"{state}; holder is {(state == "held" ? "not our DIMM reads" : "our DIMM reads or a transient")}";
+        ServiceLog.Info($"[resume] smbus mutex after pausing our DIMM reads: {HolderProbeResult}");
     }
+
+    internal string? HolderProbeResult { get; private set; }
 
     internal TimeSpan SelfRestartQuiesceWait { get; set; } = TimeSpan.FromSeconds(3);
 

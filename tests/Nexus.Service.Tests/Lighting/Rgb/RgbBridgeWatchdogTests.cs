@@ -913,4 +913,62 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         Assert.False(_bridge.MaybeSelfRestart("budget exhausted", idleOnly: false));
     }
+
+    [Fact]
+    public async Task A_quiesce_wait_that_times_out_inside_a_memory_item_is_reported_inconclusive()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n == 1)
+            {
+                watch.BeginWalk();
+                watch.SetItem("/memory/dimm/2");
+            }
+            return "held";
+        });
+        _bridge.SelfRestartQuiesceWait = TimeSpan.FromMilliseconds(300);
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+
+        Assert.Contains("inconclusive", _bridge.HolderProbeResult);
+        Assert.Contains("/memory/dimm/2", _bridge.HolderProbeResult);
+        Assert.DoesNotContain("not our DIMM reads", _bridge.HolderProbeResult);
+    }
+
+    [Fact]
+    public async Task A_held_mutex_after_the_walk_left_its_memory_item_is_reported_as_not_our_dimm_reads()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n == 1)
+            {
+                watch.BeginWalk();
+                watch.SetItem("/memory/dimm/2");
+            }
+            return "held";
+        });
+        _bridge.SelfRestartQuiesceWait = TimeSpan.FromSeconds(5);
+        var watch = _bridge.WalkWatch;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            watch.EndWalk();
+        });
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+
+        Assert.Contains("not our DIMM reads", _bridge.HolderProbeResult);
+    }
+
+    [Fact]
+    public async Task The_quiesce_probe_runs_once_per_resume()
+    {
+        await ResumedWithWatchAsync((n, watch) => "held");
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+        var probesAfterFirst = _probeCalls();
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+
+        Assert.Equal(probesAfterFirst + _bridge.SelfRestartMutexSamples, _probeCalls());
+    }
 }
