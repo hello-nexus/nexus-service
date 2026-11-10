@@ -100,6 +100,9 @@ public sealed class TlLcdScreens : IFanLcdScreens, IDisposable
 
     public int PanelFps => JpegPanelModel.TlLcd.Fps;
 
+    /// <summary>The wired Uni Fan TL screens play video at up to 30 frames a second, L-Connect's TL LCD video rate.</summary>
+    public int MaxFps(string serial) => 30;
+
     public string PanelName(string serial) =>
         _panels.ByKey(serial) is { } screen
             ? TlLcdPanels.DisplayNameFor(screen.Handshake.Identity)
