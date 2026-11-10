@@ -1,6 +1,7 @@
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Rgb;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Tests.Lighting.Rgb;
 
@@ -513,6 +514,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     private void WireSelfRestart(string mutex = "held")
     {
         _bridge.SmbusMutexProbe = () => mutex;
+        _bridge.WalkWatch = new LhmWalkWatch(() => 10_000);
         _bridge.SelfRestartSampleSpacing = TimeSpan.Zero;
         _bridge.SelfRestart = context =>
         {
@@ -721,5 +723,117 @@ public class RgbBridgeWatchdogTests : IDisposable
         _bridge.SmbusMutexProbe = () => "held";
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
+    }
+
+    private async Task ResumedWithWatchAsync(Func<int, LhmWalkWatch, string> probe)
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        WireSelfRestart();
+        await ResumeAndWaitForBounceAsync(1);
+        var watch = _bridge.WalkWatch;
+        var calls = 0;
+        _bridge.SmbusMutexProbe = () => probe(++calls, watch);
+        _probeCalls = () => Volatile.Read(ref calls);
+    }
+
+    private Func<int> _probeCalls = () => 0;
+
+    [Fact]
+    public async Task Samples_that_all_overlap_our_own_walk_never_restart_the_service()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            watch.BeginWalk();
+            watch.SetItem("/memory/dimm/1");
+            return "held";
+        });
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+        Assert.Equal(_bridge.SelfRestartMaxSamples, _probeCalls());
+    }
+
+    [Fact]
+    public async Task A_free_reading_taken_while_our_walk_ran_is_ignored()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n == 1)
+            {
+                watch.BeginWalk();
+                watch.SetItem("spd-gate");
+                return "free";
+            }
+            watch.EndWalk();
+            return "held";
+        });
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+    }
+
+    [Fact]
+    public async Task Sampling_extends_past_overlapped_samples_and_two_idle_held_samples_suffice()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n <= 4)
+            {
+                watch.BeginWalk();
+                watch.SetItem("/memory/dimm/0");
+            }
+            else
+            {
+                watch.EndWalk();
+            }
+            return "held";
+        });
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+        Assert.Equal(7, _probeCalls());
+    }
+
+    [Fact]
+    public async Task A_single_idle_held_sample_is_not_enough()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n < 6)
+            {
+                watch.BeginWalk();
+                watch.SetItem("/memory/dimm/0");
+            }
+            else
+            {
+                watch.EndWalk();
+            }
+            return "held";
+        });
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task A_free_idle_sample_among_held_ones_means_no_restart()
+    {
+        await ResumedWithWatchAsync((n, watch) => n == 3 ? "free" : "held");
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task A_walk_inside_a_non_memory_item_does_not_count_as_overlap()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            watch.BeginWalk();
+            watch.SetItem("/intelcpu/0");
+            return "held";
+        });
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+        Assert.Equal(_bridge.SelfRestartMutexSamples, _probeCalls());
     }
 }
