@@ -29,6 +29,7 @@ public class Np50LegacyDutyTests
         var provider = new Np50CoolingProvider(hub);
 
         provider.SetFanSpeed(LegacyId, 30);
+        hub.State.HubInfo.CoolingMode = "Software";
         provider.SetFanSpeed(LegacyId, 60);
         provider.SetFanSpeed(LegacyId, 10);
 
@@ -38,23 +39,62 @@ public class Np50LegacyDutyTests
     }
 
     [Fact]
+    public void Legacy_write_resends_the_mode_frame_when_the_hub_does_not_report_software()
+    {
+        var (hub, t) = NewHub();
+        var provider = new Np50CoolingProvider(hub);
+        provider.SetFanSpeed(LegacyId, 30);
+
+        provider.SetFanSpeed(LegacyId, 60);
+
+        Assert.Equal(2, t.Snapshot().Count(IsModeFrame));
+    }
+
+    [Theory]
+    [InlineData(Np50Protocol.ModeMotherboard)]
+    [InlineData(Np50Protocol.ModeStatic)]
+    public void Leaving_software_mode_drops_the_held_duty(byte mode)
+    {
+        var (hub, t) = NewHub();
+        var provider = new Np50CoolingProvider(hub);
+        provider.SetFanSpeed(LegacyId, 30);
+        hub.SetDesiredCoolingMode(mode);
+        hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
+        hub.State.HubInfo.CoolingMode = "Software";
+        t.Clear();
+        var clock = 0L;
+        hub.Clock = () => clock += 60_000;
+
+        Assert.False(hub.ReassertLegacyDutyIfDue());
+        Assert.Empty(t.Snapshot());
+    }
+
+    [Fact]
     public void Heartbeat_reasserts_the_held_legacy_duty_only_when_due_and_in_software_mode()
     {
         var (hub, t) = NewHub();
         var provider = new Np50CoolingProvider(hub);
         provider.SetFanSpeed(LegacyId, 42);
         t.Clear();
+        var now = 1_000_000L;
+        hub.Clock = () => now;
+        hub.SetLegacyFanSpeed(42);
+        t.Clear();
 
         // Hub not yet reporting Software: nothing to re-assert.
         hub.State.HubInfo.CoolingMode = "Motherboard";
-        Assert.False(hub.ReassertLegacyDutyIfDue(Environment.TickCount64 + 60_000));
+        now += 60_000;
+        Assert.False(hub.ReassertLegacyDutyIfDue());
         Assert.Empty(t.Snapshot());
 
         hub.State.HubInfo.CoolingMode = "Software";
-        Assert.False(hub.ReassertLegacyDutyIfDue(Environment.TickCount64));
-        var later = Environment.TickCount64 + 60_000;
-        Assert.True(hub.ReassertLegacyDutyIfDue(later));
-        Assert.False(hub.ReassertLegacyDutyIfDue(later + 1));
+        hub.SetLegacyFanSpeed(42);
+        t.Clear();
+        now += 2_999;
+        Assert.False(hub.ReassertLegacyDutyIfDue());
+        now += 1;
+        Assert.True(hub.ReassertLegacyDutyIfDue());
+        Assert.False(hub.ReassertLegacyDutyIfDue());
 
         var frame = Assert.Single(t.Snapshot());
         Assert.True(IsLegacyDuty(frame));
@@ -71,7 +111,9 @@ public class Np50LegacyDutyTests
         t.Clear();
         hub.State.HubInfo.CoolingMode = "Software";
 
-        Assert.False(hub.ReassertLegacyDutyIfDue(Environment.TickCount64 + 60_000));
+        hub.Clock = () => long.MaxValue / 2;
+
+        Assert.False(hub.ReassertLegacyDutyIfDue());
         Assert.Empty(t.Snapshot());
     }
 
@@ -85,7 +127,7 @@ public class Np50LegacyDutyTests
         var provider = new Np50CoolingProvider(hub);
         provider.SetFanSpeed(LegacyId, 55);
         t.Clear();
-        Thread.Sleep(3_100);
+        hub.Clock = () => long.MaxValue / 2;
 
         worker.Tick();
 
@@ -104,9 +146,14 @@ public class Np50LegacyDutyTests
         Assert.True(inRead.Wait(TimeSpan.FromSeconds(5)));
         t.Clear();
 
-        var write = Task.Run(() => hub.SetLegacyFanSpeed(20));
-        await Task.Delay(150);
-        Assert.False(write.IsCompleted);
+        var started = new ManualResetEventSlim();
+        var write = Task.Run(() =>
+        {
+            started.Set();
+            return hub.SetLegacyFanSpeed(20);
+        });
+        Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
+        Assert.False(write.Wait(100));
         Assert.Empty(t.Snapshot());
 
         release.Set();

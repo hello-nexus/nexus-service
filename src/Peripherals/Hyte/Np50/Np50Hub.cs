@@ -77,6 +77,8 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     public void SetDesiredCoolingMode(byte? mode, byte? staticSpeedPercent = null)
     {
         DesiredCoolingMode = mode;
+        // Leaving software control: a held legacy duty must not be re-sent.
+        if (mode != Np50Protocol.ModeSoftware) ClearDesiredLegacyDuty();
         if (staticSpeedPercent is byte sp)
         {
             DesiredStaticSpeedPercent = (byte)Math.Clamp((int)sp, 0, 100);
@@ -285,35 +287,46 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     private long _lastLegacyDutyMs;
     private const long LegacyDutyReassertMs = 3_000;
 
-    /// <summary>Last requested legacy 4-pin duty, or null when none is being held.</summary>
-    public int? DesiredLegacyDutyPercent => _desiredLegacyDuty;
+    internal Func<long> Clock { get; set; } = static () => Environment.TickCount64;
 
     public bool SetLegacyFanSpeed(int percent)
     {
         // Spec: hub must be in software mode for the legacy 4-pin write to take.
         // Don't re-send mode every call; assume the heartbeat / curve engine
         // owns mode state. Callers that need a mode change call SetCoolingMode first.
-        _desiredLegacyDuty = Math.Clamp(percent, 0, 100);
-        _lastLegacyDutyMs = Environment.TickCount64;
-        return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(percent));
+        // Record and write under the exchange lock so a heartbeat re-assert can
+        // never send an older duty after this one.
+        lock (_exchangeLock)
+        {
+            _desiredLegacyDuty = Math.Clamp(percent, 0, 100);
+            _lastLegacyDutyMs = Clock();
+            return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(percent));
+        }
     }
 
     /// <summary>Stop holding the legacy duty (fan handed back to firmware).</summary>
-    public void ClearDesiredLegacyDuty() => _desiredLegacyDuty = null;
+    public void ClearDesiredLegacyDuty()
+    {
+        lock (_exchangeLock) _desiredLegacyDuty = null;
+    }
 
     /// <summary>
     /// Re-send the held legacy duty at most every few seconds, only while the
     /// hub reports Software mode and software control is the desired mode.
     /// Returns true when a frame was sent.
     /// </summary>
-    public bool ReassertLegacyDutyIfDue(long nowMs)
+    public bool ReassertLegacyDutyIfDue()
     {
-        if (_desiredLegacyDuty is not int duty) return false;
-        if (DesiredCoolingMode != Np50Protocol.ModeSoftware) return false;
-        if (State.HubInfo.CoolingMode != "Software") return false;
-        if (nowMs - _lastLegacyDutyMs < LegacyDutyReassertMs) return false;
-        _lastLegacyDutyMs = nowMs;
-        return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(duty));
+        lock (_exchangeLock)
+        {
+            if (_desiredLegacyDuty is not int duty) return false;
+            if (DesiredCoolingMode != Np50Protocol.ModeSoftware) return false;
+            if (State.HubInfo.CoolingMode != "Software") return false;
+            var nowMs = Clock();
+            if (nowMs - _lastLegacyDutyMs < LegacyDutyReassertMs) return false;
+            _lastLegacyDutyMs = nowMs;
+            return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(duty));
+        }
     }
 
     public bool SetPortFanSpeeds(int port, IReadOnlyList<int> perFanPercent)

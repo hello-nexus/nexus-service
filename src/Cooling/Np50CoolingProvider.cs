@@ -304,6 +304,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
             // the fan in its hub-pinned state (BIOS / Static) instead of
             // sticking on "Manual".
             _softwareControlled.Remove(channelId);
+            _hub.ClearDesiredLegacyDuty();
             return;
         }
 
@@ -320,7 +321,9 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // a full mode frame ahead of every duty write made the hub drop the
         // duty, and the heartbeat already repairs mode drift.
         var isLegacy = channelId.EndsWith(":legacy", StringComparison.Ordinal);
-        var modeSent = !isLegacy || _hub.DesiredCoolingMode != Np50Protocol.ModeSoftware;
+        var modeSent = !isLegacy
+            || _hub.DesiredCoolingMode != Np50Protocol.ModeSoftware
+            || _hub.State.HubInfo.CoolingMode != "Software";
         if (modeSent)
         {
             _hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
