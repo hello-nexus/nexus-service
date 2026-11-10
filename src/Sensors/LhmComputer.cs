@@ -232,6 +232,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     return;
                 }
                 _walkWatch.BeginWalk();
+                _walkWatch.SetItem("spd-gate");
                 try
                 {
                     // Page reset runs while the real driver is still seated.
@@ -457,6 +458,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
         try
         {
+            _walkWatch.SetItem(hw.Identifier.ToString());
             hw.Update();
         }
         catch (Exception ex)

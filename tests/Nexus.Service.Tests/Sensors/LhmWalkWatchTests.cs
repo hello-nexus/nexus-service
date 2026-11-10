@@ -205,4 +205,20 @@ public class LhmWalkWatchTests
         Assert.True(LhmWalkWatch.TryRunWhenIdle(new object(), TimeSpan.FromMilliseconds(50), () => ran = true));
         Assert.True(ran);
     }
+
+    [Fact]
+    public void The_current_item_is_reported_while_a_walk_runs_and_cleared_when_it_ends()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.SetItem("/memory/dimm/1");
+        Advance(TimeSpan.FromSeconds(3));
+
+        var at = watch.CurrentItem;
+        Assert.Equal("/memory/dimm/1", at!.Value.Item);
+        Assert.Equal(TimeSpan.FromSeconds(3), at.Value.Age);
+
+        watch.EndWalk();
+        Assert.Null(watch.CurrentItem);
+    }
 }

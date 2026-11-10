@@ -88,6 +88,27 @@ internal sealed class LhmWalkWatch
         }
     }
 
+    private string? _item;
+    private long _itemStartMs;
+
+    /// <summary>Names the hardware item the walk is inside; diagnostics only, it says which of our threads is in SMBus or driver code.</summary>
+    internal void SetItem(string? item)
+    {
+        Interlocked.Exchange(ref _itemStartMs, item is null ? 0 : Math.Max(1, _nowMs()));
+        Volatile.Write(ref _item, item);
+    }
+
+    /// <summary>The item the running walk is inside and how long it has been there, or null.</summary>
+    internal (string Item, TimeSpan Age)? CurrentItem
+    {
+        get
+        {
+            var item = Volatile.Read(ref _item);
+            var start = Interlocked.Read(ref _itemStartMs);
+            return item is null || start == 0 ? null : (item, TimeSpan.FromMilliseconds(_nowMs() - start));
+        }
+    }
+
     internal void BeginWalk()
     {
         lock (_transition)
@@ -101,6 +122,7 @@ internal sealed class LhmWalkWatch
     {
         lock (_transition)
         {
+            Volatile.Write(ref _item, null);
             Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
             Interlocked.Exchange(ref _walkStartMs, 0);
             return Interlocked.Exchange(ref _stale, 0) != 0;
