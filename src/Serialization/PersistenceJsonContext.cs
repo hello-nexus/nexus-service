@@ -148,6 +148,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, List<Nexus.Service.Lighting.Mappings.MappingGroup>>))]
 [JsonSerializable(typeof(LianLiLightingSettings))]
 [JsonSerializable(typeof(StrimerLightingSettings))]
+[JsonSerializable(typeof(StrimerTargetLook))]
 [JsonSerializable(typeof(NollieSettings))]
 [JsonSerializable(typeof(NollieStandaloneSettings))]
 [JsonSerializable(typeof(Dictionary<string, NollieStandaloneSettings>))]

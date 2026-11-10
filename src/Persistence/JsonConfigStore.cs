@@ -137,6 +137,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         // Pre-pin per-device locks and fan locks fold into pins before
         // anything reads the document; a no-op once migrated.
         var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
+        // Keyed on the file's own content rather than the schema version, so it runs once on any build.
+        if (Nexus.Service.Lighting.StrimerEffectsMigration.Apply(_cached, json))
+        {
+            pinsMigrated = true;
+        }
         // A file with no schemaVersion key deserializes to the current
         // version and would skip Migrate(), yet it is not a fresh install.
         if (!HasTopLevelSchemaVersion(json))
