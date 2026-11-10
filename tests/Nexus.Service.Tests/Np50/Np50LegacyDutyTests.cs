@@ -39,15 +39,40 @@ public class Np50LegacyDutyTests
     }
 
     [Fact]
-    public void Legacy_write_resends_the_mode_frame_when_the_hub_does_not_report_software()
+    public void Legacy_write_resends_the_mode_frame_at_most_every_couple_of_seconds_while_the_hub_reports_another_mode()
     {
         var (hub, t) = NewHub();
+        var now = 1_000_000L;
+        hub.Clock = () => now;
         var provider = new Np50CoolingProvider(hub);
         provider.SetFanSpeed(LegacyId, 30);
 
+        now += 500;
         provider.SetFanSpeed(LegacyId, 60);
+        Assert.Equal(1, t.Snapshot().Count(IsModeFrame));
 
+        now += 2_000;
+        provider.SetFanSpeed(LegacyId, 70);
         Assert.Equal(2, t.Snapshot().Count(IsModeFrame));
+    }
+
+    [Fact]
+    public void Unknown_reported_mode_never_triggers_a_resend_and_still_allows_the_reassert()
+    {
+        var (hub, t) = NewHub();
+        var now = 1_000_000L;
+        hub.Clock = () => now;
+        var provider = new Np50CoolingProvider(hub);
+        provider.SetFanSpeed(LegacyId, 30);
+        hub.State.HubInfo.CoolingMode = "Unknown";
+        t.Clear();
+
+        now += 60_000;
+        provider.SetFanSpeed(LegacyId, 40);
+        Assert.Empty(t.Snapshot().Where(IsModeFrame));
+
+        now += 60_000;
+        Assert.True(hub.ReassertLegacyDutyIfDue());
     }
 
     [Theory]
@@ -56,14 +81,14 @@ public class Np50LegacyDutyTests
     public void Leaving_software_mode_drops_the_held_duty(byte mode)
     {
         var (hub, t) = NewHub();
+        var clock = 0L;
+        hub.Clock = () => clock += 60_000;
         var provider = new Np50CoolingProvider(hub);
         provider.SetFanSpeed(LegacyId, 30);
         hub.SetDesiredCoolingMode(mode);
         hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
         hub.State.HubInfo.CoolingMode = "Software";
         t.Clear();
-        var clock = 0L;
-        hub.Clock = () => clock += 60_000;
 
         Assert.False(hub.ReassertLegacyDutyIfDue());
         Assert.Empty(t.Snapshot());

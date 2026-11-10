@@ -178,6 +178,9 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         {
             try { _transport?.Dispose(); } catch { /* best effort */ }
             _transport = null;
+            // The reported mode is stale once the port is gone; the default makes
+            // the first legacy write after reconnect send the mode frame.
+            State.HubInfo.CoolingMode = "Motherboard";
         }
     }
 
@@ -265,8 +268,25 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
 
     // ── Writes ──
 
+    private const long ModeResendMinMs = 2_000;
+    private long _lastModeSendMs = long.MinValue / 2;
+
+    /// <summary>
+    /// True when the hub reports a known non-Software mode and no mode frame
+    /// (from any sender) went out in the last couple of seconds. "Unknown" is
+    /// no information and never asks for a resend; the spacing keeps a hub that
+    /// ignores the switch from getting a mode frame in front of every duty.
+    /// </summary>
+    public bool SoftwareModeResendDue()
+    {
+        var reported = State.HubInfo.CoolingMode;
+        if (reported == "Software" || reported == "Unknown") return false;
+        return Clock() - Volatile.Read(ref _lastModeSendMs) >= ModeResendMinMs;
+    }
+
     public bool SetCoolingMode(byte mode)
     {
+        Volatile.Write(ref _lastModeSendMs, Clock());
         // v2 mode-switch wants every parameter filled - pass through the
         // current firmware-animation state so changing cooling mode doesn't
         // accidentally clobber the user's LED setup.
@@ -321,7 +341,7 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         {
             if (_desiredLegacyDuty is not int duty) return false;
             if (DesiredCoolingMode != Np50Protocol.ModeSoftware) return false;
-            if (State.HubInfo.CoolingMode != "Software") return false;
+            if (State.HubInfo.CoolingMode is not ("Software" or "Unknown")) return false;
             var nowMs = Clock();
             if (nowMs - _lastLegacyDutyMs < LegacyDutyReassertMs) return false;
             _lastLegacyDutyMs = nowMs;
