@@ -747,6 +747,10 @@ public sealed class ElgatoProfileTranslator
         {
             return "cpu";
         }
+        if (sensorUid.StartsWith("/gpu-powermonitor/", StringComparison.OrdinalIgnoreCase))
+        {
+            return "psu";
+        }
         if (sensorUid.StartsWith("/gpu", StringComparison.OrdinalIgnoreCase))
         {
             return "gpu";

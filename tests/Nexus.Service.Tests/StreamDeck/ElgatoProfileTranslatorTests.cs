@@ -240,6 +240,7 @@ public sealed class ElgatoProfileTranslatorTests : IDisposable
     [InlineData("/intelcpu/0", "cpu")]
     [InlineData("/gpu-nvidia/0", "gpu")]
     [InlineData("/GPU/nvidia/0", "gpu")]
+    [InlineData("/gpu-powermonitor/COM3", "psu")]
     [InlineData("/ram/0", "memory")]
     [InlineData("/nvme/0", "storage")]
     [InlineData("/hdd/0", "storage")]

@@ -522,7 +522,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
         var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
-        return hw.Sensors.Select(s =>
+        var isPowerMonitor = hw.HardwareType == HardwareType.PowerMonitor;
+        return hw.Sensors
+            .Where(s => !isPowerMonitor || !LhmComponentIdentifiers.HidePowerMonitorSensor(
+                s.SensorType == SensorType.Control, s.SensorType == SensorType.Temperature, s.Value))
+            .Select(s =>
         {
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
