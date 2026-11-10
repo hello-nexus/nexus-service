@@ -45,6 +45,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     // Pending duty for the legacy 4-pin channel. Tracked separately because
     // it uses a different protocol command.
     private int _pendingLegacyDuty;
+    private int _lastLoggedLegacyDuty = -1;
 
     // Channels under user-set software control. Used to surface Mode="Manual"
     // back to the panel - without it the panel snaps a freshly Manual-clicked
@@ -192,6 +193,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // actively driven.
         if (!channelId.StartsWith("np50:", StringComparison.Ordinal)) return;
         _softwareControlled.Remove(channelId);
+        if (channelId.EndsWith(":legacy", StringComparison.Ordinal)) _hub.ClearDesiredLegacyDuty();
         if (!_hub.IsConnected) return;
         if (_softwareControlled.Count == 0)
         {
@@ -212,6 +214,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     // EEPROM read fails does it fall back to plain motherboard PWM.
     private void HandBack()
     {
+        _hub.ClearDesiredLegacyDuty();
         if (_hub.ApplyFirmwareStandaloneMode()) return;
         _hub.SetDesiredCoolingMode(Np50Protocol.ModeMotherboard);
     }
@@ -311,16 +314,28 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         _softwareControlled.Add(channelId);
 
         // Latch desired mode to Software so the heartbeat re-asserts it on
-        // every tick (firmware 2.0.3.1 occasionally needs the mode-switch
-        // command repeated to actually flip). SetDesiredCoolingMode also
-        // sends the first attempt immediately, so the next duty write often
-        // lands while the hub is already in Software mode.
-        _hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
+        // drift (firmware 2.0.3.1 occasionally needs the mode-switch command
+        // repeated to actually flip). SetDesiredCoolingMode sends the first
+        // attempt immediately. The legacy header skips the frame once latched:
+        // a full mode frame ahead of every duty write made the hub drop the
+        // duty, and the heartbeat already repairs mode drift.
+        var isLegacy = channelId.EndsWith(":legacy", StringComparison.Ordinal);
+        var modeSent = !isLegacy || _hub.DesiredCoolingMode != Np50Protocol.ModeSoftware;
+        if (modeSent)
+        {
+            _hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
+        }
 
-        if (channelId.EndsWith(":legacy", StringComparison.Ordinal))
+        if (isLegacy)
         {
             _pendingLegacyDuty = dutyPercent;
             _hub.SetLegacyFanSpeed(dutyPercent);
+            // Slider drags and curve ticks repeat values; log only changes and mode switches.
+            if (modeSent || dutyPercent != _lastLoggedLegacyDuty)
+            {
+                _lastLoggedLegacyDuty = dutyPercent;
+                ServiceLog.Info($"[np50-cooling] legacy duty write {dutyPercent}% (mode frame sent: {modeSent})");
+            }
             return;
         }
 

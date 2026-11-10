@@ -153,6 +153,14 @@ public sealed class Np50HeartbeatWorker : BackgroundService
             }
         }
 
+        // The legacy duty write is fire-and-forget; re-send it so a frame the
+        // hub dropped does not leave the fan at the wrong output until the next
+        // slider move.
+        if (_gates.Cooling)
+        {
+            _hub.ReassertLegacyDutyIfDue(Environment.TickCount64);
+        }
+
         // Pull per-port info every tick. With no fans attached the hub returns
         // a valid empty response.
         for (var port = 1; port <= Np50Protocol.PortCount; port++)
