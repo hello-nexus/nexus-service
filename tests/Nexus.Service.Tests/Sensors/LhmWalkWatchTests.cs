@@ -221,4 +221,33 @@ public class LhmWalkWatchTests
         watch.EndWalk();
         Assert.Null(watch.CurrentItem);
     }
+
+    [Fact]
+    public void A_walk_stuck_in_one_memory_item_is_a_wedge_only_after_the_limit()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.SetItem("/memory/dimm/2");
+        Advance(TimeSpan.FromSeconds(9));
+        Assert.False(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
+        Assert.True(watch.MaySelfHoldSmbus());
+
+        Advance(TimeSpan.FromSeconds(1));
+        Assert.True(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
+
+        watch.SetItem("/intelcpu/0");
+        Advance(TimeSpan.FromSeconds(30));
+        Assert.False(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void A_stale_walk_is_always_a_wedge()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        Advance(LhmWalkWatch.StallLimit + TimeSpan.FromSeconds(1));
+        Assert.True(watch.CheckStalled(out _));
+
+        Assert.True(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
+    }
 }

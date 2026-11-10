@@ -510,11 +510,13 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     private List<string> _selfRestarts = new();
+    private long _walkMs;
 
     private void WireSelfRestart(string mutex = "held")
     {
         _bridge.SmbusMutexProbe = () => mutex;
-        _bridge.WalkWatch = new LhmWalkWatch(() => 10_000);
+        _walkMs = 10_000;
+        _bridge.WalkWatch = new LhmWalkWatch(() => Volatile.Read(ref _walkMs));
         _bridge.SelfRestartSampleSpacing = TimeSpan.Zero;
         _bridge.SelfRestart = context =>
         {
@@ -835,5 +837,62 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
         Assert.Equal(_bridge.SelfRestartMutexSamples, _probeCalls());
+    }
+
+    [Fact]
+    public async Task A_walk_wedged_in_one_memory_item_counts_as_held_and_triggers_the_early_restart()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n == 1)
+            {
+                watch.BeginWalk();
+                watch.SetItem("/memory/dimm/1");
+                Interlocked.Add(ref _walkMs, 11_000);
+            }
+            return "held";
+        });
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+    }
+
+    [Fact]
+    public async Task A_walk_in_a_memory_item_for_less_than_the_wedge_limit_is_not_evidence()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            if (n == 1)
+            {
+                watch.BeginWalk();
+                watch.SetItem("/memory/dimm/1");
+                Interlocked.Add(ref _walkMs, 3_000);
+            }
+            return "held";
+        });
+
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+        Assert.Empty(_selfRestarts);
+    }
+
+    [Fact]
+    public async Task The_fallback_triggers_restart_even_when_every_sample_overlaps_our_walk()
+    {
+        await ResumedWithWatchAsync((n, watch) =>
+        {
+            watch.BeginWalk();
+            watch.SetItem("/memory/dimm/1");
+            return "held";
+        });
+
+        Assert.True(_bridge.MaybeSelfRestart("budget exhausted", idleOnly: false));
+        Assert.Equal(_bridge.SelfRestartMutexSamples, _probeCalls());
+    }
+
+    [Fact]
+    public async Task The_fallback_triggers_still_refuse_a_mutex_that_reads_free()
+    {
+        await ResumedWithWatchAsync((n, watch) => n == 2 ? "free" : "held");
+
+        Assert.False(_bridge.MaybeSelfRestart("budget exhausted", idleOnly: false));
     }
 }

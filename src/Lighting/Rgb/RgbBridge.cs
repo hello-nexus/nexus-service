@@ -1238,9 +1238,9 @@ public sealed class RgbBridge : IDisposable
     /// Every condition must hold: a hook is wired, a resume happened within the window, devices were known
     /// before it, the SMBus mutex is held, and this resume has not already restarted the service.
     /// </summary>
-    internal bool MaybeSelfRestart(string source)
+    internal bool MaybeSelfRestart(string source, bool idleOnly = true)
     {
-        if (!SelfRestartPreconditions(out var restart, out var resume, out var devices) || !MutexHeldAcrossSamples(resume))
+        if (!SelfRestartPreconditions(out var restart, out var resume, out var devices) || !MutexHeldAcrossSamples(resume, idleOnly))
         {
             return false;
         }
@@ -1272,7 +1272,7 @@ public sealed class RgbBridge : IDisposable
             return false;
         }
         // A sample taken while our own walk may hold the mutex says nothing, so the sampler decides.
-        if (SampleMutex() is (true, not "held"))
+        if (SampleMutex(idleOnly: true) is (true, not "held", _))
         {
             return false;
         }
@@ -1298,12 +1298,19 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>One probe, counted only when our walk could not have been the holder before or after it.</summary>
-    private (bool Counted, string State) SampleMutex()
+    private (bool Counted, string State, string Tag) SampleMutex(bool idleOnly)
     {
         var overlapBefore = WalkWatch.MaySelfHoldSmbus();
+        var wedged = WalkWatch.WedgedInSmbusItem(SmbusWedgeLimit);
         var state = SmbusMutexProbe();
-        return (!overlapBefore && !WalkWatch.MaySelfHoldSmbus(), state);
+        var overlap = overlapBefore || WalkWatch.MaySelfHoldSmbus();
+        var tag = wedged ? "lhm-wedged" : overlap ? "lhm-walk" : "lhm-idle";
+        // A walk stuck in one SPD item is a wedge, not a normal read, so it stays evidence; the fallback triggers ignore overlap entirely.
+        return (!idleOnly || wedged || !overlap, state, tag);
     }
+
+    /// <summary>How long our walk may sit in one memory item before a held mutex stops being explained by a normal SPD read.</summary>
+    internal TimeSpan SmbusWedgeLimit { get; set; } = TimeSpan.FromSeconds(10);
 
     internal LhmWalkWatch WalkWatch { get; set; } = LhmWalkWatch.Shared;
     /// <summary>Counted samples that end sampling early.</summary>
@@ -1315,19 +1322,20 @@ public sealed class RgbBridge : IDisposable
     internal TimeSpan SelfRestartSampleSpacing { get; set; } = TimeSpan.FromMilliseconds(1500);
 
     /// <summary>A monitoring tool can hold the mutex for a moment; only a hold that outlasts every sample justifies a restart.</summary>
-    private bool MutexHeldAcrossSamples(long resume)
+    private bool MutexHeldAcrossSamples(long resume, bool idleOnly)
     {
         var seen = new List<string>();
         var counted = 0;
         var heldAll = true;
-        for (var i = 0; i < SelfRestartMaxSamples && counted < SelfRestartMutexSamples; i++)
+        var maxSamples = idleOnly ? SelfRestartMaxSamples : SelfRestartMutexSamples;
+        for (var i = 0; i < maxSamples && counted < SelfRestartMutexSamples; i++)
         {
             if (i > 0 && SelfRestartSampleSpacing > TimeSpan.Zero)
             {
                 Thread.Sleep(SelfRestartSampleSpacing);
             }
-            var (isCounted, state) = SampleMutex();
-            seen.Add($"{state}+{(isCounted ? "lhm-idle" : "lhm-walk")}");
+            var (isCounted, state, tag) = SampleMutex(idleOnly);
+            seen.Add($"{state}+{tag}");
             if (!isCounted)
             {
                 continue;
@@ -1339,7 +1347,7 @@ public sealed class RgbBridge : IDisposable
                 break;
             }
         }
-        var decided = heldAll && counted >= SelfRestartMinCounted;
+        var decided = heldAll && counted >= (idleOnly ? SelfRestartMinCounted : SelfRestartMutexSamples);
         if (Interlocked.Exchange(ref _heldDiagResume, resume) != resume)
         {
             ServiceLog.Info($"[resume] smbus mutex samples after resume: {string.Join(",", seen)} (counted {counted}, restart={decided}); {LhmWalkSummary()}; holder process is not obtainable in-process");
@@ -1347,7 +1355,7 @@ public sealed class RgbBridge : IDisposable
         return decided;
     }
 
-    private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source));
+    private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source, idleOnly: false));
 
     internal Func<string> SmbusMutexProbe { get; set; } = ProbeSmbusMutex;
 
