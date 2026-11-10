@@ -250,4 +250,35 @@ public class LhmWalkWatchTests
 
         Assert.True(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
     }
+
+    [Fact]
+    public void Our_dimm_reads_are_paused_for_the_requested_duration_only()
+    {
+        var watch = NewWatch();
+        Assert.False(watch.SpdQuiesced);
+
+        watch.QuiesceSpdFor(TimeSpan.FromSeconds(10));
+        Advance(TimeSpan.FromSeconds(9));
+        Assert.True(watch.SpdQuiesced);
+
+        Advance(TimeSpan.FromSeconds(2));
+        Assert.False(watch.SpdQuiesced);
+    }
+
+    [Fact]
+    public void Only_memory_items_and_the_spd_gate_count_as_inside_an_smbus_item()
+    {
+        var watch = NewWatch();
+        Assert.False(watch.InSmbusItem());
+        watch.BeginWalk();
+        Assert.False(watch.InSmbusItem());
+        watch.SetItem("/intelcpu/0");
+        Assert.False(watch.InSmbusItem());
+        watch.SetItem("/memory/dimm/3");
+        Assert.True(watch.InSmbusItem());
+        watch.SetItem("spd-gate");
+        Assert.True(watch.InSmbusItem());
+        watch.EndWalk();
+        Assert.False(watch.InSmbusItem());
+    }
 }

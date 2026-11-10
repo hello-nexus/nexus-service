@@ -518,6 +518,7 @@ public class RgbBridgeWatchdogTests : IDisposable
         _walkMs = 10_000;
         _bridge.WalkWatch = new LhmWalkWatch(() => Volatile.Read(ref _walkMs));
         _bridge.SelfRestartSampleSpacing = TimeSpan.Zero;
+        _bridge.SelfRestartQuiesceWait = TimeSpan.Zero;
         _bridge.SelfRestart = context =>
         {
             _selfRestarts.Add(context);
@@ -742,12 +743,11 @@ public class RgbBridgeWatchdogTests : IDisposable
     private Func<int> _probeCalls = () => 0;
 
     [Fact]
-    public async Task Samples_that_all_overlap_our_own_walk_never_restart_the_service()
+    public async Task Samples_taken_between_items_of_our_own_walk_never_restart_the_service()
     {
         await ResumedWithWatchAsync((n, watch) =>
         {
             watch.BeginWalk();
-            watch.SetItem("/memory/dimm/1");
             return "held";
         });
 
@@ -757,14 +757,13 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task A_free_reading_taken_while_our_walk_ran_is_ignored()
+    public async Task A_free_reading_taken_between_items_of_our_walk_is_ignored()
     {
         await ResumedWithWatchAsync((n, watch) =>
         {
             if (n == 1)
             {
                 watch.BeginWalk();
-                watch.SetItem("spd-gate");
                 return "free";
             }
             watch.EndWalk();
@@ -775,14 +774,13 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task Sampling_extends_past_overlapped_samples_and_two_idle_held_samples_suffice()
+    public async Task Sampling_extends_past_uncounted_samples_and_two_idle_held_samples_suffice()
     {
         await ResumedWithWatchAsync((n, watch) =>
         {
             if (n <= 4)
             {
                 watch.BeginWalk();
-                watch.SetItem("/memory/dimm/0");
             }
             else
             {
@@ -792,18 +790,17 @@ public class RgbBridgeWatchdogTests : IDisposable
         });
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
-        Assert.Equal(7, _probeCalls());
+        Assert.Equal(7 + 1, _probeCalls());
     }
 
     [Fact]
-    public async Task A_single_idle_held_sample_is_not_enough()
+    public async Task A_single_counted_held_sample_is_not_enough()
     {
         await ResumedWithWatchAsync((n, watch) =>
         {
             if (n < 6)
             {
                 watch.BeginWalk();
-                watch.SetItem("/memory/dimm/0");
             }
             else
             {
@@ -836,7 +833,7 @@ public class RgbBridgeWatchdogTests : IDisposable
         });
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
-        Assert.Equal(_bridge.SelfRestartMutexSamples, _probeCalls());
+        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
     }
 
     [Fact]
@@ -857,7 +854,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task A_walk_in_a_memory_item_for_less_than_the_wedge_limit_is_not_evidence()
+    public async Task A_walk_inside_a_memory_item_counts_as_held_without_waiting_for_the_wedge_limit()
     {
         await ResumedWithWatchAsync((n, watch) =>
         {
@@ -870,8 +867,29 @@ public class RgbBridgeWatchdogTests : IDisposable
             return "held";
         });
 
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
+    }
+
+    [Fact]
+    public async Task A_decided_restart_pauses_our_dimm_reads_and_samples_the_mutex_once_more()
+    {
+        await ResumedWithWatchAsync((n, watch) => "held");
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+
+        Assert.True(_bridge.WalkWatch.SpdQuiesced);
+        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
+    }
+
+    [Fact]
+    public async Task A_refused_sample_run_does_not_pause_our_dimm_reads()
+    {
+        await ResumedWithWatchAsync((n, watch) => n == 2 ? "free" : "held");
+
         Assert.False(_bridge.MaybeSelfRestart("test"));
-        Assert.Empty(_selfRestarts);
+
+        Assert.False(_bridge.WalkWatch.SpdQuiesced);
     }
 
     [Fact]
@@ -885,7 +903,7 @@ public class RgbBridgeWatchdogTests : IDisposable
         });
 
         Assert.True(_bridge.MaybeSelfRestart("budget exhausted", idleOnly: false));
-        Assert.Equal(_bridge.SelfRestartMutexSamples, _probeCalls());
+        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
     }
 
     [Fact]
