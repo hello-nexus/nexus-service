@@ -23,6 +23,8 @@ public class SensorAlertEngineTests
             _wall += by;
             _ticks += by.Ticks;
         }
+        // Moves the wall clock alone, like a sleep the monotonic clock does not count.
+        public void JumpWall(TimeSpan by) => _wall += by;
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override long GetTimestamp() => _ticks;
         public override DateTimeOffset GetUtcNow() => _wall;
@@ -34,11 +36,23 @@ public class SensorAlertEngineTests
         public List<HardwareComponent> Psus { get; } = new();
         public int CpuReads { get; private set; }
         public int ExtrasReads { get; private set; }
+        public int SmartReads { get; private set; }
+        public int MoboFullReads { get; private set; }
+        public int MoboCachedReads { get; private set; }
+        public Action? OnCpuRead { get; set; }
+
+        public void BeforeSmartRead() => SmartReads++;
+        public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached()
+        {
+            MoboCachedReads++;
+            return Array.Empty<HardwareSensor>();
+        }
 
         public string GetCpuModel() => "TestCPU";
         public IReadOnlyList<HardwareSensor> GetCpuSensors()
         {
             CpuReads++;
+            OnCpuRead?.Invoke();
             return Cpu;
         }
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 20f);
@@ -52,7 +66,11 @@ public class SensorAlertEngineTests
         public IReadOnlyList<string> GetStoragePartitions() => Array.Empty<string>();
         public IReadOnlyList<StorageDriveInfo> GetStorageInfo() => Array.Empty<StorageDriveInfo>();
         public string GetStorageBrandModel() => "";
-        public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => Array.Empty<HardwareSensor>();
+        public IReadOnlyList<HardwareSensor> GetMotherboardSensors()
+        {
+            MoboFullReads++;
+            return Array.Empty<HardwareSensor>();
+        }
         public string GetMotherboardModel() => "TestMobo";
         public SensorExtras GetSensorExtras()
         {
@@ -455,6 +473,11 @@ public class SensorAlertEngineTests
 
         rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
         rig.Seconds(1);
+        Assert.Empty(rig.Engine.States());
+
+        rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = true);
+        rig.Sensors.Cpu = Array.Empty<HardwareSensor>();
+        rig.Seconds(1);
 
         Assert.Equal(SensorAlertStates.Ok, rig.State());
     }
@@ -765,5 +788,201 @@ public class SensorAlertEngineTests
 
         rig.Store.Update(s => s.Diagnostics.IgnoredComponents.Add("alert:r1"));
         Assert.DoesNotContain(model.BuildRealHealth().Components, c => c.Id == "alert:r1");
+    }
+
+    [Fact]
+    public void Engine_a_rule_edit_during_the_sensor_read_is_not_stepped_with_the_old_rule()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(high: 80, raise: 0));
+        rig.SetTemp(90);
+        rig.Engine.Reconcile();
+        rig.Sensors.OnCpuRead = () =>
+        {
+            rig.Sensors.OnCpuRead = null;
+            rig.Store.Update(s => s.Diagnostics.SensorAlerts[0] = TempRule(high: 95, raise: 0));
+            rig.Engine.Reconcile();
+        };
+
+        rig.Seconds(1);
+
+        Assert.Empty(rig.Notices);
+        Assert.Equal(SensorAlertStates.Ok, rig.State());
+    }
+
+    [Fact]
+    public void Engine_a_rule_disabled_during_the_sensor_read_stays_quiet()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(raise: 0));
+        rig.SetTemp(90);
+        rig.Sensors.OnCpuRead = () =>
+        {
+            rig.Sensors.OnCpuRead = null;
+            rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
+            rig.Engine.Reconcile();
+        };
+
+        rig.Seconds(3);
+
+        Assert.Empty(rig.Notices);
+        Assert.Empty(rig.Engine.States());
+        Assert.Empty(rig.Engine.HealthComponents());
+    }
+
+    [Fact]
+    public void Engine_disabled_rules_have_no_state_or_health_component()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(raise: 0));
+        rig.SetTemp(90);
+        rig.Seconds(1);
+
+        rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
+
+        Assert.Empty(rig.Engine.States());
+        Assert.Empty(rig.Engine.HealthComponents());
+    }
+
+    [Fact]
+    public void Normalize_coalesces_null_sensor_fields_so_naming_never_throws()
+    {
+        var rule = TempRule();
+        rule.Sensor.Name = null!;
+        rule.Sensor.Id = null!;
+        rule.Sensor.ParentName = null!;
+
+        SensorAlertRules.Normalize(rule);
+
+        Assert.Equal("", rule.Sensor.Name);
+        Assert.Equal("Temperature", SensorAlertText.DisplayName(rule.Sensor).Trim());
+    }
+
+    [Fact]
+    public void Engine_display_timestamps_follow_the_wall_clock_not_the_monotonic_one()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(raise: 0, clear: 0));
+        rig.SetTemp(90);
+        rig.Seconds(1);
+        var raisedAt = rig.Time.GetUtcNow();
+        var since = rig.Engine.States().Single().Since;
+        Assert.Equal(raisedAt.UtcDateTime.ToString("O"), since);
+
+        rig.Time.JumpWall(TimeSpan.FromHours(3));
+        rig.Engine.Tick();
+        Assert.Equal(since, rig.Engine.States().Single().Since);
+
+        rig.SetTemp(60);
+        rig.Seconds(1);
+        var entry = Assert.Single(rig.Engine.History());
+        Assert.Equal(since, entry.StartedUtc);
+        Assert.Equal(rig.Time.GetUtcNow().UtcDateTime.ToString("O"), entry.EndedUtc);
+    }
+
+    [Fact]
+    public void Engine_reads_smart_at_most_once_a_minute()
+    {
+        var rig = new Rig();
+        var rule = TempRule();
+        rule.Sensor.Category = "smart";
+        rig.AddRule(rule);
+
+        rig.Seconds(30);
+        Assert.Equal(1, rig.Sensors.SmartReads);
+        rig.Seconds(31);
+
+        Assert.Equal(2, rig.Sensors.SmartReads);
+    }
+
+    [Fact]
+    public void Engine_motherboard_rules_use_the_cached_read()
+    {
+        var rig = new Rig();
+        var rule = TempRule();
+        rule.Sensor.Category = "motherboard";
+        rig.AddRule(rule);
+
+        rig.Seconds(3);
+
+        Assert.Equal(3, rig.Sensors.MoboCachedReads);
+        Assert.Equal(0, rig.Sensors.MoboFullReads);
+    }
+
+    [Fact]
+    public void Validate_rejects_fps_and_accepts_every_picker_category()
+    {
+        foreach (var category in new[] { "cpu", "gpu", "memory", "motherboard", "storage", "psu", "cooler" })
+        {
+            var rule = TempRule();
+            rule.Sensor.Category = category;
+            Assert.Null(SensorAlertRules.Validate(rule));
+        }
+        var fps = TempRule();
+        fps.Sensor.Category = "fps";
+        Assert.NotNull(SensorAlertRules.Validate(fps));
+    }
+
+    [Fact]
+    public void Step_repeat_stops_after_acknowledge()
+    {
+        var rule = TempRule(raise: 0);
+        rule.RepeatMinutes = 5;
+        var st = Fresh();
+        SensorAlertEngine.Step(rule, Ok(90), T0, st);
+        st.Acknowledged = true;
+
+        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(6), st));
+    }
+
+    [Fact]
+    public void Step_leaving_a_band_through_the_other_side_flips_direction_and_extreme()
+    {
+        var rule = TempRule(low: 20, high: 80, raise: 0);
+        var st = Fresh();
+        SensorAlertEngine.Step(rule, Ok(90), T0, st);
+        Assert.Equal("above", st.Direction);
+
+        SensorAlertEngine.Step(rule, Ok(10), T0.AddSeconds(1), st);
+
+        Assert.Equal("below", st.Direction);
+        Assert.Equal(10, st.Extreme);
+        Assert.Equal(SensorAlertStates.Active, st.Phase);
+    }
+
+    [Fact]
+    public void Sensor_type_is_matched_case_insensitively_for_hysteresis_and_unit()
+    {
+        var rule = new SensorAlertRule { High = 100, Sensor = new SensorRef { Type = "temperature" } };
+
+        Assert.Equal(2, SensorAlertRules.Hysteresis(rule));
+        Assert.Equal("176 °F", SensorAlertText.Format(80, "temperature", "°C", fahrenheit: true));
+    }
+
+    [Fact]
+    public void LogThrottle_allows_one_line_per_key_per_interval()
+    {
+        var throttle = new LogThrottle(TimeSpan.FromMinutes(1));
+
+        Assert.True(throttle.ShouldLog("a", T0));
+        Assert.False(throttle.ShouldLog("a", T0.AddSeconds(30)));
+        Assert.True(throttle.ShouldLog("b", T0.AddSeconds(30)));
+        Assert.True(throttle.ShouldLog("a", T0.AddSeconds(61)));
+    }
+
+    [Fact]
+    public void Evaluator_registers_a_snapshot_with_the_current_states()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(raise: 0));
+        rig.SetTemp(90);
+        rig.Seconds(1);
+        var hub = new Nexus.Service.Sockets.MultiplexHub();
+        _ = new SensorAlertEvaluator(rig.Engine, Nexus.Service.Lifecycle.FeatureGates.AllEnabled, hub, rig.Time);
+
+        Assert.True(hub.TryGetTopicSnapshot(Nexus.Service.Sockets.PanelTopics.SensorAlerts, out var envelope));
+        var text = System.Text.Encoding.UTF8.GetString(envelope.Span);
+        Assert.Contains("diagnostics/alerts", text);
+        Assert.Contains("\"state\":\"active\"", text);
     }
 }

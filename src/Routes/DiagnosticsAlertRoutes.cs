@@ -17,7 +17,7 @@ public static class DiagnosticsAlertRoutes
     {
         app.MapGet("/diagnostics/alerts", (IConfigStore store, SensorAlertEngine engine) => new SensorAlertsResponse
         {
-            Rules = (store.Load().Diagnostics.SensorAlerts ?? new List<SensorAlertRule>()).ToList(),
+            Rules = engine.Rules(),
             States = engine.States(),
             History = engine.History(),
         }).AllowPanel();
@@ -51,7 +51,7 @@ public static class DiagnosticsAlertRoutes
             }
             engine.Reconcile();
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
-        });
+        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status409Conflict);
 
         app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine) =>
         {
@@ -83,29 +83,29 @@ public static class DiagnosticsAlertRoutes
             }
             engine.Reconcile();
             return Results.Ok(body);
-        });
+        }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound);
 
         app.MapDelete("/diagnostics/alerts/{id}", (string id, IConfigStore store, SensorAlertEngine engine) =>
         {
             store.Update(s => s.Diagnostics.SensorAlerts?.RemoveAll(r => r.Id == id));
             engine.Reconcile();
             return Results.NoContent();
-        });
+        }).Produces(StatusCodes.Status204NoContent);
 
         app.MapPost("/diagnostics/alerts/{id}/acknowledge", (string id, IConfigStore store, SensorAlertEngine engine) =>
         {
-            if (!(store.Load().Diagnostics.SensorAlerts?.Any(r => r.Id == id) ?? false))
+            if (!engine.Rules().Any(r => r.Id == id))
             {
                 return Results.NotFound(ApiResponse.Fail("Unknown rule."));
             }
             engine.Acknowledge(id);
             return Results.NoContent();
-        });
+        }).Produces(StatusCodes.Status204NoContent).Produces<ApiResponse>(StatusCodes.Status404NotFound);
 
         app.MapPost("/diagnostics/alerts/history/clear", (SensorAlertEngine engine) =>
         {
             engine.ClearHistory();
             return Results.NoContent();
-        });
+        }).Produces(StatusCodes.Status204NoContent);
     }
 }

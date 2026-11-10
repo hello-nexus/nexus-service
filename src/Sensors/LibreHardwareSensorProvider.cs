@@ -359,7 +359,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             }).ToList();
     }
 
-    public IReadOnlyList<HardwareSensor> GetMotherboardSensors()
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => ReadMotherboardSensors(updateSubHardware: true);
+
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached() => ReadMotherboardSensors(updateSubHardware: false);
+
+    private IReadOnlyList<HardwareSensor> ReadMotherboardSensors(bool updateSubHardware)
     {
         _lhm.Update();
         var mobo = FindHardware(HardwareType.Motherboard).FirstOrDefault();
@@ -370,7 +374,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         sensors.AddRange(MapSensors(mobo));
         foreach (var sub in mobo.SubHardware)
         {
-            sub.Update();
+            if (updateSubHardware) sub.Update();
             sensors.AddRange(MapSensors(sub));
         }
         return sensors;

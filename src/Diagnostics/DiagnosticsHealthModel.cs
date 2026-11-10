@@ -175,7 +175,7 @@ public sealed class DiagnosticsHealthModel
     public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
 #endif
 
-    /// <summary>The cached module health plus the live sensor alert components. The alerts sit outside the 30 s cache so a raise or acknowledge shows on the next read.</summary>
+    /// <summary>The cached module health plus the live sensor alert components. The alerts sit outside the module cache so a raise or acknowledge shows on the next read.</summary>
     private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
     {
         var health = BuildCachedHealth(forceRefresh);

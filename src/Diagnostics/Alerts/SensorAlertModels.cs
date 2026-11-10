@@ -69,6 +69,11 @@ public static class SensorAlertRules
         rule.RaiseAfterSeconds = Math.Clamp(rule.RaiseAfterSeconds, 0, MaxSeconds);
         rule.ClearAfterSeconds = Math.Clamp(rule.ClearAfterSeconds, 0, MaxSeconds);
         rule.Sensor ??= new SensorRef();
+        rule.Sensor.Category ??= "";
+        rule.Sensor.Id ??= "";
+        rule.Sensor.Name ??= "";
+        rule.Sensor.Type ??= "";
+        rule.Sensor.ParentName ??= "";
     }
 
     /// <summary>Null when the rule is storable, else the reason.</summary>
@@ -80,7 +85,8 @@ public static class SensorAlertRules
         {
             return "A sensor with a category, type and id or name is required.";
         }
-        if (!SensorSnapshotResolver.IsSupportedCategory(sensor.Category))
+        // The fps source lives outside the sensor provider, so a rule on it could never resolve.
+        if (sensor.Category == "fps" || !SensorSnapshotResolver.IsSupportedCategory(sensor.Category))
         {
             return $"Unknown sensor category '{sensor.Category}'.";
         }
@@ -110,14 +116,14 @@ public static class SensorAlertRules
     /// <summary>Distance inside the band a reading must come back before it counts as clear.</summary>
     public static double Hysteresis(SensorAlertRule rule)
     {
-        var fixedValue = rule.Sensor.Type switch
+        var fixedValue = (rule.Sensor.Type ?? "").ToLowerInvariant() switch
         {
-            "Temperature" => 2.0,
-            "Current" => 0.5,
-            "Power" => 5.0,
-            "Voltage" => 0.05,
-            "Fan" => 100.0,
-            "Load" or "Control" or "Level" => 2.0,
+            "temperature" => 2.0,
+            "current" => 0.5,
+            "power" => 5.0,
+            "voltage" => 0.05,
+            "fan" => 100.0,
+            "load" or "control" or "level" => 2.0,
             _ => double.NaN,
         };
         double band;

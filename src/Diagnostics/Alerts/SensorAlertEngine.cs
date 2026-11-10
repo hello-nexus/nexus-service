@@ -28,11 +28,14 @@ internal sealed class SensorAlertRuntime
 {
     public string Phase = SensorAlertStates.Ok;
     public DateTimeOffset? PhaseSince;
+    /// <summary>Wall-clock stamp of <see cref="PhaseSince"/>, for display only; delays run on the monotonic axis.</summary>
+    public DateTimeOffset? PhaseSinceUtc;
     public double? Value;
     public double? Extreme;
     public string? Direction;
     public bool Acknowledged;
     public DateTimeOffset? InvalidSince;
+    public DateTimeOffset? InvalidSinceUtc;
     public DateTimeOffset? ClearSince;
     public DateTimeOffset LastNotified;
     public string Units = "";
@@ -44,6 +47,7 @@ internal sealed class SensorAlertRuntime
     {
         Phase = SensorAlertStates.Ok;
         PhaseSince = null;
+        PhaseSinceUtc = null;
         Extreme = null;
         Direction = null;
         Acknowledged = false;
@@ -62,6 +66,7 @@ public sealed class SensorAlertEngine
 {
     internal static readonly TimeSpan UnavailableAfter = TimeSpan.FromSeconds(10);
     private const int MaxHistory = 100;
+    private static readonly TimeSpan SmartInterval = TimeSpan.FromMinutes(1);
     private const string NoticeKind = "sensorAlert";
 
     private readonly IConfigStore _store;
@@ -72,6 +77,8 @@ public sealed class SensorAlertEngine
     private readonly object _lock = new();
     private readonly Dictionary<string, SensorAlertRuntime> _states = new(StringComparer.Ordinal);
     private readonly List<SensorAlertHistoryEntry> _history = new();
+    private readonly LogThrottle _warnings = new(TimeSpan.FromMinutes(1));
+    private (DateTimeOffset At, IReadOnlyList<HardwareSensor> List)? _smart;
 
     /// <summary>Delivers a notice; the second argument is ignoreMaster.</summary>
     public Action<DiagnosticsAlertNotice, bool>? NoticeSink { get; set; }
@@ -95,15 +102,18 @@ public sealed class SensorAlertEngine
     // Monotonic axis anchored to the wall clock, so a clock jump never shortens or extends a delay.
     private DateTimeOffset Mono() => _wall0 + _time.GetElapsedTime(_stamp0);
 
-    // ---- pure step ----
-
     /// <summary>Advances <paramref name="st"/> by one sample and reports what happened.</summary>
-    internal static SensorAlertEffect Step(SensorAlertRule rule, SensorSample sample, DateTimeOffset now, SensorAlertRuntime st)
+    internal static SensorAlertEffect Step(SensorAlertRule rule, SensorSample sample, DateTimeOffset now, SensorAlertRuntime st, DateTimeOffset? wall = null)
     {
+        var stamp = wall ?? now;
         var effect = SensorAlertEffect.None;
         if (!sample.Valid)
         {
-            st.InvalidSince ??= now;
+            if (st.InvalidSince is null)
+            {
+                st.InvalidSince = now;
+                st.InvalidSinceUtc = stamp;
+            }
             if (st.Phase != SensorAlertStates.Active)
             {
                 st.Value = null;
@@ -119,6 +129,7 @@ public sealed class SensorAlertEngine
         }
 
         st.InvalidSince = null;
+        st.InvalidSinceUtc = null;
         st.Value = sample.Value;
         st.Units = sample.Units;
         var v = sample.Value;
@@ -128,6 +139,7 @@ public sealed class SensorAlertEngine
         {
             st.Phase = SensorAlertStates.Pending;
             st.PhaseSince = now;
+            st.PhaseSinceUtc = stamp;
             st.Direction = direction;
             st.Extreme = v;
         }
@@ -140,6 +152,7 @@ public sealed class SensorAlertEngine
             else if (direction != st.Direction)
             {
                 st.PhaseSince = now;
+                st.PhaseSinceUtc = stamp;
                 st.Direction = direction;
                 st.Extreme = v;
             }
@@ -150,10 +163,21 @@ public sealed class SensorAlertEngine
         }
         else if (st.Phase == SensorAlertStates.Active)
         {
-            st.Extreme = Extend(st.Direction, st.Extreme, v);
-            if (st.Episode is not null && st.Extreme is { } ex)
+            if (direction is not null && direction != st.Direction)
             {
-                st.Episode.Extreme = ex;
+                // A band with both limits can be left through the other side.
+                st.Direction = direction;
+                st.Extreme = v;
+            }
+            else
+            {
+                st.Extreme = Extend(st.Direction, st.Extreme, v);
+            }
+            if (st.Episode is { } open && st.Extreme is { } ex)
+            {
+                open.Extreme = ex;
+                open.Direction = st.Direction ?? open.Direction;
+                open.Threshold = (st.Direction == "below" ? rule.Low : rule.High) ?? open.Threshold;
             }
             effect |= StepActive(rule, v, now, st);
             return Finish(st, now, effect);
@@ -164,6 +188,7 @@ public sealed class SensorAlertEngine
         {
             st.Phase = SensorAlertStates.Active;
             st.PhaseSince = now;
+            st.PhaseSinceUtc = stamp;
             st.LastNotified = now;
             st.ClearSince = null;
             st.Acknowledged = false;
@@ -188,7 +213,7 @@ public sealed class SensorAlertEngine
         }
 
         st.ClearSince = null;
-        if (rule.RepeatMinutes > 0 && now - st.LastNotified >= TimeSpan.FromMinutes(rule.RepeatMinutes))
+        if (rule.RepeatMinutes > 0 && !st.Acknowledged && now - st.LastNotified >= TimeSpan.FromMinutes(rule.RepeatMinutes))
         {
             st.LastNotified = now;
             return SensorAlertEffect.Repeated;
@@ -235,8 +260,6 @@ public sealed class SensorAlertEngine
 
     private static double Extend(string? direction, double? extreme, double v) =>
         extreme is not { } e ? v : direction == "below" ? Math.Min(e, v) : Math.Max(e, v);
-
-    // ---- sensor resolution ----
 
     /// <summary>
     /// The sensor a rule points at, or an invalid sample. <paramref name="healedId"/> is set when the sensor was found by name and its id differs from the stored one.
@@ -301,13 +324,32 @@ public sealed class SensorAlertEngine
         };
     }
 
-    // ---- tick ----
+    /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
+    private (List<SensorAlertRule> Rules, bool Fahrenheit) Snapshot()
+    {
+        var rules = new List<SensorAlertRule>();
+        var fahrenheit = false;
+        _store.Read(s =>
+        {
+            if (s.Diagnostics.SensorAlerts is { } list)
+            {
+                foreach (var rule in list)
+                {
+                    rules.Add(rule.Clone());
+                }
+            }
+            fahrenheit = string.Equals(s.Units.MonitoringTempUnit, "f", StringComparison.OrdinalIgnoreCase);
+        });
+        return (rules, fahrenheit);
+    }
+
+    /// <summary>The configured rules, as copies.</summary>
+    public List<SensorAlertRule> Rules() => Snapshot().Rules;
 
     /// <summary>Evaluates every enabled rule once. Does nothing, and reads no sensor, without one.</summary>
     public void Tick()
     {
-        var settings = _store.Load();
-        var rules = settings.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>();
+        var (rules, fahrenheit) = Snapshot();
         var now = Mono();
         var changed = ReconcileCore(rules, now);
 
@@ -316,12 +358,14 @@ public sealed class SensorAlertEngine
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
         if (enabled.Count > 0)
         {
-            var lists = ReadCategories(enabled);
+            var lists = ReadCategories(enabled, now);
+            var wall = _time.GetUtcNow();
             lock (_lock)
             {
                 foreach (var rule in enabled)
                 {
-                    if (!_states.TryGetValue(rule.Id, out var st))
+                    // A route edit between the snapshot and here has already reset this state to its new config; stepping the old rule on it would undo that.
+                    if (!_states.TryGetValue(rule.Id, out var st) || st.Config is not { } cfg || !cfg.SameConfig(rule))
                     {
                         continue;
                     }
@@ -331,8 +375,8 @@ public sealed class SensorAlertEngine
                     {
                         heals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, healed));
                     }
-                    var effect = Step(rule, sample, now, st);
-                    changed |= ApplyEffect(rule, st, effect, now, settings.Units.MonitoringTempUnit == "f", notices);
+                    var effect = Step(rule, sample, now, st, wall);
+                    changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, notices);
                 }
             }
         }
@@ -354,7 +398,7 @@ public sealed class SensorAlertEngine
         }
     }
 
-    private Dictionary<string, IReadOnlyList<HardwareSensor>> ReadCategories(List<SensorAlertRule> enabled)
+    private Dictionary<string, IReadOnlyList<HardwareSensor>> ReadCategories(List<SensorAlertRule> enabled, DateTimeOffset now)
     {
         var categories = enabled.Select(r => r.Sensor.Category).Distinct(StringComparer.Ordinal).ToList();
         var sources = default(SensorSnapshotSources);
@@ -366,7 +410,7 @@ public sealed class SensorAlertEngine
             }
             catch (Exception ex)
             {
-                ServiceLog.Warn($"[sensor-alerts] extras read failed: {ex.Message}");
+                Warn("extras", $"[sensor-alerts] extras read failed: {ex.Message}", now);
             }
         }
         var lists = new Dictionary<string, IReadOnlyList<HardwareSensor>>(StringComparer.Ordinal);
@@ -374,15 +418,44 @@ public sealed class SensorAlertEngine
         {
             try
             {
-                lists[category] = SensorSnapshotResolver.GetCategorySensors(_sensors, category, sources);
+                lists[category] = ReadCategory(category, sources, now);
             }
             catch (Exception ex)
             {
-                ServiceLog.Warn($"[sensor-alerts] {category} read failed: {ex.Message}");
+                Warn(category, $"[sensor-alerts] {category} read failed: {ex.Message}", now);
                 lists[category] = Array.Empty<HardwareSensor>();
             }
         }
         return lists;
+    }
+
+    private IReadOnlyList<HardwareSensor> ReadCategory(string category, SensorSnapshotSources sources, DateTimeOffset now)
+    {
+        // Drive temperatures exist only under smart, and each read wakes sleeping drives, so it is sampled slowly.
+        if (category == "smart")
+        {
+            if (_smart is { } cached && now - cached.At < SmartInterval)
+            {
+                return cached.List;
+            }
+            var fresh = SensorSnapshotResolver.GetCategorySensors(_sensors, category, sources);
+            _smart = (now, fresh);
+            return fresh;
+        }
+        // The cached read leaves the Super I/O refresh to the regular locked walk.
+        if (category == "motherboard")
+        {
+            return _sensors.GetMotherboardSensorsCached();
+        }
+        return SensorSnapshotResolver.GetCategorySensors(_sensors, category, sources);
+    }
+
+    private void Warn(string key, string message, DateTimeOffset now)
+    {
+        if (_warnings.ShouldLog(key, now))
+        {
+            ServiceLog.Warn(message);
+        }
     }
 
     private bool ApplyEffect(
@@ -439,7 +512,7 @@ public sealed class SensorAlertEngine
         }
         catch (Exception ex)
         {
-            ServiceLog.Warn($"[sensor-alerts] notify failed: {ex.Message}");
+            Warn("notify", $"[sensor-alerts] notify failed: {ex.Message}", Mono());
         }
     }
 
@@ -461,29 +534,27 @@ public sealed class SensorAlertEngine
         }
         catch (Exception ex)
         {
-            ServiceLog.Warn($"[sensor-alerts] id self-heal failed: {ex.Message}");
+            Warn("heal", $"[sensor-alerts] id self-heal failed: {ex.Message}", Mono());
         }
     }
-
-    // ---- reconcile ----
 
     /// <summary>Applies rule edits and removals to the runtime state: an edited rule restarts from ok and a removed one is dropped. Call after the rule list changes.</summary>
     public void Reconcile()
     {
-        var rules = _store.Load().Diagnostics.SensorAlerts ?? new List<SensorAlertRule>();
-        ReconcileCore(rules, Mono());
+        ReconcileCore(Snapshot().Rules, Mono());
         Changed?.Invoke();
     }
 
     private bool ReconcileCore(List<SensorAlertRule> rules, DateTimeOffset now)
     {
         var changed = false;
+        var wall = _time.GetUtcNow();
         lock (_lock)
         {
             var live = new HashSet<string>(rules.Select(r => r.Id), StringComparer.Ordinal);
             foreach (var id in _states.Keys.Where(id => !live.Contains(id)).ToList())
             {
-                EndEpisode(_states[id], now);
+                EndEpisode(_states[id], wall);
                 _states.Remove(id);
                 changed = true;
             }
@@ -499,10 +570,11 @@ public sealed class SensorAlertEngine
                 {
                     continue;
                 }
-                EndEpisode(st, now);
+                EndEpisode(st, wall);
                 st.ResetToOk();
                 st.Episode = null;
                 st.InvalidSince = null;
+                st.InvalidSinceUtc = null;
                 st.Value = null;
                 st.Reported = SensorAlertStates.Ok;
                 st.Config = rule.Clone();
@@ -512,15 +584,13 @@ public sealed class SensorAlertEngine
         return changed;
     }
 
-    private static void EndEpisode(SensorAlertRuntime st, DateTimeOffset now)
+    private static void EndEpisode(SensorAlertRuntime st, DateTimeOffset wall)
     {
         if (st.Phase == SensorAlertStates.Active && st.Episode is { EndedUtc: null } episode)
         {
-            episode.EndedUtc = Iso(now);
+            episode.EndedUtc = Iso(wall);
         }
     }
-
-    // ---- acknowledge, history, snapshots ----
 
     /// <summary>Marks an active alert as seen; its health component goes away until it clears and raises again.</summary>
     public bool Acknowledge(string ruleId)
@@ -546,12 +616,14 @@ public sealed class SensorAlertEngine
         Changed?.Invoke();
     }
 
+    /// <summary>States of the enabled rules; a disabled rule has nothing to report.</summary>
     public List<SensorAlertState> States()
     {
+        var enabled = Snapshot().Rules.Where(r => r.Enabled).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
         var now = Mono();
         lock (_lock)
         {
-            return _states.Select(kv => ToState(kv.Key, kv.Value, now)).ToList();
+            return _states.Where(kv => enabled.Contains(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now)).ToList();
         }
     }
 
@@ -578,9 +650,9 @@ public sealed class SensorAlertEngine
         var reported = Reported(st, now);
         var since = reported switch
         {
-            SensorAlertStates.Unavailable => st.InvalidSince,
+            SensorAlertStates.Unavailable => st.InvalidSinceUtc,
             SensorAlertStates.Ok => null,
-            _ => st.PhaseSince,
+            _ => st.PhaseSinceUtc,
         };
         var inEpisode = reported is SensorAlertStates.Pending or SensorAlertStates.Active;
         return new SensorAlertState
@@ -598,15 +670,14 @@ public sealed class SensorAlertEngine
     /// <summary>One component per active, unacknowledged rule that opted into health.</summary>
     internal List<HealthComponent> HealthComponents()
     {
-        var settings = _store.Load();
-        var rules = settings.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>();
-        var fahrenheit = settings.Units.MonitoringTempUnit == "f";
+        var (rules, fahrenheit) = Snapshot();
         var result = new List<HealthComponent>();
         lock (_lock)
         {
             foreach (var rule in rules)
             {
-                if (!rule.ShowInHealth || !_states.TryGetValue(rule.Id, out var st)
+                if (!rule.Enabled || !rule.ShowInHealth || !_states.TryGetValue(rule.Id, out var st)
+                    || st.Config is not { } cfg || !cfg.SameConfig(rule)
                     || st.Phase != SensorAlertStates.Active || st.Acknowledged)
                 {
                     continue;
@@ -639,6 +710,28 @@ public sealed class SensorAlertEngine
     private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 }
 
+/// <summary>Allows one log line per key per interval, so a persistent failure does not log on every tick.</summary>
+internal sealed class LogThrottle
+{
+    private readonly TimeSpan _interval;
+    private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.Ordinal);
+
+    public LogThrottle(TimeSpan interval) => _interval = interval;
+
+    public bool ShouldLog(string key, DateTimeOffset now)
+    {
+        lock (_last)
+        {
+            if (_last.TryGetValue(key, out var last) && now - last < _interval)
+            {
+                return false;
+            }
+            _last[key] = now;
+            return true;
+        }
+    }
+}
+
 /// <summary>Toast and health wording, in the user's temperature unit.</summary>
 internal static class SensorAlertText
 {
@@ -648,7 +741,7 @@ internal static class SensorAlertText
             ? sensor.Name
             : $"{sensor.Name} {sensor.Type}";
 
-    /// <summary>E.g. "Pin 3 Current above 9.5 A for 10 s (now 10.1 A)".</summary>
+    /// <summary>The toast sentence: name, direction, limit, hold time and the current reading.</summary>
     internal static string Describe(SensorAlertRule rule, string? direction, double value, string units, bool fahrenheit)
     {
         var below = direction == "below";
@@ -659,7 +752,7 @@ internal static class SensorAlertText
 
     internal static string Format(double value, string type, string units, bool fahrenheit)
     {
-        if (type == "Temperature")
+        if (string.Equals(type, "Temperature", StringComparison.OrdinalIgnoreCase))
         {
             var shown = fahrenheit ? value * 9 / 5 + 32 : value;
             return shown.ToString("0.#", CultureInfo.InvariantCulture) + (fahrenheit ? " °F" : " °C");

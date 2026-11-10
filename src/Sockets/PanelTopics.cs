@@ -134,6 +134,9 @@ public static class PanelTopics
     /// <summary>Sensor threshold alert states, carried inline; sent on state transitions and rule changes only, never per evaluation tick.</summary>
     public const string SensorAlerts = "diagnostics/alerts";
 
+    public static ReadOnlyMemory<byte> BuildSensorAlerts(System.Collections.Generic.List<Diagnostics.Alerts.SensorAlertState> states) =>
+        WsEnvelope.Build(SensorAlerts, new Diagnostics.Alerts.SensorAlertsFrame { States = states }, AppJsonContext.Default.SensorAlertsFrame);
+
     public static void BroadcastSensorAlerts(MultiplexHub hub, System.Collections.Generic.List<Diagnostics.Alerts.SensorAlertState> states)
     {
         if (!hub.TopicHasSubscribers(SensorAlerts))
