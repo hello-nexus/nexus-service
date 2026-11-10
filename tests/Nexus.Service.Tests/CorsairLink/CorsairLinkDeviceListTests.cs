@@ -13,20 +13,21 @@ public class CorsairLinkDeviceListTests
     private const byte Devices = 0x36;
     private const int ListCapacity = CorsairLinkProtocol.ReportLength - 4;
 
-    /// <summary>Serves a device-list stream (data-type, channels, records) split across reads like the hub: the first read carries what fits, the next read the rest (or times out).</summary>
+    public enum Second { Report, Timeout, ErrorStatus, ErrorStatusWithGarbage }
+
+    /// <summary>Serves a device-list stream split across reads: the first read carries what fits, the second the rest, or the failure in <see cref="SecondRead"/>.</summary>
     private sealed class ListHub : IHidDevice
     {
         private readonly byte[] _stream;
-        private readonly bool _continuationAvailable;
         private readonly Dictionary<byte, byte> _handles = new();
         private readonly Queue<byte[]> _responses = new();
         private int _listReads;
         public int ListReads => _listReads;
+        public Second SecondRead = Second.Report;
 
-        public ListHub(byte[] stream, bool continuationAvailable = true)
+        public ListHub(byte[] stream)
         {
             _stream = stream;
-            _continuationAvailable = continuationAvailable;
         }
 
         public int VendorId => CorsairLinkProtocol.VendorId;
@@ -40,6 +41,7 @@ public class CorsairLinkDeviceListTests
         {
             var cmd = report.Slice(CorsairLinkProtocol.HeaderSize).ToArray();
             var status = 0;
+            var echo = cmd[0];
             var payload = Array.Empty<byte>();
             switch (cmd[0])
             {
@@ -65,17 +67,27 @@ public class CorsairLinkDeviceListTests
                     break;
                 case 0x08:
                     if (!_handles.TryGetValue(cmd[1], out var res)) status = 3;
-                    else if (res == Devices && _listReads == 1 && !_continuationAvailable)
+                    else if (res == Devices && _listReads == 1 && SecondRead != Second.Report)
                     {
-                        // No second report arrives, so that read times out.
                         _listReads++;
-                        return true;
+                        switch (SecondRead)
+                        {
+                            case Second.Timeout:
+                                return true;
+                            case Second.ErrorStatus:
+                                status = 3;
+                                break;
+                            default:
+                                status = 3;
+                                payload = Enumerable.Repeat((byte)0xFF, ListCapacity).ToArray();
+                                break;
+                        }
                     }
                     else payload = ReadResource(res);
                     break;
             }
             var resp = new byte[CorsairLinkProtocol.WriteBufferLength];
-            resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = cmd[0];
+            resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = echo;
             resp[1 + CorsairLinkProtocol.ResponseStatusOffset] = (byte)status;
             payload.CopyTo(resp, 1 + 4);
             _responses.Enqueue(resp);
@@ -131,11 +143,11 @@ public class CorsairLinkDeviceListTests
         return bytes.ToArray();
     }
 
-    // 16 devices with 26-char serials and four empty slots (ch9-12), then ch19 LX and ch20 RX: 576 bytes of records, over the 505 one report holds.
-    private static byte[] LongList() => Stream(20, ch => ch switch
+    // Long serials with four empty slots (ch9-12) and an RX at the last channel push the records past one report.
+    private static byte[] LongList(int channels = 20) => Stream(channels, ch => ch switch
     {
         >= 9 and <= 12 => new byte[8],
-        20 => Record(15, 0, 26),
+        _ when ch == channels => Record(15, 0, 26),
         _ => Record(2, 0, 26),
     });
 
@@ -155,18 +167,41 @@ public class CorsairLinkDeviceListTests
         var channels = hub.State.Devices.Select(d => d.Channel).ToArray();
         Assert.Equal(16, channels.Length);
         Assert.Equal(new[] { 19, 20 }, channels.TakeLast(2));
-        Assert.False(hub.State.DeviceListTruncated);
-        // 14 LX fans at 18 LEDs plus the ch20 RX at 8: the colour frame covers ch19 and ch20.
-        Assert.Equal((15 * 18 + 8) * 3, hub.State.Devices.Sum(d => d.LedCount) * 3);
+        Assert.Equal(15 * 18 + 8, hub.State.Devices.Sum(d => d.LedCount));
+        Assert.Equal(0, hub.TruncationWarnings);
+    }
+
+    [Theory]
+    [InlineData(Second.Timeout, 21)]
+    [InlineData(Second.ErrorStatus, 22)]
+    [InlineData(Second.ErrorStatusWithGarbage, 23)]
+    public void A_continuation_that_is_not_accepted_leaves_the_list_truncated_and_warns(Second second, int channels)
+    {
+        var device = new ListHub(LongList(channels)) { SecondRead = second };
+        using var hub = Connect(device);
+
+        Assert.DoesNotContain(hub.State.Devices, d => d.Channel >= 19);
+        Assert.Equal(1, hub.TruncationWarnings);
     }
 
     [Fact]
-    public void A_missing_continuation_is_reported_as_a_truncated_device_list()
+    public void A_continuation_that_fails_on_one_poll_keeps_the_previous_topology_and_warns_once()
     {
-        using var hub = Connect(new ListHub(LongList(), continuationAvailable: false));
+        var device = new ListHub(LongList(24));
+        using var hub = Connect(device);
+        var before = hub.State.Devices.Select(d => d.Channel).ToArray();
 
-        Assert.True(hub.State.DeviceListTruncated);
-        Assert.DoesNotContain(hub.State.Devices, d => d.Channel >= 19);
+        device.SecondRead = Second.Timeout;
+        Assert.True(hub.Poll());
+        Assert.Equal(before, hub.State.Devices.Select(d => d.Channel));
+
+        device.SecondRead = Second.Report;
+        Assert.True(hub.Poll());
+        device.SecondRead = Second.Timeout;
+        Assert.True(hub.Poll());
+
+        Assert.Equal(before, hub.State.Devices.Select(d => d.Channel));
+        Assert.Equal(1, hub.TruncationWarnings);
     }
 
     [Fact]
@@ -177,7 +212,6 @@ public class CorsairLinkDeviceListTests
         using var hub = Connect(device);
 
         Assert.Equal(new[] { 1, 2, 3 }, hub.State.Devices.Select(d => d.Channel));
-        Assert.False(hub.State.DeviceListTruncated);
         Assert.Equal(1, device.ListReads);
     }
 

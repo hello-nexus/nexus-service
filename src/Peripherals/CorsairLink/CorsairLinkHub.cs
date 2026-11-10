@@ -108,6 +108,19 @@ public sealed class CorsairLinkHub : IDisposable
     private readonly int[] _owedReplies = new int[256];
     private readonly long[] _owedSinceMs = new long[256];
     private bool _traceQuiet;
+    private bool _listDiagLogged;
+    private bool _truncationLogged;
+    internal int TruncationWarnings { get; private set; }
+    // Last device list that parsed completely; stands in when a later continuation read fails.
+    private (int Channels, List<CorsairLinkProtocol.DiscoveredDevice> Devices)? _lastCompleteList;
+
+    private sealed class DeviceListRead
+    {
+        public List<CorsairLinkProtocol.DiscoveredDevice> Devices = new();
+        public CorsairLinkProtocol.DeviceListInfo Info;
+        public bool Continued;
+        public bool ContinuationRejected;
+    }
 
     /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and its hex put in <paramref name="ownHeard"/>; any other report is another host and its hex goes in <paramref name="heard"/>.</summary>
     public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out string ownHeard)
@@ -215,6 +228,9 @@ public sealed class CorsairLinkHub : IDisposable
             _colorReopenDue = false;
             _redetecting = false;
             _redetectRequested = false;
+            _listDiagLogged = false;
+            _truncationLogged = false;
+            _lastCompleteList = null;
         }
     }
 
@@ -627,24 +643,36 @@ public sealed class CorsairLinkHub : IDisposable
 
     private bool RefreshLocked()
     {
-        var devResp = ReadEndpointLocked(CorsairLinkProtocol.ModeGetDevices, CorsairLinkProtocol.DataGetDevices, continuation: true);
+        var listRead = new DeviceListRead();
+        var devResp = ReadEndpointLocked(CorsairLinkProtocol.ModeGetDevices, CorsairLinkProtocol.DataGetDevices, listRead);
         if (devResp == null)
         {
             TraceNote("0x36 read returned no device list");
             return false;
         }
-        var discovered = CorsairLinkProtocol.ParseDevices(devResp, out var listInfo);
+        var discovered = listRead.Devices;
+        var listInfo = listRead.Info;
+        if (listInfo.Truncated && !_truncationLogged)
+        {
+            _truncationLogged = true;
+            TruncationWarnings++;
+            ServiceLog.Warn($"[corsair] device list cut off after ch{listInfo.LastChannel} of {listInfo.Channels} channels; later channels stay dark");
+        }
+        if (!listInfo.Truncated)
+        {
+            _lastCompleteList = (listInfo.Channels, discovered);
+        }
+        else if (_lastCompleteList is { } previous && previous.Channels == listInfo.Channels)
+        {
+            discovered = previous.Devices;
+        }
         TraceNote($"0x36 devices={discovered.Count}");
         if (!_listDiagLogged)
         {
             _listDiagLogged = true;
-            ServiceLog.Info($"[corsair] device list: channels={listInfo.Channels} bytes={listInfo.BytesUsed}/{listInfo.BytesAvailable} continuation={(_listContinued ? "read" : "none")}");
+            var continuation = listRead.Continued ? "read" : listRead.ContinuationRejected ? "failed" : "none";
+            ServiceLog.Info($"[corsair] device list: channels={listInfo.Channels} bytes={listInfo.BytesUsed}/{listInfo.BytesAvailable} continuation={continuation}");
         }
-        if (listInfo.Truncated && !_truncationLogged)
-        {
-            ServiceLog.Warn($"[corsair] device list cut off after ch{listInfo.LastChannel} of {listInfo.Channels} channels; later channels stay dark");
-        }
-        _truncationLogged = listInfo.Truncated;
 
         // Resolve dynamic LED counts for variable-LED devices (adapters, Commander Duo).
         var ledCounts = new int[CorsairLinkProtocol.SensorArrayLength];
@@ -698,7 +726,6 @@ public sealed class CorsairLinkHub : IDisposable
         LogDevicesIfChanged(list);
         State.Devices = list;
         State.HasLcd = hasLcd;
-        State.DeviceListTruncated = listInfo.Truncated;
         State.UnmappedChannels = unmapped;
         return true;
     }
@@ -751,15 +778,10 @@ public sealed class CorsairLinkHub : IDisposable
 
     // close -> open -> read one endpoint; returns a copy of the response (the
     // shared _read buffer is clobbered by the trailing close), or null on failure.
-    // With continuation, a first report whose device list runs past its end is
-    // followed by a second read whose data (past the 4-byte header) is appended, so
-    // a longer list parses as one buffer. A list that fits sends no extra command,
-    // so a healthy chain pays no extra read under the hub lock on every poll.
-    private bool _listDiagLogged;
-    private bool _truncationLogged;
-    private bool _listContinued;
-
-    private byte[]? ReadEndpointLocked(byte mode, ReadOnlySpan<byte> dataType, bool continuation = false)
+    // With a list, a first report whose device list runs past its end is followed
+    // by a second read whose data past the header is appended; a list that fits
+    // sends no extra command.
+    private byte[]? ReadEndpointLocked(byte mode, ReadOnlySpan<byte> dataType, DeviceListRead? list = null)
     {
         Span<byte> m = stackalloc byte[] { mode };
         _traceQuiet = mode != CorsairLinkProtocol.ModeGetDevices;
@@ -771,21 +793,31 @@ public sealed class CorsairLinkHub : IDisposable
         if (n > 0 && _read[4] == dataType[0] && _read[5] == dataType[1])
         {
             copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
-            _listContinued = false;
-            CorsairLinkProtocol.DeviceListInfo first = default;
-            if (continuation) CorsairLinkProtocol.ParseDevices(copy, out first);
-            if (continuation && first.Truncated)
+            if (list != null)
             {
-                var n2 = Transfer(CorsairLinkProtocol.CmdRead, m);
-                _listContinued = n2 > CorsairLinkProtocol.ContinuationHeaderSize
-                    && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdRead[0];
-                if (_listContinued)
+                list.Devices = CorsairLinkProtocol.ParseDevices(copy, out var first);
+                list.Info = first;
+                if (first.Truncated)
                 {
-                    var extra = CorsairLinkProtocol.ReportLength - CorsairLinkProtocol.ContinuationHeaderSize;
-                    var joined = new byte[CorsairLinkProtocol.ReportLength + extra];
-                    copy.CopyTo(joined, 0);
-                    _read.AsSpan(CorsairLinkProtocol.ContinuationHeaderSize, extra).CopyTo(joined.AsSpan(CorsairLinkProtocol.ReportLength));
-                    copy = joined;
+                    var n2 = Transfer(CorsairLinkProtocol.CmdRead, m);
+                    var accepted = n2 > CorsairLinkProtocol.ContinuationHeaderSize
+                        && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdRead[0]
+                        && _read[CorsairLinkProtocol.ResponseStatusOffset] == 0;
+                    if (accepted)
+                    {
+                        var extra = CorsairLinkProtocol.ReportLength - CorsairLinkProtocol.ContinuationHeaderSize;
+                        var joined = new byte[CorsairLinkProtocol.ReportLength + extra];
+                        copy.CopyTo(joined, 0);
+                        _read.AsSpan(CorsairLinkProtocol.ContinuationHeaderSize, extra).CopyTo(joined.AsSpan(CorsairLinkProtocol.ReportLength));
+                        copy = joined;
+                        list.Devices = CorsairLinkProtocol.ParseDevices(copy, out var joinedInfo);
+                        list.Info = joinedInfo;
+                        list.Continued = true;
+                    }
+                    else
+                    {
+                        list.ContinuationRejected = true;
+                    }
                 }
             }
         }

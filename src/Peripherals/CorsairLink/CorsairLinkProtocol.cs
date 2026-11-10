@@ -138,7 +138,7 @@ public static class CorsairLinkProtocol
         public string Serial { get; }
     }
 
-    /// <summary>Header bytes of a continuation report that are not list data (report id, busy, command echo, status).</summary>
+    /// <summary>Header bytes of a continuation report that are not list data ([0], busy, command echo, status).</summary>
     public const int ContinuationHeaderSize = 4;
 
     /// <summary>How a device-list parse ended.</summary>

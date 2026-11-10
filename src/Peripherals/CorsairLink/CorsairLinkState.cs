@@ -46,8 +46,5 @@ public sealed class CorsairLinkState
     public bool HasLcd { get; set; }
 
     /// <summary>Listed speed-capable channels the hub has no sensor slot for (dark until re-detected).</summary>
-    /// <summary>The hub's device list was cut off in the bytes read, so higher channels are missing.</summary>
-    public bool DeviceListTruncated { get; set; }
-
     public IReadOnlyList<int> UnmappedChannels { get; set; } = Array.Empty<int>();
 }
