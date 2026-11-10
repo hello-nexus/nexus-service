@@ -1305,8 +1305,8 @@ public sealed class RgbBridge : IDisposable
         var state = SmbusMutexProbe();
         var overlap = overlapBefore || WalkWatch.MaySelfHoldSmbus();
         var tag = wedged ? "lhm-wedged" : overlap ? "lhm-walk" : "lhm-idle";
-        // A walk stuck in one SPD item is a wedge, not a normal read, so it stays evidence; the fallback triggers ignore overlap entirely.
-        return (!idleOnly || wedged || !overlap, state, tag);
+        // A walk inside a memory item is the one place our code takes the mutex, and its reads can starve the daemon's detection for minutes, so it stays evidence; only a sample between items says nothing.
+        return (!idleOnly || wedged || !overlap || WalkWatch.InSmbusItem(), state, tag);
     }
 
     /// <summary>How long our walk may sit in one memory item before a held mutex stops being explained by a normal SPD read.</summary>
@@ -1348,12 +1348,33 @@ public sealed class RgbBridge : IDisposable
             }
         }
         var decided = heldAll && counted >= (idleOnly ? SelfRestartMinCounted : SelfRestartMutexSamples);
+        if (decided)
+        {
+            ProbeHolderByQuiesce();
+        }
         if (Interlocked.Exchange(ref _heldDiagResume, resume) != resume)
         {
             ServiceLog.Info($"[resume] smbus mutex samples after resume: {string.Join(",", seen)} (counted {counted}, restart={decided}); {LhmWalkSummary()}; holder process is not obtainable in-process");
         }
         return decided;
     }
+
+    /// <summary>Pauses our own DIMM reads, waits for the walk to leave its memory item, and samples once: free means our reads held it, held means another process does.</summary>
+    private void ProbeHolderByQuiesce()
+    {
+        WalkWatch.QuiesceSpdFor(SelfRestartQuiesceWait + TimeSpan.FromSeconds(7));
+        var waited = TimeSpan.Zero;
+        var step = TimeSpan.FromMilliseconds(100);
+        while (WalkWatch.InSmbusItem() && waited < SelfRestartQuiesceWait)
+        {
+            Thread.Sleep(step);
+            waited += step;
+        }
+        var state = SmbusMutexProbe();
+        ServiceLog.Info($"[resume] smbus mutex after pausing our DIMM reads: {state}; holder is {(state == "held" ? "not our DIMM reads" : "our DIMM reads or a transient")}");
+    }
+
+    internal TimeSpan SelfRestartQuiesceWait { get; set; } = TimeSpan.FromSeconds(3);
 
     private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source, idleOnly: false));
 
