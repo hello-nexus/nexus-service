@@ -461,6 +461,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             var item = hw.Identifier.ToString();
             if (_walkWatch.SpdQuiesced && item.StartsWith("/memory/dimm", StringComparison.Ordinal))
             {
+                _walkWatch.SetItem(null);
                 return;
             }
             _walkWatch.SetItem(item);
