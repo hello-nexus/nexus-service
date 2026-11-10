@@ -138,38 +138,83 @@ public static class CorsairLinkProtocol
         public string Serial { get; }
     }
 
+    /// <summary>Header bytes of a continuation report that are not list data (report id, busy, command echo, status).</summary>
+    public const int ContinuationHeaderSize = 4;
+
+    /// <summary>How a device-list parse ended.</summary>
+    public readonly struct DeviceListInfo
+    {
+        public DeviceListInfo(int channels, int bytesUsed, int bytesAvailable, bool truncated, int lastChannel)
+        {
+            Channels = channels;
+            BytesUsed = bytesUsed;
+            BytesAvailable = bytesAvailable;
+            Truncated = truncated;
+            LastChannel = lastChannel;
+        }
+
+        /// <summary>Slot count the hub reported (resp[6]).</summary>
+        public int Channels { get; }
+        public int BytesUsed { get; }
+        public int BytesAvailable { get; }
+        /// <summary>A slot or serial did not fit in the bytes read; later channels were not parsed.</summary>
+        public bool Truncated { get; }
+        /// <summary>Last slot fully parsed (0 when none).</summary>
+        public int LastChannel { get; }
+    }
+
+    public static List<DiscoveredDevice> ParseDevices(ReadOnlySpan<byte> resp) => ParseDevices(resp, out _);
+
     /// <summary>
     /// Decode the connected-device list from a <see cref="ModeGetDevices"/> read.
     /// channels=resp[6]; each slot is an 8-byte record (type=rec[2], model=rec[3])
     /// followed by a variable-length serial whose length is rec[7]. A slot with
-    /// length 0 is empty.
+    /// length 0 is empty. The list can span two reports (see
+    /// <see cref="ContinuationHeaderSize"/>); <paramref name="info"/> reports a cut-off list.
     /// </summary>
-    public static List<DiscoveredDevice> ParseDevices(ReadOnlySpan<byte> resp)
+    public static List<DiscoveredDevice> ParseDevices(ReadOnlySpan<byte> resp, out DeviceListInfo info)
     {
         var list = new List<DiscoveredDevice>();
-        if (resp.Length < 7) return list;
+        if (resp.Length < 7)
+        {
+            info = new DeviceListInfo(0, 0, 0, false, 0);
+            return list;
+        }
         int channels = resp[6];
         var data = resp.Slice(7);
         var pos = 0;
+        var last = 0;
+        var truncated = false;
         for (var i = 1; i <= channels; i++)
         {
-            if (pos + 8 > data.Length) break;
+            if (pos + 8 > data.Length)
+            {
+                truncated = true;
+                break;
+            }
             int idLen = data[pos + 7];
             if (idLen == 0)
             {
                 pos += 8;
+                last = i;
                 continue;
             }
             int type = data[pos + 2];
             int model = data[pos + 3];
-            var serial = "";
-            if (pos + 8 + idLen <= data.Length)
+            if (pos + 8 + idLen > data.Length)
             {
-                serial = System.Text.Encoding.ASCII.GetString(data.Slice(pos + 8, idLen));
+                // The device is real but its serial is cut off; keep it so its channel still lights.
+                list.Add(new DiscoveredDevice(i, type, model, ""));
+                last = i;
+                truncated = true;
+                break;
             }
+            var serial = System.Text.Encoding.ASCII.GetString(data.Slice(pos + 8, idLen));
             list.Add(new DiscoveredDevice(i, type, model, serial));
             pos += 8 + idLen;
+            last = i;
         }
+        info = new DeviceListInfo(channels, pos, data.Length, truncated, last);
         return list;
     }
 
