@@ -751,10 +751,10 @@ public sealed class CorsairLinkHub : IDisposable
 
     // close -> open -> read one endpoint; returns a copy of the response (the
     // shared _read buffer is clobbered by the trailing close), or null on failure.
-    // With continuation, a matching first report is followed by a second read whose
-    // data (past the 4-byte header) is appended, so a list longer than one report
-    // parses as one buffer. The second read is our own command, so its echo cannot
-    // leave a reply owed.
+    // With continuation, a first report whose device list runs past its end is
+    // followed by a second read whose data (past the 4-byte header) is appended, so
+    // a longer list parses as one buffer. A list that fits sends no extra command,
+    // so a healthy chain pays no extra read under the hub lock on every poll.
     private bool _listDiagLogged;
     private bool _truncationLogged;
     private bool _listContinued;
@@ -771,7 +771,10 @@ public sealed class CorsairLinkHub : IDisposable
         if (n > 0 && _read[4] == dataType[0] && _read[5] == dataType[1])
         {
             copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
-            if (continuation)
+            _listContinued = false;
+            CorsairLinkProtocol.DeviceListInfo first = default;
+            if (continuation) CorsairLinkProtocol.ParseDevices(copy, out first);
+            if (continuation && first.Truncated)
             {
                 var n2 = Transfer(CorsairLinkProtocol.CmdRead, m);
                 _listContinued = n2 > CorsairLinkProtocol.ContinuationHeaderSize

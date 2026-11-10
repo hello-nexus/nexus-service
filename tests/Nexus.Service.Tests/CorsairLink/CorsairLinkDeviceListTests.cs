@@ -173,10 +173,12 @@ public class CorsairLinkDeviceListTests
     public void A_single_report_list_is_unchanged()
     {
         var stream = Stream(3, _ => Record(2, 0, 26));
-        using var hub = Connect(new ListHub(stream));
+        var device = new ListHub(stream);
+        using var hub = Connect(device);
 
         Assert.Equal(new[] { 1, 2, 3 }, hub.State.Devices.Select(d => d.Channel));
         Assert.False(hub.State.DeviceListTruncated);
+        Assert.Equal(1, device.ListReads);
     }
 
     [Fact]
