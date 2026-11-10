@@ -98,12 +98,10 @@ public class Np50LegacyDutyTests
     public void Heartbeat_reasserts_the_held_legacy_duty_only_when_due_and_in_software_mode()
     {
         var (hub, t) = NewHub();
-        var provider = new Np50CoolingProvider(hub);
-        provider.SetFanSpeed(LegacyId, 42);
-        t.Clear();
         var now = 1_000_000L;
         hub.Clock = () => now;
-        hub.SetLegacyFanSpeed(42);
+        var provider = new Np50CoolingProvider(hub);
+        provider.SetFanSpeed(LegacyId, 42);
         t.Clear();
 
         // Hub not yet reporting Software: nothing to re-assert.
