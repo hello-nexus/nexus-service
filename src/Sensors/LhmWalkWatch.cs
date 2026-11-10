@@ -88,25 +88,25 @@ internal sealed class LhmWalkWatch
         }
     }
 
-    private string? _item;
-    private long _itemStartMs;
+    private sealed record ItemAt(string Item, long StartMs);
 
-    /// <summary>Names the hardware item the walk is inside; diagnostics only, it says which of our threads is in SMBus or driver code.</summary>
-    internal void SetItem(string? item)
-    {
-        Interlocked.Exchange(ref _itemStartMs, item is null ? 0 : Math.Max(1, _nowMs()));
-        Volatile.Write(ref _item, item);
-    }
+    private ItemAt? _item;
+
+    /// <summary>Names the hardware item the walk is inside; says which of our threads is in SMBus or driver code.</summary>
+    internal void SetItem(string? item) => Volatile.Write(ref _item, item is null ? null : new ItemAt(item, Math.Max(1, _nowMs())));
 
     /// <summary>The item the running walk is inside and how long it has been there, or null.</summary>
-    internal (string Item, TimeSpan Age)? CurrentItem
+    internal (string Item, TimeSpan Age)? CurrentItem => Volatile.Read(ref _item) is { } at ? (at.Item, TimeSpan.FromMilliseconds(_nowMs() - at.StartMs)) : null;
+
+    /// <summary>True while our own walk could be holding the SMBus mutex: a walk is running and it is in a memory item, the SPD gate rebuild, or between items.</summary>
+    internal bool MaySelfHoldSmbus()
     {
-        get
+        if (CurrentWalkAge is null)
         {
-            var item = Volatile.Read(ref _item);
-            var start = Interlocked.Read(ref _itemStartMs);
-            return item is null || start == 0 ? null : (item, TimeSpan.FromMilliseconds(_nowMs() - start));
+            return false;
         }
+        var at = Volatile.Read(ref _item);
+        return at is null || at.Item.StartsWith("/memory", StringComparison.Ordinal) || at.Item == "spd-gate";
     }
 
     internal void BeginWalk()
