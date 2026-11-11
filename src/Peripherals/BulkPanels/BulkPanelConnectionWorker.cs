@@ -105,6 +105,11 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
                             ServiceLog.Info($"[{driver.HandlerId}] device re-enumerated; reopening");
                             break;
                         }
+                        if (driver.RebootWanted)
+                        {
+                            ServiceLog.Info($"[{driver.HandlerId}] rebooting the panel");
+                            break;
+                        }
                         if (driver.GeometryStale && _hub.Renegotiate())
                         {
                             ServiceLog.Info($"[{driver.HandlerId}] renegotiated at {_hub.Width}x{_hub.Height}");

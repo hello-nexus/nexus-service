@@ -163,8 +163,23 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         }
     }
 
+    private sealed class FakeOrientableTransport : IStreamedPanelTransport, IOrientablePanelTransport
+    {
+        public Func<(int Rotation, bool Mirror)>? Source { get; private set; }
+        public bool IsOpen { get; private set; }
+        public string Serial { get; }
+        public FakeOrientableTransport(string serial) { Serial = serial; }
+        public void BindOrientation(Func<(int Rotation, bool Mirror)> source) => Source = source;
+        public void Open() => IsOpen = true;
+        public void StartPlayer() { }
+        public void Write(ReadOnlySpan<byte> annexBAccessUnit) { }
+        public void Dispose() { IsOpen = false; }
+    }
+
     private sealed class FakeDiscovery : IStreamedPanelDiscovery
     {
+        public bool UseOrientableTransport { get; set; }
+        public List<FakeOrientableTransport> Orientables { get; } = new();
         public string HandlerId => "fake-panel";
         public List<StreamedPanelDeviceInfo> Devices { get; } = new();
         public List<FakeTransport> Transports { get; } = new();
@@ -179,6 +194,12 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
 
         public IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info)
         {
+            if (UseOrientableTransport)
+            {
+                var orientable = new FakeOrientableTransport(info.Serial);
+                Orientables.Add(orientable);
+                return orientable;
+            }
             if (UseBrightnessTransport)
             {
                 var brightness = new FakeBrightnessTransport(info.Serial);
@@ -189,6 +210,107 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
             Transports.Add(t);
             return t;
         }
+    }
+
+    private static StreamedPanelDeviceInfo TurnableGlass(int width = 854, int height = 480) => new()
+    {
+        Serial = "vision",
+        Profile = new StreamedPanelProfile
+        {
+            Kind = "vision",
+            DisplayName = "Vision",
+            Surface = PanelSurfaces.LcdWide,
+            Family = "thermalright-lcd",
+            CssWidth = width,
+            CssHeight = height,
+            SupportsRenderTurn = true,
+        },
+    };
+
+    [Fact]
+    public void A_quarter_turn_on_non_square_glass_remakes_the_session_at_the_swapped_size_and_a_turn_back_remakes_it_again()
+    {
+        _discovery.Devices.Add(TurnableGlass());
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var flat = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.Equal((854, 480), (flat.CssWidth, flat.CssHeight));
+        var id = flat.PanelDeviceId;
+
+        // A half turn is the same class: nothing is remade.
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 180 });
+        coordinator.TickOnce();
+        Assert.Equal(flat.SessionId, Assert.Single(coordinator.GetAssignments().Assignments).SessionId);
+
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 90 });
+        coordinator.TickOnce();
+        var turned = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.NotEqual(flat.SessionId, turned.SessionId);
+        Assert.Equal((480, 854), (turned.CssWidth, turned.CssHeight));
+        // The record keeps the glass's own size and reports the render size beside it.
+        var record = _registry.Get(id)!;
+        Assert.Equal((854, 480), (record.Capabilities!.CssWidth, record.Capabilities.CssHeight));
+        Assert.Equal((480, 854), (record.RenderWidth, record.RenderHeight));
+
+        // 90 to 270 stays in the class.
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 270 });
+        coordinator.TickOnce();
+        Assert.Equal(turned.SessionId, Assert.Single(coordinator.GetAssignments().Assignments).SessionId);
+
+        _registry.Patch(id, new PanelDevicePatch { Rotation = 0 });
+        coordinator.TickOnce();
+        var back = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.NotEqual(turned.SessionId, back.SessionId);
+        Assert.Equal((854, 480), (back.CssWidth, back.CssHeight));
+        Assert.Equal((854, 480), (_registry.Get(id)!.Capabilities!.CssWidth, _registry.Get(id)!.Capabilities!.CssHeight));
+    }
+
+    [Fact]
+    public void The_orientation_the_coordinator_binds_starts_from_the_record_and_keeps_it_when_a_read_comes_back_empty()
+    {
+        var record = _registry.Allocate("Vision", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide, Family = "thermalright-lcd", CssWidth = 854, CssHeight = 480 });
+        _registry.Patch(record.Id, new PanelDevicePatch { Rotation = 270, Mirror = true });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["vision"] = new() { PanelDeviceId = record.Id } });
+        _discovery.UseOrientableTransport = true;
+        _discovery.Devices.Add(TurnableGlass());
+
+        Coordinator().TickOnce();
+
+        var source = Assert.Single(_discovery.Orientables).Source!;
+        Assert.Equal((270, true), source());
+        // The record going away reads as a failed read, not as an upright unmirrored mount.
+        _registry.Remove(record.Id);
+        Assert.Equal((270, true), source());
+    }
+
+    [Fact]
+    public void A_restart_with_the_glass_already_turned_starts_the_session_at_the_swapped_size()
+    {
+        var record = _registry.Allocate("Vision", new PanelDeviceCapabilities { Surface = PanelSurfaces.LcdWide, Family = "thermalright-lcd", CssWidth = 854, CssHeight = 480 });
+        _registry.Patch(record.Id, new PanelDevicePatch { Rotation = 270 });
+        _store.Save(new Dictionary<string, StreamedPanelRecord>(StringComparer.Ordinal) { ["vision"] = new() { PanelDeviceId = record.Id } });
+        _discovery.Devices.Add(TurnableGlass());
+
+        Coordinator().TickOnce();
+
+        var assignment = Assert.Single(Coordinator().GetAssignments().Assignments);
+        Assert.Equal((480, 854), (assignment.CssWidth, assignment.CssHeight));
+    }
+
+    [Fact]
+    public void Square_glass_and_glass_without_a_turned_render_keep_their_session_at_any_rotation()
+    {
+        _discovery.Devices.Add(TurnableGlass(480, 480));
+        var coordinator = Coordinator();
+        coordinator.TickOnce();
+        var square = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        _registry.Patch(square.PanelDeviceId, new PanelDevicePatch { Rotation = 90 });
+        coordinator.TickOnce();
+
+        var after = Assert.Single(coordinator.GetAssignments().Assignments);
+        Assert.Equal(square.SessionId, after.SessionId);
+        Assert.Equal((480, 480), (after.CssWidth, after.CssHeight));
     }
 
     [Fact]
@@ -588,7 +710,7 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Assert.Equal(new[] { "fixed-key" }, _store.Load().Keys);
     }
 
-    private void Touch(string id) => _config.Update(s => s.PanelDevices[id].Flip180 = false);
+    private void Touch(string id) => _config.Update(s => s.PanelDevices[id].AccentColor = "#010203");
 
     [Fact]
     public void The_customers_two_record_shape_keeps_the_record_with_a_stored_setting()
@@ -860,54 +982,40 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Profile = new StreamedPanelProfile { Kind = "sized", DisplayName = "Sized", Surface = "lcd-wide", CssWidth = width, CssHeight = height, Codec = codec },
     };
 
-    [Fact]
-    public void A_raw_panel_over_1000_px_renders_native_until_its_record_asks_for_high_performance()
+    [Theory]
+    [InlineData(2288, 1080)]
+    [InlineData(1920, 480)]
+    public void A_legacy_high_performance_setting_streams_at_native_and_never_re_mints_the_session(int width, int height)
     {
-        _discovery.Devices.Add(Sized(2288, 1080));
+        _discovery.Devices.Add(Sized(width, height));
         var coordinator = Coordinator();
         coordinator.TickOnce();
-        var full = Assert.Single(coordinator.GetAssignments().Assignments);
+        var first = Assert.Single(coordinator.GetAssignments().Assignments);
+        var panelId = first.PanelDeviceId;
 
-        Assert.Equal(1.0, full.Dpr);
-        Assert.Equal(2288, full.CssWidth);
-        Assert.Equal(1080, full.CssHeight);
-        var record = _registry.Get(full.PanelDeviceId)!;
-        Assert.Null(record.HighResolution);
-        Assert.True(record.Capabilities!.SupportsRenderScale);
-        Assert.Equal(1.0, record.Capabilities.Dpr);
-
-        _registry.Patch(full.PanelDeviceId, new PanelDevicePatch { HighResolution = false });
-        coordinator.TickOnce();
-        var half = Assert.Single(coordinator.GetAssignments().Assignments);
-
-        Assert.Equal(0.5, half.Dpr);
-        Assert.NotEqual(full.SessionId, half.SessionId);
-        Assert.Equal(full.PanelDeviceId, half.PanelDeviceId);
-
-        _registry.Patch(full.PanelDeviceId, new PanelDevicePatch { HighResolution = true });
-        coordinator.TickOnce();
-
-        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
-    }
-
-    [Fact]
-    public void A_record_that_asks_for_high_performance_renders_lower_from_the_first_session()
-    {
-        _discovery.Devices.Add(Sized(1920, 480));
-        var coordinator = Coordinator();
-        coordinator.TickOnce();
-        var panelId = Assert.Single(coordinator.GetAssignments().Assignments).PanelDeviceId;
-        Assert.Equal(1.0, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        // The retired Render mode PATCH field is accepted and has no effect.
         _registry.Patch(panelId, new PanelDevicePatch { HighResolution = false });
+        coordinator.TickOnce();
+        var patched = Assert.Single(coordinator.GetAssignments().Assignments);
+
+        Assert.Equal(first.SessionId, patched.SessionId);
+        Assert.Equal(1.0, patched.Dpr);
+        Assert.Equal(width, patched.CssWidth);
+        Assert.Equal(height, patched.CssHeight);
+
         _discovery.Devices.Clear();
         _nowMs += 120_000;
         coordinator.TickOnce();
         Assert.Empty(coordinator.GetAssignments().Assignments);
 
-        _discovery.Devices.Add(Sized(1920, 480));
+        _discovery.Devices.Add(Sized(width, height));
         coordinator.TickOnce();
+        var again = Assert.Single(coordinator.GetAssignments().Assignments);
 
-        Assert.Equal(2.0 / 3, Assert.Single(coordinator.GetAssignments().Assignments).Dpr);
+        Assert.Equal(panelId, again.PanelDeviceId);
+        Assert.Equal(1.0, again.Dpr);
+        Assert.Equal(width, again.CssWidth);
+        Assert.Equal(height, again.CssHeight);
     }
 
     [Theory]
@@ -923,7 +1031,6 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         var assignment = Assert.Single(coordinator.GetAssignments().Assignments);
 
         Assert.Equal(1.0, assignment.Dpr);
-        Assert.Null(_registry.Get(assignment.PanelDeviceId)!.Capabilities!.SupportsRenderScale);
     }
 
     [Fact]
@@ -1426,6 +1533,80 @@ public sealed class StreamedPanelCoordinatorTests : IDisposable
         Advance(coordinator, 5000);
         Assert.Equal(42, transport.LastApplied);
         Assert.Null(_registry.Get(panelId)!.LockRestoreBrightness);
+    }
+
+    [Fact]
+    public async Task A_followed_panel_with_no_recorded_slider_returns_to_its_hardware_level_after_a_lock()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        transport.Applied = 70;
+        var noon = new DateTime(2026, 6, 21, 12, 0, 0);
+        var key = StreamedPanelCoordinator.FollowKey(panelId);
+        _config.Update(s =>
+        {
+            s.Lighting.BrightnessSchedule = new()
+            {
+                Enabled = true,
+                SunShift = false,
+                Points = new() { new() { Hour = 0, Brightness = 50 }, new() { Hour = 12, Brightness = 50 } },
+            };
+            s.Devices.ScheduleFollowing.Add(key);
+        });
+        coordinator.ScheduleFollow = new Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState(_config, () => noon);
+        var surface = new Nexus.Service.Lighting.ScheduleFollow.PanelLcdScheduleSurface(coordinator);
+
+        Assert.Null(surface.Slider(key));
+        var hardware = await surface.ReadHardwareAsync(key, default);
+        Assert.Equal(70, hardware);
+        surface.RememberSlider(key, hardware!.Value);
+        coordinator.ApplyBrightness(panelId);
+        Assert.Equal(50, transport.Applied);
+
+        _lock.Set(true);
+        Advance(coordinator, 5000);
+        Assert.Equal(0, transport.LastApplied);
+        _lock.Set(false);
+        Advance(coordinator, 5000);
+        Assert.Equal(50, transport.Applied);
+
+        _config.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
+        coordinator.ApplyBrightness(panelId);
+        Assert.Equal(70, transport.Applied);
+    }
+
+    [Fact]
+    public async Task A_panel_slept_by_a_lock_before_it_had_a_slider_keeps_its_level_as_the_slider_while_capped()
+    {
+        var (coordinator, panelId, transport) = DimmablePanel(stored: null);
+        transport.Applied = 70;
+        var noon = new DateTime(2026, 6, 21, 12, 0, 0);
+        var key = StreamedPanelCoordinator.FollowKey(panelId);
+        _config.Update(s =>
+        {
+            s.Lighting.BrightnessSchedule = new()
+            {
+                Enabled = true,
+                SunShift = false,
+                Points = new() { new() { Hour = 0, Brightness = 50 }, new() { Hour = 12, Brightness = 50 } },
+            };
+            s.Devices.ScheduleFollowing.Add(key);
+        });
+        coordinator.ScheduleFollow = new Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState(_config, () => noon);
+        var surface = new Nexus.Service.Lighting.ScheduleFollow.PanelLcdScheduleSurface(coordinator);
+
+        _lock.Set(true);
+        Advance(coordinator, 5000);
+        Assert.Equal(70, _registry.Get(panelId)!.LockRestoreBrightness);
+        _lock.Set(false);
+        Advance(coordinator, 5000);
+
+        Assert.Equal(50, transport.Applied);
+        Assert.Equal(70, _registry.Get(panelId)!.LcdBrightness);
+        Assert.Null(await surface.ReadHardwareAsync(key, default));
+
+        _config.Update(s => s.Lighting.BrightnessSchedule.Enabled = false);
+        coordinator.ApplyBrightness(panelId);
+        Assert.Equal(70, transport.Applied);
     }
 
     [Fact]

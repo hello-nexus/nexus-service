@@ -275,6 +275,40 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         Assert.Equal(3, changes);
     }
 
+    [Fact]
+    public void Gate_off_releases_the_held_gt_port_even_when_the_primary_closed_on_its_own()
+    {
+        var primary = new GtTransport();
+        var ports = new[]
+        {
+            new Y70DisplayPort { PortName = "COM3", Serial = "TOUCH", Variant = Y70DisplayProtocol.VariantTouch },
+            new Y70DisplayPort { PortName = "COM7", Serial = "GTSER", Variant = Y70DisplayProtocol.VariantGt },
+        };
+        var gt = new GtTransport();
+        var hub = new Y70DisplayHub(new FixedDiscovery(ports), p => p.PortName == "COM3" ? primary : gt);
+        var config = new InMemoryConfigStore();
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), new DeviceControlGate(config), new FakeY70Provider());
+        Assert.True(hub.EnsureConnected());
+        Assert.True(hub.EnsureBacklightConnected());
+        primary.Open = false;
+        Assert.False(hub.IsConnected);
+        Assert.True(hub.HasBacklight);
+
+        config.Update(s => s.Devices.NexusControlDisabled.Add(Nexus.Service.Devices.Handlers.Y70Handler.HandlerId));
+        worker.Tick();
+
+        Assert.False(hub.HasBacklight);
+        Assert.True(gt.Disposed);
+    }
+
+    private sealed class FixedDiscovery : IY70DisplayPortDiscovery
+    {
+        private readonly IReadOnlyList<Y70DisplayPort> _ports;
+        public FixedDiscovery(IReadOnlyList<Y70DisplayPort> ports) => _ports = ports;
+        public IReadOnlyList<Y70DisplayPort> Discover() => _ports;
+    }
+
     private sealed class GtDiscovery : IY70DisplayPortDiscovery
     {
         public bool Present = true;
@@ -285,7 +319,9 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
 
     private sealed class GtTransport : INp50Transport
     {
-        public bool IsOpen => true;
+        public bool Open = true;
+        public bool Disposed;
+        public bool IsOpen => Open;
         public string Serial => "GTTEST1";
         public void Write(ReadOnlySpan<byte> data) { }
         public void DiscardInput() { }
@@ -296,7 +332,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
             reply.CopyTo(buffer);
             return reply.Length;
         }
-        public void Dispose() { }
+        public void Dispose() { Disposed = true; Open = false; }
     }
 
     private sealed class EmptyUsbEnumerator : IUsbEnumerator

@@ -127,6 +127,9 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
 
+    /// <summary>Brightness schedule: the level for a screen's MAC key and stored slider. The slider stays the user's; only the byte on the wire is scaled. Called outside the hub lock.</summary>
+    public Func<string, int, int>? ScheduleScale { get; set; }
+
     /// <summary>
     /// Raised under the hub lock with an AIO's MAC hex when it acknowledges RF control.
     /// The firmware then draws its own screen over whatever its USB link last showed.
@@ -1026,11 +1029,13 @@ public sealed partial class Slv3Hub : IDisposable
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        // The schedule cap reads settings, so it is resolved here for every bound AIO, never under the hub lock.
+        var aioScaled = aio ? ScaleAios(BoundAioKeys(aioScreens), aioScreens) : null;
         var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
         {
-            return DriveLocked(aioSensors, aioScreens, flexLcd);
+            return DriveLocked(aioSensors, aioScreens, aioScaled, flexLcd);
         }
         finally
         {
@@ -1038,7 +1043,36 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, Slv3FlexLcdFrame? flexLcd)
+    // The AIOs SyncAioLocked drives: bound to us, with pump control or a saved screen.
+    private List<string> BoundAioKeys(IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        lock (_lock)
+        {
+            return _lastFanRecords
+                .Where(r => r.IsHydroShift && IsBoundToUsLocked(r))
+                .Select(r => Convert.ToHexString(r.Mac))
+                .Where(k => _aioControl.ContainsKey(k) || screens?.ContainsKey(k) == true)
+                .ToList();
+        }
+    }
+
+    /// <summary>The schedule-scaled screen brightness per bound AIO; one with no saved screen scales the default.</summary>
+    internal Dictionary<string, int>? ScaleAios(IReadOnlyList<string> boundKeys, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        if (ScheduleScale is not { } scale || boundKeys.Count == 0)
+        {
+            return null;
+        }
+        var scaled = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var key in boundKeys)
+        {
+            var slider = screens is not null && screens.TryGetValue(key, out var screen) ? screen.Brightness : Slv3AioScreen.Default.Brightness;
+            scaled[key] = scale(key, slider);
+        }
+        return scaled;
+    }
+
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, IReadOnlyDictionary<string, int>? aioScaled, Slv3FlexLcdFrame? flexLcd)
     {
         lock (_lock)
         {
@@ -1053,7 +1087,7 @@ public sealed partial class Slv3Hub : IDisposable
                     return true;
                 }
                 SyncPwmLocked();
-                SyncAioLocked(aioSensors, aioScreens);
+                SyncAioLocked(aioSensors, aioScreens, aioScaled);
                 RefreshMasterMacLocked();
                 SendClockHeartbeatLocked(SyncFlexLcdLocked(flexLcd, _nowMs()));
                 RunSaveCfgScheduleLocked();
@@ -1751,7 +1785,7 @@ public sealed partial class Slv3Hub : IDisposable
     // echoes its cmdSeq, and the param block (pump timer plus LCD settings and
     // readings) goes out every DriveTick. The block always carries a pump timer,
     // so a screen-only AIO gets the default pump speed.
-    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens, IReadOnlyDictionary<string, int>? scaled)
     {
         if (_aioControl.Count == 0 && (screens is null || screens.Count == 0))
         {
@@ -1815,8 +1849,11 @@ public sealed partial class Slv3Hub : IDisposable
             // With the AIO's USB cable connected and Nexus widgets on, the streamed panel owns the
             // glass and the panel record's own setting is the only one that applies; this byte
             // stays at the user's value then, the same condition the web uses to hide this toggle.
-            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !UsbPanelOwnsGlass(key, shown.NexusWidgets);
-            shown = shown with { Brightness = AioLockBrightness(key, shown.Brightness, sleeping) };
+            var panelOwnsGlass = UsbPanelOwnsGlass(key, shown.NexusWidgets);
+            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !panelOwnsGlass;
+            // One screen can carry two schedule keys (this one and its streamed panel's); the panel's applies while it owns the glass.
+            var level = !panelOwnsGlass && scaled is not null && scaled.TryGetValue(key, out var capped) ? (byte)capped : shown.Brightness;
+            shown = shown with { Brightness = AioLockBrightness(key, level, sleeping) };
             var block = Slv3Protocol.BuildAioParamBlock(
                 sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
                 shown,
@@ -3405,6 +3442,11 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     /// <summary>RF payloads handed to the TX over the last <see cref="AirRateWindowMs"/>; drops older entries.</summary>
+    internal int RecentAirSends()
+    {
+        lock (_lock) return RecentAirSendsLocked();
+    }
+
     private int RecentAirSendsLocked()
     {
         var cutoff = _nowMs() - AirRateWindowMs;

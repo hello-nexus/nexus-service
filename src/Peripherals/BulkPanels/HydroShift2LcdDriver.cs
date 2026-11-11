@@ -81,7 +81,10 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { FrameRate });
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
         Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
-        ClearOverlay(pipe);
+        if (!ClearOverlay(pipe))
+        {
+            ServiceLog.Warn($"[{HandlerId}] overlay wipe at connect unanswered");
+        }
 
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(HydroShift2Protocol.Width, HydroShift2Protocol.Height);

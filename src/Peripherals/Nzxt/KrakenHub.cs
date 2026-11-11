@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Threading;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.PixelFormats;
@@ -23,6 +26,22 @@ public sealed class KrakenHub : IDisposable
     private const int DirectReplyTimeoutMs = 150;
     private const int PollReadTimeoutMs = 250;
 
+    // 2023 Kraken while an LCD stream is open (KrakenModel.CamSessionInit): the vendor app
+    // sends no status polls, the cooler reports on its own, and a keepalive goes out
+    // periodically. A poll is the fallback once no report has been read for the fallback window.
+    private const long CamKeepAliveMs = 28_000;
+    private const long CamStatusFallbackMs = 3_000;
+    private const long CamStatusStaleMs = 10_000;
+    private const long CamFallbackLogMs = 60_000;
+    private const long CamDiagMs = 30_000;
+    private const int CamBacklightDelayMs = 70;
+    // A frame on this model waits for the cooler's reply to its start command before the bulk. The
+    // wait is a small multiple of the vendor app's start-to-bulk gap, and a miss only moves on. The
+    // cooler never answers the end command, so the frame does not wait for one.
+    private const int CamStartReplyMs = 5;
+    /// <summary>How long a non-frame write waits for an open frame; a frame is well inside the default.</summary>
+    internal int CamWriteWaitMs { get; set; } = 40;
+
     // Bulk pixel data goes out in chunks; 64 KiB measured ~13 MB/s on the bench unit.
     private const int BulkChunkBytes = 64 * 1024;
     // Direct-path transfer size; divides a 640x640 BGR888 frame evenly.
@@ -30,9 +49,13 @@ public sealed class KrakenHub : IDisposable
 
     private readonly object _lock = new();
     // Serialises whole LCD transfers with each other. The stream path holds this across a
-    // frame while taking _lock only for the short HID steps, so the ~414 ms of pixels does
-    // not block the lighting writer: pixels ride the bulk endpoint, colours ride HID.
+    // frame while taking _lock only for the short HID steps, so the pixels do not block a
+    // reader of the snapshot: pixels ride the bulk endpoint, commands ride HID. On a 2023 Kraken
+    // the HID writes that are not part of the frame wait for it to close (AwaitFrameClosedLocked).
     private readonly object _lcdTransferLock = new();
+    // True from a 2023 Kraken frame's start command to its end command; guarded by _lock.
+    private bool _camFrameOpen;
+    private int _camWritersWaiting;
     private readonly IKrakenLcdTransportFactory? _lcdFactory;
     private IHidDevice? _device;
     private IKrakenLcdTransport? _lcd;
@@ -69,6 +92,14 @@ public sealed class KrakenHub : IDisposable
     // a transfer into the bucket it is currently displaying (code 9), so a stream has
     // to write an idle one and switch to it.
     private bool _streamReady;
+    private long _lastStatusMs;
+    private long _lastKeepAliveMs;
+    private long _fallbackLoggedMs;
+    private long _diagAtMs;
+    private int _statusReads;
+    private int _framesWritten;
+    private int _framesSkipped;
+    private int _statusFallbacks;
     private int _streamActiveBucket = -1;
     private long _streamRetryAtMs;
     private int _streamFailures;
@@ -110,6 +141,26 @@ public sealed class KrakenHub : IDisposable
 
     /// <summary>Millisecond clock the fade and the Z3 stream retry read; tests replace it.</summary>
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>Pause between the dark step and the real backlight at session open; tests replace it.</summary>
+    internal Action<int> DelayMs { get; set; } = Thread.Sleep;
+
+    /// <summary>
+    /// False once the last status report is too old to steer fans by. Always true off the
+    /// 2023 Kraken, whose per-second poll keeps the value fresh or fails the connection.
+    /// </summary>
+    public bool StatusFresh
+    {
+        get
+        {
+            if (!_modelRead.CamSessionInit)
+            {
+                return true;
+            }
+            var at = Volatile.Read(ref _lastStatusMs);
+            return at != 0 && Clock() - at < CamStatusStaleMs;
+        }
+    }
 
     internal LcdFadeRunner FadeRunner => _fadeRunner ??= new LcdFadeRunner(StepFade, onFault: FaultFade);
     private KrakenDisplayMode? _lockPendingMode;
@@ -179,11 +230,58 @@ public sealed class KrakenHub : IDisposable
             _lockSavedBrightness = _snapshot.LcdBrightness;
             _lockDimmed = true;
             _saveRestore?.Invoke(_lockSavedBrightness);
-            var from = _fade is { Down: false } rising ? rising.LevelAt(Clock()) : _lockSavedBrightness;
+            var from = _fade is { Down: false } rising ? rising.LevelAt(Clock()) : Scaled(_lockSavedBrightness);
             StartFadeLocked(from, 0, SleepBlackoutCoordinator.LockFadeDuration);
             ServiceLog.Info($"[lcd-lock] kraken LCD sleeping (backlight {_lockSavedBrightness}% kept)");
         }
     }
+
+    // The brightness schedule. The snapshot, the lock memory and the stored slider stay the user's
+    // level; only what goes to the cooler is scaled.
+    private Func<int, int>? _scale;
+    private Func<int?>? _loadSlider;
+    private Action<int>? _saveSlider;
+    private Func<bool>? _follows;
+
+    /// <summary>Wires the brightness schedule: the scale to the cooler's level, where the user's own slider is remembered (the cooler reads back only the scaled value), and whether the cooler follows the schedule.</summary>
+    public void BindSchedule(Func<int, int> scale, Func<int?> loadSlider, Action<int> saveSlider, Func<bool>? follows = null)
+    {
+        _scale = scale;
+        _loadSlider = loadSlider;
+        _saveSlider = saveSlider;
+        _follows = follows;
+    }
+
+    /// <summary>The user's slider as remembered by the schedule binding, or null.</summary>
+    public int? RememberedSlider => _loadSlider?.Invoke();
+
+    /// <summary>Records the user's slider without touching the cooler.</summary>
+    public void RememberSlider(int percent) => _saveSlider?.Invoke(Math.Clamp(percent, 0, 100));
+
+    private int Scaled(int slider) => _scale?.Invoke(slider) ?? slider;
+
+    /// <summary>Puts the current scaled level on the glass. Left alone while the lock holds it dark or a fade is running; those end on the scaled level themselves.</summary>
+    public bool ApplySchedule()
+    {
+        lock (_lcdTransferLock)
+        lock (_lock)
+        {
+            if (!_isConnected || _device == null || !_model.HasLcd || _lockDimmed || _lockRestorePending || _fade is not null)
+            {
+                return false;
+            }
+            // While following (or owed a restore) the remembered slider is the user's level; the snapshot may have
+            // adopted a capped reading at connect.
+            if (_follows?.Invoke() == true && _loadSlider?.Invoke() is { } slider && slider != _snapshot.LcdBrightness)
+            {
+                _snapshot = _snapshot.WithLcd(Math.Clamp(slider, 0, 100), _snapshot.LcdOrientationQuarterTurns);
+            }
+            return WriteLocked(BacklightReport(Scaled(_snapshot.LcdBrightness), _snapshot.LcdOrientationQuarterTurns));
+        }
+    }
+
+    private byte[] BacklightReport(int brightnessPercent, int orientationQuarterTurns) =>
+        KrakenProtocol.EncodeSetBacklight(brightnessPercent, orientationQuarterTurns, _model.CamSessionInit);
 
     private void ExitLockSleep()
     {
@@ -205,14 +303,15 @@ public sealed class KrakenHub : IDisposable
                 ApplyPendingWhileDarkLocked();
                 // Up from 0, or from the step a fade down was caught on.
                 var from = _fade is { Down: true } falling ? falling.LevelAt(Clock()) : 0;
-                if (from == _lockSavedBrightness)
+                var target = Scaled(_lockSavedBrightness);
+                if (from == target)
                 {
                     _fade = null;
-                    FinishRestoreLocked(WriteLocked(KrakenProtocol.EncodeSetBacklight(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)));
+                    FinishRestoreLocked(WriteLocked(BacklightReport(target, _snapshot.LcdOrientationQuarterTurns)));
                 }
                 else
                 {
-                    StartFadeLocked(from, _lockSavedBrightness, SleepBlackoutCoordinator.UnlockFadeDuration);
+                    StartFadeLocked(from, target, SleepBlackoutCoordinator.UnlockFadeDuration);
                 }
             }
             else
@@ -244,7 +343,7 @@ public sealed class KrakenHub : IDisposable
         if (from == to)
         {
             _fade = null;
-            var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(to, turns));
+            var wrote = WriteLocked(BacklightReport(to, turns));
             if (to > 0)
             {
                 FinishRestoreLocked(wrote);
@@ -263,6 +362,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_fade is not { } fade)
             {
                 return;
@@ -270,7 +370,7 @@ public sealed class KrakenHub : IDisposable
             _fade = null;
             try
             {
-                var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(fade.To, _snapshot.LcdOrientationQuarterTurns));
+                var wrote = WriteLocked(BacklightReport(fade.To, _snapshot.LcdOrientationQuarterTurns));
                 if (!fade.Down)
                 {
                     FinishRestoreLocked(wrote);
@@ -293,6 +393,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_fade is not { } fade || !_isConnected || _device == null)
             {
                 _fade = null;
@@ -305,7 +406,7 @@ public sealed class KrakenHub : IDisposable
             {
                 return true;
             }
-            var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(level, _snapshot.LcdOrientationQuarterTurns));
+            var wrote = WriteLocked(BacklightReport(level, _snapshot.LcdOrientationQuarterTurns));
             if (wrote)
             {
                 _fadeLastSent = level;
@@ -330,7 +431,7 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
-        if (WriteLocked(KrakenProtocol.EncodeSetBacklight(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)))
+        if (WriteLocked(BacklightReport(Scaled(_lockSavedBrightness), _snapshot.LcdOrientationQuarterTurns)))
         {
             _lockRestorePending = false;
             _saveRestore?.Invoke(null);
@@ -428,6 +529,9 @@ public sealed class KrakenHub : IDisposable
         get { lock (_lock) { return _lcdHeight; } }
     }
 
+    /// <summary>True on the 2023 Kraken (0x300E), whose LCD wire runs on the vendor app's session and cadence.</summary>
+    public bool IsCamSessionModel => _modelRead.CamSessionInit;
+
     /// <summary>Bytes in one uncompressed RGBA frame at the attached panel's size.</summary>
     public int LcdFrameBytes
     {
@@ -480,6 +584,23 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     private bool WriteLocked(byte[] report)
     {
+        if (_camFrameOpen)
+        {
+            // Every entry point that writes waits for the frame first (AwaitFrameClosedLocked); this
+            // counts the writes that got out anyway, which are only ones past the wait bound.
+            Interlocked.Increment(ref _nonFrameWritesDuringFrame);
+        }
+        return WriteFrameLocked(report);
+    }
+
+    private int _nonFrameWritesDuringFrame;
+
+    /// <summary>Tests read how many non-frame writes went out between a frame's start and end.</summary>
+    internal int NonFrameWritesDuringFrame => Volatile.Read(ref _nonFrameWritesDuringFrame);
+
+    // The writes of a 2023 Kraken frame itself, which must not wait for the frame they belong to.
+    private bool WriteFrameLocked(byte[] report)
+    {
         if (_device == null)
         {
             return false;
@@ -489,14 +610,88 @@ public sealed class KrakenHub : IDisposable
             : report.AsSpan(0, _reportLength));
     }
 
+    // On a 2023 Kraken every HID write that is not part of a frame goes out between frames, never
+    // between a frame's start and end commands, as the vendor app does. A public entry point that
+    // writes and takes only _lock calls this once, first thing after taking it and before reading
+    // any state, because the wait releases _lock so the frame can finish and state may change
+    // meanwhile. Entry points that take _lcdTransferLock first need no call, as the sender holds it
+    // across the frame. If the frame outlasts the bound the write goes out anyway, since a
+    // keepalive or fan write is worth more than one frame. Caller holds _lock.
+    private void AwaitFrameClosedLocked()
+    {
+        if (!_camFrameOpen)
+        {
+            return;
+        }
+        long deadline = Stopwatch.GetTimestamp() + CamWriteWaitMs * Stopwatch.Frequency / 1000;
+        _camWritersWaiting++;
+        try
+        {
+            while (_camFrameOpen)
+            {
+                long left = deadline - Stopwatch.GetTimestamp();
+                if (left <= 0)
+                {
+                    return;
+                }
+                Monitor.Wait(_lock, (int)Math.Max(1, left * 1000 / Stopwatch.Frequency));
+            }
+        }
+        finally
+        {
+            _camWritersWaiting--;
+            Monitor.PulseAll(_lock);
+        }
+    }
+
+    // Monitor is not fair: a sender that re-enters at once after a frame would keep winning _lock
+    // over the writers its frame close just woke. It steps aside until they have written, bounded
+    // like their wait. Caller holds _lock.
+    private void YieldToWritersLocked()
+    {
+        if (_camWritersWaiting == 0)
+        {
+            return;
+        }
+        long deadline = Stopwatch.GetTimestamp() + CamWriteWaitMs * Stopwatch.Frequency / 1000;
+        while (_camWritersWaiting > 0)
+        {
+            long left = deadline - Stopwatch.GetTimestamp();
+            if (left <= 0)
+            {
+                return;
+            }
+            Monitor.Wait(_lock, (int)Math.Max(1, left * 1000 / Stopwatch.Frequency));
+        }
+    }
+
+    internal int CamWritersWaiting
+    {
+        get { lock (_lock) { return _camWritersWaiting; } }
+    }
+
     /// <summary>
     /// Reads the static device facts and marks the hub connected. Called from the worker
     /// thread only.
     /// </summary>
     public bool Connect()
     {
+        var connected = ConnectCore();
+        if (connected)
+        {
+            lock (_camLock)
+            {
+                _camClosed = false;
+            }
+        }
+        return connected;
+    }
+
+    private bool ConnectCore()
+    {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_device == null)
             {
                 return false;
@@ -525,6 +720,7 @@ public sealed class KrakenHub : IDisposable
                 : ReadLightingChannelsLocked();
 
             int brightness = 0;
+            int? resyncLevel = null;
             int orientation = 0;
             var mode = KrakenDisplayMode.Liquid;
             if (_model.HasLcd)
@@ -534,6 +730,13 @@ public sealed class KrakenHub : IDisposable
                 if (lcdInfo.HasValue)
                 {
                     brightness = lcdInfo.Value.BrightnessPercent;
+                    // The cooler reads back what was written, which may be a capped level. While following, the
+                    // remembered slider is the user's value; otherwise only when it scales to exactly the reading.
+                    if (_loadSlider?.Invoke() is { } remembered && (_follows?.Invoke() == true || Scaled(remembered) == brightness))
+                    {
+                        resyncLevel = Scaled(remembered) != brightness ? remembered : null;
+                        brightness = remembered;
+                    }
                     orientation = lcdInfo.Value.OrientationQuarterTurns;
                     // The panel reports its own size; the model table is only the seed, so a
                     // variant we have not measured still gets driven at its real resolution.
@@ -598,7 +801,7 @@ public sealed class KrakenHub : IDisposable
             var restoreFailed = false;
             if (_model.HasLcd && (sleepNow || restore))
             {
-                var wrote = WriteLocked(KrakenProtocol.EncodeSetBacklight(sleepNow ? 0 : brightness, orientation));
+                var wrote = WriteLocked(BacklightReport(sleepNow ? 0 : Scaled(brightness), orientation));
                 if (!sleepNow)
                 {
                     if (wrote)
@@ -615,6 +818,11 @@ public sealed class KrakenHub : IDisposable
                     : $"[lcd-lock] kraken LCD restored to {brightness}% after reconnect");
             }
             _lockRestorePending = restoreFailed;
+            if (resyncLevel is { } resync && !sleepNow && !restore)
+            {
+                // The cooler kept a stale capped level across the reconnect.
+                WriteLocked(BacklightReport(Scaled(resync), orientation));
+            }
 
             _isConnected = true;
             return true;
@@ -694,12 +902,22 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_device == null)
             {
                 return false;
             }
             DrainLocked();
             RetryRestoreLocked();
+            if (_model.CamSessionInit)
+            {
+                var now = Clock();
+                LogCamDiagLocked(now);
+                if (_streamReady && !PollQuietLocked(now))
+                {
+                    return true;
+                }
+            }
             if (!WriteLocked(KrakenProtocol.EncodeStatusRequest()))
             {
                 return false;
@@ -720,12 +938,72 @@ public sealed class KrakenHub : IDisposable
                 var reading = KrakenProtocol.DecodeStatus(buf[..n]);
                 if (reading.HasValue)
                 {
-                    _snapshot = _snapshot.WithReading(reading.Value);
+                    FoldStatusLocked(reading.Value);
                     return true;
                 }
             }
             return true;
         }
+    }
+
+    private void FoldStatusLocked(KrakenReading reading)
+    {
+        _snapshot = _snapshot.WithReading(reading);
+        Volatile.Write(ref _lastStatusMs, Clock());
+        Interlocked.Increment(ref _statusReads);
+    }
+
+    /// <summary>
+    /// The poll of an open 2023 Kraken stream: the keepalive when due, and no status request
+    /// while reports keep arriving. Returns true when the caller must still request one
+    /// because none has been read for the fallback window, false when this poll is done.
+    /// </summary>
+    private bool PollQuietLocked(long now)
+    {
+        if (now - _lastKeepAliveMs >= CamKeepAliveMs)
+        {
+            WriteLocked(CamKeepAlive);
+            _lastKeepAliveMs = now;
+        }
+        var at = Volatile.Read(ref _lastStatusMs);
+        if (now - at < CamStatusFallbackMs)
+        {
+            return false;
+        }
+        Interlocked.Increment(ref _statusFallbacks);
+        if (now - _fallbackLoggedMs >= CamFallbackLogMs)
+        {
+            _fallbackLoggedMs = now;
+            ServiceLog.Warn(
+                $"[nzxt-kraken] no status report for {(at == 0 ? "the whole session" : $"{now - at} ms")} while streaming; polling once");
+        }
+        return true;
+    }
+
+    private void LogCamDiagLocked(long now)
+    {
+        if (_diagAtMs == 0)
+        {
+            _diagAtMs = now;
+            return;
+        }
+        if (now - _diagAtMs < CamDiagMs)
+        {
+            return;
+        }
+        _diagAtMs = now;
+        var written = Interlocked.Exchange(ref _framesWritten, 0);
+        var skipped = Interlocked.Exchange(ref _framesSkipped, 0);
+        var reports = Interlocked.Exchange(ref _statusReads, 0);
+        var fallbacks = Interlocked.Exchange(ref _statusFallbacks, 0);
+        if (written + skipped + reports + fallbacks == 0)
+        {
+            return;
+        }
+        ServiceLog.Info(
+            $"[nzxt-kraken] {CamDiagMs / 1000} s: {written} frames written, {skipped} skipped as unchanged, " +
+            $"{reports} status reports read, {fallbacks} fallback polls, stream {(_streamReady ? "open" : "closed")}" +
+            CamCadenceText() + CamReplyText());
     }
 
     public bool SetPumpCurve(ReadOnlySpan<byte> duties) => SendCurve(pump: true, duties);
@@ -749,6 +1027,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             var channel = _useNewSpeedChannels
                 ? (pump ? KrakenProtocol.PumpChannel : KrakenProtocol.FanChannel)
                 : (pump ? KrakenProtocol.LegacyPumpChannel : KrakenProtocol.LegacyFanChannel);
@@ -764,7 +1043,7 @@ public sealed class KrakenHub : IDisposable
     {
         // Taken before the transfer lock; the flag only flips under both, so a stale read at
         // worst sends one command that the lock path then corrects.
-        var report = KrakenProtocol.EncodeSetBacklight(brightnessPercent, orientationQuarterTurns);
+        var report = BacklightReport(Scaled(brightnessPercent), orientationQuarterTurns);
         // A rotation re-uploads the stored frame, which is a full bulk transfer, so this
         // takes the transfer lock first - same order as PushStreamFrame, never the reverse.
         lock (_lcdTransferLock)
@@ -778,7 +1057,7 @@ public sealed class KrakenHub : IDisposable
                 _saveRestore?.Invoke(_lockSavedBrightness);
                 // Dark, or the step a fade down is on: the change must not jump the ramp.
                 var shown = _fade is { } running ? running.LevelAt(Clock()) : 0;
-                report = KrakenProtocol.EncodeSetBacklight(shown, orientationQuarterTurns);
+                report = BacklightReport(shown, orientationQuarterTurns);
             }
             else
             {
@@ -798,6 +1077,7 @@ public sealed class KrakenHub : IDisposable
             int turns = orientationQuarterTurns & 0x03;
             bool rotated = turns != _snapshot.LcdOrientationQuarterTurns;
             _snapshot = _snapshot.WithLcd(Math.Clamp(brightnessPercent, 0, 100), turns);
+            _saveSlider?.Invoke(_snapshot.LcdBrightness);
             // The panel will not re-orient a stored image on its own.
             if (rotated && _lastLcdFrame != null && _snapshot.DisplayMode == KrakenDisplayMode.Bucket)
             {
@@ -825,6 +1105,7 @@ public sealed class KrakenHub : IDisposable
         }
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             if (_device == null)
             {
                 return false;
@@ -880,6 +1161,7 @@ public sealed class KrakenHub : IDisposable
         var report = KrakenProtocol.EncodeColors(channelId, mode, speed, rgbColors, forward);
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             return WriteLocked(report);
         }
     }
@@ -893,6 +1175,7 @@ public sealed class KrakenHub : IDisposable
     {
         lock (_lock)
         {
+            AwaitFrameClosedLocked();
             switch (_model.Lighting)
             {
                 case KrakenLightingProtocol.ChannelReport:
@@ -1288,6 +1571,10 @@ public sealed class KrakenHub : IDisposable
     private bool _plusStillDirty;
     private int _plusGen;
     private static readonly byte[] PlusBeginSession = KrakenProtocol.EncodeBeginLiveSession();
+    private static readonly byte[] PlusStatusRequest = KrakenProtocol.EncodeStatusRequest();
+    private static readonly byte[] PlusLcdInfoRequest = KrakenProtocol.EncodeLcdInfoRequest();
+    private static readonly byte[] CamKeepAlive = KrakenProtocol.EncodeSessionKeepAlive();
+    private static readonly byte[] CamBacklightOff = KrakenProtocol.EncodeSessionBacklightOff();
     private static readonly byte[] PlusCancel = KrakenProtocol.EncodeCancelTransfers();
     private static readonly byte[] PlusStart = KrakenProtocol.EncodeStartDirectTransfer(KrakenProtocol.BulkFormatRgb565);
     private static readonly byte[] PlusEnd = KrakenProtocol.EncodeEndTransfer();
@@ -1348,6 +1635,10 @@ public sealed class KrakenHub : IDisposable
     /// </summary>
     private bool PushPlusFrame(ReadOnlySpan<byte> bgra)
     {
+        if (_model.CamSessionInit)
+        {
+            return OfferCamFrame(bgra);
+        }
         lock (_lcdTransferLock)
         {
             if (LockDimmed)
@@ -1362,6 +1653,7 @@ public sealed class KrakenHub : IDisposable
                 || !bgra.SequenceEqual(_plusSource);
             if (!changed && _plusActive && now - Volatile.Read(ref _plusSentAtMs) < PlusIdleResendMs)
             {
+                Interlocked.Increment(ref _framesSkipped);
                 return true;
             }
             if (changed)
@@ -1484,6 +1776,16 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
+        if (_model.CamSessionInit)
+        {
+            // Joined before the hold is cleared, so a send in flight cannot re-arm it afterwards.
+            StopCamSender(join: true);
+            lock (_camLock)
+            {
+                _camFresh = false;
+            }
+            _camStats.BreakChain();
+        }
         lock (_plusHoldLock)
         {
             bool holdsStill = _plusSendingStill || (_plusActive && _plusHoldIsStill);
@@ -1496,53 +1798,390 @@ public sealed class KrakenHub : IDisposable
         }
     }
 
+    // Waits for the cooler's 0x37 reply to a frame's start command (sub-command 1), at most
+    // timeoutMs from sentAt, and records the latency or a miss. Status reports read meanwhile are folded
+    // as ExchangeLocked does. A miss neither fails the frame nor touches the stream state. Caller holds
+    // _lock, the only place HID input is read, so nothing else can take the reply. The deadline runs on
+    // Stopwatch because TickCount64 follows the coarse system tick on Windows.
+    private void AwaitCamReplyLocked(byte subCommand, int timeoutMs, long sentAt, KrakenReplySeries stats)
+    {
+        if (_device == null)
+        {
+            return;
+        }
+        Span<byte> buf = stackalloc byte[KrakenProtocol.ReportLength];
+        long deadline = sentAt + timeoutMs * Stopwatch.Frequency / 1000;
+        while (true)
+        {
+            long now = Stopwatch.GetTimestamp();
+            long left = deadline - now;
+            if (left <= 0)
+            {
+                stats.RecordMiss();
+                return;
+            }
+            int waitMs = (int)Math.Max(1, (left * 1000 + Stopwatch.Frequency - 1) / Stopwatch.Frequency);
+            int n = _device.Read(buf, waitMs);
+            if (n < 0)
+            {
+                stats.RecordMiss();
+                return;
+            }
+            if (n == 0)
+            {
+                continue;
+            }
+            var span = buf[..n];
+            if (KrakenProtocol.IsStatusReply(span))
+            {
+                var reading = KrakenProtocol.DecodeStatus(span);
+                if (reading.HasValue)
+                {
+                    FoldStatusLocked(reading.Value);
+                }
+                continue;
+            }
+            if (span.Length > 1 && span[0] == 0x37 && span[1] == subCommand)
+            {
+                stats.RecordReply(Stopwatch.GetTimestamp() - sentAt);
+                return;
+            }
+        }
+    }
+
     // Caller holds _lcdTransferLock. The device lock covers only the HID steps.
     private bool SendPlusWireLocked(long now, bool still)
     {
         int gen = BeginPlusSend(still);
+        bool cam = _model.CamSessionInit;
+        long startedAt = 0;
         var wire = _plusWire;
         var header = _plusHeader;
         IKrakenLcdTransport lcd;
-        lock (_lock)
+        try
         {
-            if (_device == null || _lcd == null || wire == null || header == null)
+            lock (_lock)
             {
+                if (cam)
+                {
+                    YieldToWritersLocked();
+                }
+                if (_device == null || _lcd == null || wire == null || header == null)
+                {
+                    return false;
+                }
+                lcd = _lcd;
+                if (!_streamReady)
+                {
+                    if (cam)
+                    {
+                        OpenCamSessionLocked();
+                    }
+                    else
+                    {
+                        WriteLocked(PlusBeginSession);
+                        WriteLocked(PlusCancel);
+                    }
+                    _streamReady = true;
+                }
+                var mode = still ? KrakenDisplayMode.Bucket : KrakenDisplayMode.Liquid;
+                if (_snapshot.DisplayMode != mode)
+                {
+                    _snapshot = _snapshot.WithDisplayMode(mode);
+                }
+                if (cam)
+                {
+                    // A reply left from an earlier frame must not answer this frame's start.
+                    DrainLocked();
+                    _camFrameOpen = true;
+                }
+                if (!WriteFrameLocked(PlusStart))
+                {
+                    _streamReady = false;
+                    return false;
+                }
+                if (cam)
+                {
+                    startedAt = Stopwatch.GetTimestamp();
+                    AwaitCamReplyLocked(0x01, CamStartReplyMs, startedAt, _camReplies);
+                }
+            }
+            if (cam)
+            {
+                _camStats.RecordStart(startedAt);
+            }
+            // The header is its own bulk transfer, then the whole frame in one.
+            if (!lcd.Write(header) || !lcd.Write(wire))
+            {
+                lock (_lock) { _streamReady = false; }
                 return false;
             }
-            lcd = _lcd;
-            if (!_streamReady)
+            lock (_lock)
             {
-                WriteLocked(PlusBeginSession);
-                WriteLocked(PlusCancel);
-                _streamReady = true;
-            }
-            var mode = still ? KrakenDisplayMode.Bucket : KrakenDisplayMode.Liquid;
-            if (_snapshot.DisplayMode != mode)
-            {
-                _snapshot = _snapshot.WithDisplayMode(mode);
-            }
-            if (!WriteLocked(PlusStart))
-            {
-                _streamReady = false;
-                return false;
+                if (_device == null)
+                {
+                    _streamReady = false;
+                    return false;
+                }
+                if (!WriteFrameLocked(PlusEnd))
+                {
+                    _streamReady = false;
+                    return false;
+                }
             }
         }
-        // The header is its own bulk transfer, then the whole frame in one.
-        if (!lcd.Write(header) || !lcd.Write(wire))
+        finally
         {
-            lock (_lock) { _streamReady = false; }
-            return false;
-        }
-        lock (_lock)
-        {
-            if (_device == null || !WriteLocked(PlusEnd))
+            if (cam)
             {
-                _streamReady = false;
-                return false;
+                lock (_lock)
+                {
+                    _camFrameOpen = false;
+                    Monitor.PulseAll(_lock);
+                }
             }
         }
+        Interlocked.Increment(ref _framesWritten);
         ArmPlusHold(gen, still, now);
         return true;
+    }
+
+    // Cadenced LCD sender for the 2023 Kraken (KrakenModel.CamSessionInit). The vendor app starts a frame
+    // every fixed interval and repeats a frame when nothing new is ready; this sender does the same. A
+    // producer only hands over its latest frame (a newer one replaces a pending one, nothing queues) and
+    // one sender thread owns the wire. It runs only while frames keep arriving: once they stop for the
+    // idle window the hold's slower resend keeps the panel lit.
+    private const long CamSenderIdleExitMs = 10_000;
+    private const int CamSenderJoinMs = 2_000;
+    private const long CamSendWarnMs = 60_000;
+    private readonly object _camLock = new();
+    private readonly KrakenCadenceStats _camStats = new();
+    private readonly KrakenReplySeries _camReplies = new();
+
+    internal KrakenReplySeries CamReplies => _camReplies;
+
+    internal int StatusReportsRead => Volatile.Read(ref _statusReads);
+    private byte[]? _camPending;
+    private bool _camFresh;
+    private long _camOfferedAtMs;
+    private long _camWarnedAtMs;
+    private CamRun? _camRun;
+    // Set by Detach and Dispose under _camLock before the sender stops, so a frame offered in the
+    // window before the device goes cannot start a new run; Connect clears it.
+    private bool _camClosed;
+
+    /// <summary>Tests run code in the window between an offer's device check and its sender start.</summary>
+    internal Action? BeforeCamOffer { get; set; }
+
+    /// <summary>Tests turn the thread off and step the sender by hand.</summary>
+    internal bool CamSenderThread { get; set; } = true;
+
+    /// <summary>The slot clock for one sender run; tests replace it with a fake.</summary>
+    internal Func<CancellationToken, KrakenCadence> CadenceFactory { get; set; } = KrakenCadence.Create;
+
+    internal bool CamSenderRunning
+    {
+        get { lock (_camLock) { return _camRun != null; } }
+    }
+
+    private sealed class CamRun(CancellationTokenSource cts, KrakenCadence cadence)
+    {
+        public CancellationTokenSource Cts { get; } = cts;
+        public KrakenCadence Cadence { get; } = cadence;
+        public Thread? Thread { get; set; }
+    }
+
+    // Encodes the producer's frame into the pending buffer. A frame dropped by the lock fade is reported as taken.
+    private bool OfferCamFrame(ReadOnlySpan<byte> bgra)
+    {
+        if (LockDimmed)
+        {
+            return true;
+        }
+        lock (_lock)
+        {
+            if (_device == null || _lcd == null)
+            {
+                return false;
+            }
+        }
+        BeforeCamOffer?.Invoke();
+        int w = _lcdWidth, h = _lcdHeight;
+        int turns = _snapshot.LcdOrientationQuarterTurns;
+        var len = Rgb565Encoder.EncodedLength(w, h);
+        lock (_camLock)
+        {
+            if (_camPending == null || _camPending.Length != len)
+            {
+                _camPending = new byte[len];
+            }
+            Rgb565Encoder.Encode(bgra, w, h, turns, _camPending, sourceIsBgra: true, highByteFirst: true);
+            _camFresh = true;
+            Volatile.Write(ref _camOfferedAtMs, Clock());
+            if (_camRun == null && CamSenderThread && !_camClosed && !_disposed)
+            {
+                _camRun = StartCamRunLocked();
+            }
+        }
+        return true;
+    }
+
+    private CamRun StartCamRunLocked()
+    {
+        var cts = new CancellationTokenSource();
+        var run = new CamRun(cts, CadenceFactory(cts.Token));
+        _camStats.BreakChain();
+        run.Thread = new Thread(() => CamSenderLoop(run))
+        {
+            IsBackground = true,
+            Name = "kraken-lcd-cadence",
+        };
+        run.Thread.Start();
+        return run;
+    }
+
+    private void CamSenderLoop(CamRun run)
+    {
+        try
+        {
+            while (run.Cadence.WaitNextSlot(out _))
+            {
+                SendCamSlot();
+                if (Clock() - Volatile.Read(ref _camOfferedAtMs) >= CamSenderIdleExitMs)
+                {
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[nzxt-kraken] LCD sender stopped: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            lock (_camLock)
+            {
+                if (ReferenceEquals(_camRun, run))
+                {
+                    _camRun = null;
+                }
+            }
+            run.Cadence.Dispose();
+            run.Cts.Dispose();
+        }
+    }
+
+    private void StopCamSender(bool join, bool close = false)
+    {
+        CamRun? run;
+        lock (_camLock)
+        {
+            if (close)
+            {
+                _camClosed = true;
+            }
+            run = _camRun;
+            _camRun = null;
+            run?.Cts.Cancel();
+        }
+        if (join && run?.Thread is { } thread && thread != Thread.CurrentThread)
+        {
+            thread.Join(CamSenderJoinMs);
+        }
+    }
+
+    /// <summary>
+    /// One slot of the cadenced wire: sends the pending frame, or the last one again when nothing new
+    /// arrived. Holds the transfer lock across the frame, the device lock only for the short HID steps.
+    /// </summary>
+    internal bool SendCamSlot()
+    {
+        lock (_lcdTransferLock)
+        {
+            if (LockDimmed)
+            {
+                return true;
+            }
+            bool fresh;
+            lock (_camLock)
+            {
+                fresh = _camFresh;
+                if (fresh && _camPending is { } pending)
+                {
+                    var previous = _plusWire;
+                    bool resized = previous == null || previous.Length != pending.Length;
+                    _plusWire = pending;
+                    _camPending = resized ? null : previous;
+                    if (resized)
+                    {
+                        _plusHeader = KrakenProtocol.EncodeBulkHeader(KrakenProtocol.BulkFormatRgb565, pending.Length);
+                    }
+                    _camFresh = false;
+                }
+                else
+                {
+                    fresh = false;
+                }
+            }
+            if (_plusWire == null)
+            {
+                return true;
+            }
+            var sent = SendPlusWireLocked(Clock(), still: false);
+            if (sent)
+            {
+                _camStats.CountSend(fresh);
+            }
+            else
+            {
+                var now = Clock();
+                if (_camWarnedAtMs == 0 || now - _camWarnedAtMs >= CamSendWarnMs)
+                {
+                    _camWarnedAtMs = now;
+                    ServiceLog.Warn("[nzxt-kraken] LCD frame send failed; the session reopens on the next slot");
+                }
+            }
+            return sent;
+        }
+    }
+
+    private string CamReplyText()
+    {
+        if (_camReplies.Take(Stopwatch.Frequency) is not { } r)
+        {
+            return string.Empty;
+        }
+        var f = CultureInfo.InvariantCulture;
+        return $", start reply ms p50 {r.P50Ms.ToString("F1", f)} p95 {r.P95Ms.ToString("F1", f)} " +
+            $"max {r.MaxMs.ToString("F1", f)} over {r.Replies}, {r.Misses} missed";
+    }
+
+    private string CamCadenceText()
+    {
+        if (_camStats.Take(Stopwatch.Frequency) is not { } c)
+        {
+            return string.Empty;
+        }
+        var f = CultureInfo.InvariantCulture;
+        return $", start-to-start ms min {c.MinMs.ToString("F1", f)} p50 {c.P50Ms.ToString("F1", f)} " +
+            $"p95 {c.P95Ms.ToString("F1", f)} max {c.MaxMs.ToString("F1", f)} over {c.Samples}, " +
+            $"{c.Fresh} new frames sent, {c.Repeated} repeated";
+    }
+
+    // The vendor app's order at stream start, then its real backlight a moment after the dark
+    // step. Caller holds _lock and _lcdTransferLock.
+    private void OpenCamSessionLocked()
+    {
+        WriteLocked(CamKeepAlive);
+        WriteLocked(KrakenProtocol.EncodeSetUpdateInterval(_model.TelemetryInterval));
+        WriteLocked(PlusStatusRequest);
+        WriteLocked(PlusBeginSession);
+        WriteLocked(PlusLcdInfoRequest);
+        WriteLocked(PlusCancel);
+        WriteLocked(CamBacklightOff);
+        DelayMs(CamBacklightDelayMs);
+        WriteLocked(BacklightReport(Scaled(_snapshot.LcdBrightness), _snapshot.LcdOrientationQuarterTurns));
+        _lastKeepAliveMs = Clock();
     }
 
     // Caller holds _lcdTransferLock. Encodes the stored still at the current orientation
@@ -1848,7 +2487,7 @@ public sealed class KrakenHub : IDisposable
                 var reading = KrakenProtocol.DecodeStatus(span);
                 if (reading.HasValue)
                 {
-                    _snapshot = _snapshot.WithReading(reading.Value);
+                    FoldStatusLocked(reading.Value);
                 }
                 continue;
             }
@@ -1888,7 +2527,7 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
-        var buf = new byte[KrakenProtocol.ReportLength];
+        Span<byte> buf = stackalloc byte[KrakenProtocol.ReportLength];
         for (int i = 0; i < 64; i++)
         {
             int n = _device.Read(buf, 0);
@@ -1896,27 +2535,36 @@ public sealed class KrakenHub : IDisposable
             {
                 return;
             }
-            var span = buf.AsSpan(0, n);
+            var span = buf[..n];
             if (KrakenProtocol.IsStatusReply(span))
             {
                 var reading = KrakenProtocol.DecodeStatus(span);
                 if (reading.HasValue)
                 {
-                    _snapshot = _snapshot.WithReading(reading.Value);
+                    FoldStatusLocked(reading.Value);
                 }
             }
         }
     }
 
+    // Counts Detach calls, so a reader of per-connection state can tell a new cooler from the same one.
+    private int _detaches;
+    internal int Detaches => Volatile.Read(ref _detaches);
+
     public void Detach()
     {
+        StopCamSender(join: false, close: true);
         lock (_lock)
         {
+            Interlocked.Increment(ref _detaches);
+            _camFrameOpen = false;
+            Monitor.PulseAll(_lock);
             _isConnected = false;
             _fade = null;
             _snapshot = KrakenSnapshot.Empty;
             // A re-attached cooler may hold buckets from before; the next stream re-enters.
             _streamReady = false;
+            Volatile.Write(ref _lastStatusMs, 0);
             ClearPlusHold();
             _lastNakKey = 0;
             Volatile.Write(ref _streamRetryAtMs, 0);
@@ -1931,6 +2579,7 @@ public sealed class KrakenHub : IDisposable
 
     public void Dispose()
     {
+        StopCamSender(join: false, close: true);
         lock (_lock)
         {
             if (_disposed)
@@ -1938,6 +2587,8 @@ public sealed class KrakenHub : IDisposable
                 return;
             }
             _disposed = true;
+            _camFrameOpen = false;
+            Monitor.PulseAll(_lock);
             _isConnected = false;
             _fade = null;
             _snapshot = KrakenSnapshot.Empty;

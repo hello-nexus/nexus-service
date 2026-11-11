@@ -86,6 +86,9 @@ public sealed class BrightnessScheduleBody
     private SunLocationDto? _location;
 
     public bool Enabled { get; set; }
+
+    /// <summary>Whether the lighting master brightness follows the schedule. GET returns the resolved value (true for a file that predates it); on a POST absent keeps the stored one.</summary>
+    public bool? LightingFollows { get; set; }
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
     public bool? SunShift { get; set; }
@@ -375,4 +378,32 @@ public class ScreenSyncOptions
     /// shows a "Change screen" action that re-opens that picker instead of a list.
     /// </summary>
     public string SelectionMode { get; set; } = "app";
+}
+
+/// <summary>One device's place in the brightness schedule. Key is the surface's stable id: "y70", "corsair-lcd",
+/// "nzxt-kraken-lcd", "panel-lcd:" plus a panel device id, "slv3-aio:" plus a MAC, or a display id.
+/// LevelPercent is the schedule cap on the device right now (100 while it does not follow);
+/// AppliedPercent is min(slider, level), null when the slider is unknown.</summary>
+public sealed class ScheduleFollowDeviceDto
+{
+    public string Key { get; set; } = "";
+    public bool Follows { get; set; }
+    public int LevelPercent { get; set; } = 100;
+
+    /// <summary>The schedule cap while the schedule is on and the device follows (equal to <see cref="LevelPercent"/>), else null.</summary>
+    public int? CapPercent { get; set; }
+    public int? AppliedPercent { get; set; }
+}
+
+/// <summary>GET response of /lighting/brightness-schedule/devices. A device that is absent does not follow.</summary>
+public sealed class ScheduleFollowDevicesResponse
+{
+    public List<ScheduleFollowDeviceDto> Devices { get; set; } = new();
+}
+
+/// <summary>POST body of /lighting/brightness-schedule/devices.</summary>
+public sealed class ScheduleFollowSetBody
+{
+    public string Key { get; set; } = "";
+    public bool Follows { get; set; }
 }

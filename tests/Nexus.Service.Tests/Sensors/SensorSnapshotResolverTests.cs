@@ -462,6 +462,25 @@ public class SensorSnapshotResolverTests
     }
 
     [Fact]
+    public void ResolveOrDefault_psu_default_skips_power_monitor_sensors()
+    {
+        var wire = Component("/gpu-powermonitor/COM3", MakeSensor("/gpu-powermonitor/COM3/power/6", "Power", 120f));
+        var real = Component("/psu/0", MakeSensor("/psu/0/power/0", "Power", 310f));
+
+        var both = new StubSensors { Psus = { wire, real } };
+        Assert.Equal(310f, SensorSnapshotResolver.ResolveOrDefault(both, "psu", "")!.Value);
+        Assert.Equal(310f, SensorSnapshotResolver.ResolveOrDefault(both, "psu", "stale")!.Value);
+
+        var onlyWire = new StubSensors { Psus = { wire } };
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", ""));
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", "stale"));
+        Assert.Equal(120f, SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", "/gpu-powermonitor/COM3/power/6")!.Value);
+
+        var wireNamed = new StubSensors { Psus = { Component("/gpu-powermonitor/COM3", MakeSensor("/gpu-powermonitor/COM3/power/6", "Total Power", "Power", 120f)) } };
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(wireNamed, "psu", "Total Power"));
+    }
+
+    [Fact]
     public void Resolve_finds_battery_cooler_psu_and_embedded_controller_sensors()
     {
         var sensors = new StubSensors

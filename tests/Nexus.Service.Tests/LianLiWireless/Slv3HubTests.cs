@@ -30,6 +30,29 @@ public partial class Slv3HubTests
         Assert.Equal(Slv3LinkStatus.Ok, hub.State.LinkStatus);
     }
 
+    [Fact]
+    public void A_bound_screen_without_a_saved_setting_is_scaled_from_the_default_brightness()
+    {
+        var calls = new List<(string Key, int Slider)>();
+        var hub = new Slv3Hub(new RoleDiscovery(), _ => new SilentTransport(Slv3DongleRole.Tx))
+        {
+            ScheduleScale = (key, slider) =>
+            {
+                calls.Add((key, slider));
+                return slider / 2;
+            },
+        };
+        var saved = new Dictionary<string, Slv3AioScreen> { ["AA"] = Slv3Protocol.AioScreenFrom(80, 0, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, true, true, true, false) };
+
+        var scaled = hub.ScaleAios(new[] { "AA", "BB" }, saved);
+
+        Assert.Equal(new[] { "AA", "BB" }, calls.Select(c => c.Key));
+        Assert.Equal(Slv3AioScreen.Default.Brightness, calls[1].Slider);
+        Assert.Equal(40, scaled!["AA"]);
+        Assert.Equal(Slv3AioScreen.Default.Brightness / 2, scaled["BB"]);
+        Assert.DoesNotContain("CC", scaled.Keys);
+    }
+
     // The device page renders the disconnected reason from LinkStatus, so each
     // way a connect attempt can fail has to leave its own value behind.
     [Fact]

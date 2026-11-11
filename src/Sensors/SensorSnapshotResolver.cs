@@ -128,7 +128,7 @@ public static class SensorSnapshotResolver
         if (!string.IsNullOrEmpty(sensorId))
         {
             var match = FindById(list, sensorId)
-                ?? FindByName(list, sensorId)
+                ?? (category == "psu" ? FindByNameExcludingPowerMonitor(list, sensorId) : FindByName(list, sensorId))
                 ?? FindByFanHeaderName(list, sensorId, sources.FanHeaderNames);
             if (match is not null)
             {
@@ -144,6 +144,7 @@ public static class SensorSnapshotResolver
                 // paint a reading on the physical key that the touch tile
                 // renders as "--".
                 "fps" => null,
+                "psu" => FirstRealPsu(list),
                 _ => list[0],
             };
         }
@@ -152,6 +153,7 @@ public static class SensorSnapshotResolver
             "cpu" => FindByName(list, "CPU Total") ?? list[0],
             "gpu" => FindGpuCoreLoad(list) ?? list[0],
             "memory" => FindByName(list, "Memory Usage") ?? list[0],
+            "psu" => FirstRealPsu(list),
             _ => list[0],
         };
     }
@@ -166,6 +168,31 @@ public static class SensorSnapshotResolver
             if (!string.Equals(pair.Value, name, StringComparison.Ordinal)) continue;
             var match = FindById(list, pair.Key);
             if (match is not null) return match;
+        }
+        return null;
+    }
+
+    /// <summary>The first sensor not owned by an inline power monitor, so a WireView never becomes the PSU default.</summary>
+    private static HardwareSensor? FirstRealPsu(IReadOnlyList<HardwareSensor> list)
+    {
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (!LhmComponentIdentifiers.IsPowerMonitor(list[i].Id))
+            {
+                return list[i];
+            }
+        }
+        return null;
+    }
+
+    private static HardwareSensor? FindByNameExcludingPowerMonitor(IReadOnlyList<HardwareSensor> list, string name)
+    {
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (list[i].Name == name && !LhmComponentIdentifiers.IsPowerMonitor(list[i].Id))
+            {
+                return list[i];
+            }
         }
         return null;
     }

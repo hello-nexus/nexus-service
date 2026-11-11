@@ -51,6 +51,10 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private readonly IDisplayOrientationProvider _orientation;
     private readonly IDisplayBrightnessProvider _ddc;
     private readonly HardwarePresence? _presence;
+    private readonly Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? _follow;
+
+    /// <summary>The level to put on the glass for a stored slider value: the slider capped by the schedule while this panel follows the schedule.</summary>
+    private int Shown(int slider) => _follow?.Scale(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70, slider) ?? slider;
 
     // A DDC lookup enumerates every display (i2c transactions on Linux), so the heartbeat reuses the last result for a bounded time. A failed write drops a cached hit.
     private const long DdcLookupTtlMs = 60_000;
@@ -69,8 +73,10 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         IConfigStore store,
         IDisplayOrientationProvider orientation,
         IDisplayBrightnessProvider ddc,
-        HardwarePresence? presence = null)
+        HardwarePresence? presence = null,
+        Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? follow = null)
     {
+        _follow = follow;
         _presence = presence;
         _hub = hub;
         _store = store;
@@ -130,13 +136,32 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         // WritePendingDdcBrightness picks the register set by variant.
         if (SerialTransportSelected)
         {
-            ApplySerial(!_store.Load().Y70.ScreenOff, pct);
+            ApplySerial(!_store.Load().Y70.ScreenOff, Shown(pct));
         }
         else
         {
-            DdcSetBrightnessCoalesced(pct);
+            DdcSetBrightnessCoalesced(Shown(pct));
         }
         _store.Update(s => s.Y70.Brightness = pct);
+    }
+
+    /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
+    public void ReapplyBrightness()
+    {
+        var y70 = _store.Load().Y70;
+        if (y70.ScreenOff)
+        {
+            return;
+        }
+        var shown = Shown(y70.Brightness);
+        if (SerialTransportSelected)
+        {
+            ApplySerial(true, shown);
+        }
+        else
+        {
+            DdcSetBrightnessCoalesced(shown);
+        }
     }
 
     public bool GetToggle() => _store.Load().Y70.ScreenOff;
@@ -180,12 +205,12 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                     DdcSetPower(true);
                     _touchDdcStandbyFallback = false;
                 }
-                DdcSetBrightnessCoalesced(Math.Max(_store.Load().Y70.Brightness, Y70DisplayProtocol.MinBrightnessOnPercent));
+                DdcSetBrightnessCoalesced(Math.Max(Shown(_store.Load().Y70.Brightness), Y70DisplayProtocol.MinBrightnessOnPercent));
             }
         }
         else if (SerialTransportSelected)
         {
-            ApplySerial(screenOn, _store.Load().Y70.Brightness);
+            ApplySerial(screenOn, Shown(_store.Load().Y70.Brightness));
         }
         else
         {

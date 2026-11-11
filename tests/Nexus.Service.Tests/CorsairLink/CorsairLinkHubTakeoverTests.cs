@@ -21,9 +21,17 @@ public class CorsairLinkHubTakeoverTests
         public bool RefuseUntilHardware;
         public bool NeverAcceptSoftware;
         public Action<byte[]>? OnCommand;
+        /// <summary>Runs after a command is handled and before its own reply is queued.</summary>
+        public Action<byte[]>? OnBeforeReply;
+        /// <summary>Overrides the echoed command byte of the firmware reply.</summary>
+        public byte? FirmwareEcho;
+        /// <summary>Only the first firmware reply carries <see cref="FirmwareEcho"/>.</summary>
+        public bool FirmwareEchoOnce;
+        /// <summary>Per-command reply latency; a read shorter than it fails, but the time it waited counts toward the next read.</summary>
+        public Func<byte[], int>? ReplyDelayMs;
         private bool _hardwareSeen;
         private readonly Dictionary<byte, byte> _resource = new();
-        private readonly Queue<byte[]> _responses = new();
+        private readonly List<(byte[] Report, int NeedMs)> _responses = new();
 
         public int VendorId => CorsairLinkProtocol.VendorId;
         public int ProductId => CorsairLinkProtocol.ProductId;
@@ -76,10 +84,13 @@ public class CorsairLinkHubTakeoverTests
                     break;
             }
             var resp = new byte[CorsairLinkProtocol.WriteBufferLength];
-            resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = cmd[0];
+            var isFirmware = cmd[0] == 0x02 && cmd[1] == 0x13;
+            resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = isFirmware && FirmwareEcho is { } fe ? fe : cmd[0];
+            if (isFirmware && FirmwareEchoOnce) FirmwareEcho = null;
             resp[1 + CorsairLinkProtocol.ResponseStatusOffset] = (byte)status;
             payload.CopyTo(resp, 1 + 4);
-            lock (_responses) _responses.Enqueue(resp);
+            OnBeforeReply?.Invoke(cmd);
+            lock (_responses) _responses.Add((resp, ReplyDelayMs?.Invoke(cmd) ?? 0));
             return true;
         }
 
@@ -100,11 +111,11 @@ public class CorsairLinkHubTakeoverTests
             }
         }
 
-        public void Inject(byte echo)
+        public void Inject(byte echo, int needMs = 0)
         {
             var resp = new byte[CorsairLinkProtocol.WriteBufferLength];
             resp[1 + CorsairLinkProtocol.ResponseCommandOffset] = echo;
-            lock (_responses) _responses.Enqueue(resp);
+            lock (_responses) _responses.Add((resp, needMs));
         }
 
         public int Read(Span<byte> buffer, int timeoutMs)
@@ -113,7 +124,14 @@ public class CorsairLinkHubTakeoverTests
             lock (_responses)
             {
                 if (_responses.Count == 0) return 0;
-                resp = _responses.Dequeue();
+                var head = _responses[0];
+                if (head.NeedMs > timeoutMs)
+                {
+                    _responses[0] = (head.Report, head.NeedMs - timeoutMs);
+                    return 0;
+                }
+                resp = head.Report;
+                _responses.RemoveAt(0);
             }
             resp.CopyTo(buffer);
             return resp.Length;
@@ -153,6 +171,111 @@ public class CorsairLinkHubTakeoverTests
     }
 
     private static string Join(IEnumerable<string> names) => string.Join(" ", names);
+
+    // The first software-mode command's reply is produced after the given latency.
+    private static Func<byte[], int> SlowFirstSoftwareReply(int ms)
+    {
+        var seen = false;
+        return c =>
+        {
+            if (seen || c[0] != 0x01 || c[3] != CorsairLinkProtocol.ModeSoftware) return 0;
+            seen = true;
+            return ms;
+        };
+    }
+
+    [Fact]
+    public void A_late_software_mode_reply_does_not_shift_the_stream_into_a_false_foreign_host()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(300) };
+        using var hub = NewHub(device);
+
+        var ok = hub.Initialize();
+
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.Equal("4.1.656", hub.State.Firmware);
+    }
+
+    [Fact]
+    public void A_firmware_reply_that_does_not_echo_the_firmware_command_is_not_parsed()
+    {
+        var device = new TakeoverHub { FirmwareEcho = 0x01 };
+        using var hub = NewHub(device);
+
+        hub.Initialize();
+
+        Assert.Equal("", hub.State.Firmware);
+    }
+
+    [Fact]
+    public void A_stray_reply_on_the_firmware_read_is_retried_once_for_the_version()
+    {
+        var device = new TakeoverHub { FirmwareEcho = 0x01, FirmwareEchoOnce = true };
+        using var hub = NewHub(device);
+
+        Assert.True(hub.Initialize(), hub.LastInitTrace);
+
+        Assert.Equal("4.1.656", hub.State.Firmware);
+    }
+
+    [Fact]
+    public void A_late_software_mode_reply_on_the_firmware_read_leaves_the_real_firmware_reply_to_be_read()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(700) };
+        using var hub = NewHub(device);
+
+        var ok = hub.Initialize();
+
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.Equal("4.1.656", hub.State.Firmware);
+    }
+
+    [Fact]
+    public void A_foreign_report_inside_the_drain_window_marks_another_program()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(300) };
+        device.OnBeforeReply = c =>
+        {
+            if (c[0] == 0x01 && c[3] == CorsairLinkProtocol.ModeSoftware) device.Inject(0x77, 300);
+        };
+        using var hub = NewHub(device);
+
+        Assert.False(hub.Initialize());
+
+        Assert.True(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.DoesNotContain("drained late software-mode reply", hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void A_foreign_echo_after_a_late_software_mode_reply_still_marks_another_program()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(300) };
+        device.OnBeforeReply = c =>
+        {
+            if (c[0] == 0x02 && c[1] == 0x13) device.Inject(0x77);
+        };
+        using var hub = NewHub(device);
+
+        hub.Initialize();
+
+        Assert.True(hub.ForeignHostSeen, hub.LastInitTrace);
+    }
+
+    [Fact]
+    public void A_software_mode_reply_later_than_the_drain_bound_is_not_waited_for()
+    {
+        var device = new TakeoverHub { ReplyDelayMs = SlowFirstSoftwareReply(900) };
+        using var hub = NewHub(device);
+
+        var ok = hub.Initialize();
+
+        // The drain gives up after one empty read: the firmware read times out too and the version stays unset (the guard keeps a stale reply from being parsed), while init still connects.
+        Assert.True(ok, hub.LastInitTrace);
+        Assert.False(hub.ForeignHostSeen, hub.LastInitTrace);
+        Assert.Equal("", hub.State.Firmware);
+    }
 
     [Fact]
     public void Takeover_runs_the_measured_order_before_the_endpoint_setup()
