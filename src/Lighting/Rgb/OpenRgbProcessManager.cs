@@ -86,6 +86,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                     if (proc.WaitForExit(1000))
                     {
                         ServiceLog.Info($"[openrgb-proc] killed orphan PID {proc.Id}");
+                        SmbusMutexReclaimer.Reclaim("after orphan kill");
                     }
                     else
                     {
@@ -759,6 +760,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 if (_proc.WaitForExit(500))
                 {
                     ServiceLog.Info($"[openrgb-proc] killed pid={pid}");
+                    SmbusMutexReclaimer.Reclaim("after OpenRGB kill");
                 }
                 else
                 {

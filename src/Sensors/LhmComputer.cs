@@ -143,6 +143,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 if (!_testHost)
                 {
+                    // A mutex abandoned by an earlier OpenRGB child would otherwise be adopted by this process for good.
+                    SmbusMutexReclaimer.Reclaim("before sensor open");
                     _computer.Open();
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
                 }
