@@ -48,8 +48,8 @@ public interface IMetricsHistoryStore : IDisposable
     /// <summary>Slot-aggregated tracked-sensor history (MetricSample.SensorReadings),
     /// one row per (rule id, slot) that has data. Steps of a whole minute or more
     /// read a minute rollup that keeps MetricsHistory.TempRetentionDays; narrower
-    /// steps read a short raw tier.</summary>
-    IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds);
+    /// steps read a short raw tier. A non-null seriesIds limits the scan to those series.</summary>
+    IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds, IReadOnlySet<string>? seriesIds = null);
 
     /// <summary>Deletes one tracked sensor's history. Readings for it stamped at or
     /// before nowSec that are still unflushed are discarded on Append, so a flush

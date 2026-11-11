@@ -221,7 +221,7 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
         _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()
             .Update(s => s.Diagnostics.SensorAlerts!.Single().Sensor.Id = "cpu/temp-healed");
 
-        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", Rule(id: "cpu/temp", high: 85));
+        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", Rule(id: "cpu/stale-old", high: 85));
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Single(Store.QuerySensorSeriesDecimated(t0, t0 + 5, 1), s => s.SeriesId == id);

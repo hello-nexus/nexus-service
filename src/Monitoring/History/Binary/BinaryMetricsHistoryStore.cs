@@ -232,8 +232,8 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
         }
     }
 
-    public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds) =>
-        _sensorSeries.QueryDecimated(fromSec, toSec, stepSeconds);
+    public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds, IReadOnlySet<string>? seriesIds = null) =>
+        _sensorSeries.QueryDecimated(fromSec, toSec, stepSeconds, seriesIds);
 
     public void DeleteSensorSeries(string seriesId, long nowSec)
     {

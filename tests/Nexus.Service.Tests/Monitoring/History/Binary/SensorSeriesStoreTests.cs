@@ -213,4 +213,50 @@ public class SensorSeriesStoreTests : IDisposable
             Assert.Contains(store.QuerySensorSeriesDecimated(t0 - 200, t0 + 4000, 1), s => s.SeriesId == "a");
         }
     }
+
+    [Fact]
+    public void A_narrowed_query_reads_only_the_requested_series()
+    {
+        using var store = new BinaryMetricsHistoryStore(_dir);
+        var t0 = 1_800_000_000L;
+        store.Append(new[] { Sample(t0, ("a", 1), ("b", 2)) }, null);
+
+        var slots = store.QuerySensorSeriesDecimated(t0, t0, 1, new System.Collections.Generic.HashSet<string> { "b" });
+
+        Assert.Equal("b", slots.Single().SeriesId);
+    }
+
+    /// <summary>Worst-case timing probe (all series, 90-day minute rollup). Runs only with NEXUS_BENCH=1: it writes millions of slots.</summary>
+    [Fact]
+    public void Worst_case_ninety_day_query_timing()
+    {
+        if (Environment.GetEnvironmentVariable("NEXUS_BENCH") != "1")
+        {
+            return;
+        }
+        using var store = new BinaryMetricsHistoryStore(_dir);
+        var end = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 60 * 60;
+        var days = MetricsHistory.TempRetentionDays;
+        var ids = Enumerable.Range(0, SensorSeriesRingStore.MaxSeries).Select(i => $"rule-{i}").ToArray();
+        // One sample per minute, written in two-day batches so the two-day raw ring never collides within a batch.
+        for (var day = days; day > 0; day--)
+        {
+            store.Append(Enumerable.Range(0, 1440).Select(m => Sample(end - day * 86_400L + m * 60L, ids.Select(id => (id, 40.0 + m % 7)).ToArray())).ToList(), null);
+        }
+        var from = end - days * 86_400L;
+        var step = MetricsDecimation.StepSecondsFor(days * 86_400L, 600);
+
+        foreach (var (label, filter) in new (string, System.Collections.Generic.HashSet<string>?)[]
+        {
+            ("32 series", null),
+            ("10 series", ids.Take(10).ToHashSet()),
+            ("1 series", ids.Take(1).ToHashSet()),
+        })
+        {
+            store.QuerySensorSeriesDecimated(from, end, step, filter);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var rows = store.QuerySensorSeriesDecimated(from, end, step, filter).Count;
+            Console.Error.WriteLine($"[bench] sensor-series 90d step={step}s {label}: {sw.ElapsedMilliseconds} ms, {rows} rows");
+        }
+    }
 }

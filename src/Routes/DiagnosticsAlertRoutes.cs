@@ -67,6 +67,8 @@ public static class DiagnosticsAlertRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
+            // Read outside the store lock: it can walk hardware.
+            var bodyIdResolves = engine.IdResolves(body.Sensor);
             var found = false;
             var sensorChanged = false;
             store.Update(s =>
@@ -77,7 +79,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     return;
                 }
-                sensorChanged = !SensorAlertRules.SameSensor(list[index].Sensor, body.Sensor);
+                sensorChanged = !SensorAlertRules.SameSensor(list[index].Sensor, body.Sensor, bodyIdResolves);
                 list[index] = body;
                 found = true;
             });
@@ -141,7 +143,7 @@ public static class DiagnosticsAlertRoutes
             {
                 // Tail first, then the store: see /monitoring/history for why the order matters.
                 var tail = buffer.SnapshotRange(fromSec, toSec);
-                var db = history.QuerySensorSeriesDecimated(fromSec, toSec, step);
+                var db = history.QuerySensorSeriesDecimated(fromSec, toSec, step, names.Keys.ToHashSet(StringComparer.Ordinal));
                 var series = new List<MetricSeriesWire>();
                 foreach (var (id, name) in names.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                 {

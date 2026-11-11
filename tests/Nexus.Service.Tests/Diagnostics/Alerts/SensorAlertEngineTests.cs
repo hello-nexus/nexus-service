@@ -92,9 +92,9 @@ public class SensorAlertEngineTests
         public List<(DiagnosticsAlertNotice Notice, bool IgnoreMaster)> Notices { get; } = new();
         public int ChangedCount { get; private set; }
 
-        public Rig()
+        public Rig(TimeSpan? startupHold = null)
         {
-            Engine = new SensorAlertEngine(Store, Sensors, Time);
+            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold);
             Engine.NoticeSink = (n, ignore) => Notices.Add((n, ignore));
             Engine.Changed += () => ChangedCount++;
         }
@@ -1149,26 +1149,94 @@ public class SensorAlertEngineTests
     {
         var rig = new Rig();
         rig.AddRule(TempRule(low: null, high: null));
-        rig.SetTemp(50);
+        // The sensor now reports under another id, so the tick finds it by name and rewrites the rule's id.
+        rig.SetTemp(50, id: "cpu/healed");
         rig.Seconds(1);
 
-        rig.Store.Update(s => s.Diagnostics.SensorAlerts.Single().Sensor.Id = "cpu/healed");
-
+        Assert.Equal("cpu/healed", rig.Store.Load().Diagnostics.SensorAlerts.Single().Sensor.Id);
         Assert.Single(rig.Engine.CurrentReadings(0));
     }
 
     [Fact]
-    public void One_tick_is_stamped_onto_a_single_second_only()
+    public void IdResolves_is_true_only_for_a_live_id_so_twin_sensors_stay_distinct()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.Sensors.Cpu = new[] { Temp("cpu/a", "GPU Core", 50), Temp("cpu/b", "GPU Core", 51) };
+        rig.Seconds(1);
+        SensorRef Ref(string id) => new() { Category = "cpu", Id = id, Name = "GPU Core", Type = "Temperature", ParentName = "CPU" };
+
+        Assert.True(rig.Engine.IdResolves(Ref("cpu/b")));
+        Assert.False(rig.Engine.IdResolves(Ref("cpu/gone")));
+        // Both ids live: identical names must not merge two physical sensors into one series.
+        Assert.False(SensorAlertRules.SameSensor(Ref("cpu/a"), Ref("cpu/b"), bIdResolves: true));
+        // A stale pre-heal id no longer resolves: the name and parent carry the series.
+        Assert.True(SensorAlertRules.SameSensor(Ref("cpu/a"), Ref("cpu/gone"), bIdResolves: false));
+        Assert.False(SensorAlertRules.SameSensor(Ref("cpu/a"), new SensorRef { Category = "cpu", Id = "x", Name = "Other", Type = "Temperature", ParentName = "CPU" }, bIdResolves: false));
+    }
+
+    [Fact]
+    public void Jittered_engine_and_sampler_timers_leave_no_gap()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.SetTemp(50);
+        var events = new List<(long Ms, bool Tick)>();
+        for (var i = 1; i <= 120; i++)
+        {
+            events.Add((i * 1000L + i * 7 % 5 * 100, true));
+            events.Add((i * 1000L + 450 + i * 3 % 4 * 100, false));
+        }
+        long now = 0;
+        long sec = 0;
+        foreach (var (ms, tick) in events.OrderBy(e => e.Ms).Where(e => e.Ms > 1000))
+        {
+            rig.Time.Advance(TimeSpan.FromMilliseconds(ms - now));
+            now = ms;
+            if (tick)
+            {
+                rig.Engine.Tick();
+            }
+            else
+            {
+                sec++;
+                Assert.True(rig.Engine.CurrentReadings(sec).Count == 1 || sec == 1, $"gap at sampler second {sec}");
+            }
+        }
+    }
+
+    [Fact]
+    public void A_stalled_tick_leaves_a_gap_after_the_age_limit_not_a_flat_run()
     {
         var rig = new Rig();
         rig.AddRule(TempRule(low: null, high: null));
         rig.SetTemp(50);
         rig.Seconds(1);
 
-        Assert.Single(rig.Engine.CurrentReadings(100));
-        Assert.Single(rig.Engine.CurrentReadings(100));
-        Assert.Empty(rig.Engine.CurrentReadings(101));
-        Assert.Empty(rig.Engine.CurrentReadings(102));
+        rig.Time.Advance(TimeSpan.FromMilliseconds(1400));
+        Assert.Single(rig.Engine.CurrentReadings(1));
+        rig.Time.Advance(TimeSpan.FromMilliseconds(200));
+        Assert.Empty(rig.Engine.CurrentReadings(2));
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        Assert.Empty(rig.Engine.CurrentReadings(3));
+    }
+
+    [Fact]
+    public void The_fast_smart_retry_window_starts_after_the_boot_startup_hold()
+    {
+        var rig = new Rig(startupHold: TimeSpan.FromSeconds(60));
+        var rule = TempRule();
+        rule.Sensor.Category = "smart";
+        rig.AddRule(rule);
+
+        // Still inside the hold plus the first minute: retries keep coming every five seconds (reads at 1, 6, ... 86).
+        rig.Seconds(90);
+        Assert.Equal(18, rig.Sensors.SmartReads);
+        rig.Sensors.Storage["smart/nvme/0"] = new StorageComponent { Id = "smart/nvme/0", Sensors = new List<HardwareSensor> { Temp("cpu/temp", "CPU Package", 50) } };
+        rig.Seconds(6);
+
+        Assert.Equal(19, rig.Sensors.SmartReads);
+        Assert.Equal("ok", rig.Engine.States().Single().State);
     }
 
     [Fact]

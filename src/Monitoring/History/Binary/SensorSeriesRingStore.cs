@@ -21,9 +21,10 @@ namespace Nexus.Service.Monitoring.History.Binary;
 ///
 /// The dictionary of open rings is swapped whole, never mutated, so a
 /// concurrent route read sees either the old or the new set. RingFile reads
-/// through a raw pointer with no disposed check, so a query holds
-/// <see cref="_ringLock"/> for its whole scan and Delete/Dispose take it
-/// before unmapping a ring.
+/// through a raw pointer with no disposed check, so each series' rings are
+/// reference counted: a query holds a reference for its scan and Delete or
+/// Dispose only drop the owner's, so the unmap (and file delete) happens when
+/// the last reader leaves and a delete never waits on a query.
 /// </summary>
 internal sealed class SensorSeriesRingStore : IDisposable
 {
@@ -41,9 +42,8 @@ internal sealed class SensorSeriesRingStore : IDisposable
     private readonly long _secondCapacity;
     private readonly long _minuteCapacity;
     private readonly int _minuteRetentionExtraDays;
-    private readonly object _ringLock = new();
     private long _pruneFloorSec;
-    private Dictionary<string, (RingFile Second, RingFile Minute)> _rings = new(StringComparer.Ordinal);
+    private Dictionary<string, SeriesRings> _rings = new(StringComparer.Ordinal);
 
     public SensorSeriesRingStore(string dir, long secondCapacity, long minuteCapacity, long initialPruneFloorSec)
     {
@@ -73,15 +73,15 @@ internal sealed class SensorSeriesRingStore : IDisposable
     private long MinuteFloorSec(long cutoffSec) =>
         cutoffSec == RingFile.UnwrittenStamp ? cutoffSec : cutoffSec - _minuteRetentionExtraDays * 86_400L;
 
-    private void Open(string id, Dictionary<string, (RingFile Second, RingFile Minute)> into)
+    private void Open(string id, Dictionary<string, SeriesRings> into)
     {
         var second = RingFile.CreateOrOpen(Path.Combine(_dir, id + ".ring"), _secondCapacity, SecondBodyLength, _pruneFloorSec);
         var minute = RingFile.CreateOrOpen(
             Path.Combine(_dir, id + ".min"), _minuteCapacity, MinuteBodyLength, MinuteTier.ToPruneFloorIndex(MinuteFloorSec(_pruneFloorSec)));
-        into[id] = (second, minute);
+        into[id] = new SeriesRings(second, minute, Path.Combine(_dir, id + ".ring"), Path.Combine(_dir, id + ".min"), () => !Volatile.Read(ref _rings).ContainsKey(id));
     }
 
-    private (RingFile Second, RingFile Minute)? GetOrCreate(string id)
+    private SeriesRings? GetOrCreate(string id)
     {
         var current = Volatile.Read(ref _rings);
         if (current.TryGetValue(id, out var existing))
@@ -92,7 +92,7 @@ internal sealed class SensorSeriesRingStore : IDisposable
         {
             return null;
         }
-        var next = new Dictionary<string, (RingFile, RingFile)>(current, StringComparer.Ordinal);
+        var next = new Dictionary<string, SeriesRings>(current, StringComparer.Ordinal);
         Open(id, next);
         Volatile.Write(ref _rings, next);
         return next[id];
@@ -137,7 +137,7 @@ internal sealed class SensorSeriesRingStore : IDisposable
         }
     }
 
-    private static void RebuildMinute((RingFile Second, RingFile Minute) rings, long minuteFloorSec)
+    private static void RebuildMinute(SeriesRings rings, long minuteFloorSec)
     {
         var raw = RingFileScan.Enumerate(rings.Second, minuteFloorSec, minuteFloorSec + 59);
         var agg = FieldAgg.FromReadings(raw.Select(r => (double?)BinaryPrimitives.ReadSingleLittleEndian(r.Body)));
@@ -173,7 +173,7 @@ internal sealed class SensorSeriesRingStore : IDisposable
     }
 
     /// <summary>Slot-aggregated avg/max per series. A step of a whole minute or more folds the minute rollup; a narrower one decimates the raw ring.</summary>
-    public IReadOnlyList<SensorSeriesDecimatedSlot> QueryDecimated(long fromSec, long toSec, int stepSeconds)
+    public IReadOnlyList<SensorSeriesDecimatedSlot> QueryDecimated(long fromSec, long toSec, int stepSeconds, IReadOnlySet<string>? seriesIds = null)
     {
         var result = new List<SensorSeriesDecimatedSlot>();
         if (toSec < fromSec)
@@ -181,9 +181,13 @@ internal sealed class SensorSeriesRingStore : IDisposable
             return result;
         }
         var rollup = stepSeconds >= 60 && stepSeconds % 60 == 0;
-        lock (_ringLock)
+        foreach (var (id, rings) in Volatile.Read(ref _rings))
         {
-            foreach (var (id, rings) in Volatile.Read(ref _rings))
+            if ((seriesIds is not null && !seriesIds.Contains(id)) || !rings.TryAcquire())
+            {
+                continue;
+            }
+            try
             {
                 if (rollup)
                 {
@@ -193,6 +197,10 @@ internal sealed class SensorSeriesRingStore : IDisposable
                 {
                     AddRaw(result, id, rings.Second, fromSec, toSec, stepSeconds);
                 }
+            }
+            finally
+            {
+                rings.Release();
             }
         }
         return result;
@@ -241,24 +249,33 @@ internal sealed class SensorSeriesRingStore : IDisposable
         {
             return false;
         }
-        var next = new Dictionary<string, (RingFile, RingFile)>(current, StringComparer.Ordinal);
+        var next = new Dictionary<string, SeriesRings>(current, StringComparer.Ordinal);
         next.Remove(id);
         Volatile.Write(ref _rings, next);
-        lock (_ringLock)
+        // Unmaps now when no query holds the rings. A mapped file cannot be removed on Windows, so a failed delete is retried by the last reader.
+        rings.Retire();
+        if (!(TryDelete(Path.Combine(_dir, id + ".ring")) & TryDelete(Path.Combine(_dir, id + ".min"))))
         {
-            rings.Second.Dispose();
-            rings.Minute.Dispose();
+            rings.DeleteWhenReleased();
         }
-        TryDelete(Path.Combine(_dir, id + ".ring"));
-        TryDelete(Path.Combine(_dir, id + ".min"));
         return true;
     }
 
-    private static void TryDelete(string path)
+    private static bool TryDelete(string path)
     {
-        try { File.Delete(path); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        try
+        {
+            File.Delete(path);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Drops every series. Returns the number of ring files removed.</summary>
@@ -291,12 +308,77 @@ internal sealed class SensorSeriesRingStore : IDisposable
 
     public void Dispose()
     {
-        lock (_ringLock)
+        foreach (var rings in Volatile.Read(ref _rings).Values)
         {
-            foreach (var (second, minute) in Volatile.Read(ref _rings).Values)
+            rings.Retire();
+        }
+    }
+
+    /// <summary>One series' two rings, unmapped when the owner and every in-flight query have let go.</summary>
+    private sealed class SeriesRings(RingFile second, RingFile minute, string secondPath, string minutePath, Func<bool> isOrphaned)
+    {
+        private int _refs = 1;
+        private volatile bool _deleteFiles;
+
+        public RingFile Second { get; } = second;
+        public RingFile Minute { get; } = minute;
+
+        public void Deconstruct(out RingFile secondRing, out RingFile minuteRing)
+        {
+            secondRing = Second;
+            minuteRing = Minute;
+        }
+
+        public bool TryAcquire()
+        {
+            while (true)
             {
-                second.Dispose();
-                minute.Dispose();
+                var refs = Volatile.Read(ref _refs);
+                if (refs <= 0)
+                {
+                    return false;
+                }
+                if (Interlocked.CompareExchange(ref _refs, refs + 1, refs) == refs)
+                {
+                    return true;
+                }
+            }
+        }
+
+        public void Release()
+        {
+            if (Interlocked.Decrement(ref _refs) != 0)
+            {
+                return;
+            }
+            Second.Dispose();
+            Minute.Dispose();
+            if (_deleteFiles)
+            {
+                DeleteFiles();
+            }
+        }
+
+        /// <summary>Drops the owner's reference; the unmap follows once no query holds one.</summary>
+        public void Retire() => Release();
+
+        /// <summary>Removes the files once unmapped; a delete that failed while a query held the mapping is retried here.</summary>
+        public void DeleteWhenReleased()
+        {
+            _deleteFiles = true;
+            if (Volatile.Read(ref _refs) <= 0)
+            {
+                DeleteFiles();
+            }
+        }
+
+        private void DeleteFiles()
+        {
+            // A series recreated under the same id since the delete owns those paths now.
+            if (isOrphaned())
+            {
+                TryDelete(secondPath);
+                TryDelete(minutePath);
             }
         }
     }

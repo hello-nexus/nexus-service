@@ -197,12 +197,12 @@ public sealed class InMemoryMetricsHistoryStore : IMetricsHistoryStore, IPrivacy
         }
     }
 
-    public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds)
+    public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds, IReadOnlySet<string>? seriesIds = null)
     {
         lock (_lock)
         {
             var rows = _rows.Values.Where(s => s.TsSec >= fromSec && s.TsSec <= toSec).ToList();
-            var ids = rows.SelectMany(s => s.SensorReadings).Select(r => r.Id).Distinct(StringComparer.Ordinal).ToList();
+            var ids = rows.SelectMany(s => s.SensorReadings).Select(r => r.Id).Where(id => seriesIds is null || seriesIds.Contains(id)).Distinct(StringComparer.Ordinal).ToList();
             var result = new List<SensorSeriesDecimatedSlot>();
             foreach (var id in ids)
             {
