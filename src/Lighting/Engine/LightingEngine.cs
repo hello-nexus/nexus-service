@@ -1246,7 +1246,6 @@ public sealed partial class LightingEngine : IDisposable
             blockedBy = current is null ? "no effect"
                 : _studioOverlay is not null ? "editor overlay"
                 : _paused ? "paused"
-                : _frozen ? "frozen"
                 : _blackout ? "blackout"
                 : "wake ramp";
             return false;
@@ -1295,7 +1294,7 @@ public sealed partial class LightingEngine : IDisposable
             // A frozen global paints one canvas, so only zones that follow it are held back; pinned zones keep animating.
             if (_frozen || !IsTimePure(current))
             {
-                blockedBy = "global effect is not time-pure";
+                blockedBy = _frozen ? "frozen global" : "global effect is not time-pure";
                 return false;
             }
             settledAfter = Math.Max(settledAfter, Volatile.Read(ref _aheadParamsChangedMs));
