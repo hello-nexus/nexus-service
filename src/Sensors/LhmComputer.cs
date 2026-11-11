@@ -49,8 +49,6 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // Separate from _updateLock so a reader asking a cached answer never waits behind a hardware walk.
     private readonly object _rotationalLock = new();
     private readonly LhmWalkWatch _walkWatch = LhmWalkWatch.Shared;
-    private Timer? _walkTimer;
-    private static readonly TimeSpan WalkWatchPeriod = TimeSpan.FromSeconds(5);
     private long _lastUpdateTicks;
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
@@ -155,7 +153,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 PawnIoBootGate.SignalLhmOpened();
             }
         });
-        _ = _openTask.ContinueWith(_ => StartWalkWatch(), TaskScheduler.Default);
+        _walkWatch.Stalled += OnWalkStalled;
         _gate.Changed += OnControlGateChanged;
         _config.OnChanged += OnConfigChanged;
         // A toggle between the reads above and these subscriptions would otherwise
@@ -165,23 +163,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     public Computer Instance => _computer;
 
-    private void StartWalkWatch()
-    {
-        if (_disposed || _testHost)
-        {
-            return;
-        }
-        _walkTimer = new Timer(_ => CheckWalkAge(), null, WalkWatchPeriod, WalkWatchPeriod);
-    }
-
-    private void CheckWalkAge()
-    {
-        if (_walkWatch.CheckStalled(out var age))
-        {
-            ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s; sensor readings reported as missing until it completes");
-            _walkWatch.RaiseStalled(age);
-        }
-    }
+    private void OnWalkStalled(TimeSpan age) =>
+        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s; sensor readings reported as missing until it completes");
 
     /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
     internal bool IsHubDriven(IHardware hw) =>
@@ -552,7 +535,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     {
         _gate.Changed -= OnControlGateChanged;
         _config.OnChanged -= OnConfigChanged;
-        _walkTimer?.Dispose();
+        _walkWatch.Stalled -= OnWalkStalled;
         // Wait for the background open to finish before Close(): LHM's
         // Computer.Close() isn't documented thread-safe against an in-flight
         // Open(), and Dispose() is only called at service shutdown so the
