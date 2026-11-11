@@ -130,7 +130,7 @@ public sealed class RgbBridge : IDisposable
     private long _detectionActivityTicks;
     // 1 between a STARTED seen on this session and its COMPLETE.
     private int _detectionStartedSeen;
-    // Diagnostics: TickCount64 when the open detection pass began (spawn, re-detect request or STARTED); 0 when none is open. Interlocked.
+    // Diagnostics: TickCount64 when the open detection pass began (spawn, restart or STARTED); 0 when none is open. Interlocked.
     private long _detectionPassBeganMs;
     // When the outstanding re-detect was requested; 0 when none or once COMPLETE arrives. UtcNow ticks, Interlocked.
     private long _redetectRequestedTicks;
@@ -938,6 +938,7 @@ public sealed class RgbBridge : IDisposable
         Interlocked.Exchange(ref _redetectRequestedTicks, 0);
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
         Volatile.Write(ref _detectionStartedSeen, 0);
+        Interlocked.Exchange(ref _detectionPassBeganMs, 0);
         OpenRgbDetectorMap.EndHold();
         return true;
     }
@@ -1105,6 +1106,9 @@ public sealed class RgbBridge : IDisposable
             { await _controller.DisconnectAsync().ConfigureAwait(false); }
             catch { }
             await Task.Delay(500).ConfigureAwait(false);
+            // The old daemon's pass, if any, died with it; this is a fresh one.
+            Interlocked.Exchange(ref _detectionPassBeganMs, 0);
+            LogDetectionPassBegan("daemon restarted");
             _proc.Start();
             // The relaunch rewrote the overrides and detects from scratch.
             lock (_lock)

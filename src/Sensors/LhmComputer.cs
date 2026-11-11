@@ -46,6 +46,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Task _openTask;
     private readonly object _updateLock = new();
     // Diagnostics: which hardware item the Update walk is inside, and when it entered, so a stuck walk can be named.
+    private readonly Dictionary<string, long> _slowUpdateLoggedAt = new(StringComparer.Ordinal);
     private volatile string? _walkHolder;
     private long _walkHolderSinceTicks;
     private long _lockHeldWarnedAtTicks;
@@ -435,7 +436,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         {
             if (clock.ElapsedMilliseconds > SlowUpdateWarnMs)
             {
-                ServiceLog.Warn($"[lhm] slow update: {hw.HardwareType} {hw.Name} took {clock.ElapsedMilliseconds} ms");
+                var slowKey = hw.Identifier.ToString();
+                var slowNow = Environment.TickCount64;
+                if (!_slowUpdateLoggedAt.TryGetValue(slowKey, out var slowLast) || slowNow - slowLast >= UpdateErrorLogIntervalMs)
+                {
+                    _slowUpdateLoggedAt[slowKey] = slowNow;
+                    ServiceLog.Warn($"[lhm] slow update: {hw.HardwareType} {hw.Name} took {clock.ElapsedMilliseconds} ms");
+                }
             }
         }
     }
