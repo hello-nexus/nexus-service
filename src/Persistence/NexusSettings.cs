@@ -1278,7 +1278,7 @@ public sealed class CoolingSettings
     public Dictionary<string, int> ManualSpeeds { get; set; } = new();
     /// <summary>Per-channel duty offset in points, added to whatever a curve computes for that channel and clamped at the write. Absent entry means 0.</summary>
     public Dictionary<string, int> FanOffsets { get; set; } = new();
-    /// <summary>Per-channel pin override keyed by channel ID. A pinned channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An absent entry defaults to pinned for pumps, unpinned otherwise; see <see cref="Nexus.Service.Cooling.FanProfiles.IsPinned"/>.</summary>
+    /// <summary>Per-channel pin override keyed by channel ID. A pinned channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An absent entry defaults to pinned for pumps and GPU fans, unpinned otherwise; see <see cref="Nexus.Service.Cooling.FanProfiles.IsPinned"/>.</summary>
     public Dictionary<string, bool> FanPinOverrides { get; set; } = new();
     /// <summary>Pre-rename name of <see cref="FanPinOverrides"/>. Read only so an older settings file or profile still loads; <see cref="Nexus.Service.Lighting.PinMigration"/> folds it into the new field and clears it.</summary>
     public Dictionary<string, bool>? FanLockOverrides { get; set; }

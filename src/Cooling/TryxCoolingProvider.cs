@@ -55,7 +55,7 @@ public sealed class TryxCoolingProvider : IFanControlProvider, ICoolingProvider,
                 Mode = target is null ? FanModes.Auto : FanModes.Manual,
                 Kind = FanKinds.Fan,
                 // It sits on the AIO's pump head; with no pump channel on this device to mark it,
-                // say so here, so presets leave it to its own config by default.
+                // say so here.
                 IsAio = true,
                 DeviceId = DeviceId,
                 DeviceName = DeviceName,
