@@ -191,7 +191,10 @@ fi
 # openrgb-headless dlopen()s libhidapi-libusb, so ldd above cannot see it; the
 # HID devices only libusb can reach (HyperX Quadcast S, DuoCast) need it.
 LDCONFIG="$(command -v ldconfig || echo /sbin/ldconfig)"
-if [ -x "$LDCONFIG" ] && ! "$LDCONFIG" -p 2>/dev/null | grep -q 'libhidapi-libusb\.so\(\.0\)\? '; then
+# Captured first: grep -q exits on the first match, and under pipefail the
+# SIGPIPE it leaves ldconfig would read as "not installed".
+LDCACHE="$([ -x "$LDCONFIG" ] && "$LDCONFIG" -p 2>/dev/null || true)"
+if [ -n "$LDCACHE" ] && ! grep -q 'libhidapi-libusb\.so\(\.0\)\? ' <<<"$LDCACHE"; then
   echo "WARNING: libhidapi-libusb is not installed, so some USB RGB devices (e.g. HyperX Quadcast S) will not be detected:"
   echo "  Debian/Ubuntu/Mint: sudo apt install libhidapi-libusb0"
   echo "  Fedora/Bazzite:     sudo dnf install hidapi"
