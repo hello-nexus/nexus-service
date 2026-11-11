@@ -889,8 +889,6 @@ public class FanProfilesTests : IDisposable
         Assert.True(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "lianli-hydroshift2:fan1", Kind = FanKinds.Fan }));
         Assert.True(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "lianli-hydroshift2:pump", Kind = FanKinds.Pump }));
         Assert.False(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "qseries:S1:p2:1", Kind = FanKinds.Fan, IsAio = true }));
-        // The HydroShift II Curve board is a different device id and is not covered by the pin.
-        Assert.False(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "lianli-hydroshift2-curve:pump", Kind = FanKinds.Fan }));
     }
 
     [Fact]

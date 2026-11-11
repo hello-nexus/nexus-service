@@ -63,7 +63,7 @@ public class QSeriesCoolerStoredCurvePumpTests
     }
 
     [Fact]
-    public void Fan_write_holds_the_pump_on_the_stored_curve_and_reports_the_commanded_value()
+    public void Fan_write_holds_the_pump_on_the_stored_curve()
     {
         var (hub, t, provider) = NewHub(FactoryCurve());
         hub.State.CoolantTempInC = 49f;
@@ -71,13 +71,11 @@ public class QSeriesCoolerStoredCurvePumpTests
         provider.SetFanSpeed(FanId, 60);
 
         Assert.Equal(79, Assert.Single(PumpFrames(t))[5]);
-        var ch = provider.GetFanChannels().Single(c => c.Id == PumpId);
-        Assert.Equal(79, ch.DutyPercent);
-        Assert.Equal(FanModes.Auto, ch.Mode);
+        Assert.Equal(FanModes.Auto, provider.GetFanChannels().Single(c => c.Id == PumpId).Mode);
     }
 
     [Fact]
-    public void Off_turbo_caps_the_pump_wire()
+    public void Off_turbo_sends_the_curve_wire_uncapped()
     {
         var (hub, t, provider) = NewHub(FactoryCurve());
         t.TurboByte = QSeriesCoolerProtocol.TurboOffByte;
@@ -85,7 +83,7 @@ public class QSeriesCoolerStoredCurvePumpTests
 
         provider.SetFanSpeed(FanId, 60);
 
-        Assert.Equal(QSeriesCoolerProtocol.PumpOffTurboWireCap, Assert.Single(PumpFrames(t))[5]);
+        Assert.Equal(91, Assert.Single(PumpFrames(t))[5]);
     }
 
     [Fact]
@@ -97,7 +95,7 @@ public class QSeriesCoolerStoredCurvePumpTests
 
         provider.SetFanSpeed(FanId, 60);
 
-        Assert.Equal(91, provider.GetFanChannels().Single(c => c.Id == PumpId).DutyPercent);
+        Assert.Equal(91, Assert.Single(PumpFrames(t))[5]);
     }
 
     [Fact]
@@ -172,7 +170,7 @@ public class QSeriesCoolerStoredCurvePumpTests
 
         provider.SetFanSpeed(FanId, 60);
 
-        Assert.Equal(91, provider.GetFanChannels().Single(c => c.Id == PumpId).DutyPercent);
+        Assert.Equal(91, Assert.Single(PumpFrames(t))[5]);
     }
 
     [Fact]
@@ -229,14 +227,62 @@ public class QSeriesCoolerStoredCurvePumpTests
         var (hub, t, provider) = NewHub(FactoryCurve());
         hub.State.CoolantTempInC = 49f;
         provider.SetFanSpeed(FanId, 60);
-        Assert.Equal(79, provider.GetFanChannels().Single(c => c.Id == PumpId).DutyPercent);
+        Assert.Equal(79, Assert.Single(PumpFrames(t))[5]);
 
         var flat = Enumerable.Range(0, 5).Select(i => new QSeriesFirmwareCurvePoint { PumpTempC = 30 + i * 5, PumpDutyPercent = 60, FanTempC = 30 + i * 5, FanDutyPercent = 50 }).ToArray();
         Assert.True(hub.WriteFirmwareCurve(flat));
         t.Curve = flat;
         provider.RefreshStoredCurvePump();
 
-        Assert.Equal(60, provider.GetFanChannels().Single(c => c.Id == PumpId).DutyPercent);
+        Assert.Equal(60, PumpFrames(t).Last()[5]);
+    }
+
+    [Fact]
+    public void Firmware_without_a_stored_curve_caches_the_factory_curve()
+    {
+        var (hub, t, provider) = NewHub(null, firmware: "1.0.0.0");
+        hub.State.CoolantTempInC = 49f;
+        provider.SetFanSpeed(FanId, 60);
+        hub.State.CoolantTempInC = 50f;
+        provider.RefreshStoredCurvePump();
+
+        Assert.Equal(91, PumpFrames(t).Last()[5]);
+        Assert.DoesNotContain(t.Writes, w => w.Length >= 3 && w[1] == 0xCC && w[2] == 0x04);
+    }
+
+    [Theory]
+    [InlineData(QSeriesCoolerProtocol.ControlModeMotherboard)]
+    [InlineData(QSeriesCoolerProtocol.ControlModeFirmware)]
+    public void A_fan_write_from_another_mode_sends_the_mode_frame_then_the_pump_speed_frame(byte startMode)
+    {
+        var (hub, t, _) = NewHub(FactoryCurve());
+        t.ControlMode = startMode;
+
+        Assert.True(hub.SetChannelFanSpeeds(QSeriesCoolerProtocol.FanChannel, new[] { new QSeriesCoolerProtocol.QSeriesFanSlotDuty(50, 0, 0) }));
+
+        var frames = PumpFrames(t);
+        Assert.Equal(2, frames.Count);
+        Assert.Equal(QSeriesCoolerProtocol.ControlModeSoftware, frames[0][4]);
+        Assert.Equal(QSeriesCoolerProtocol.ControlModeKeep, frames[1][4]);
+        Assert.True(frames[0][5] > 0);
+        Assert.Equal(frames[0][5], frames[1][5]);
+        Assert.True(t.Writes.FindIndex(w => ReferenceEquals(w, frames[1])) < t.Writes.FindIndex(w => w.Length >= 4 && w[2] == 0x02 && w[3] == QSeriesCoolerProtocol.FanChannel));
+    }
+
+    [Fact]
+    public void The_hold_yields_to_a_pin_and_to_a_hand_back_that_empties_the_driven_set()
+    {
+        var (hub, t, _) = NewHub(FactoryCurve());
+
+        // Pinned non-software mode: no write even though the caller wants a hold.
+        hub.MarkDesiredControlMode(QSeriesCoolerProtocol.ControlModeMotherboard);
+        Assert.False(hub.HoldPumpOnCurve(FactoryCurve(), 49f, () => true));
+
+        // Nothing driven any more (the predicate runs under the hub lock): no write.
+        hub.MarkDesiredControlMode(QSeriesCoolerProtocol.ControlModeSoftware);
+        Assert.False(hub.HoldPumpOnCurve(FactoryCurve(), 49f, () => false));
+
+        Assert.Empty(PumpFrames(t));
     }
 
     // SetControl frames (FF CC 02, channel byte 0), not per-channel fan frames.

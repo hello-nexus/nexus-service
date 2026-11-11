@@ -37,7 +37,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     // Last software-commanded pump duty, echoed when toggling turbo or switching
     // to software so the pump isn't reset by an unrelated fan-channel write.
     private int _lastPumpDuty = 50;
-    // Set while Nexus holds the pump on the cooler's stored curve (wire scale, uncapped);
+    // Set while Nexus holds the pump on the cooler's stored curve (wire scale, sent as is);
     // null whenever _lastPumpDuty drives it. Cleared by any user duty and on mode change.
     private byte? _curvePumpWire;
     private int _firmwareCurveVersion;
@@ -45,9 +45,8 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     /// <summary>Bumped when the stored firmware curve is rewritten, so cached copies go stale.</summary>
     public int FirmwareCurveVersion => Volatile.Read(ref _firmwareCurveVersion);
 
-    private byte PumpWireFor(bool turboOn) => _curvePumpWire is { } w
-        ? (turboOn ? w : Math.Min(w, QSeriesCoolerProtocol.PumpOffTurboWireCap))
-        : QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn);
+    private byte PumpWireFor(bool turboOn) => _curvePumpWire
+        ?? QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn);
     // Last channel topology the INF log line reported, so a poll that finds no
     // model/LED-count change stays silent. Null until the first successful parse,
     // so an initially empty channel still logs "(none)" once.
@@ -487,22 +486,25 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     /// <summary>
     /// Hold the pump in software mode at the wire byte the cooler's stored <paramref name="curve"/>
     /// gives at <paramref name="coolantC"/>. Writes only when that byte changes or the hub is not
-    /// yet in software mode. Returns the commanded curve wire byte, null when nothing was written
-    /// because the hub is unreachable.
+    /// yet in software mode. <paramref name="shouldHold"/> runs under the hub lock (like the
+    /// hand-back's check), together with the pin check, so a concurrent release or pin is not undone.
+    /// False when nothing was held.
     /// </summary>
-    public int? HoldPumpOnCurve(IReadOnlyList<QSeriesFirmwareCurvePoint> curve, float? coolantC)
+    public bool HoldPumpOnCurve(QSeriesFirmwareCurvePoint[] curve, float? coolantC, Func<bool> shouldHold)
     {
-        var wire = (byte)QSeriesCoolerProtocol.StoredCurvePumpWire(curve.ToArray(), coolantC);
+        var wire = (byte)QSeriesCoolerProtocol.StoredCurvePumpWire(curve, coolantC);
         lock (_lock)
         {
-            if (!EnsureConnected()) return null;
+            if (_desiredControlMode is byte pinned && pinned != QSeriesCoolerProtocol.ControlModeSoftware) return false;
+            if (!shouldHold()) return false;
+            if (!EnsureConnected()) return false;
             var t = _transport;
-            if (t is null) return null;
-            if (_curvePumpWire == wire && State.ControlMode == QSeriesCoolerProtocol.ControlModeSoftware) return wire;
+            if (t is null) return false;
+            if (_curvePumpWire == wire && State.ControlMode == QSeriesCoolerProtocol.ControlModeSoftware) return true;
             try
             {
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
-                if (!ReadPort0(port0)) return null;
+                if (!ReadPort0(port0)) return false;
                 _curvePumpWire = wire;
                 var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
                 var sent = PumpWireFor(turboOn);
@@ -511,13 +513,13 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, sent, turboByte, port0));
                 t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, sent, turboByte, port0));
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
-                return wire;
+                return true;
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[qseries-cooler] hold pump on curve failed: {ex.GetType().Name}: {ex.Message}");
                 Disconnect();
-                return null;
+                return false;
             }
         }
     }
@@ -572,6 +574,8 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                     var pumpWire = PumpWireFor(turboOn);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, pumpWire, turboByte, port0));
+                    // The pump speed only takes effect in a second frame with the mode byte cleared.
+                    t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, pumpWire, turboByte, port0));
                 }
                 t.Write(QSeriesCoolerProtocol.BuildSetChannelFanSpeeds(channel, capped));
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;

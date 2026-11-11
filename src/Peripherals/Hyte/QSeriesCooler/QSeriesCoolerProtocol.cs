@@ -602,19 +602,15 @@ public static class QSeriesCoolerProtocol
     /// <summary>
     /// Map a 0-100 pump duty to the firmware's voltage-percentage wire byte.
     /// The pump is off below the table's first running duty and ramps non-linearly
-    /// above; off-turbo the wire byte is additionally capped at
-    /// <see cref="PumpOffTurboWireCap"/>. Matches PQSeriesCommand
+    /// above; off-turbo any duty above 55 is capped to wire byte 55. Matches PQSeriesCommand
     /// .SetPumpSpeedCommand over SmartDeviceMethods._pumpSpeedPercentageToVoltagePercentage.
     /// </summary>
     public static byte MapPumpDutyToWire(int dutyPercent, bool turboOn)
     {
         var d = Math.Clamp(dutyPercent, 0, 100);
         if (turboOn) return PumpDutyToWire[d];
-        return d > PumpOffTurboWireCap ? PumpOffTurboWireCap : PumpDutyToWire[d];
+        return d > 55 ? (byte)55 : PumpDutyToWire[d];
     }
-
-    /// <summary>Highest pump wire byte allowed while turbo is off.</summary>
-    public const byte PumpOffTurboWireCap = 55;
 
     /// <summary>Lowest pump wire byte that still runs the pump (the duty table maps its first running duty here).</summary>
     public const byte PumpMinRunningWire = 31;
@@ -623,7 +619,8 @@ public static class QSeriesCoolerProtocol
     /// Pump wire byte for software mode that follows the cooler's stored firmware pump curve at
     /// <paramref name="coolantC"/>. The stored pump points are already wire-scale (measured on a Q60:
     /// software wire at a point's value matches the firmware-mode RPM there), so they are not
-    /// run through <see cref="MapPumpDutyToWire"/>. Linear between points, clamped to the end
+    /// run through <see cref="MapPumpDutyToWire"/> or its off-turbo cap (measured: wire bytes above that
+    /// cap still raise pump speed with turbo off, as the firmware's own curve does). Linear between points, clamped to the end
     /// points, never below <see cref="PumpMinRunningWire"/>. An empty curve gives the maximum;
     /// an unknown coolant temp gives the curve's highest pump point, so no fallback runs the pump low.
     /// </summary>
