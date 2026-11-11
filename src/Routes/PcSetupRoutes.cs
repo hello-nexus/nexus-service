@@ -31,49 +31,51 @@ public static class PcSetupRoutes
 
         app.MapPut("/system/setup", async (HttpContext ctx, LightingSceneStore scene) =>
         {
+            const string route = "PUT /system/setup";
             var body = await ReadBodyAsync(ctx, AppJsonContext.Default.PutPcSetupBody);
             if (body is null)
             {
-                return Fail(new("bad_body", "body is malformed or over the size cap"));
+                return Fail(ctx, route, new("bad_body", "body is malformed or over the size cap"), null, null);
             }
             if (body.BaseRev is not { } baseRev)
             {
-                return Fail(new("base_rev_required", "baseRev is required"));
+                return Fail(ctx, route, new("base_rev_required", "baseRev is required"), null, body.Setup);
             }
             if (PcSetupValidation.Validate(body.Setup) is { } error)
             {
-                return Fail(error);
+                return Fail(ctx, route, error, baseRev, body.Setup);
             }
             lock (SetupWriteLock)
             {
                 return scene.Setup.TrySave(baseRev, body.Setup!, out var current)
-                    ? Results.Json(new PcSetupRevResponse { Rev = current.Rev }, AppJsonContext.Default.PcSetupRevResponse)
-                    : Conflict(current);
+                    ? Saved(ctx, route, baseRev, current, body.Setup!)
+                    : Conflict(ctx, route, baseRev, current);
             }
         });
 
         app.MapPatch("/system/setup/placements", async (HttpContext ctx, LightingSceneStore scene) =>
         {
+            const string route = "PATCH /system/setup/placements";
             var body = await ReadBodyAsync(ctx, AppJsonContext.Default.PatchPcSetupPlacementsBody);
             if (body is null)
             {
-                return Fail(new("bad_body", "body is malformed or over the size cap"));
+                return Fail(ctx, route, new("bad_body", "body is malformed or over the size cap"), null, null);
             }
             if (body.BaseRev is not { } baseRev)
             {
-                return Fail(new("base_rev_required", "baseRev is required"));
+                return Fail(ctx, route, new("base_rev_required", "baseRev is required"), null, null);
             }
             var places = body.Places ?? new List<PcSetupPlacement>();
             if (places.Count > PcSetupValidation.MaxItems + 1)
             {
-                return Fail(new("too_many_items", $"at most {PcSetupValidation.MaxItems + 1} places"));
+                return Fail(ctx, route, new("too_many_items", $"at most {PcSetupValidation.MaxItems + 1} places"), baseRev, null);
             }
             lock (SetupWriteLock)
             {
                 var current = scene.Setup.Load();
                 if (current.Rev != baseRev)
                 {
-                    return Conflict(current);
+                    return Conflict(ctx, route, baseRev, current);
                 }
                 var next = current.Setup;
                 var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -81,11 +83,11 @@ public static class PcSetupRoutes
                 {
                     if (p is null || !seen.Add(p.Id ?? ""))
                     {
-                        return Fail(new("duplicate_id", "each id may appear once in places"));
+                        return Fail(ctx, route, new("duplicate_id", "each id may appear once in places"), baseRev, current.Setup);
                     }
                     if (!PcSetupValidation.IsFinitePlace(p.X, p.Z, p.Yaw))
                     {
-                        return Fail(new("non_finite_number", $"place {p.Id}: x, z and yaw must be finite"));
+                        return Fail(ctx, route, new("non_finite_number", $"place {p.Id}: x, z and yaw must be finite"), baseRev, current.Setup);
                     }
                     if (p.Id == PcSetupValidation.CaseId)
                     {
@@ -111,54 +113,55 @@ public static class PcSetupRoutes
                     }
                     else
                     {
-                        return Fail(new("unknown_id", $"no item with id {p.Id}"));
+                        return Fail(ctx, route, new("unknown_id", $"no item with id {p.Id}"), baseRev, current.Setup);
                     }
                 }
                 if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
                 {
-                    return Fail(new("record_too_large", $"the record is over {PcSetupValidation.MaxRecordBytes / 1024} KiB"));
+                    return Fail(ctx, route, new("record_too_large", $"the record is over {PcSetupValidation.MaxRecordBytes / 1024} KiB"), baseRev, current.Setup);
                 }
                 return scene.Setup.TrySave(baseRev, next, out var saved)
-                    ? Results.Json(new PcSetupRevResponse { Rev = saved.Rev }, AppJsonContext.Default.PcSetupRevResponse)
-                    : Conflict(saved);
+                    ? Saved(ctx, route, baseRev, saved, next)
+                    : Conflict(ctx, route, baseRev, saved);
             }
         });
 
         app.MapPatch("/system/setup/radiator", async (HttpContext ctx, LightingSceneStore scene) =>
         {
+            const string route = "PATCH /system/setup/radiator";
             var body = await ReadBodyAsync(ctx, AppJsonContext.Default.PatchPcSetupRadiatorBody);
             if (body is null)
             {
-                return Fail(new("bad_body", "body is malformed or over the size cap"));
+                return Fail(ctx, route, new("bad_body", "body is malformed or over the size cap"), null, null);
             }
             if (body.BaseRev is not { } baseRev)
             {
-                return Fail(new("base_rev_required", "baseRev is required"));
+                return Fail(ctx, route, new("base_rev_required", "baseRev is required"), null, null);
             }
             if (PcSetupValidation.RadiatorMount(body.Mount) is { } error)
             {
-                return Fail(error);
+                return Fail(ctx, route, error, baseRev, null);
             }
             lock (SetupWriteLock)
             {
                 var current = scene.Setup.Load();
                 if (current.Rev == 0)
                 {
-                    return Fail(new("no_record", "no saved setup to change"));
+                    return Fail(ctx, route, new("no_record", "no saved setup to change"), baseRev, null);
                 }
                 if (current.Rev != baseRev)
                 {
-                    return Conflict(current);
+                    return Conflict(ctx, route, baseRev, current);
                 }
                 var next = current.Setup;
                 next.Case.RadiatorMount = body.Mount;
                 if (PcSetupValidation.Size(next) > PcSetupValidation.MaxRecordBytes)
                 {
-                    return Fail(new("record_too_large", $"the record is over {PcSetupValidation.MaxRecordBytes / 1024} KiB"));
+                    return Fail(ctx, route, new("record_too_large", $"the record is over {PcSetupValidation.MaxRecordBytes / 1024} KiB"), baseRev, next);
                 }
                 return scene.Setup.TrySave(baseRev, next, out var saved)
-                    ? Results.Json(new PcSetupRevResponse { Rev = saved.Rev }, AppJsonContext.Default.PcSetupRevResponse)
-                    : Conflict(saved);
+                    ? Saved(ctx, route, baseRev, saved, next)
+                    : Conflict(ctx, route, baseRev, saved);
             }
         });
     }
@@ -206,12 +209,24 @@ public static class PcSetupRoutes
 
     private static PcSetupResponse ToResponse(PcSetupFile file) => new() { Rev = file.Rev, Setup = file.Setup };
 
-    private static IResult Conflict(PcSetupFile current) =>
-        Results.Json(ToResponse(current), AppJsonContext.Default.PcSetupResponse, statusCode: StatusCodes.Status409Conflict);
+    private static IResult Saved(HttpContext ctx, string route, int baseRev, PcSetupFile saved, PcSetup setup)
+    {
+        PcSetupSaveLog.Write(ctx, route, "200", baseRev, saved.Rev, setup);
+        return Results.Json(new PcSetupRevResponse { Rev = saved.Rev }, AppJsonContext.Default.PcSetupRevResponse);
+    }
 
-    private static IResult Fail(PcSetupError error) =>
-        Results.Json(
+    private static IResult Conflict(HttpContext ctx, string route, int baseRev, PcSetupFile current)
+    {
+        PcSetupSaveLog.Write(ctx, route, "409", baseRev, current.Rev, null);
+        return Results.Json(ToResponse(current), AppJsonContext.Default.PcSetupResponse, statusCode: StatusCodes.Status409Conflict);
+    }
+
+    private static IResult Fail(HttpContext ctx, string route, PcSetupError error, int? baseRev, PcSetup? setup)
+    {
+        PcSetupSaveLog.Write(ctx, route, $"400 {error.Code}", baseRev, null, setup);
+        return Results.Json(
             new PcSetupErrorResponse { Error = true, Msg = error.Message, Code = error.Code },
             AppJsonContext.Default.PcSetupErrorResponse,
             statusCode: StatusCodes.Status400BadRequest);
+    }
 }
