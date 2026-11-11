@@ -126,6 +126,9 @@ public sealed partial class LightingEngine : IDisposable
     private IEffect? _lastRenderEffect;
 
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
+
+    /// <summary>The same frame as <see cref="OnFrame"/> with the device snapshot it was serialized from, section for section, and whether it is the black frame <see cref="Stop"/> publishes last.</summary>
+    public event Action<ReadOnlyMemory<byte>, DeviceFrame[], bool>? FrameSerialized;
     public event Action? OnEffectChanged;
 
     /// <summary>Raised on the engine thread once per tick, after every device frame is published; handlers must not block.</summary>
@@ -133,6 +136,14 @@ public sealed partial class LightingEngine : IDisposable
     public string CurrentEffectName => _currentEffect?.Name ?? "none";
     public IEffect? CurrentEffect => _currentEffect;
     public DeviceFrame[] Devices => _devices;
+
+    private volatile bool _stopped;
+
+    /// <summary>True from the end of <see cref="Stop"/> until the render loop starts again; nothing reports to the dashboard meanwhile.</summary>
+    public bool IsStopped => _stopped;
+
+    /// <summary>Per-LED output the frame writers actually drive, collected for the dashboard preview.</summary>
+    public LiveLedSink Live { get; } = new();
     public bool Paused => _paused;
     public bool Frozen => _frozen;
     public bool Blackout => _blackout;
@@ -655,6 +666,7 @@ public sealed partial class LightingEngine : IDisposable
             {
                 _cts?.Dispose();
                 _cts = new CancellationTokenSource();
+                _stopped = false;
                 var token = _cts.Token;
                 // Dedicated thread: on Windows the loop blocks on its high-resolution timer instead of awaiting.
                 _loopTask = Task.Factory.StartNew(
@@ -778,9 +790,12 @@ public sealed partial class LightingEngine : IDisposable
                 dev.Clear();
             }
 
+            // Stopped before the final black frame so the dashboard feed drops frames that arrive after it; that one frame is marked final and still reports. A tick racing this on the shared frame buffer is not excluded.
+            _stopped = true;
             try
-            { SerializeAndBroadcast(); }
+            { SerializeAndBroadcast(final: true); }
             catch { }
+            Live.Enabled = false;
         }
         // Handler may start/stop an audio-capture subprocess; must not run under the engine lock.
         OnEffectChanged?.Invoke();
@@ -2353,7 +2368,7 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
-    private void SerializeAndBroadcast()
+    private void SerializeAndBroadcast(bool final = false)
     {
         var devices = _devices;
         var canvasBytes = _canvas.ByteCount;
@@ -2390,6 +2405,7 @@ public sealed partial class LightingEngine : IDisposable
             pos += dev.LedCount * 3;
         }
         OnFrame?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos));
+        FrameSerialized?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos), devices, final);
     }
 
     /// <summary>

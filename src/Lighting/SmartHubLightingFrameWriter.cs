@@ -223,6 +223,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
                 var fromFrame = Math.Min(ledCount, frame.LedCount);
                 FillBufferSlice(dst, offset, frame.LedBytes, fromFrame,
                     brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                _engine.Live.Report(zone.Id, frame.LedBytes, fromFrame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
                 for (var k = fromFrame; k < ledCount && offset + k < dst.Length; k++) dst[offset + k] = default;
             }
             offset += ledCount;
@@ -264,7 +265,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
         return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
-    private static void FillBufferSlice(SmartHubColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
+    internal static void FillBufferSlice(SmartHubColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
         double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)
