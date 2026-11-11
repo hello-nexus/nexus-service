@@ -489,4 +489,45 @@ public class LiveLedColorsTests
 
         Assert.Equal(sent ? new byte[] { 1, 2, 3 } : new byte[] { 9, 9, 9 }, sink.TryGetFresh("old"));
     }
+
+    [Fact]
+    public void HydroShift2_KeepsTheLoopPhaseOnAnIdenticalUpload()
+    {
+        Assert.Equal(100, HydroShift2LightingFrameWriter.LoopPhaseStart(queued: false, hadLoop: true, current: 100, now: 900));
+        Assert.Equal(900, HydroShift2LightingFrameWriter.LoopPhaseStart(queued: true, hadLoop: true, current: 100, now: 900));
+        Assert.Equal(900, HydroShift2LightingFrameWriter.LoopPhaseStart(queued: false, hadLoop: false, current: 100, now: 900));
+    }
+
+    [Fact]
+    public void Commit_WhileReportingIsOff_DropsWhatWasStaged()
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.Stage("dev", Source(), Leds, 1.0, DeviceColorAdjust.Identity, false, 0, 0, 0);
+        sink.Enabled = false;
+        sink.Commit("dev");
+        sink.Enabled = true;
+        sink.Commit("dev");
+        Assert.Null(sink.TryGetFresh("dev"));
+    }
+
+    [Fact]
+    public void Stop_ReportsTheFinalBlackFrameThenTurnsReportingOff()
+    {
+        var engine = new LightingEngine();
+        var frame = FrameWith(Source());
+        engine.UpdateDevices(new[] { frame });
+        // A writer: reports what it drives from the frame it was handed.
+        engine.OnFrame += _ => engine.Live.Report("f", frame.LedBytes, Leds, 1.0, DeviceColorAdjust.Identity);
+        byte[]? last = null;
+        var feed = new LiveLedDashboardFeed(engine.Live, () => 1, () => engine.IsStopped, copy => last = copy, _ => { });
+        engine.FrameSerialized += feed.OnFrame;
+        // Earlier frames already turned reporting on.
+        engine.Live.Enabled = true;
+
+        engine.Stop();
+
+        Assert.NotNull(last);
+        Assert.Equal(new byte[Leds * 3], Parse(last!, last!.Length)[0]);
+        Assert.False(engine.Live.Enabled);
+    }
 }

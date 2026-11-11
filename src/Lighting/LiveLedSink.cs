@@ -150,7 +150,7 @@ public sealed class LiveLedSink
     /// <summary>Publish what <see cref="Stage"/> held, because the writer pushed it.</summary>
     public void Commit(string id)
     {
-        if (!Enabled || !_entries.TryGetValue(id, out var e))
+        if (!_entries.TryGetValue(id, out var e))
         {
             return;
         }
@@ -158,6 +158,12 @@ public sealed class LiveLedSink
         {
             if (e.StagedLength < 0)
             {
+                return;
+            }
+            if (!Enabled)
+            {
+                // Reporting is off, so what was staged is dropped rather than kept for a later session.
+                e.StagedLength = -1;
                 return;
             }
             if (e.Bytes.Length < e.StagedLength)

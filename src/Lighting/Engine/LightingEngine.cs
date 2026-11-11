@@ -137,6 +137,11 @@ public sealed partial class LightingEngine : IDisposable
     public IEffect? CurrentEffect => _currentEffect;
     public DeviceFrame[] Devices => _devices;
 
+    private volatile bool _stopped;
+
+    /// <summary>True from the end of <see cref="Stop"/> until the render loop starts again; nothing reports to the dashboard meanwhile.</summary>
+    public bool IsStopped => _stopped;
+
     /// <summary>Per-LED output the frame writers actually drive, collected for the dashboard preview.</summary>
     public LiveLedSink Live { get; } = new();
     public bool Paused => _paused;
@@ -661,6 +666,7 @@ public sealed partial class LightingEngine : IDisposable
             {
                 _cts?.Dispose();
                 _cts = new CancellationTokenSource();
+                _stopped = false;
                 var token = _cts.Token;
                 // Dedicated thread: on Windows the loop blocks on its high-resolution timer instead of awaiting.
                 _loopTask = Task.Factory.StartNew(
@@ -757,8 +763,6 @@ public sealed partial class LightingEngine : IDisposable
 
     public void Stop()
     {
-        // No frames are serialized after this, so the dashboard copy has nobody to wait on.
-        Live.Enabled = false;
         lock (_lock)
         {
             var old = _currentEffect;
@@ -786,9 +790,12 @@ public sealed partial class LightingEngine : IDisposable
                 dev.Clear();
             }
 
+            // The final black frame still reports to the dashboard; reporting stops only after it.
             try
             { SerializeAndBroadcast(); }
             catch { }
+            _stopped = true;
+            Live.Enabled = false;
         }
         // Handler may start/stop an audio-capture subprocess; must not run under the engine lock.
         OnEffectChanged?.Invoke();

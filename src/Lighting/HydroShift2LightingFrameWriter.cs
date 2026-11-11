@@ -209,11 +209,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             Unorder(loopPref?.ColorOrder, _loopLive);
             _loopLiveCount = uploadCount;
             _loopLiveFrameMs = interval * HydroShift2Protocol.RingTickMs;
-            // An identical upload is not re-sent, so the loop already running keeps its phase.
-            if (queued || !hadLoop)
-            {
-                _loopLiveStartMs = Environment.TickCount64;
-            }
+            _loopLiveStartMs = LoopPhaseStart(queued, hadLoop, _loopLiveStartMs, Environment.TickCount64);
             _loopContext = context;
             return;
         }
@@ -253,6 +249,9 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         }
         return now - since >= LoopSettleMs;
     }
+
+    /// <summary>An identical upload is not re-sent, so the loop already running keeps its phase; a new loop starts now.</summary>
+    internal static long LoopPhaseStart(bool queued, bool hadLoop, long current, long now) => queued || !hadLoop ? now : current;
 
     private byte[]? _loopLive;
     private int _loopLiveCount;

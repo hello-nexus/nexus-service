@@ -2799,6 +2799,7 @@ public sealed class RgbBridge : IDisposable
 
         foreach (var physIdx in _touchedPhysicals)
         {
+            _pushDroppedByCap = false;
             if (_physBuffers.TryGetValue(physIdx, out var buf)
                 && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx)))
             {

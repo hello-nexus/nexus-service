@@ -80,30 +80,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly FeatureGates _gates;
     private readonly SensorFeed? _sensorFeed;
 
-    private byte[] _dashboardFrame = Array.Empty<byte>();
-    private readonly object _dashboardLock = new();
-    private int _dashboardFrames;
-
-    // Stop and the render tick can both serialize a frame, so composing is serialized. Each broadcast gets its own copy because section lengths change per frame and the send outlives the lock.
-    private void BroadcastDashboardFrame(ReadOnlyMemory<byte> frame, DeviceFrame[] devices)
-    {
-        var connected = _hub.ClientCount > 0;
-        _engine.Live.Enabled = connected;
-        if (!connected)
-        {
-            return;
-        }
-        byte[]? copy;
-        lock (_dashboardLock)
-        {
-            copy = LiveLedFrameComposer.ComposeCopy(frame.Span, devices, _engine.Live, ref _dashboardFrame);
-            if ((++_dashboardFrames & 255) == 0)
-            {
-                _engine.Live.Prune(devices);
-            }
-        }
-        _ = copy is not null ? _hub.BroadcastBinaryAsync(copy) : _hub.BroadcastBinaryAsync(frame);
-    }
+    private readonly LiveLedDashboardFeed _dashboard;
 
     public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null, SensorFeed? sensorFeed = null)
     {
@@ -139,7 +116,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         _screenPP.Set(s.ScreenEffect.Hue, s.ScreenEffect.Colorize, s.ScreenEffect.Saturation, s.ScreenEffect.Contrast, s.ScreenEffect.FlipX, s.ScreenEffect.FlipY, s.ScreenEffect.Reactive, s.ScreenEffect.Reactivity, s.ScreenEffect.Intensity);
         _mediaPP.Set(s.MediaEffect.Hue, s.MediaEffect.Colorize, s.MediaEffect.Saturation, s.MediaEffect.Contrast, s.MediaEffect.FlipX, s.MediaEffect.FlipY);
 
-        _engine.FrameSerialized += BroadcastDashboardFrame;
+        _dashboard = new LiveLedDashboardFeed(_engine.Live, () => _hub.ClientCount, () => _engine.IsStopped,
+            copy => _hub.BroadcastLatestBinary(copy), raw => _ = _hub.BroadcastBinaryAsync(raw));
+        _engine.FrameSerialized += _dashboard.OnFrame;
         _engine.OnEffectChanged += ReconcileAudioCapture;
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.
         _store.OnChanged += RefreshPinnedLooks;
