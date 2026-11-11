@@ -898,14 +898,14 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_retries_an_empty_smart_read_after_ten_seconds()
+    public void Engine_retries_an_empty_smart_read_after_five_seconds()
     {
         var rig = new Rig();
         var rule = TempRule();
         rule.Sensor.Category = "smart";
         rig.AddRule(rule);
 
-        rig.Seconds(9);
+        rig.Seconds(4);
         Assert.Equal(1, rig.Sensors.SmartReads);
         rig.Sensors.Storage["smart/nvme/0"] = new StorageComponent { Id = "smart/nvme/0", Sensors = new List<HardwareSensor> { Temp("cpu/temp", "CPU Package", 50) } };
         rig.Seconds(2);

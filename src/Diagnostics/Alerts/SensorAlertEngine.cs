@@ -68,8 +68,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     internal static readonly TimeSpan UnavailableAfter = TimeSpan.FromSeconds(10);
     private const int MaxHistory = 100;
     private static readonly TimeSpan SmartInterval = TimeSpan.FromMinutes(1);
-    // The first read after service start returns no drives until the hardware walk has run.
-    private static readonly TimeSpan SmartEmptyRetry = TimeSpan.FromSeconds(10);
+    // The first read after service start returns no drives until the hardware walk has run; retry inside the 10 s invalid window.
+    private static readonly TimeSpan SmartEmptyRetry = TimeSpan.FromSeconds(5);
     private const string NoticeKind = "sensorAlert";
 
     private readonly IConfigStore _store;
