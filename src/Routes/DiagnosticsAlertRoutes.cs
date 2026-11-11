@@ -77,7 +77,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     return;
                 }
-                sensorChanged = SensorIdentityChanged(list[index].Sensor, body.Sensor);
+                sensorChanged = !SensorAlertRules.SameSensor(list[index].Sensor, body.Sensor);
                 list[index] = body;
                 found = true;
             });
@@ -95,8 +95,12 @@ public static class DiagnosticsAlertRoutes
 
         app.MapDelete("/diagnostics/alerts/{id}", (string id, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {
-            store.Update(s => s.Diagnostics.SensorAlerts?.RemoveAll(r => r.Id == id));
-            DropHistory(id, history, buffer);
+            var removed = false;
+            store.Update(s => removed = s.Diagnostics.SensorAlerts?.RemoveAll(r => r.Id == id) > 0);
+            if (removed)
+            {
+                DropHistory(id, history, buffer);
+            }
             engine.Reconcile();
             return Results.NoContent();
         }).Produces(StatusCodes.Status204NoContent);
@@ -188,10 +192,6 @@ public static class DiagnosticsAlertRoutes
             return Results.NoContent();
         }).Produces(StatusCodes.Status204NoContent);
     }
-
-    // Category, id and type name the series; a rename or parent change does not make it a different sensor.
-    private static bool SensorIdentityChanged(SensorRef before, SensorRef after) =>
-        before.Category != after.Category || before.Id != after.Id || !string.Equals(before.Type, after.Type, StringComparison.OrdinalIgnoreCase);
 
     private static void DropHistory(string ruleId, IMetricsHistoryStore history, MetricsSampleBuffer buffer)
     {

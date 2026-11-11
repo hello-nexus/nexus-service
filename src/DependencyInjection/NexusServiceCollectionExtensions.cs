@@ -533,11 +533,24 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(_ =>
+        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>
         {
             try
             {
-                return new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                var store = new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                // Tracked-sensor series left by a deleted rule (a crash, or an older build) would otherwise count toward the series cap forever.
+                try
+                {
+                    var ruleIds = new HashSet<string>(StringComparer.Ordinal);
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
+                        s => ruleIds.UnionWith((s.Diagnostics.SensorAlerts ?? new()).Select(r => r.Id)));
+                    store.PruneSensorSeries(ruleIds);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[metrics-history-store] sensor series prune skipped: {ex.Message}");
+                }
+                return store;
             }
             catch (Exception ex)
             {

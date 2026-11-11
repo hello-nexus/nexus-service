@@ -28,6 +28,10 @@ public sealed class InMemoryMetricsHistoryStore : IMetricsHistoryStore, IPrivacy
     {
         lock (_lock)
         {
+            if (_sensorSeriesDeletedAt.Count > 0 && samples.Count > 0)
+            {
+                ExpireDeletedSensorSeries(samples.Max(x => x.TsSec));
+            }
             foreach (var s in samples)
             {
                 _rows[s.TsSec] = DropDeletedSensorReadings(s);
@@ -169,6 +173,30 @@ public sealed class InMemoryMetricsHistoryStore : IMetricsHistoryStore, IPrivacy
         return s with { SensorReadings = s.SensorReadings.Where(r => !_sensorSeriesDeletedAt.TryGetValue(r.Id, out var at) || s.TsSec > at).ToList() };
     }
 
+    private void ExpireDeletedSensorSeries(long newestSec)
+    {
+        var floor = newestSec - MetricsSampleBuffer.FailureRetentionCapSeconds;
+        foreach (var id in _sensorSeriesDeletedAt.Where(kv => kv.Value < floor).Select(kv => kv.Key).ToList())
+        {
+            _sensorSeriesDeletedAt.Remove(id);
+        }
+    }
+
+    public void PruneSensorSeries(IReadOnlySet<string> liveIds)
+    {
+        lock (_lock)
+        {
+            foreach (var ts in _rows.Keys.ToList())
+            {
+                var row = _rows[ts];
+                if (row.SensorReadings.Any(r => !liveIds.Contains(r.Id)))
+                {
+                    _rows[ts] = row with { SensorReadings = row.SensorReadings.Where(r => liveIds.Contains(r.Id)).ToList() };
+                }
+            }
+        }
+    }
+
     public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds)
     {
         lock (_lock)
@@ -192,6 +220,7 @@ public sealed class InMemoryMetricsHistoryStore : IMetricsHistoryStore, IPrivacy
     {
         lock (_lock)
         {
+            ExpireDeletedSensorSeries(nowSec);
             _sensorSeriesDeletedAt[seriesId] = nowSec;
             foreach (var ts in _rows.Keys.ToList())
             {

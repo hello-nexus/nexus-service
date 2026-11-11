@@ -70,6 +70,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     private static readonly TimeSpan SmartInterval = TimeSpan.FromMinutes(1);
     // The first read after service start returns no drives until the hardware walk has run; retry inside the 10 s invalid window.
     private static readonly TimeSpan SmartEmptyRetry = TimeSpan.FromSeconds(5);
+    // A machine with no readable drive would otherwise poll every retry forever, so the fast retry covers only the start-up walk.
+    private static readonly TimeSpan SmartEmptyRetryWindow = TimeSpan.FromMinutes(1);
     private const string NoticeKind = "sensorAlert";
 
     private readonly IConfigStore _store;
@@ -84,16 +86,56 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     private (DateTimeOffset At, IReadOnlyList<HardwareSensor> List)? _smart;
 
     // Latest resolved reading per enabled rule, swapped whole each tick; the
-    // metrics sampler stamps it onto its own 1 Hz samples.
+    // metrics sampler stamps it onto its own 1 Hz samples, each snapshot onto
+    // at most one second so a stalled tick leaves a gap instead of flat copies.
     private static readonly TimeSpan SeriesMaxAge = TimeSpan.FromSeconds(3);
-    private sealed record SeriesSnapshot(DateTimeOffset At, IReadOnlyList<Nexus.Service.Monitoring.History.SensorSeriesReading> Readings);
-    private SeriesSnapshot _series = new(DateTimeOffset.MinValue, Array.Empty<Nexus.Service.Monitoring.History.SensorSeriesReading>());
+    private sealed record SeriesEntry(string RuleId, double Value, SensorRef Sensor);
 
-    /// <summary>Readings of the enabled rules from the latest tick, empty once that tick is stale (evaluation paused or no rules).</summary>
+    private sealed class SeriesSnapshot(DateTimeOffset at, IReadOnlyList<SeriesEntry> entries)
+    {
+        public DateTimeOffset At { get; } = at;
+        public IReadOnlyList<SeriesEntry> Entries { get; } = entries;
+        /// <summary>The sample second this snapshot was stamped onto, or -1 while unclaimed.</summary>
+        public long StampedSec = -1;
+    }
+
+    private SeriesSnapshot _series = new(DateTimeOffset.MinValue, Array.Empty<SeriesEntry>());
+
+    /// <summary>
+    /// Readings of the enabled rules from the latest tick, for the sample second <paramref name="tsSec"/>.
+    /// Empty once that tick is stale, when it was already stamped onto another second, and for a rule that
+    /// was deleted, disabled or re-pointed since the tick.
+    /// </summary>
     public IReadOnlyList<Nexus.Service.Monitoring.History.SensorSeriesReading> CurrentReadings(long tsSec)
     {
         var snapshot = Volatile.Read(ref _series);
-        return Mono() - snapshot.At <= SeriesMaxAge ? snapshot.Readings : Array.Empty<Nexus.Service.Monitoring.History.SensorSeriesReading>();
+        if (Mono() - snapshot.At > SeriesMaxAge || snapshot.Entries.Count == 0)
+        {
+            return Array.Empty<Nexus.Service.Monitoring.History.SensorSeriesReading>();
+        }
+        var claimed = Interlocked.CompareExchange(ref snapshot.StampedSec, tsSec, -1);
+        if (claimed != -1 && claimed != tsSec)
+        {
+            return Array.Empty<Nexus.Service.Monitoring.History.SensorSeriesReading>();
+        }
+        var live = new List<Nexus.Service.Monitoring.History.SensorSeriesReading>(snapshot.Entries.Count);
+        _store.Read(s => LiveReadings(snapshot.Entries, s.Diagnostics.SensorAlerts, live));
+        return live;
+    }
+
+    private static void LiveReadings(
+        IReadOnlyList<SeriesEntry> entries,
+        IEnumerable<SensorAlertRule>? rules,
+        List<Nexus.Service.Monitoring.History.SensorSeriesReading> into)
+    {
+        var current = (rules ?? Enumerable.Empty<SensorAlertRule>()).Where(r => r.Enabled).ToDictionary(r => r.Id, StringComparer.Ordinal);
+        foreach (var e in entries)
+        {
+            if (current.TryGetValue(e.RuleId, out var rule) && SensorAlertRules.SameSensor(e.Sensor, rule.Sensor))
+            {
+                into.Add(new Nexus.Service.Monitoring.History.SensorSeriesReading(e.RuleId, e.Value));
+            }
+        }
     }
 
     /// <summary>Delivers a notice; the second argument is ignoreMaster.</summary>
@@ -372,7 +414,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var enabled = rules.Where(r => r.Enabled).ToList();
         var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
-        var readings = new List<Nexus.Service.Monitoring.History.SensorSeriesReading>(enabled.Count);
+        var readings = new List<SeriesEntry>(enabled.Count);
         if (enabled.Count > 0)
         {
             var lists = ReadCategories(enabled, now);
@@ -394,7 +436,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     }
                     if (sample.Valid && double.IsFinite(sample.Value))
                     {
-                        readings.Add(new Nexus.Service.Monitoring.History.SensorSeriesReading(rule.Id, sample.Value));
+                        readings.Add(new SeriesEntry(rule.Id, sample.Value, rule.Sensor));
                     }
                     var effect = Step(rule, sample, now, st, wall);
                     changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, notices);
@@ -403,6 +445,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
 
         Volatile.Write(ref _series, new SeriesSnapshot(now, readings));
+        DropStaleSeries();
         if (heals.Count > 0)
         {
             HealSensorIds(heals);
@@ -456,7 +499,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         // Drive temperatures exist only under smart, and each read wakes sleeping drives, so it is sampled slowly.
         if (category == "smart")
         {
-            if (_smart is { } cached && now - cached.At < (cached.List.Count == 0 ? SmartEmptyRetry : SmartInterval))
+            if (_smart is { } cached && now - cached.At < (cached.List.Count == 0 && now - _wall0 < SmartEmptyRetryWindow ? SmartEmptyRetry : SmartInterval))
             {
                 return cached.List;
             }
@@ -564,6 +607,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     public void Reconcile()
     {
         ReconcileCore(Snapshot().Rules, Mono());
+        DropStaleSeries();
         Changed?.Invoke();
     }
 
@@ -604,6 +648,25 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             }
         }
         return changed;
+    }
+
+    // A deleted, disabled or re-pointed rule's reading must not be stamped onto a sample after the route dropped its history.
+    private void DropStaleSeries()
+    {
+        var snapshot = Volatile.Read(ref _series);
+        if (snapshot.Entries.Count == 0)
+        {
+            return;
+        }
+        var live = new List<Nexus.Service.Monitoring.History.SensorSeriesReading>();
+        _store.Read(s => LiveReadings(snapshot.Entries, s.Diagnostics.SensorAlerts, live));
+        if (live.Count == snapshot.Entries.Count)
+        {
+            return;
+        }
+        var keep = live.Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+        var kept = new SeriesSnapshot(snapshot.At, snapshot.Entries.Where(e => keep.Contains(e.RuleId)).ToList()) { StampedSec = snapshot.StampedSec };
+        Interlocked.CompareExchange(ref _series, kept, snapshot);
     }
 
     private static void EndEpisode(SensorAlertRuntime st, DateTimeOffset wall)

@@ -20,9 +20,10 @@ namespace Nexus.Service.Monitoring.History.Binary;
 /// fixed-point i16 cannot hold).
 ///
 /// The dictionary of open rings is swapped whole, never mutated, so a
-/// concurrent route read sees either the old or the new set. A reader that
-/// holds a ring a delete just disposed gets ObjectDisposedException, which
-/// the query methods treat as "series gone".
+/// concurrent route read sees either the old or the new set. RingFile reads
+/// through a raw pointer with no disposed check, so a query holds
+/// <see cref="_ringLock"/> for its whole scan and Delete/Dispose take it
+/// before unmapping a ring.
 /// </summary>
 internal sealed class SensorSeriesRingStore : IDisposable
 {
@@ -40,6 +41,7 @@ internal sealed class SensorSeriesRingStore : IDisposable
     private readonly long _secondCapacity;
     private readonly long _minuteCapacity;
     private readonly int _minuteRetentionExtraDays;
+    private readonly object _ringLock = new();
     private long _pruneFloorSec;
     private Dictionary<string, (RingFile Second, RingFile Minute)> _rings = new(StringComparer.Ordinal);
 
@@ -128,10 +130,10 @@ internal sealed class SensorSeriesRingStore : IDisposable
                 RebuildMinute(open[id], minute);
             }
         }
-        foreach (var (second, minute) in open.Values)
+        foreach (var id in touched.Keys)
         {
-            second.Flush();
-            minute.Flush();
+            open[id].Second.Flush();
+            open[id].Minute.Flush();
         }
     }
 
@@ -179,9 +181,9 @@ internal sealed class SensorSeriesRingStore : IDisposable
             return result;
         }
         var rollup = stepSeconds >= 60 && stepSeconds % 60 == 0;
-        foreach (var (id, rings) in Volatile.Read(ref _rings))
+        lock (_ringLock)
         {
-            try
+            foreach (var (id, rings) in Volatile.Read(ref _rings))
             {
                 if (rollup)
                 {
@@ -191,10 +193,6 @@ internal sealed class SensorSeriesRingStore : IDisposable
                 {
                     AddRaw(result, id, rings.Second, fromSec, toSec, stepSeconds);
                 }
-            }
-            catch (ObjectDisposedException)
-            {
-                // Deleted while this query ran.
             }
         }
         return result;
@@ -246,8 +244,11 @@ internal sealed class SensorSeriesRingStore : IDisposable
         var next = new Dictionary<string, (RingFile, RingFile)>(current, StringComparer.Ordinal);
         next.Remove(id);
         Volatile.Write(ref _rings, next);
-        rings.Second.Dispose();
-        rings.Minute.Dispose();
+        lock (_ringLock)
+        {
+            rings.Second.Dispose();
+            rings.Minute.Dispose();
+        }
         TryDelete(Path.Combine(_dir, id + ".ring"));
         TryDelete(Path.Combine(_dir, id + ".min"));
         return true;
@@ -272,12 +273,31 @@ internal sealed class SensorSeriesRingStore : IDisposable
         return count;
     }
 
+    /// <summary>Deletes every series whose id is not in <paramref name="liveIds"/>, open or not, so files orphaned by a crash or an older build neither linger nor count toward <see cref="MaxSeries"/>.</summary>
+    public void PruneExcept(IReadOnlySet<string> liveIds)
+    {
+        foreach (var id in Volatile.Read(ref _rings).Keys.Where(id => !liveIds.Contains(id)).ToList())
+        {
+            Delete(id);
+        }
+        foreach (var file in Directory.EnumerateFiles(_dir).Where(f => Path.GetExtension(f) is ".ring" or ".min").ToList())
+        {
+            if (!liveIds.Contains(Path.GetFileNameWithoutExtension(file)))
+            {
+                TryDelete(file);
+            }
+        }
+    }
+
     public void Dispose()
     {
-        foreach (var (second, minute) in Volatile.Read(ref _rings).Values)
+        lock (_ringLock)
         {
-            second.Dispose();
-            minute.Dispose();
+            foreach (var (second, minute) in Volatile.Read(ref _rings).Values)
+            {
+                second.Dispose();
+                minute.Dispose();
+            }
         }
     }
 }

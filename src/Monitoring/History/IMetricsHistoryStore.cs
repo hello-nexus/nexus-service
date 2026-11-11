@@ -56,6 +56,11 @@ public interface IMetricsHistoryStore : IDisposable
     /// racing the delete cannot bring it back.</summary>
     void DeleteSensorSeries(string seriesId, long nowSec);
 
+    /// <summary>Deletes the history of every tracked sensor whose id is not in
+    /// liveIds (the current rule ids). Run once at startup to drop series a
+    /// crash or an older build left behind.</summary>
+    void PruneSensorSeries(IReadOnlySet<string> liveIds);
+
     /// <summary>One bucket for one temperature component (cpu / gpu:&lt;id&gt;
     /// / storage:&lt;serial&gt; / ram:&lt;id&gt;), bucket-aligned (see
     /// MetricsHistory.TempBucketMinutes), read from the 90-day temp_buckets

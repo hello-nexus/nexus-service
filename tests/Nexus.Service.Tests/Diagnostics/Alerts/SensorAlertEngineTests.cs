@@ -1097,6 +1097,98 @@ public class SensorAlertEngineTests
         Assert.Empty(rig.Engine.CurrentReadings(0));
     }
 
+    [Fact]
+    public void A_deleted_rule_stops_contributing_before_the_next_tick()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null, id: "gone"));
+        rig.AddRule(TempRule(low: null, high: null, id: "kept"));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+
+        rig.Store.Update(s => s.Diagnostics.SensorAlerts.RemoveAll(r => r.Id == "gone"));
+
+        Assert.Equal(new[] { "kept" }, rig.Engine.CurrentReadings(0).Select(r => r.Id).ToArray());
+    }
+
+    [Fact]
+    public void Reconcile_drops_a_deleted_rules_reading_from_the_snapshot()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null, id: "gone"));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+        rig.Store.Update(s => s.Diagnostics.SensorAlerts.Clear());
+        rig.Engine.Reconcile();
+        // Re-adding the id (the same guid never recurs, but the filter must not lean on the store alone) shows the snapshot is empty.
+        rig.AddRule(TempRule(low: null, high: null, id: "gone"));
+
+        Assert.Empty(rig.Engine.CurrentReadings(0));
+    }
+
+    [Fact]
+    public void A_rule_pointed_at_another_sensor_does_not_carry_the_old_reading()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+
+        rig.Store.Update(s =>
+        {
+            var sensor = s.Diagnostics.SensorAlerts.Single().Sensor;
+            sensor.Id = "cpu/other";
+            sensor.Name = "CPU Other";
+        });
+
+        Assert.Empty(rig.Engine.CurrentReadings(0));
+    }
+
+    [Fact]
+    public void A_healed_sensor_id_keeps_its_reading()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+
+        rig.Store.Update(s => s.Diagnostics.SensorAlerts.Single().Sensor.Id = "cpu/healed");
+
+        Assert.Single(rig.Engine.CurrentReadings(0));
+    }
+
+    [Fact]
+    public void One_tick_is_stamped_onto_a_single_second_only()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+
+        Assert.Single(rig.Engine.CurrentReadings(100));
+        Assert.Single(rig.Engine.CurrentReadings(100));
+        Assert.Empty(rig.Engine.CurrentReadings(101));
+        Assert.Empty(rig.Engine.CurrentReadings(102));
+    }
+
+    [Fact]
+    public void Engine_stops_retrying_an_empty_smart_read_every_five_seconds_after_the_first_minute()
+    {
+        var rig = new Rig();
+        var rule = TempRule();
+        rule.Sensor.Category = "smart";
+        rig.AddRule(rule);
+
+        rig.Seconds(61);
+        var duringStartup = rig.Sensors.SmartReads;
+        Assert.Equal(12, duringStartup);
+
+        rig.Seconds(50);
+        Assert.Equal(duringStartup, rig.Sensors.SmartReads);
+        rig.Seconds(5);
+        Assert.Equal(duringStartup + 1, rig.Sensors.SmartReads);
+    }
+
     [Theory]
     [InlineData(null, null, true)]
     [InlineData(null, 80.0, true)]

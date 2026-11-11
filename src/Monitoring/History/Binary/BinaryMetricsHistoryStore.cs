@@ -206,6 +206,12 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
     // not reach the rings: a flush can be mid-flight when the delete lands.
     private IReadOnlyList<MetricSample> DropDeletedSensorReadings(IReadOnlyList<MetricSample> samples)
     {
+        if (_sensorSeriesDeletedAt.Count == 0 || samples.Count == 0)
+        {
+            return samples;
+        }
+        // The buffer never holds a sample older than its retention cap, so a tombstone older than that can no longer match one.
+        ExpireDeletedSensorSeries(samples.Max(s => s.TsSec));
         if (_sensorSeriesDeletedAt.Count == 0)
         {
             return samples;
@@ -217,6 +223,15 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
             .ToList();
     }
 
+    private void ExpireDeletedSensorSeries(long newestSec)
+    {
+        var floor = newestSec - MetricsSampleBuffer.FailureRetentionCapSeconds;
+        foreach (var id in _sensorSeriesDeletedAt.Where(kv => kv.Value < floor).Select(kv => kv.Key).ToList())
+        {
+            _sensorSeriesDeletedAt.Remove(id);
+        }
+    }
+
     public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds) =>
         _sensorSeries.QueryDecimated(fromSec, toSec, stepSeconds);
 
@@ -224,8 +239,17 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
     {
         lock (_resetLock)
         {
+            ExpireDeletedSensorSeries(nowSec);
             _sensorSeriesDeletedAt[seriesId] = nowSec;
             _sensorSeries.Delete(seriesId);
+        }
+    }
+
+    public void PruneSensorSeries(IReadOnlySet<string> liveIds)
+    {
+        lock (_resetLock)
+        {
+            _sensorSeries.PruneExcept(liveIds);
         }
     }
 

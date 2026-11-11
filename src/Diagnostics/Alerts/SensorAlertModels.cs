@@ -63,6 +63,17 @@ public static class SensorAlertRules
 
     private static readonly int[] AllowedRepeats = { 0, 5, 15, 60 };
 
+    /// <summary>
+    /// Whether two refs name the same sensor, so a series keeps its history. The engine rewrites a stale
+    /// Id server-side (self-heal), so a client still holding the old id sends the same name and parent
+    /// under a different id; matching either the id or the name and parent covers that, and a rename
+    /// under the same id.
+    /// </summary>
+    public static bool SameSensor(SensorRef a, SensorRef b) =>
+        a.Category == b.Category
+        && string.Equals(a.Type, b.Type, StringComparison.OrdinalIgnoreCase)
+        && (a.Id == b.Id || (a.Name == b.Name && a.ParentName == b.ParentName));
+
     /// <summary>Clamps the delay fields in place. Run before <see cref="Validate"/> and before storing.</summary>
     public static void Normalize(SensorAlertRule rule)
     {

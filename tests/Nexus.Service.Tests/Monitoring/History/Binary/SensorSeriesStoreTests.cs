@@ -149,4 +149,68 @@ public class SensorSeriesStoreTests : IDisposable
         Assert.Equal(new[] { t0 + 1 }, slots.Where(s => s.SeriesId == "a").Select(s => s.Slot).ToArray());
         Assert.Single(slots, s => s.SeriesId == "b");
     }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Queries_racing_delete_and_recreate_never_touch_an_unmapped_ring()
+    {
+        using var store = new BinaryMetricsHistoryStore(_dir);
+        var t0 = 1_800_000_000L;
+        store.Append(new[] { Sample(t0, ("a", 1)) }, null);
+        using var stop = new System.Threading.CancellationTokenSource();
+
+        var readers = Enumerable.Range(0, 3).Select(i => System.Threading.Tasks.Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                store.QuerySensorSeriesDecimated(t0, t0 + 1000, i == 0 ? 60 : 1);
+            }
+        })).ToArray();
+
+        for (var i = 1; i <= 150; i++)
+        {
+            store.DeleteSensorSeries("a", t0 + i * 2);
+            store.Append(new[] { Sample(t0 + i * 2 + 1, ("a", i)) }, null);
+        }
+        stop.Cancel();
+        await System.Threading.Tasks.Task.WhenAll(readers);
+
+        Assert.Single(store.QuerySensorSeriesDecimated(t0 + 300, t0 + 400, 1));
+    }
+
+    [Fact]
+    public void Prune_drops_series_files_that_are_not_live_rules_so_they_free_the_series_cap()
+    {
+        var t0 = 1_800_000_000L;
+        var dir = Path.Combine(_dir, "sensorseries");
+        using (var store = new BinaryMetricsHistoryStore(_dir))
+        {
+            store.Append(new[] { Sample(t0, ("keep", 1), ("dead", 2)) }, null);
+        }
+        File.WriteAllBytes(Path.Combine(dir, "stray.min"), new byte[8]);
+
+        using var reopened = new BinaryMetricsHistoryStore(_dir);
+        reopened.PruneSensorSeries(new System.Collections.Generic.HashSet<string> { "keep" });
+
+        Assert.Equal(new[] { "keep" }, reopened.QuerySensorSeriesDecimated(t0, t0, 1).Select(s => s.SeriesId).ToArray());
+        Assert.False(File.Exists(Path.Combine(dir, "dead.ring")));
+        Assert.False(File.Exists(Path.Combine(dir, "dead.min")));
+        Assert.False(File.Exists(Path.Combine(dir, "stray.min")));
+        Assert.True(File.Exists(Path.Combine(dir, "keep.ring")));
+    }
+
+    [Fact]
+    public void An_old_delete_stops_filtering_once_it_is_older_than_the_buffer_can_replay()
+    {
+        var t0 = 1_800_000_000L;
+        using var binary = new BinaryMetricsHistoryStore(_dir);
+        using var memory = new InMemoryMetricsHistoryStore();
+        foreach (IMetricsHistoryStore store in new IMetricsHistoryStore[] { binary, memory })
+        {
+            store.DeleteSensorSeries("a", t0);
+            // The newest sample is past the buffer retention cap, so the delete can no longer match a replayed sample.
+            store.Append(new[] { Sample(t0 - 100, ("a", 1)), Sample(t0 + 3000, ("b", 2)) }, null);
+
+            Assert.Contains(store.QuerySensorSeriesDecimated(t0 - 200, t0 + 4000, 1), s => s.SeriesId == "a");
+        }
+    }
 }

@@ -14,7 +14,7 @@ public sealed class MetricsSampleBuffer
 {
     // Bounds unflushed growth when the store is failing: a 1Hz sampler with
     // no successful flush would otherwise buffer forever.
-    private const int FailureRetentionCapSeconds = 600;
+    internal const int FailureRetentionCapSeconds = 600;
 
     private readonly object _lock = new();
     private readonly SortedDictionary<long, MetricSample> _samples = new();

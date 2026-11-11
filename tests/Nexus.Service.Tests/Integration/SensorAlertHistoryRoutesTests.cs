@@ -176,7 +176,7 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
         var sensor = field switch
         {
             "category" => new { category = "gpu", id = "cpu/temp", name = "CPU Package", type = "Temperature", parentName = "CPU" },
-            "id" => new { category = "cpu", id = "cpu/temp2", name = "CPU Package", type = "Temperature", parentName = "CPU" },
+            "id" => new { category = "cpu", id = "cpu/temp2", name = "Other Sensor", type = "Temperature", parentName = "CPU" },
             _ => new { category = "cpu", id = "cpu/temp", name = "CPU Package", type = "Power", parentName = "CPU" },
         };
 
@@ -208,5 +208,34 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Single(Store.QuerySensorSeriesDecimated(t0, t0 + 5, 1), s => s.SeriesId == id);
+    }
+
+    [Fact]
+    public async Task A_put_with_the_pre_heal_id_keeps_the_history()
+    {
+        var client = Client();
+        var id = await Create(client, Rule());
+        var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 600;
+        Store.Append(new[] { Sample(t0, (id, 10)) }, null);
+        // The engine healed the stored id; a client still holding the old one sends it back with the same name and parent.
+        _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()
+            .Update(s => s.Diagnostics.SensorAlerts!.Single().Sensor.Id = "cpu/temp-healed");
+
+        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", Rule(id: "cpu/temp", high: 85));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Single(Store.QuerySensorSeriesDecimated(t0, t0 + 5, 1), s => s.SeriesId == id);
+    }
+
+    [Fact]
+    public async Task Deleting_an_unknown_rule_leaves_no_history_tombstone()
+    {
+        var client = Client();
+        var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10;
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync("/diagnostics/alerts/ghost")).StatusCode);
+        Store.Append(new[] { Sample(t0, ("ghost", 1)) }, null);
+
+        Assert.Contains(Store.QuerySensorSeriesDecimated(t0, t0 + 5, 1), s => s.SeriesId == "ghost");
     }
 }
