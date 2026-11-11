@@ -692,7 +692,8 @@ public sealed class SensorAlertEngine
                     Status = severity,
                     Reasons = new List<HealthComponentReason>
                     {
-                        new("alerts.sensorThreshold", severity, text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={st.Direction}"),
+                        new("alerts.sensorThreshold", severity, text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={st.Direction}",
+                            ThresholdParams(rule, st)),
                     },
                 });
             }
@@ -720,6 +721,26 @@ internal sealed class LogThrottle
 
     public bool ShouldLog(string key, DateTimeOffset now)
     {
+    // Values are native units (temperature in Celsius); the UI converts for display.
+    private static Dictionary<string, string> ThresholdParams(SensorAlertRule rule, SensorAlertRuntime st)
+    {
+        var p = new Dictionary<string, string>
+        {
+            ["ruleId"] = rule.Id,
+            ["category"] = rule.Sensor.Category,
+            ["direction"] = st.Direction ?? "",
+            ["type"] = rule.Sensor.Type,
+            ["sensorName"] = rule.Sensor.Name,
+            ["value"] = (st.Value ?? st.Extreme ?? 0).ToString(CultureInfo.InvariantCulture),
+            ["units"] = st.Units,
+        };
+        if ((st.Direction == "below" ? rule.Low : rule.High) is { } threshold)
+        {
+            p["threshold"] = threshold.ToString(CultureInfo.InvariantCulture);
+        }
+        return p;
+    }
+
         lock (_last)
         {
             if (_last.TryGetValue(key, out var last) && now - last < _interval)
