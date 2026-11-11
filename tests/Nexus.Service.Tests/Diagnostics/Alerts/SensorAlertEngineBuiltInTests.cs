@@ -270,7 +270,7 @@ public partial class SensorAlertEngineTests
         rig.SetTemp(90);
         rig.Seconds(2);
         rig.SetTemp(60);
-        rig.Seconds(2);
+        rig.Seconds(7);
 
         Assert.Equal(SensorAlertStates.Ok, rig.State());
         Assert.NotNull(rig.Engine.States().Single().EndedAt);

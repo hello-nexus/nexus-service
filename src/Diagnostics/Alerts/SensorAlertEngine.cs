@@ -70,6 +70,7 @@ internal sealed class SensorAlertRuntime
 /// </summary>
 public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensorSeriesSource
 {
+    private static readonly TimeSpan ClearDelay = TimeSpan.FromSeconds(5);
     internal static readonly TimeSpan UnavailableAfter = TimeSpan.FromSeconds(10);
     private const int MaxHistory = 100;
     private static readonly TimeSpan SmartInterval = TimeSpan.FromMinutes(1);
@@ -304,7 +305,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         if (inside)
         {
             st.ClearSince ??= now;
-            if (now - st.ClearSince.Value >= TimeSpan.FromSeconds(rule.ClearAfterSeconds))
+            if (now - st.ClearSince.Value >= ClearDelay)
             {
                 // An alert the user already dismissed leaves nothing behind.
                 st.Ended = st.Acknowledged

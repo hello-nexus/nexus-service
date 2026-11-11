@@ -372,13 +372,13 @@ public partial class SensorAlertEngineTests
     public void Engine_writes_history_and_clears_with_hysteresis()
     {
         var rig = new Rig();
-        rig.AddRule(TempRule(raise: 0, clear: 2));
+        rig.AddRule(TempRule(raise: 0, clear: 5));
         rig.SetTemp(90);
         rig.Seconds(1);
         rig.SetTemp(95);
         rig.Seconds(1);
         rig.SetTemp(78);
-        rig.Seconds(3);
+        rig.Seconds(7);
 
         Assert.Equal(SensorAlertStates.Ok, rig.State());
         var entry = Assert.Single(rig.Engine.History());
@@ -500,7 +500,7 @@ public partial class SensorAlertEngineTests
         Assert.True(rig.Engine.States().Single().Acknowledged);
 
         rig.SetTemp(60);
-        rig.Seconds(1);
+        rig.Seconds(7);
         rig.SetTemp(90);
         rig.Seconds(1);
         Assert.Single(rig.Engine.HealthComponents());
@@ -657,7 +657,7 @@ public partial class SensorAlertEngineTests
             rig.SetTemp(90);
             rig.Seconds(1);
             rig.SetTemp(60);
-            rig.Seconds(1);
+            rig.Seconds(7);
         }
         Assert.Equal(100, rig.Engine.History().Count);
 
@@ -729,7 +729,7 @@ public partial class SensorAlertEngineTests
         SensorAlertRules.Normalize(rule);
 
         Assert.Equal(0, rule.RaiseAfterSeconds);
-        Assert.Equal(600, rule.ClearAfterSeconds);
+        Assert.Equal(5, rule.ClearAfterSeconds);
     }
 
     [Fact]
@@ -751,7 +751,7 @@ public partial class SensorAlertEngineTests
             Assert.Equal(10, back.Low);
             Assert.Null(back.High);
             Assert.Equal(7, back.RaiseAfterSeconds);
-            Assert.Equal(9, back.ClearAfterSeconds);
+            Assert.Equal(5, back.ClearAfterSeconds);
             Assert.Equal("act", back.Severity);
             Assert.Equal(0, back.RepeatMinutes);
             Assert.True(back.ShowInHealth);
@@ -893,7 +893,7 @@ public partial class SensorAlertEngineTests
         Assert.Equal(since, rig.Engine.States().Single().Since);
 
         rig.SetTemp(60);
-        rig.Seconds(1);
+        rig.Seconds(6);
         var entry = Assert.Single(rig.Engine.History());
         Assert.Equal(since, entry.StartedUtc);
         Assert.Equal(rig.Time.GetUtcNow().UtcDateTime.ToString("O"), entry.EndedUtc);

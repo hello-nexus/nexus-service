@@ -26,7 +26,8 @@ public sealed class SensorAlertRule
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public double? High { get; set; }
     public int RaiseAfterSeconds { get; set; } = 5;
-    public int ClearAfterSeconds { get; set; } = 5;
+    /// <summary>Wire and downgrade compatibility only: always 5, any input is ignored. The engine clears after a fixed delay.</summary>
+    public int ClearAfterSeconds { get => 5; set { } }
     /// <summary>"watch" | "act".</summary>
     public string Severity { get; set; } = "watch";
     public bool NotifyDesktop { get; set; } = true;
@@ -57,7 +58,6 @@ public sealed class SensorAlertRule
         && Low == other.Low
         && High == other.High
         && RaiseAfterSeconds == other.RaiseAfterSeconds
-        && ClearAfterSeconds == other.ClearAfterSeconds
         && Severity == other.Severity
         && NotifyDesktop == other.NotifyDesktop
         && BuiltIn == other.BuiltIn

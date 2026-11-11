@@ -90,7 +90,6 @@ public static class SensorAlertRules
     public static void Normalize(SensorAlertRule rule)
     {
         rule.RaiseAfterSeconds = Math.Clamp(rule.RaiseAfterSeconds, 0, MaxSeconds);
-        rule.ClearAfterSeconds = Math.Clamp(rule.ClearAfterSeconds, 0, MaxSeconds);
         rule.Sensor ??= new SensorRef();
         rule.Sensor.Category ??= "";
         rule.Sensor.Id ??= "";
