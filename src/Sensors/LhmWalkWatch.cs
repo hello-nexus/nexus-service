@@ -24,7 +24,7 @@ internal sealed class LhmWalkWatch
 
     private readonly Func<Action, IOneShot> _oneShotFactory;
     private IOneShot? _stallTimer;
-    // Set while no memory item or SPD gate rebuild is running; waiters block on it instead of polling the item.
+    // Set while no memory item or SPD gate rebuild is running; waiters block on it instead of re-reading the item.
     private readonly ManualResetEventSlim _outsideSmbus = new(true);
 
     internal LhmWalkWatch(Func<long>? nowMs = null, Func<Action, IOneShot>? oneShotFactory = null)

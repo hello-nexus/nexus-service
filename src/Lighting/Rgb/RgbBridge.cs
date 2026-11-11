@@ -1144,9 +1144,8 @@ public sealed class RgbBridge : IDisposable
             // The one deadline that notices a daemon which never lists its devices; the commit or a finished pass disarms it.
             if (Volatile.Read(ref _expectedDevices) > 0)
             {
-                Volatile.Write(ref _settleRechecks, 0);
                 Volatile.Write(ref _settleWaitsForConnect, 0);
-                ArmSettleCheck(SettleStallTimeout);
+                ArmSettleCheck(SettleStallTimeout, fresh: true);
             }
             // The relaunch rewrote the overrides and detects from scratch.
             lock (_lock)
@@ -1285,18 +1284,25 @@ public sealed class RgbBridge : IDisposable
         }
         _ = Task.Run(() =>
         {
+            var restarted = false;
             try
             {
-                if (!MaybeSelfRestart("settle-stall, mutex held on the first settle check"))
-                {
-                    Interlocked.Exchange(ref _selfRestartRefusedResume, resume);
-                    // Hand the resume back to the daemon restart now, not at the next poll.
-                    ArmSettleCheck(TimeSpan.Zero);
-                }
+                restarted = MaybeSelfRestart("settle-stall, mutex held on the first settle check");
+            }
+            catch (Exception ex)
+            {
+                // A failed decision is a refusal: the daemon restart must still happen.
+                ServiceLog.Warn($"[resume] service self-restart decision failed: {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 Interlocked.Exchange(ref _selfRestartDeciding, 0);
+            }
+            if (!restarted)
+            {
+                Interlocked.Exchange(ref _selfRestartRefusedResume, resume);
+                // Hand the resume back to the daemon restart right away.
+                ArmSettleCheck(TimeSpan.Zero);
             }
         });
         return true;
@@ -1304,15 +1310,17 @@ public sealed class RgbBridge : IDisposable
 
     internal LhmWalkWatch WalkWatch { get; set; } = LhmWalkWatch.Shared;
 
-    /// <summary>How long the mutex must stay unavailable before a service restart is justified; a brief hold by a monitoring tool ends the wait early.</summary>
     internal string? MutexWaitSummary { get; private set; }
 
+    /// <summary>How long the mutex must stay unavailable before a service restart is justified; a brief hold by a monitoring tool ends the wait early.</summary>
     internal TimeSpan SelfRestartMutexWindow { get; set; } = TimeSpan.FromMilliseconds(4500);
 
     /// <summary>Waits the window out on the mutex itself: the wait ends the moment the mutex frees, and a timeout means it was held throughout.</summary>
     private bool MutexHeldForWindow(long resume)
     {
         var walkAtStart = LhmWalkSummary(WalkWatch);
+        // One wait, not samples: the daemon's detection is itself a queued waiter on this mutex and never got in across many restarts,
+        // and a released mutex goes to the first waiter, so a holder with gaps would have let it in. A timeout means a continuous hold.
         var state = SmbusMutexWait(SelfRestartMutexWindow);
         var walkAtEnd = LhmWalkSummary(WalkWatch);
         var held = state == "held";
@@ -1398,66 +1406,126 @@ public sealed class RgbBridge : IDisposable
     private int _settleRechecks;
     private const int SettleMaxRechecks = 12;
     internal Task? LastSettleDeadlineCheck { get; private set; }
+    private int _settleLooks;
+    internal int SettleLookCount => Volatile.Read(ref _settleLooks);
 
     /// <summary>Creates the deadline timers; replaceable so tests fire them by hand.</summary>
     internal Func<Action, IOneShot> OneShotFactory { get; set; } = fire => new TimerOneShot(fire);
 
-    private void ArmSettleCheck(TimeSpan due)
+    // Bumped by every arm that did not come from a look finishing, so a look that raced one never replaces it; guarded by _settleTimerLock.
+    private int _settleGeneration;
+    private bool _settleTimerClosed;
+    // 0 idle, 1 a look runs, 2 a look runs and another arrived meanwhile; Interlocked.
+    private int _lookState;
+
+    private void ArmSettleCheck(TimeSpan due, bool fresh = false)
     {
         lock (_settleTimerLock)
         {
-            if (Volatile.Read(ref _expectedDevices) == 0)
+            if (_settleTimerClosed || Volatile.Read(ref _expectedDevices) == 0)
             {
+                return;
+            }
+            _settleGeneration++;
+            if (fresh)
+            {
+                _settleRechecks = 0;
+            }
+            (_settleTimer ??= OneShotFactory(OnSettleDeadline)).Arm(due);
+        }
+    }
+
+    /// <summary>Arms the next look a finished look asked for, unless a newer arm landed while it ran. A look that was only deferred is not counted against the cap.</summary>
+    private void RearmSettleCheck(int generation, TimeSpan due, bool counted)
+    {
+        lock (_settleTimerLock)
+        {
+            if (_settleTimerClosed || generation != _settleGeneration || Volatile.Read(ref _expectedDevices) == 0)
+            {
+                return;
+            }
+            if (counted && ++_settleRechecks > SettleMaxRechecks)
+            {
+                ServiceLog.Warn($"[resume] settle check stopped after {SettleMaxRechecks} looks that found the stall due and could not act; the next daemon restart arms it again");
                 return;
             }
             (_settleTimer ??= OneShotFactory(OnSettleDeadline)).Arm(due);
         }
     }
 
-    private void OnSettleDeadline() => LastSettleDeadlineCheck = Task.Run(async () =>
+    /// <summary>One look at a time; a deadline that fires during a look is coalesced into exactly one more look after it.</summary>
+    private void OnSettleDeadline()
     {
-        try
+        for (;;)
         {
-            if (await EvaluateSettleStallAsync().ConfigureAwait(false) is not { } next)
+            var state = Volatile.Read(ref _lookState);
+            if (state == 0)
+            {
+                if (Interlocked.CompareExchange(ref _lookState, 1, 0) == 0)
+                {
+                    LastSettleDeadlineCheck = Task.Run(RunSettleLooksAsync);
+                    return;
+                }
+            }
+            else if (state == 2 || Interlocked.CompareExchange(ref _lookState, 2, 1) == 1)
             {
                 return;
             }
-            if (Interlocked.Increment(ref _settleRechecks) > SettleMaxRechecks)
-            {
-                ServiceLog.Warn($"[resume] settle check stopped after {SettleMaxRechecks} looks with nothing to act on; the next daemon restart arms it again");
-                return;
-            }
-            ArmSettleCheck(next);
         }
-        catch (Exception ex)
+    }
+
+    private async Task RunSettleLooksAsync()
+    {
+        do
         {
-            ServiceLog.Warn($"[resume] settle check failed: {ex.Message}");
+            try
+            {
+                int generation;
+                lock (_settleTimerLock)
+                {
+                    generation = _settleGeneration;
+                }
+                var (next, counted) = await LookAtSettleAsync().ConfigureAwait(false);
+                if (next is { } due)
+                {
+                    RearmSettleCheck(generation, due, counted);
+                }
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[resume] settle check failed: {ex.Message}");
+            }
         }
-    });
+        while (Interlocked.CompareExchange(ref _lookState, 0, 1) != 1 && Interlocked.Exchange(ref _lookState, 1) == 2);
+    }
 
     /// <summary>
     /// The settle deadline: one look at a daemon restarted with devices known. Returns when to look again, or null when the
     /// stall was handled or no longer applies; the commit, a finished pass and the give-up all disarm it.
     /// </summary>
-    internal async Task<TimeSpan?> EvaluateSettleStallAsync()
+    internal async Task<TimeSpan?> EvaluateSettleStallAsync() => (await LookAtSettleAsync().ConfigureAwait(false)).Next;
+
+    /// <summary>The look itself. Counted is false for a look that only found the stall not yet due, which says nothing about a stuck daemon.</summary>
+    private async Task<(TimeSpan? Next, bool Counted)> LookAtSettleAsync()
     {
+        Interlocked.Increment(ref _settleLooks);
         if (!IsActive || Volatile.Read(ref _expectedDevices) == 0)
         {
-            return null;
+            return (null, false);
         }
         if (!SettleStallDue(out _, out var sinceSpawn, out _))
         {
-            return Volatile.Read(ref _expectedDevices) == 0 ? null : SettleRecheckDelay(sinceSpawn);
+            return (Volatile.Read(ref _expectedDevices) == 0 ? null : SettleRecheckDelay(sinceSpawn), false);
         }
         // A dropped session is the reconnect path; the connect arms the next look.
         if (!_controller.IsConnected)
         {
-            return WaitForConnect();
+            return (WaitForConnect(), true);
         }
         // A full fetch in flight must not be queued behind.
         if (_refreshSemaphore.CurrentCount == 0)
         {
-            return DetectionQuietWindow;
+            return (DetectionQuietWindow, true);
         }
         IReadOnlyList<int> addresses;
         try
@@ -1467,22 +1535,22 @@ public sealed class RgbBridge : IDisposable
         catch (Exception ex)
         {
             RecordDaemonFailure("refresh", ex.Message);
-            return DetectionQuietWindow;
+            return (DetectionQuietWindow, true);
         }
         if (!_controller.IsConnected)
         {
-            return WaitForConnect();
+            return (WaitForConnect(), true);
         }
         if (addresses.Count > 0)
         {
             // Devices are listed; the refresh that commits them disarms the check.
-            return null;
+            return (null, true);
         }
         if (RecoverSettleStall())
         {
-            return null;
+            return (null, true);
         }
-        return Volatile.Read(ref _expectedDevices) == 0 ? null : WatchdogFloor;
+        return (Volatile.Read(ref _expectedDevices) == 0 ? null : WatchdogFloor, true);
     }
 
     /// <summary>Records that a look found no session. A connect that landed meanwhile is looked at now instead of missed.</summary>
@@ -1688,7 +1756,7 @@ public sealed class RgbBridge : IDisposable
                 return;
             }
             _connectFailureLogged = false;
-            // A settle check that found no session waits for this event instead of polling for one.
+            // A settle check that found no session waits for this event instead of retrying.
             if (Interlocked.Exchange(ref _settleWaitsForConnect, 0) == 1)
             {
                 ArmSettleCheck(TimeSpan.Zero);
@@ -3297,6 +3365,7 @@ public sealed class RgbBridge : IDisposable
         LhmWalkWatch.Shared.Stalled -= OnLhmWalkStalled;
         lock (_settleTimerLock)
         {
+            _settleTimerClosed = true;
             _settleTimer?.Dispose();
             _settleTimer = null;
         }

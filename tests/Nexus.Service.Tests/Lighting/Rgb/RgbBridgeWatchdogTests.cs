@@ -34,8 +34,16 @@ public class RgbBridgeWatchdogTests : IDisposable
         public void StartDetection() => DetectionStateChanged?.Invoke(true);
         public void CompleteDetection() => DetectionStateChanged?.Invoke(false);
         public event Action<int, uint, uint>? WriteRejected { add { } remove { } }
+        // Holds the controller-count request until released, so a test can overlap a second deadline with a look in flight.
+        public volatile Task? AddressGate;
+
         public async Task<IReadOnlyList<int>> GetControllerAddressesAsync(CancellationToken ct = default)
         {
+            Record("addresses");
+            if (AddressGate is { } gate)
+            {
+                await gate;
+            }
             if (DropOnList)
             {
                 _connected = false;
@@ -1028,7 +1036,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task The_settle_deadline_stops_re_arming_after_a_bounded_number_of_empty_looks()
+    public async Task Looks_that_only_find_the_stall_not_yet_due_never_use_up_the_cap()
     {
         UseFakeClock();
         await ActivateAndSettleAsync();
@@ -1037,17 +1045,135 @@ public class RgbBridgeWatchdogTests : IDisposable
         await ResumeAndWaitForBounceAsync(1);
         Assert.True(await WaitUntilAsync(() => _deadlines.Single is { ArmCount: 1 }, TimeSpan.FromSeconds(5)));
 
-        // The daemon never reaches the settle timeout, so every look asks for the remainder.
-        for (var look = 1; look <= 12; look++)
+        // Slow but live detection keeps pushing the look back, far past the cap.
+        for (var look = 1; look <= 30; look++)
         {
             _deadlines.Single!.Fire();
             await _bridge.LastSettleDeadlineCheck!;
             Assert.Equal(1 + look, _deadlines.Single!.ArmCount);
         }
+
+        // The daemon then goes silent with nothing listed: the check is still alive and acts.
+        _uptime = TimeSpan.FromMinutes(5);
+        Advance(TimeSpan.FromSeconds(30));
+        _deadlines.Single!.Fire();
+
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task Looks_that_find_the_stall_due_but_cannot_act_stop_re_arming_after_a_bounded_number()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+        _deadlines.Single!.Fire();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { Armed: true, Due: var due } && due == TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(5)));
+        Advance(TimeSpan.FromSeconds(30));
+        var armsBefore = _deadlines.Single!.ArmCount;
+
+        // Inside the restart floor the stall is due and nothing can be done.
+        for (var look = 1; look <= 12; look++)
+        {
+            _deadlines.Single!.Fire();
+            await _bridge.LastSettleDeadlineCheck!;
+            Assert.Equal(armsBefore + look, _deadlines.Single!.ArmCount);
+        }
         _deadlines.Single!.Fire();
         await _bridge.LastSettleDeadlineCheck!;
 
-        Assert.Equal(13, _deadlines.Single!.ArmCount);
+        Assert.Equal(armsBefore + 12, _deadlines.Single!.ArmCount);
         Assert.False(_deadlines.Single!.Armed);
+        Assert.Equal(2, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task A_self_restart_decision_that_throws_is_a_refusal_and_the_daemon_restart_follows()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        WireSelfRestart();
+        _bridge.SelfRestart = _ => throw new InvalidOperationException("hook failed");
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+
+        await _bridge.EvaluateSettleStallAsync();
+        Assert.True(await WaitUntilAsync(() => !_bridge.SelfRestartDeciding, TimeSpan.FromSeconds(5)));
+
+        Assert.True(_deadlines.Single!.Armed);
+        Assert.Equal(TimeSpan.Zero, _deadlines.Single!.Due);
+        await PollAndExpectBounceAsync(2);
+    }
+
+    [Fact]
+    public async Task A_deadline_that_fires_during_a_look_is_coalesced_into_exactly_one_more_look()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+        var gate = new TaskCompletionSource();
+        _controller.AddressGate = gate.Task;
+        var looksBefore = _bridge.SettleLookCount;
+
+        _deadlines.Single!.Fire();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("addresses") >= 1, TimeSpan.FromSeconds(5)));
+        _deadlines.Single!.Fire();
+        _deadlines.Single!.Fire();
+        _deadlines.Single!.Fire();
+        Assert.Equal(looksBefore + 1, _bridge.SettleLookCount);
+
+        _controller.AddressGate = null;
+        gate.SetResult();
+        await _bridge.LastSettleDeadlineCheck!;
+
+        Assert.Equal(looksBefore + 2, _bridge.SettleLookCount);
+    }
+
+    [Fact]
+    public async Task A_lone_deadline_runs_exactly_one_look()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        var looksBefore = _bridge.SettleLookCount;
+
+        _deadlines.Single!.Fire();
+        await _bridge.LastSettleDeadlineCheck!;
+
+        Assert.Equal(looksBefore + 1, _bridge.SettleLookCount);
+    }
+
+    [Fact]
+    public async Task A_look_that_raced_a_fresh_arm_does_not_replace_it()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+        var gate = new TaskCompletionSource();
+        _controller.AddressGate = gate.Task;
+        _deadlines.Single!.Fire();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("addresses") >= 1, TimeSpan.FromSeconds(5)));
+
+        // A resume restarts the daemon and arms a fresh deadline while the look is still waiting.
+        _bridge.OnSystemResume();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        var arms = _deadlines.Single!.ArmCount;
+        _controller.AddressGate = null;
+        _controller.Fail = true;
+        gate.SetResult();
+        await _bridge.LastSettleDeadlineCheck!;
+        _controller.Fail = false;
+
+        Assert.Equal(arms, _deadlines.Single!.ArmCount);
+        Assert.Equal(TimeSpan.FromSeconds(30), _deadlines.Single!.Due);
     }
 }
