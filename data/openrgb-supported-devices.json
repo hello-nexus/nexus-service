@@ -1,5 +1,5 @@
 {
-  "count": 2045,
+  "count": 2051,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -9842,7 +9842,31 @@
       "type": "gpu"
     },
     {
+      "name": "MSI GeForce RTX 5060 Ti Gaming Trio OC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5060 Ti VANGUARD SOC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "MSI GeForce RTX 5070 Gaming Trio",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5070 Ti 16G SHADOW 3X",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -9858,7 +9882,23 @@
       "type": "gpu"
     },
     {
+      "name": "MSI GeForce RTX 5070 Ti MLG Edition",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "MSI GeForce RTX 5070 Ti VANGUARD SOC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5070 VANGUARD SOC",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -13109,6 +13149,14 @@
       "name": "Razer Chroma PC Case Lighting Kit",
       "vid": "0x1532",
       "pid": "0x0F0E",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "ledstrip"
+    },
+    {
+      "name": "Razer Chroma Wireless ARGB Controller",
+      "vid": "0x1532",
+      "pid": "0x0F2C",
       "controller": "RazerController",
       "kind": "hid",
       "type": "ledstrip"
