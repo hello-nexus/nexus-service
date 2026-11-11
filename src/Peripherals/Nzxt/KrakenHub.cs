@@ -230,9 +230,53 @@ public sealed class KrakenHub : IDisposable
             _lockSavedBrightness = _snapshot.LcdBrightness;
             _lockDimmed = true;
             _saveRestore?.Invoke(_lockSavedBrightness);
-            var from = _fade is { Down: false } rising ? rising.LevelAt(Clock()) : _lockSavedBrightness;
+            var from = _fade is { Down: false } rising ? rising.LevelAt(Clock()) : Scaled(_lockSavedBrightness);
             StartFadeLocked(from, 0, SleepBlackoutCoordinator.LockFadeDuration);
             ServiceLog.Info($"[lcd-lock] kraken LCD sleeping (backlight {_lockSavedBrightness}% kept)");
+        }
+    }
+
+    // The brightness schedule. The snapshot, the lock memory and the stored slider stay the user's
+    // level; only what goes to the cooler is scaled.
+    private Func<int, int>? _scale;
+    private Func<int?>? _loadSlider;
+    private Action<int>? _saveSlider;
+    private Func<bool>? _follows;
+
+    /// <summary>Wires the brightness schedule: the scale to the cooler's level, where the user's own slider is remembered (the cooler reads back only the scaled value), and whether the cooler follows the schedule.</summary>
+    public void BindSchedule(Func<int, int> scale, Func<int?> loadSlider, Action<int> saveSlider, Func<bool>? follows = null)
+    {
+        _scale = scale;
+        _loadSlider = loadSlider;
+        _saveSlider = saveSlider;
+        _follows = follows;
+    }
+
+    /// <summary>The user's slider as remembered by the schedule binding, or null.</summary>
+    public int? RememberedSlider => _loadSlider?.Invoke();
+
+    /// <summary>Records the user's slider without touching the cooler.</summary>
+    public void RememberSlider(int percent) => _saveSlider?.Invoke(Math.Clamp(percent, 0, 100));
+
+    private int Scaled(int slider) => _scale?.Invoke(slider) ?? slider;
+
+    /// <summary>Puts the current scaled level on the glass. Left alone while the lock holds it dark or a fade is running; those end on the scaled level themselves.</summary>
+    public bool ApplySchedule()
+    {
+        lock (_lcdTransferLock)
+        lock (_lock)
+        {
+            if (!_isConnected || _device == null || !_model.HasLcd || _lockDimmed || _lockRestorePending || _fade is not null)
+            {
+                return false;
+            }
+            // While following (or owed a restore) the remembered slider is the user's level; the snapshot may have
+            // adopted a capped reading at connect.
+            if (_follows?.Invoke() == true && _loadSlider?.Invoke() is { } slider && slider != _snapshot.LcdBrightness)
+            {
+                _snapshot = _snapshot.WithLcd(Math.Clamp(slider, 0, 100), _snapshot.LcdOrientationQuarterTurns);
+            }
+            return WriteLocked(BacklightReport(Scaled(_snapshot.LcdBrightness), _snapshot.LcdOrientationQuarterTurns));
         }
     }
 
@@ -259,14 +303,15 @@ public sealed class KrakenHub : IDisposable
                 ApplyPendingWhileDarkLocked();
                 // Up from 0, or from the step a fade down was caught on.
                 var from = _fade is { Down: true } falling ? falling.LevelAt(Clock()) : 0;
-                if (from == _lockSavedBrightness)
+                var target = Scaled(_lockSavedBrightness);
+                if (from == target)
                 {
                     _fade = null;
-                    FinishRestoreLocked(WriteLocked(BacklightReport(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)));
+                    FinishRestoreLocked(WriteLocked(BacklightReport(target, _snapshot.LcdOrientationQuarterTurns)));
                 }
                 else
                 {
-                    StartFadeLocked(from, _lockSavedBrightness, SleepBlackoutCoordinator.UnlockFadeDuration);
+                    StartFadeLocked(from, target, SleepBlackoutCoordinator.UnlockFadeDuration);
                 }
             }
             else
@@ -386,7 +431,7 @@ public sealed class KrakenHub : IDisposable
         {
             return;
         }
-        if (WriteLocked(BacklightReport(_lockSavedBrightness, _snapshot.LcdOrientationQuarterTurns)))
+        if (WriteLocked(BacklightReport(Scaled(_lockSavedBrightness), _snapshot.LcdOrientationQuarterTurns)))
         {
             _lockRestorePending = false;
             _saveRestore?.Invoke(null);
@@ -675,6 +720,7 @@ public sealed class KrakenHub : IDisposable
                 : ReadLightingChannelsLocked();
 
             int brightness = 0;
+            int? resyncLevel = null;
             int orientation = 0;
             var mode = KrakenDisplayMode.Liquid;
             if (_model.HasLcd)
@@ -684,6 +730,13 @@ public sealed class KrakenHub : IDisposable
                 if (lcdInfo.HasValue)
                 {
                     brightness = lcdInfo.Value.BrightnessPercent;
+                    // The cooler reads back what was written, which may be a capped level. While following, the
+                    // remembered slider is the user's value; otherwise only when it scales to exactly the reading.
+                    if (_loadSlider?.Invoke() is { } remembered && (_follows?.Invoke() == true || Scaled(remembered) == brightness))
+                    {
+                        resyncLevel = Scaled(remembered) != brightness ? remembered : null;
+                        brightness = remembered;
+                    }
                     orientation = lcdInfo.Value.OrientationQuarterTurns;
                     // The panel reports its own size; the model table is only the seed, so a
                     // variant we have not measured still gets driven at its real resolution.
@@ -748,7 +801,7 @@ public sealed class KrakenHub : IDisposable
             var restoreFailed = false;
             if (_model.HasLcd && (sleepNow || restore))
             {
-                var wrote = WriteLocked(BacklightReport(sleepNow ? 0 : brightness, orientation));
+                var wrote = WriteLocked(BacklightReport(sleepNow ? 0 : Scaled(brightness), orientation));
                 if (!sleepNow)
                 {
                     if (wrote)
@@ -765,6 +818,11 @@ public sealed class KrakenHub : IDisposable
                     : $"[lcd-lock] kraken LCD restored to {brightness}% after reconnect");
             }
             _lockRestorePending = restoreFailed;
+            if (resyncLevel is { } resync && !sleepNow && !restore)
+            {
+                // The cooler kept a stale capped level across the reconnect.
+                WriteLocked(BacklightReport(Scaled(resync), orientation));
+            }
 
             _isConnected = true;
             return true;
@@ -985,7 +1043,7 @@ public sealed class KrakenHub : IDisposable
     {
         // Taken before the transfer lock; the flag only flips under both, so a stale read at
         // worst sends one command that the lock path then corrects.
-        var report = BacklightReport(brightnessPercent, orientationQuarterTurns);
+        var report = BacklightReport(Scaled(brightnessPercent), orientationQuarterTurns);
         // A rotation re-uploads the stored frame, which is a full bulk transfer, so this
         // takes the transfer lock first - same order as PushStreamFrame, never the reverse.
         lock (_lcdTransferLock)
@@ -1019,6 +1077,7 @@ public sealed class KrakenHub : IDisposable
             int turns = orientationQuarterTurns & 0x03;
             bool rotated = turns != _snapshot.LcdOrientationQuarterTurns;
             _snapshot = _snapshot.WithLcd(Math.Clamp(brightnessPercent, 0, 100), turns);
+            _saveSlider?.Invoke(_snapshot.LcdBrightness);
             // The panel will not re-orient a stored image on its own.
             if (rotated && _lastLcdFrame != null && _snapshot.DisplayMode == KrakenDisplayMode.Bucket)
             {
@@ -2121,7 +2180,7 @@ public sealed class KrakenHub : IDisposable
         WriteLocked(PlusCancel);
         WriteLocked(CamBacklightOff);
         DelayMs(CamBacklightDelayMs);
-        WriteLocked(BacklightReport(_snapshot.LcdBrightness, _snapshot.LcdOrientationQuarterTurns));
+        WriteLocked(BacklightReport(Scaled(_snapshot.LcdBrightness), _snapshot.LcdOrientationQuarterTurns));
         _lastKeepAliveMs = Clock();
     }
 

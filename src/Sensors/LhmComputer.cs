@@ -58,6 +58,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
+    private volatile bool _opened;
     private volatile bool _disposed;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
@@ -117,6 +118,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             IsNetworkEnabled = true,
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
+            // Opens matching STM32 serial ports to probe for a WireView Pro II.
+            IsPowerMonitorEnabled = config.Load().PowerMonitorsEnabled,
         };
         _openTask = Task.Run(async () =>
         {
@@ -138,6 +141,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 if (!_testHost)
                 {
                     _computer.Open();
+                    _opened = true;
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
                 }
             }
@@ -155,6 +159,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // A toggle between the reads above and these subscriptions would otherwise
         // hold until the next restart.
         ScheduleSpdApply();
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
     }
 
     public Computer Instance => _computer;
@@ -176,13 +181,43 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     private void OnConfigChanged()
     {
-        var setting = _config.Load().ReadRamTemperatures;
-        if (setting == _settingSeen)
+        var snapshot = _config.Load();
+        var setting = snapshot.ReadRamTemperatures;
+        if (setting != _settingSeen)
+        {
+            _settingSeen = setting;
+            ScheduleSpdApply();
+        }
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
+    }
+
+    /// <summary>Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.</summary>
+    private void ApplyPowerMonitors()
+    {
+        if (_testHost)
         {
             return;
         }
-        _settingSeen = setting;
-        ScheduleSpdApply();
+        try
+        {
+            bool want;
+            lock (_updateLock)
+            {
+                want = _config.Load().PowerMonitorsEnabled;
+                if (_disposed || _computer.IsPowerMonitorEnabled == want)
+                {
+                    return;
+                }
+                _computer.IsPowerMonitorEnabled = want;
+            }
+            Console.WriteLine(_opened
+                ? $"[lhm] power monitors {(want ? "on" : "off")}"
+                : $"[lhm] power monitors setting stored: {(want ? "on" : "off")}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[lhm] power monitor apply failed: {ex.Message}");
+        }
     }
 
     // The swap needs Open() finished; the open task never faults, so the

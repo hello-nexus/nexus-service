@@ -261,6 +261,15 @@ public sealed class ElgatoProfileTranslatorTests : IDisposable
         Assert.Contains(report.Unmapped, e => e.Reason == "monitoringSensor");
     }
 
+    [Fact]
+    public void Translate_Lhm_PowerMonitorUidIsStoredAsSensorId()
+    {
+        var (config, _) = TranslateSingleLhmSlot(new { sensorUid = "/gpu-powermonitor/COM3", min = 10, max = 90 });
+        var slot = config.Pages[0].Slots[0];
+        Assert.Equal("psu", slot.Action!.Category);
+        Assert.Equal("/gpu-powermonitor/COM3", slot.Action.Sensor);
+    }
+
     /// <summary>
     /// The verbatim settings payload com.moeilijk.lhm writes (captured from a
     /// real ProfilesV3 store): the sensor leaf lives in readingId/readingLabel,
