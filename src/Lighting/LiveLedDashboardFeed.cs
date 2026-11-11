@@ -24,32 +24,35 @@ internal sealed class LiveLedDashboardFeed
         _sendRaw = sendRaw;
     }
 
-    // Stop and the render tick can both serialize a frame, so composing is serialized. Each send gets its own copy because section lengths change per frame and the send outlives the lock.
-    public void OnFrame(ReadOnlyMemory<byte> frame, DeviceFrame[] devices)
+    // Stop and the render tick can both serialize a frame, so deciding, composing and handing off are serialized. Each send gets its own copy because section lengths change per frame and the send outlives the lock. Once the engine is stopped only its final frame goes out, so a late lit frame cannot replace the black one.
+    public void OnFrame(ReadOnlyMemory<byte> frame, DeviceFrame[] devices, bool final)
     {
         var connected = _clientCount() > 0;
-        // A stopped engine serializes nothing more, so reporting stays off until it runs again.
-        _sink.Enabled = connected && !_engineStopped();
-        if (!connected)
-        {
-            return;
-        }
-        byte[]? copy;
         lock (_lock)
         {
-            copy = LiveLedFrameComposer.ComposeCopy(frame.Span, devices, _sink, ref _scratch);
+            var stopped = _engineStopped();
+            if (stopped && !final)
+            {
+                return;
+            }
+            _sink.Enabled = connected;
+            if (!connected)
+            {
+                return;
+            }
+            var copy = LiveLedFrameComposer.ComposeCopy(frame.Span, devices, _sink, ref _scratch);
             if ((++_frames & 255) == 0)
             {
                 _sink.Prune(devices);
             }
-        }
-        if (copy is not null)
-        {
-            _sendComposed(copy);
-        }
-        else
-        {
-            _sendRaw(frame);
+            if (copy is not null)
+            {
+                _sendComposed(copy);
+            }
+            else
+            {
+                _sendRaw(frame);
+            }
         }
     }
 }

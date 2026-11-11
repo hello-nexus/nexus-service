@@ -127,8 +127,8 @@ public sealed partial class LightingEngine : IDisposable
 
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
 
-    /// <summary>The same frame as <see cref="OnFrame"/> with the device snapshot it was serialized from, section for section.</summary>
-    public event Action<ReadOnlyMemory<byte>, DeviceFrame[]>? FrameSerialized;
+    /// <summary>The same frame as <see cref="OnFrame"/> with the device snapshot it was serialized from, section for section, and whether it is the black frame <see cref="Stop"/> publishes last.</summary>
+    public event Action<ReadOnlyMemory<byte>, DeviceFrame[], bool>? FrameSerialized;
     public event Action? OnEffectChanged;
 
     /// <summary>Raised on the engine thread once per tick, after every device frame is published; handlers must not block.</summary>
@@ -790,11 +790,11 @@ public sealed partial class LightingEngine : IDisposable
                 dev.Clear();
             }
 
-            // The final black frame still reports to the dashboard; reporting stops only after it.
-            try
-            { SerializeAndBroadcast(); }
-            catch { }
+            // Stopped before the final black frame so a render tick still in flight cannot publish a lit frame after it; that one frame is marked final and still reports.
             _stopped = true;
+            try
+            { SerializeAndBroadcast(final: true); }
+            catch { }
             Live.Enabled = false;
         }
         // Handler may start/stop an audio-capture subprocess; must not run under the engine lock.
@@ -2367,7 +2367,7 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
-    private void SerializeAndBroadcast()
+    private void SerializeAndBroadcast(bool final = false)
     {
         var devices = _devices;
         var canvasBytes = _canvas.ByteCount;
@@ -2404,7 +2404,7 @@ public sealed partial class LightingEngine : IDisposable
             pos += dev.LedCount * 3;
         }
         OnFrame?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos));
-        FrameSerialized?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos), devices);
+        FrameSerialized?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos), devices, final);
     }
 
     /// <summary>

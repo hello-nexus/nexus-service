@@ -530,4 +530,25 @@ public class LiveLedColorsTests
         Assert.Equal(new byte[Leds * 3], Parse(last!, last!.Length)[0]);
         Assert.False(engine.Live.Enabled);
     }
+
+    [Fact]
+    public void Feed_DropsALitFrameThatArrivesAfterStop_AndKeepsReportingOnUntilTheFinalFrameIsDone()
+    {
+        var engine = new LightingEngine();
+        var frame = FrameWith(Source());
+        engine.UpdateDevices(new[] { frame });
+        var sent = new List<byte[]>();
+        var feed = new LiveLedDashboardFeed(engine.Live, () => 1, () => engine.IsStopped, copy => sent.Add(copy), _ => sent.Add(Array.Empty<byte>()));
+        engine.FrameSerialized += feed.OnFrame;
+        engine.Live.Enabled = true;
+        engine.Stop();
+        var afterFinal = sent.Count;
+
+        // A render tick that was already in flight serializes a lit frame after Stop's black one.
+        var lit = WireFrame(new[] { frame }, new byte[3]);
+        feed.OnFrame(lit, new[] { frame }, false);
+
+        Assert.Equal(afterFinal, sent.Count);
+        Assert.False(engine.Live.Enabled);
+    }
 }

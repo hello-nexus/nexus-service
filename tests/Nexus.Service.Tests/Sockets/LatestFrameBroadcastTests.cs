@@ -14,6 +14,23 @@ public sealed class LatestFrameBroadcastTests
         private readonly List<byte> _sent = new();
 
         public TaskCompletionSource FirstSend { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Registered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly List<(int Count, TaskCompletionSource Done)> _waiters = new();
+
+        // Completes once the socket has fully sent this many frames.
+        public Task WaitForSent(int count)
+        {
+            lock (_sent)
+            {
+                if (_sent.Count >= count)
+                {
+                    return Task.CompletedTask;
+                }
+                var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _waiters.Add((count, done));
+                return done.Task;
+            }
+        }
         public IReadOnlyList<byte> Sent { get { lock (_sent) { return _sent.ToArray(); } } }
 
         public void Release() => _gate.TrySetResult();
@@ -30,6 +47,7 @@ public sealed class LatestFrameBroadcastTests
 
         public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
         {
+            Registered.TrySetResult();
             await _incoming.Reader.WaitToReadAsync(cancellationToken);
             return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
         }
@@ -44,6 +62,13 @@ public sealed class LatestFrameBroadcastTests
             lock (_sent)
             {
                 _sent.Add(buffer.Span[0]);
+                foreach (var (count, done) in _waiters)
+                {
+                    if (_sent.Count >= count)
+                    {
+                        done.TrySetResult();
+                    }
+                }
             }
         }
     }
@@ -54,11 +79,7 @@ public sealed class LatestFrameBroadcastTests
         var hub = new WebSocketHub();
         var socket = new StalledSocket();
         var loop = hub.HandleClientAsync(socket);
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (hub.ClientCount == 0 && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(10);
-        }
+        await socket.Registered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         hub.BroadcastLatestBinary(new byte[] { 1 });
         await socket.FirstSend.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -68,15 +89,13 @@ public sealed class LatestFrameBroadcastTests
         }
 
         socket.Release();
-        deadline = DateTime.UtcNow.AddSeconds(5);
-        while (socket.Sent.Count < 2 && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(10);
-        }
-        await Task.Delay(100);
+        await socket.WaitForSent(2).WaitAsync(TimeSpan.FromSeconds(5));
+        // Once the pump has drained, a further frame goes out next and nothing older is left behind it.
+        hub.BroadcastLatestBinary(new byte[] { 51 });
+        await socket.WaitForSent(3).WaitAsync(TimeSpan.FromSeconds(5));
 
-        // The frame in flight, then only the newest one.
-        Assert.Equal(new byte[] { 1, 50 }, socket.Sent);
+        // The frame in flight, then only the newest one, then the later one.
+        Assert.Equal(new byte[] { 1, 50, 51 }, socket.Sent);
         socket.Close();
         await loop.WaitAsync(TimeSpan.FromSeconds(5));
     }
