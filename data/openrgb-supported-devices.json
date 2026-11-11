@@ -1,5 +1,5 @@
 {
-  "count": 2045,
+  "count": 2046,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -13109,6 +13109,14 @@
       "name": "Razer Chroma PC Case Lighting Kit",
       "vid": "0x1532",
       "pid": "0x0F0E",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "ledstrip"
+    },
+    {
+      "name": "Razer Chroma Wireless ARGB Controller",
+      "vid": "0x1532",
+      "pid": "0x0F2C",
       "controller": "RazerController",
       "kind": "hid",
       "type": "ledstrip"
