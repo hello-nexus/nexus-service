@@ -45,7 +45,28 @@ public sealed record HealthComponent
     public IReadOnlyList<HealthComponentReason> Reasons { get; init; } = Array.Empty<HealthComponentReason>();
 }
 
-public sealed record HealthComponentReason(string Code, string Severity, string Summary, string Detail);
+/// <summary>
+/// One reason a component is not healthy. Detail is human/debug text and stays
+/// as is (support bundle). Params, when present, carries the same key=value
+/// facts Detail embeds, machine-readable so the UI can compose a localized
+/// sentence: keys are exactly the keys Detail uses, values are invariant-culture
+/// strings (numbers with '.', booleans "true"/"false", temperatures in Celsius,
+/// timestamps as unix milliseconds).
+/// </summary>
+public sealed record HealthComponentReason(
+    string Code, string Severity, string Summary, string Detail, Dictionary<string, string>? Params = null);
+
+/// <summary>Invariant-culture formatting shared by every reason that fills HealthComponentReason.Params.</summary>
+internal static class ReasonParams
+{
+    public static string Num(double value, string? format = null) =>
+        value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
+
+    public static string Bool(bool value) => value ? "true" : "false";
+
+    public static long Ms(DateTime utc) =>
+        new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+}
 
 /// <summary>
 /// Aggregates every diagnostics module into the GET /diagnostics/health payload.
@@ -73,6 +94,7 @@ public sealed class DiagnosticsHealthModel
     private readonly ISensorProvider _sensors;
     private readonly IMetricsHistoryStore _tempStore;
     private readonly IConfigStore _store;
+    private readonly Alerts.SensorAlertEngine? _alerts;
 
     private readonly object _gate = new();
     private DiagnosticsHealthResponse? _cached;
@@ -93,8 +115,10 @@ public sealed class DiagnosticsHealthModel
         PnpProblemScanner pnp,
         ISensorProvider sensors,
         IMetricsHistoryStore tempStore,
-        IConfigStore store)
+        IConfigStore store,
+        Alerts.SensorAlertEngine? alerts = null)
     {
+        _alerts = alerts;
         _smart = smart;
         _cooling = cooling;
         _gpu = gpu;
@@ -172,7 +196,30 @@ public sealed class DiagnosticsHealthModel
     public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
 #endif
 
+    /// <summary>The cached module health plus the live sensor alert components. The alerts sit outside the module cache so a raise or acknowledge shows on the next read.</summary>
     private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
+    {
+        var health = BuildCachedHealth(forceRefresh);
+        if (_alerts is null)
+        {
+            return health;
+        }
+        var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+        var extra = _alerts.HealthComponents().Where(c => !ignored.Contains(c.Id, StringComparer.Ordinal)).ToList();
+        if (extra.Count == 0)
+        {
+            return health;
+        }
+        var components = health.Components.Concat(extra).ToList();
+        return health with
+        {
+            Supported = true,
+            Components = components,
+            Overall = WorstStatus(components.Select(c => c.Status)),
+        };
+    }
+
+    private DiagnosticsHealthResponse BuildCachedHealth(bool forceRefresh)
     {
         lock (_gate)
         {
@@ -423,6 +470,15 @@ public sealed class DiagnosticsHealthModel
                     ? $"{device.Name} reports 0 RPM while driven"
                     : $"{device.Name} reports 0 RPM at low duty";
                 var detail = $"rpm={Fmt(device.Rpm)} targetDuty={Fmt(device.TargetDutyPercent)}% since={device.SinceUtc:O}";
+                var stallParams = new Dictionary<string, string>
+                {
+                    ["rpm"] = Fmt(device.Rpm),
+                    ["targetDuty"] = Fmt(device.TargetDutyPercent),
+                };
+                if (device.SinceUtc is { } since)
+                {
+                    stallParams["since"] = ReasonParams.Ms(since).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
 
                 components.Add(new HealthComponent
                 {
@@ -430,7 +486,7 @@ public sealed class DiagnosticsHealthModel
                     Kind = "cooling",
                     Name = device.Name,
                     Status = severity,
-                    Reasons = new List<HealthComponentReason> { new(code, severity, summary, detail) },
+                    Reasons = new List<HealthComponentReason> { new(code, severity, summary, detail, stallParams) },
                 });
             }
         }
@@ -439,7 +495,14 @@ public sealed class DiagnosticsHealthModel
             "cooling.sustainedHighTemp",
             HealthStatuses.Watch,
             $"{ep.Name} recently ran above {ep.ThresholdC:0} C",
-            $"componentId={ep.ComponentId} peakC={ep.PeakC:0.0} start={ep.StartUtc:O} end={ep.EndUtc:O}")).ToList();
+            $"componentId={ep.ComponentId} peakC={ep.PeakC:0.0} start={ep.StartUtc:O} end={ep.EndUtc:O}",
+            new Dictionary<string, string>
+            {
+                ["componentId"] = ep.ComponentId,
+                ["peakC"] = ReasonParams.Num(ep.PeakC, "0.0"),
+                ["start"] = ReasonParams.Ms(ep.StartUtc).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["end"] = ReasonParams.Ms(ep.EndUtc).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            })).ToList();
 
         if (stallEligible || reasons.Count > 0)
         {
@@ -480,7 +543,16 @@ public sealed class DiagnosticsHealthModel
             Reasons = new List<HealthComponentReason>
             {
                 new("cooling.thermalGuardTrip", severity, summary,
-                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}"),
+                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}",
+                    new Dictionary<string, string>
+                    {
+                        ["cause"] = cause,
+                        ["active"] = ReasonParams.Bool(active),
+                        ["reason"] = trip.Reason,
+                        ["peakC"] = ReasonParams.Num(trip.PeakC, "0.0"),
+                        ["escalated"] = ReasonParams.Bool(trip.Escalated),
+                        ["at"] = trip.AtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    }),
             },
         });
     }

@@ -280,13 +280,13 @@ public sealed class DevSimEvents
 
     // ── Diagnostics health ──
 
-    private static HealthComponent Component(string id, string kind, string name, string status, string code, string summary, string detail) => new()
+    private static HealthComponent Component(string id, string kind, string name, string status, string code, string summary, string detail, Dictionary<string, string>? reasonParams = null) => new()
     {
         Id = id,
         Kind = kind,
         Name = name,
         Status = status,
-        Reasons = new List<HealthComponentReason> { new(code, status, summary, detail) },
+        Reasons = new List<HealthComponentReason> { new(code, status, summary, detail, reasonParams) },
     };
 
     /// <summary>The extra health components the active health sims contribute, with the real reason codes.</summary>
@@ -296,17 +296,20 @@ public sealed class DevSimEvents
         if (IsActive(HealthFanStall))
         {
             list.Add(Component("cooling:sim-fan", "cooling", "Simulated Fan #1", HealthStatuses.Act, "cooling.fanStall",
-                "Simulated Fan #1 reports 0 RPM while driven", "rpm=0 targetDuty=60% (simulated)"));
+                "Simulated Fan #1 reports 0 RPM while driven", "rpm=0 targetDuty=60% (simulated)",
+                new Dictionary<string, string> { ["rpm"] = "0", ["targetDuty"] = "60" }));
         }
         if (IsActive(HealthPumpStall))
         {
             list.Add(Component("cooling:sim-pump", "cooling", "Simulated AIO pump", HealthStatuses.Act, "cooling.pumpStall",
-                "Simulated AIO pump reports 0 RPM while driven", "rpm=0 targetDuty=70% (simulated)"));
+                "Simulated AIO pump reports 0 RPM while driven", "rpm=0 targetDuty=70% (simulated)",
+                new Dictionary<string, string> { ["rpm"] = "0", ["targetDuty"] = "70" }));
         }
         if (IsActive(HealthSustainedHighTemp))
         {
             list.Add(Component("cooling", "cooling", "Cooling", HealthStatuses.Watch, "cooling.sustainedHighTemp",
-                "Simulated CPU recently ran above 90 C", "componentId=sim peakC=94.0 (simulated)"));
+                "Simulated CPU recently ran above 90 C", "componentId=sim peakC=94.0 (simulated)",
+                new Dictionary<string, string> { ["componentId"] = "sim", ["peakC"] = "94.0" }));
         }
         if (IsActive(HealthGpuThrottle))
         {

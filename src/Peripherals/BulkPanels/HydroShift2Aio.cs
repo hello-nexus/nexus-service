@@ -16,6 +16,9 @@ public sealed class HydroShift2Aio : BackgroundService
     private const int TickMs = 250;
     private const int ParamsPollMs = 1000;
 
+    /// <summary>Settle before the overlay wipe after an unlock, so the push does not race the link coming back.</summary>
+    public const int WakeOverlaySettleMs = 1500;
+
     /// <summary>L-Connect resends pump/fan on this cadence; a single low pump target drifted back up within seconds (measured).</summary>
     private const int PumpFanResendMs = 3600;
 
@@ -71,6 +74,7 @@ public sealed class HydroShift2Aio : BackgroundService
     private bool _wasAvailable;
     private bool _driving;
     private volatile bool _overlayClear;
+    private long _overlayClearNotBefore;
     private bool _rewipeArmed = true;
     private long _rewipeAt;
     private int _rewipeRetriesLeft;
@@ -102,7 +106,14 @@ public sealed class HydroShift2Aio : BackgroundService
     public event Action<string, bool>? ScreenOwnerChanged;
 
     /// <summary>Wipes what the firmware drew over the glass once the unit is read, unless it shows its own screen by then.</summary>
-    public void ClearScreenOverlay() => _overlayClear = true;
+    public void ClearScreenOverlay() => ClearScreenOverlay(0);
+
+    /// <summary>Same wipe, held back for a settle so the first push after an unlock does not land on a link still coming up.</summary>
+    public void ClearScreenOverlay(int settleMs)
+    {
+        Volatile.Write(ref _overlayClearNotBefore, settleMs > 0 ? Environment.TickCount64 + settleMs : 0);
+        _overlayClear = true;
+    }
 
     /// <summary>Called on a system resume; the loop wipes the overlay again and re-sends the ring once the unit has settled.</summary>
     public void OnSystemResumed() => _resumed = true;
@@ -268,9 +279,13 @@ public sealed class HydroShift2Aio : BackgroundService
             {
                 _rewipeAt = 0;
             }
-            if (_overlayClear || rewipe)
+            var clearDue = _overlayClear && now >= Volatile.Read(ref _overlayClearNotBefore);
+            if (clearDue || rewipe)
             {
-                _overlayClear = false;
+                if (clearDue)
+                {
+                    _overlayClear = false;
+                }
                 var attempted = false;
                 if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
                 {

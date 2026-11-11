@@ -491,6 +491,19 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.SmartHealthMonitor>());
 
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsHealthModel>();
+        services.AddSingleton(sp =>
+        {
+            var engine = new Nexus.Service.Diagnostics.Alerts.SensorAlertEngine(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>());
+            // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
+            engine.NoticeSink = (notice, ignoreMaster) => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().Raise(notice, ignoreMaster);
+            return engine;
+        });
+        // The sampler records every enabled rule's reading as a tracked-sensor series.
+        services.AddSingleton<Nexus.Service.Monitoring.History.ISensorSeriesSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>());
+        services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());
 
@@ -520,11 +533,24 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(_ =>
+        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>
         {
             try
             {
-                return new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                var store = new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                // Tracked-sensor series left by a deleted rule (a crash, or an older build) would otherwise count toward the series cap forever.
+                try
+                {
+                    var ruleIds = new HashSet<string>(StringComparer.Ordinal);
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
+                        s => ruleIds.UnionWith((s.Diagnostics.SensorAlerts ?? new()).Select(r => r.Id)));
+                    store.PruneSensorSeries(ruleIds);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[metrics-history-store] sensor series prune skipped: {ex.Message}");
+                }
+                return store;
             }
             catch (Exception ex)
             {
@@ -2132,6 +2158,17 @@ public static class NexusServiceCollectionExtensions
             // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
             // closes, since the frames and the connect handshake wipe what an earlier one drew.
             wireless.AioSwitched += _ => aio.ClearScreenOverlay();
+            // The USB link survives a lock sleep, so the firmware redraws its own layer over the stream until a push wipes it.
+            if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
+            {
+                lockState.Changed += locked =>
+                {
+                    if (!locked)
+                    {
+                        aio.ClearScreenOverlay(Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio.WakeOverlaySettleMs);
+                    }
+                };
+            }
             aio.ScreenOwnerChanged += (mac, ownScreen) =>
             {
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
