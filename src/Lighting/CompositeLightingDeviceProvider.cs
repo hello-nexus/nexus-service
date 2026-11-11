@@ -417,9 +417,11 @@ public sealed class CompositeLightingDeviceProvider : ILightingDeviceProvider
     internal static void ApplyAreaSampling(LightingEngine engine, List<LightingDevice> devices, NexusSettings settings)
     {
         var modes = settings.Devices.SamplingModes;
+        var colorModes = settings.Devices.ColorSamplingModes;
         var frames = engine.Devices;
         foreach (var dev in devices)
         {
+            dev.ColorSampling = ColorSamplings.Name(ColorSamplings.Of(colorModes, dev.Id));
             var mode = SamplingModes.Of(modes, dev.Id);
             dev.Sampling = SamplingModes.Name(mode);
             if (mode == SamplingMode.Led)

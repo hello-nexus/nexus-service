@@ -689,6 +689,7 @@ public static class NexusServiceCollectionExtensions
             engine.SetStackSlots(areaSettings.Lighting.DeviceStacks);
             var modeStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
             engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
+            engine.ColorSamplingModeSource = () => modeStore.Load().Devices.ColorSamplingModes;
             return engine;
         });
         services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>(sp =>
