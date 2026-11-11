@@ -436,7 +436,12 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private Snap Snapshot()
     {
+        var builtIns = BuiltIns().Devices;
+        // Also here, not only on a tick: a settings reset removes the stored rules while the detected devices stay.
+        SeedBuiltIns(builtIns);
+        var devices = builtIns.ToDictionary(d => BuiltInSensorRules.RuleId(d.SeriesId), StringComparer.Ordinal);
         var rules = new List<SensorAlertRule>();
+        var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
         _store.Read(s =>
         {
@@ -444,20 +449,40 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             {
                 foreach (var rule in list)
                 {
-                    rules.Add(rule.Clone());
+                    if (rule.BuiltIn is null)
+                    {
+                        rules.Add(rule.Clone());
+                    }
+                    else if (devices.TryGetValue(rule.Id, out var device))
+                    {
+                        var copy = rule.Clone();
+                        copy.Sensor.Name = device.Name;
+                        builtInRules.Add(copy);
+                    }
                 }
             }
             fahrenheit = string.Equals(s.Units.MonitoringTempUnit, "f", StringComparison.OrdinalIgnoreCase);
         });
-        return new Snap(rules, fahrenheit);
+        // Built-ins first, in the Cooling chart's order.
+        builtInRules.Sort((a, b) =>
+        {
+            var byKind = BuiltInSensorRules.KindRank(BuiltInSensorRules.SeriesId(a.Id)) - BuiltInSensorRules.KindRank(BuiltInSensorRules.SeriesId(b.Id));
+            return byKind != 0 ? byKind : string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
+        });
+        builtInRules.AddRange(rules);
+        return new Snap(builtInRules, fahrenheit);
     }
 
-    /// <summary>The configured rules, as copies.</summary>
+    /// <summary>The configured rules, as copies: the built-ins of the devices detected now, then the user's.</summary>
     public List<SensorAlertRule> Rules() => Snapshot().Rules;
+
+    /// <summary>The devices that have a built-in rule now.</summary>
+    public IReadOnlyList<BuiltInDevice> BuiltInDevices() => BuiltIns().Devices;
 
     /// <summary>Evaluates every enabled rule once. Does nothing, and reads no sensor, without one.</summary>
     public void Tick()
     {
+        RefreshBuiltIns();
         var snap = Snapshot();
         var (rules, fahrenheit) = snap;
         var now = Mono();
@@ -487,7 +512,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     {
                         heals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, healed));
                     }
-                    if (sample.Valid && double.IsFinite(sample.Value))
+                    // A built-in's series is the monitoring history's own, so it is not recorded twice.
+                    if (rule.BuiltIn is null && sample.Valid && double.IsFinite(sample.Value))
                     {
                         // A healed id is the same sensor, so the entry carries it and compares equal to the rule once the heal lands.
                         readings.Add(new SeriesEntry(rule.Id, sample.Value, healed is null ? rule.Sensor : WithId(rule.Sensor, healed)));
@@ -575,7 +601,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     {
         if (category == BuiltInSensorRules.Category)
         {
-            return ReadBuiltIns();
+            return BuiltIns().Sensors;
         }
         // Drive temperatures exist only under smart, and each read wakes sleeping drives, so it is sampled slowly.
         if (category == "smart")
@@ -596,31 +622,77 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return SensorSnapshotResolver.GetCategorySensors(_sensors, category, sources);
     }
 
+    private sealed record BuiltInSnapshot(IReadOnlyList<BuiltInDevice> Devices, IReadOnlyList<HardwareSensor> Sensors);
+
+    private BuiltInSnapshot? _builtIns;
+
+    private BuiltInSnapshot BuiltIns() => Volatile.Read(ref _builtIns) ?? RefreshBuiltIns();
+
     /// <summary>
-    /// One synthetic temperature sensor per component, from the same picks the temperature history uses: the CPU package
-    /// (else the first CPU temperature), the hottest dedicated GPU (none means no GPU reading, so a SoC or APU graphics
-    /// die never duplicates the CPU), the hottest drive that is not ignored (the SMART cache, so no drive wakes) and the
-    /// hottest memory-module sensor. Each component reads on its own, so one failing source leaves the others live.
+    /// Detects the devices the Cooling temperature history plots, each read the way the sampler reads it: the CPU package
+    /// (else the first CPU temperature), each GPU's core temperature, each drive with a SMART temperature (the cache, so no
+    /// drive wakes) and the mean of the memory-module sensors. Each source reads on its own, so one failure leaves the others
+    /// live.
     /// </summary>
-    private IReadOnlyList<HardwareSensor> ReadBuiltIns()
+    private BuiltInSnapshot RefreshBuiltIns()
     {
-        var list = new List<HardwareSensor>(4);
+        var empty = new BuiltInSnapshot(Array.Empty<BuiltInDevice>(), Array.Empty<HardwareSensor>());
+        var migrated = false;
+        _store.Read(s => migrated = s.Diagnostics.BuiltInSensorsVersion >= BuiltInSensorRules.PerDeviceVersion);
+        // Settings that never went through BuiltInSensorRules.Ensure have no legacy templates yet, so nothing is detected or read.
+        if (!migrated)
+        {
+            return empty;
+        }
+        var devices = new List<BuiltInDevice>();
+        var sensors = new List<HardwareSensor>();
         var now = Mono();
-        TryAdd(list, "cpu", now, ReadCpuBuiltIn);
-        TryAdd(list, "gpu", now, ReadGpuBuiltIn);
-        TryAdd(list, "storage", now, ReadStorageBuiltIn);
-        TryAdd(list, "ram", now, ReadRamBuiltIn);
-        return list;
+        TryDiscover(devices, sensors, "cpu", now, DiscoverCpu);
+        TryDiscover(devices, sensors, "gpu", now, DiscoverGpus);
+        TryDiscover(devices, sensors, "memory", now, DiscoverMemory);
+        TryDiscover(devices, sensors, "storage", now, DiscoverDrives);
+        var snapshot = new BuiltInSnapshot(devices, sensors);
+        Volatile.Write(ref _builtIns, snapshot);
+        return snapshot;
     }
 
-    private void TryAdd(List<HardwareSensor> list, string key, DateTimeOffset now, Func<HardwareSensor?> read)
+    private void SeedBuiltIns(IReadOnlyList<BuiltInDevice> devices)
+    {
+        var missing = false;
+        _store.Read(s =>
+        {
+            var have = (s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>()).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+            missing = devices.Any(d => !have.Contains(BuiltInSensorRules.RuleId(d.SeriesId)));
+        });
+        if (!missing)
+        {
+            return;
+        }
+        try
+        {
+            _store.Update(s =>
+            {
+                var list = s.Diagnostics.SensorAlerts ??= new List<SensorAlertRule>();
+                foreach (var device in devices)
+                {
+                    if (!list.Any(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId)))
+                    {
+                        list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics));
+                    }
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Warn("builtin-seed", $"[sensor-alerts] built-in seeding failed: {ex.Message}", Mono());
+        }
+    }
+
+    private void TryDiscover(List<BuiltInDevice> devices, List<HardwareSensor> sensors, string key, DateTimeOffset now, Action<List<BuiltInDevice>, List<HardwareSensor>> discover)
     {
         try
         {
-            if (read() is { } sensor)
-            {
-                list.Add(sensor);
-            }
+            discover(devices, sensors);
         }
         catch (Exception ex)
         {
@@ -628,74 +700,71 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private HardwareSensor? ReadCpuBuiltIn() =>
-        SummarySensors.PickCpuTemp(_sensors.GetCpuSensors()) is { } cpu
-            ? Synthetic("cpu", "CPU", cpu.Value, cpu.Stale, string.IsNullOrEmpty(cpu.Parent.Name) ? "CPU" : cpu.Parent.Name)
-            : null;
-
-    private HardwareSensor? ReadGpuBuiltIn()
+    private void DiscoverCpu(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
     {
-        HardwareSensor? hottest = null;
-        var name = "";
+        var temp = Nexus.Service.Monitoring.History.SystemMetricsSource.FindSensor(_sensors.GetCpuSensors(), "Temperature", "Package");
+        if (temp is null)
+        {
+            return;
+        }
+        var name = Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveCpuTempName(_sensors.GetCpuModel());
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, ""), temp.Value, temp.Stale);
+    }
+
+    private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    {
         foreach (var gpu in _sensors.GetGpus())
         {
-            if (gpu.Integrated)
+            var temp = Nexus.Service.Monitoring.History.SystemMetricsSource.FindSensor(gpu.Sensors, "Temperature", "Core");
+            if (temp is null)
             {
                 continue;
             }
-            var temp = gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase) && x.Name.Contains("Core", StringComparison.OrdinalIgnoreCase))
-                ?? gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase));
-            if (temp is not null && IsUsable(temp) && (hottest is null || temp.Value > hottest.Value))
-            {
-                hottest = temp;
-                name = gpu.Name;
-            }
+            var seriesId = BuiltInSensorRules.GpuSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(gpu.Id);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id), temp.Value, temp.Stale);
         }
-        return hottest is null ? null : Synthetic("gpu", "GPU", hottest.Value, false, name);
     }
 
-    private HardwareSensor? ReadStorageBuiltIn()
+    private void DiscoverMemory(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    {
+        var usable = Nexus.Service.Monitoring.History.SystemMetricsSource.FindRamTempSensors(_sensors.GetMemorySensors());
+        if (usable.Count == 0)
+        {
+            return;
+        }
+        var fresh = usable.Where(IsUsable).ToList();
+        var value = fresh.Count == 0 ? float.NaN : fresh.Average(x => x.Value);
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.RamTemp, BuiltInSensorRules.MemorySeriesId, "Memory Temperature", false, ""), value, fresh.Count == 0);
+    }
+
+    private void DiscoverDrives(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
     {
         if (_drives?.Snapshot() is not { Supported: true } smart)
         {
-            return null;
+            return;
         }
-        var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
-        Nexus.Service.Diagnostics.Storage.SmartDriveInfo? hottest = null;
-        foreach (var drive in smart.Drives)
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var drive in smart.Drives.Where(d => d.TemperatureC is not null).OrderBy(d => d.Id, StringComparer.Ordinal))
         {
-            if (drive.TemperatureC is { } c && double.IsFinite(c) && !ignored.Contains(drive.Id, StringComparer.Ordinal)
-                && (hottest is null || c > hottest.TemperatureC))
-            {
-                hottest = drive;
-            }
+            var seriesId = BuiltInSensorRules.DriveSeriesPrefix + Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveUniqueSanitizedId(drive.Id, used);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.StorageTemp, seriesId, drive.Name, false, drive.Id), (float)drive.TemperatureC!.Value, false);
         }
-        return hottest?.TemperatureC is { } driveC ? Synthetic("storage", "Storage", (float)driveC, false, hottest.Name) : null;
     }
 
-    private HardwareSensor? ReadRamBuiltIn()
+    private static void Add(List<BuiltInDevice> devices, List<HardwareSensor> sensors, BuiltInDevice device, float value, bool stale)
     {
-        HardwareSensor? hottest = null;
-        foreach (var sensor in Nexus.Service.Monitoring.History.SystemMetricsSource.FindRamTempSensors(_sensors.GetMemorySensors()))
+        devices.Add(device);
+        sensors.Add(new HardwareSensor
         {
-            if (IsUsable(sensor) && (hottest is null || sensor.Value > hottest.Value))
-            {
-                hottest = sensor;
-            }
-        }
-        return hottest is null ? null : Synthetic("ram", "Memory", hottest.Value, false, hottest.Name);
+            Id = device.SeriesId,
+            Name = device.Name,
+            Type = "Temperature",
+            Value = value,
+            Units = "°C",
+            Stale = stale,
+            Parent = new SensorParent { Id = device.SeriesId, Name = device.Name },
+        });
     }
-
-    private static HardwareSensor Synthetic(string id, string name, float value, bool stale, string source) => new()
-    {
-        Id = id,
-        Name = name,
-        Type = "Temperature",
-        Value = value,
-        Units = "°C",
-        Stale = stale,
-        Parent = new SensorParent { Id = id, Name = source },
-    };
 
     private void Warn(string key, string message, DateTimeOffset now)
     {
@@ -1045,7 +1114,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             p["builtIn"] = rule.BuiltIn;
         }
-        if (source.Length > 0)
+        if (source.Length > 0 && rule.BuiltIn is null)
         {
             p["sourceName"] = source;
         }
@@ -1088,14 +1157,7 @@ internal sealed class LogThrottle
 internal static class SensorAlertText
 {
     /// <summary>The sensor's name with its type appended unless the name already says it.</summary>
-    internal static string DisplayName(SensorAlertRule rule) => rule.BuiltIn switch
-    {
-        BuiltInSensorRules.CpuTemp => "CPU temperature",
-        BuiltInSensorRules.GpuTemp => "GPU temperature",
-        BuiltInSensorRules.StorageTemp => "Storage temperature",
-        BuiltInSensorRules.RamTemp => "Memory temperature",
-        _ => DisplayName(rule.Sensor),
-    };
+    internal static string DisplayName(SensorAlertRule rule) => rule.BuiltIn is not null ? rule.Sensor.Name : DisplayName(rule.Sensor);
 
     internal static string DisplayName(SensorRef sensor) =>
         sensor.Name.EndsWith(sensor.Type, StringComparison.OrdinalIgnoreCase) || sensor.Type.Length == 0
@@ -1108,7 +1170,7 @@ internal static class SensorAlertText
         var below = direction == "below";
         var threshold = (below ? rule.Low : rule.High) ?? 0;
         var delay = rule.RaiseAfterSeconds > 0 ? $" for {rule.RaiseAfterSeconds} s" : "";
-        return $"{WithSource(rule, source)} {(below ? "below" : "above")} {Format(threshold, rule.Sensor.Type, units, fahrenheit)}{delay} (now {Format(value, rule.Sensor.Type, units, fahrenheit)})";
+        return $"{DisplayName(rule)} {(below ? "below" : "above")} {Format(threshold, rule.Sensor.Type, units, fahrenheit)}{delay} (now {Format(value, rule.Sensor.Type, units, fahrenheit)})";
     }
 
     /// <summary>The sentence for a finished alert that still waits for the user.</summary>
@@ -1116,14 +1178,8 @@ internal static class SensorAlertText
     {
         var type = rule.Sensor.Type;
         var below = ended.Direction == "below";
-        return $"{WithSource(rule, source)} was {(below ? "below" : "above")} {Format(ended.Threshold, type, units, fahrenheit)} (peak {Format(ended.Peak, type, units, fahrenheit)}), back to normal";
+        return $"{DisplayName(rule)} was {(below ? "below" : "above")} {Format(ended.Threshold, type, units, fahrenheit)} (peak {Format(ended.Peak, type, units, fahrenheit)}), back to normal";
     }
-
-    // A built-in has no name of its own to say which GPU or drive it follows.
-    private static string WithSource(SensorAlertRule rule, string source) =>
-        rule.BuiltIn is BuiltInSensorRules.GpuTemp or BuiltInSensorRules.StorageTemp && source.Length > 0
-            ? $"{DisplayName(rule)} ({source})"
-            : DisplayName(rule);
 
     internal static string Format(double value, string type, string units, bool fahrenheit)
     {

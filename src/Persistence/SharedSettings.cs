@@ -295,6 +295,8 @@ public sealed class DiagnosticsSettings
     public List<string> IgnoredComponents { get; set; } = new();
     /// <summary>User sensor threshold rules, machine-wide. Capped at <see cref="Nexus.Service.Diagnostics.Alerts.SensorAlertRules.MaxRules"/> by the routes.</summary>
     public List<SensorAlertRule> SensorAlerts { get; set; } = new();
+    /// <summary>Generation of the built-in sensor rules; below the per-device generation, the legacy per-kind templates are still to be seeded from the old fields.</summary>
+    public int BuiltInSensorsVersion { get; set; }
 }
 
 public sealed class DiagnosticsSettingsPatch

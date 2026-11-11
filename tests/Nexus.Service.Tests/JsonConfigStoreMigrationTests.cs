@@ -1129,15 +1129,15 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
-    public void Load_NewInstallTurnsNotificationsOnAndSeedsBuiltInsToNotify()
+    public void Load_NewInstallTurnsNotificationsOnAndSeedsNoTemplates()
     {
         var store = new JsonConfigStore(_settingsPath);
         try
         {
             var d = store.Load().Diagnostics;
             Assert.True(d.Notifications.Enabled);
-            Assert.NotEmpty(d.SensorAlerts);
-            Assert.All(d.SensorAlerts, r => Assert.True(r.NotifyDesktop));
+            Assert.Empty(d.SensorAlerts);
+            Assert.Equal(Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.PerDeviceVersion, d.BuiltInSensorsVersion);
         }
         finally
         {

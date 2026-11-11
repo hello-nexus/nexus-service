@@ -22,6 +22,9 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
             {
                 s.RemoveAll<IMetricsHistoryStore>();
                 s.AddSingleton<IMetricsHistoryStore>(new InMemoryMetricsHistoryStore());
+                // No temperature source, so no built-in rule adds its monitoring series to these user-rule assertions.
+                s.RemoveAll<Nexus.Service.Sensors.ISensorProvider>();
+                s.AddSingleton<Nexus.Service.Sensors.ISensorProvider>(new StubSensorProvider());
             });
         }
     }

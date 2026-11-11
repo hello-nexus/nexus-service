@@ -416,9 +416,10 @@ public static class DiagnosticsHealthRoutes
                     BuiltInSensorRules.RamTemp => "ram",
                     _ => null,
                 };
-                if (kind is not null && rule is { Enabled: true, High: { } high })
+                // Devices of a kind share its band, so the most sensitive enabled limit wins.
+                if (kind is not null && !BuiltInSensorRules.IsTemplate(rule) && rule is { Enabled: true, High: { } high })
                 {
-                    limits[kind] = high;
+                    limits[kind] = limits.TryGetValue(kind, out var lowest) ? Math.Min(lowest, high) : high;
                 }
             }
         });

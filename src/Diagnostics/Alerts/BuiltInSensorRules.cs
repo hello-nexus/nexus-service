@@ -6,20 +6,32 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Diagnostics.Alerts;
 
+/// <summary>A detected device whose temperature the Cooling history plots. <see cref="SeriesId"/> is the monitoring history series id; <see cref="ComponentId"/> is the raw id the ignore list uses.</summary>
+public sealed record BuiltInDevice(string Kind, string SeriesId, string Name, bool Integrated, string ComponentId);
+
 /// <summary>
-/// The four component-temperature rules every install carries: CPU, GPU, storage and memory. They are ordinary
-/// <see cref="SensorAlertRule"/>s (same engine, state, history, series and notices) with a fixed id and a synthetic
-/// sensor the engine resolves itself, so the user can turn one off or move its limit but never delete or re-point it.
+/// One temperature rule per detected CPU, GPU, drive and (when the machine reports one) memory, id <c>builtin:&lt;history series id&gt;</c>.
+/// They are ordinary <see cref="SensorAlertRule"/>s with a synthetic sensor the engine resolves itself; the user can turn one
+/// off or move its limit but never delete or re-point it. A rule is listed only while its device is detected; its stored
+/// settings stay, so a device that returns keeps them. The legacy per-kind rows (<c>builtin-cpu</c> and so on) are hidden templates
+/// that give a device first seen after an upgrade the limits the user had.
 /// </summary>
 public static class BuiltInSensorRules
 {
     /// <summary>Resolver category of the synthetic sensors; the engine reads it, the sensor provider has no such category.</summary>
     public const string Category = "builtin";
 
+    public const string IdPrefix = "builtin:";
+
     public const string CpuTemp = "cpuTemp";
     public const string GpuTemp = "gpuTemp";
     public const string StorageTemp = "storageTemp";
     public const string RamTemp = "ramTemp";
+
+    public const string CpuSeriesId = "cpu-temp";
+    public const string GpuSeriesPrefix = "gpu-temp:";
+    public const string MemorySeriesId = "mem-temp";
+    public const string DriveSeriesPrefix = "drive-temp:";
 
     /// <summary>Hold before a built-in raises. The temperatures swing second to second under load, so this is longer than a user rule's.</summary>
     public const int RaiseAfterSeconds = 60;
@@ -27,36 +39,64 @@ public static class BuiltInSensorRules
     /// <summary>Same clear delay as any new sensor rule.</summary>
     public const int ClearAfterSeconds = 5;
 
-    private sealed record Spec(string Kind, string Id, string SensorId, string SensorName, double LimitMin, double LimitMax, double NewInstallHigh);
+    /// <summary>Stored settings generation: 2 means per-device built-ins, so the legacy per-kind seeding has run.</summary>
+    public const int PerDeviceVersion = 2;
 
-    // Order is the display order and the stored order (built-ins first). New-install limits sit in each component's throttle region (Intel runs the package near its limit under load by design), so only a real thermal event alerts.
+    private sealed record Spec(string Kind, string TemplateId, double LimitMin, double LimitMax, double NewInstallHigh);
+
+    // New-install limits sit in each component's throttle region (Intel runs the package near its limit under load by design), so only a real thermal event alerts.
     private static readonly Spec[] Specs =
     {
-        new(CpuTemp, "builtin-cpu", "cpu", "CPU", 60, 105, 100),
-        new(GpuTemp, "builtin-gpu", "gpu", "GPU", 60, 105, 90),
-        new(StorageTemp, "builtin-storage", "storage", "Storage", 40, 90, 75),
-        new(RamTemp, "builtin-ram", "ram", "Memory", 40, 90, 75),
+        new(CpuTemp, "builtin-cpu", 60, 105, 100),
+        new(GpuTemp, "builtin-gpu", 60, 105, 90),
+        new(StorageTemp, "builtin-storage", 40, 90, 75),
+        new(RamTemp, "builtin-ram", 40, 90, 75),
     };
-
-    public static IReadOnlyList<string> Ids { get; } = Specs.Select(s => s.Id).ToArray();
 
     public static bool IsKind(string? kind) => Specs.Any(s => s.Kind == kind);
 
-    public static bool IsBuiltInId(string id) => Specs.Any(s => s.Id == id);
+    /// <summary>Reserved ids: the per-device <c>builtin:</c> rules and the hidden <c>builtin-</c> templates. A user rule id is a GUID.</summary>
+    public static bool IsBuiltInId(string id) => id.StartsWith("builtin", StringComparison.Ordinal);
 
-    /// <summary>The stored limit range of a kind: the old Settings slider range, so a hand-edited or stale value is pulled back to something the UI can show.</summary>
+    /// <summary>A hidden legacy per-kind row: never listed, evaluated or counted.</summary>
+    public static bool IsTemplate(SensorAlertRule rule) => rule.BuiltIn is not null && Specs.Any(s => s.TemplateId == rule.Id);
+
+    public static string RuleId(string seriesId) => IdPrefix + seriesId;
+
+    public static string SeriesId(string ruleId) => ruleId[IdPrefix.Length..];
+
+    /// <summary>The Cooling chart order of a series: cpu, gpu, memory, drive, then by id.</summary>
+    public static int KindRank(string seriesId) =>
+        seriesId == CpuSeriesId ? 0
+        : seriesId.StartsWith(GpuSeriesPrefix, StringComparison.Ordinal) ? 1
+        : seriesId == MemorySeriesId ? 2
+        : 3;
+
+    /// <summary>The stored limit range of a kind, so a hand-edited or stale value is pulled back to something the UI can show.</summary>
     public static (double Min, double Max) LimitRange(string kind)
     {
         var spec = Specs.First(s => s.Kind == kind);
         return (spec.LimitMin, spec.LimitMax);
     }
 
-    /// <summary>Re-points a built-in at its fixed sensor, and clamps each limit that is set; either may be null. The one place a client-sent built-in is made safe to store.</summary>
-    public static void Pin(SensorAlertRule rule)
+    /// <summary>The high limit a newly seen device starts with. An integrated GPU shares the CPU die, so it follows the CPU default and never alerts before the CPU entry.</summary>
+    public static double DefaultHigh(string kind, bool integrated) =>
+        Specs.First(s => s.Kind == (integrated && kind == GpuTemp ? CpuTemp : kind)).NewInstallHigh;
+
+    /// <summary>Makes a client-sent built-in safe to store: keeps the stored identity and sensor, and clamps each limit that is set; either may be null.</summary>
+    public static void Pin(SensorAlertRule rule, SensorAlertRule current)
     {
+        rule.Id = current.Id;
+        rule.BuiltIn = current.BuiltIn;
+        rule.Sensor = new SensorRef
+        {
+            Category = current.Sensor.Category,
+            Id = current.Sensor.Id,
+            Name = current.Sensor.Name,
+            Type = current.Sensor.Type,
+            ParentName = current.Sensor.ParentName,
+        };
         var spec = Specs.First(s => s.Kind == rule.BuiltIn);
-        rule.Id = spec.Id;
-        rule.Sensor = FixedSensor(spec);
         rule.Low = ClampLimit(rule.Low, spec);
         rule.High = ClampLimit(rule.High, spec);
     }
@@ -66,11 +106,10 @@ public static class BuiltInSensorRules
         value is { } v && double.IsFinite(v) ? Math.Clamp(v, spec.LimitMin, spec.LimitMax) : null;
 
     /// <summary>
-    /// Adds each missing built-in and puts the built-ins first, in fixed order. Runs on every settings load: a version gate
-    /// would never reseed after a build without sensor alerts dropped the list and kept the schema version. A present
-    /// built-in is only re-pinned, so the user's edits survive. Returns whether anything changed.
+    /// Cleans the stored list and, once per file, seeds the hidden per-kind templates. Runs on every settings load.
+    /// A present built-in is only clamped, so the user's edits survive. Returns whether anything changed.
     /// </summary>
-    /// <param name="newInstall">True for a settings file that did not exist: the new-install defaults. Otherwise a missing built-in is seeded from the legacy diagnostics fields, so an upgrade keeps the user's edited limits, toggles and notification choice (a limit still at the old default takes the new one).</param>
+    /// <param name="newInstall">True for a settings file that did not exist: no templates, every device takes the new-install defaults. Otherwise a missing template is seeded from the legacy diagnostics fields, so an upgrade keeps the user's edited limits, toggles and notification choice (a limit still at the old default takes the new one).</param>
     public static bool Ensure(DiagnosticsSettings diagnostics, bool newInstall)
     {
         var changed = false;
@@ -80,8 +119,9 @@ public static class BuiltInSensorRules
             changed = true;
         }
         var list = diagnostics.SensorAlerts;
-        // A hand-edited file can hold null or id-less entries; they would break every lookup below.
-        if (list.RemoveAll(r => r is null || string.IsNullOrEmpty(r.Id)) > 0)
+        // A hand-edited file can hold null or id-less entries, or a built-in id with no kind; they would break every lookup.
+        if (list.RemoveAll(r => r is null || string.IsNullOrEmpty(r.Id)
+            || (IsBuiltInId(r.Id) && !IsKind(r.BuiltIn))) > 0)
         {
             changed = true;
         }
@@ -93,44 +133,87 @@ public static class BuiltInSensorRules
                 changed = true;
             }
         }
-        foreach (var spec in Specs)
+        if (diagnostics.BuiltInSensorsVersion < PerDeviceVersion)
         {
-            var index = list.FindIndex(r => r.Id == spec.Id);
-            if (index < 0)
+            if (!newInstall)
             {
-                list.Add(newInstall ? NewInstallRule(spec) : MigratedRule(spec, diagnostics));
-                changed = true;
-                continue;
+                foreach (var spec in Specs.Where(spec => !list.Any(r => r.Id == spec.TemplateId)))
+                {
+                    list.Add(MigratedTemplate(spec, diagnostics));
+                }
             }
-            changed |= Repin(list[index], spec);
-        }
-
-        var ordered = Specs.Select(spec => list.First(r => r.Id == spec.Id)).Concat(list.Where(r => !Ids.Contains(r.Id))).ToList();
-        if (!ordered.SequenceEqual(list))
-        {
-            list.Clear();
-            list.AddRange(ordered);
+            diagnostics.BuiltInSensorsVersion = PerDeviceVersion;
             changed = true;
+        }
+        foreach (var rule in list.Where(r => r.BuiltIn is not null))
+        {
+            changed |= Repin(rule);
         }
         return changed;
     }
 
-    /// <summary>The factory state of one built-in, for "Restore default": the new-install values, not the user's legacy ones.</summary>
-    public static SensorAlertRule Defaults(string id) => NewInstallRule(Specs.First(s => s.Id == id));
-
-    private static bool Repin(SensorAlertRule rule, Spec spec)
+    /// <summary>The factory state of one device's built-in, for "Restore default" and first sight: the new-install values, not the user's legacy ones.</summary>
+    public static SensorAlertRule Defaults(BuiltInDevice device) => new()
     {
-        var changed = false;
-        if (rule.BuiltIn != spec.Kind)
+        Id = RuleId(device.SeriesId),
+        Enabled = true,
+        Sensor = FixedSensor(device),
+        High = DefaultHigh(device.Kind, device.Integrated),
+        RaiseAfterSeconds = RaiseAfterSeconds,
+        ClearAfterSeconds = ClearAfterSeconds,
+        Severity = SensorAlertRules.Watch,
+        NotifyDesktop = true,
+        ShowInHealth = true,
+        RepeatMinutes = 0,
+        BuiltIn = device.Kind,
+    };
+
+    /// <summary>
+    /// The rule a device gets the first time it is seen: the kind's template when an upgrade left one (its limits, toggle,
+    /// severity, hold and notify choice), else the defaults. A drive on the ignore list starts disabled.
+    /// </summary>
+    public static SensorAlertRule Seed(BuiltInDevice device, DiagnosticsSettings diagnostics)
+    {
+        var rule = Defaults(device);
+        var spec = Specs.First(s => s.Kind == device.Kind);
+        var template = diagnostics.SensorAlerts?.FirstOrDefault(r => r.Id == spec.TemplateId);
+        if (template is not null)
         {
-            rule.BuiltIn = spec.Kind;
-            changed = true;
+            rule.Enabled = template.Enabled;
+            // A limit still at the kind default was never chosen, so an integrated GPU keeps its own default.
+            if (template.High is { } th && !(device.Integrated && th == spec.NewInstallHigh))
+            {
+                rule.High = ClampLimit(th, spec);
+            }
+            else if (template.High is null)
+            {
+                rule.High = null;
+            }
+            rule.Low = ClampLimit(template.Low, spec);
+            rule.RaiseAfterSeconds = template.RaiseAfterSeconds;
+            rule.Severity = template.Severity;
+            rule.NotifyDesktop = template.NotifyDesktop;
         }
-        var pinned = FixedSensor(spec);
-        if (rule.Sensor is null || rule.Sensor.Category != pinned.Category || rule.Sensor.Id != pinned.Id
-            || rule.Sensor.Name != pinned.Name || rule.Sensor.Type != pinned.Type || rule.Sensor.ParentName != pinned.ParentName)
+        if (device.Kind == StorageTemp && diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) == true)
         {
-            rule.Sensor = pinned;
+            rule.Enabled = false;
+        }
+        return rule;
+    }
+
+    private static bool Repin(SensorAlertRule rule)
+    {
+        var spec = Specs.FirstOrDefault(s => s.Kind == rule.BuiltIn);
+        if (spec is null)
+        {
+            return false;
+        }
+        var changed = false;
+        if (rule.Sensor.Category != Category || rule.Sensor.Type != "Temperature" || rule.Sensor.ParentName != "")
+        {
+            rule.Sensor.Category = Category;
+            rule.Sensor.Type = "Temperature";
+            rule.Sensor.ParentName = "";
             changed = true;
         }
         // Both limits are optional (none = tracking only); a hand edit is only pulled into range, and a crossed band loses its low.
@@ -149,24 +232,18 @@ public static class BuiltInSensorRules
         return changed;
     }
 
-    private static SensorAlertRule NewInstallRule(Spec spec) => new()
+    private static SensorAlertRule MigratedTemplate(Spec spec, DiagnosticsSettings d)
     {
-        Id = spec.Id,
-        Enabled = true,
-        Sensor = FixedSensor(spec),
-        High = spec.NewInstallHigh,
-        RaiseAfterSeconds = RaiseAfterSeconds,
-        ClearAfterSeconds = ClearAfterSeconds,
-        Severity = SensorAlertRules.Watch,
-        NotifyDesktop = true,
-        ShowInHealth = true,
-        RepeatMinutes = 0,
-        BuiltIn = spec.Kind,
-    };
-
-    private static SensorAlertRule MigratedRule(Spec spec, DiagnosticsSettings d)
-    {
-        var rule = NewInstallRule(spec);
+        var rule = new SensorAlertRule
+        {
+            Id = spec.TemplateId,
+            Enabled = true,
+            Sensor = new SensorRef { Category = Category, Id = spec.TemplateId, Type = "Temperature", ParentName = "" },
+            High = spec.NewInstallHigh,
+            RaiseAfterSeconds = RaiseAfterSeconds,
+            Severity = SensorAlertRules.Watch,
+            BuiltIn = spec.Kind,
+        };
         var (legacyEnabled, legacyLimit, defaultLimit) = spec.Kind switch
         {
             CpuTemp => (d.Components.Cpu, d.Thresholds.CpuC, TemperatureInsights.CpuThresholdC),
@@ -190,11 +267,12 @@ public static class BuiltInSensorRules
         return rule;
     }
 
-    private static SensorRef FixedSensor(Spec spec) => new()
+    /// <summary>The synthetic sensor a device's rule points at; its name is the device name.</summary>
+    public static SensorRef FixedSensor(BuiltInDevice device) => new()
     {
         Category = Category,
-        Id = spec.SensorId,
-        Name = spec.SensorName,
+        Id = device.SeriesId,
+        Name = device.Name,
         Type = "Temperature",
         ParentName = "",
     };

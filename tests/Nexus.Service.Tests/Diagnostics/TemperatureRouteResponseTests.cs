@@ -95,21 +95,35 @@ public class TemperatureRouteResponseTests
     }
 
     [Fact]
-    public void BuiltInLimits_ReadsTheHighOfEachBuiltInRuleByHistoryKind()
+    public void BuiltInLimits_TakesTheLowestEnabledHighOfEachKindAndIgnoresTemplates()
     {
         var store = new InMemoryConfigStore();
         store.Update(s =>
         {
-            Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(s.Diagnostics, newInstall: true);
-            s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-storage").High = 66;
+            s.Diagnostics.SensorAlerts.AddRange(new[]
+            {
+                Device("cpuTemp", "cpu-temp", 100),
+                Device("gpuTemp", "gpu-temp:g0", 90),
+                Device("gpuTemp", "gpu-temp:g1", 100),
+                Device("storageTemp", "drive-temp:d0", 66),
+                Device("ramTemp", "mem-temp", 75),
+                new Nexus.Service.Persistence.SensorAlertRule { Id = "builtin-gpu", BuiltIn = "gpuTemp", High = 40 },
+            });
         });
 
         var limits = DiagnosticsHealthRoutes.BuiltInLimits(store);
 
         Assert.Equal(new Dictionary<string, double> { ["cpu"] = 100, ["gpu"] = 90, ["storage"] = 66, ["ram"] = 75 }, limits);
 
-        store.Update(s => s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-gpu").Enabled = false);
+        store.Update(s => s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin:gpu-temp:g0").Enabled = false);
 
-        Assert.DoesNotContain("gpu", DiagnosticsHealthRoutes.BuiltInLimits(store).Keys);
+        Assert.Equal(100, DiagnosticsHealthRoutes.BuiltInLimits(store)["gpu"]);
+    }
+
+    private static Nexus.Service.Persistence.SensorAlertRule Device(string kind, string seriesId, double high)
+    {
+        var rule = Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Defaults(new Nexus.Service.Diagnostics.Alerts.BuiltInDevice(kind, seriesId, "Name", false, ""));
+        rule.High = high;
+        return rule;
     }
 }

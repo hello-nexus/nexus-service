@@ -545,7 +545,7 @@ public static class NexusServiceCollectionExtensions
                 {
                     var ruleIds = new HashSet<string>(StringComparer.Ordinal);
                     sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
-                        s => ruleIds.UnionWith((s.Diagnostics.SensorAlerts ?? new()).Select(r => r.Id)));
+                        s => ruleIds.UnionWith((s.Diagnostics.SensorAlerts ?? new()).Where(r => r.BuiltIn is null).Select(r => r.Id)));
                     store.PruneSensorSeries(ruleIds);
                 }
                 catch (Exception ex)
