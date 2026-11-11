@@ -326,6 +326,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public int WindowLedCount;
         public bool Failing;
         public bool Visited;
+        // Diagnostics: why this chain is on the live path (empty while rolling), since when, and whether that was logged.
+        public string LiveReason = "";
+        public double LiveSinceMs;
+        public bool LiveLogged;
     }
 
     // One look-ahead render per window serves every chain: all chains play on
@@ -520,6 +524,64 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
         MasterLevel globalBrightness, long nowTicks, double nowMs)
     {
+        var rolled = TickRollingCore(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, nowMs, out var liveReason);
+        NoteRollingMode(macHex, zones, rolled, liveReason, nowMs);
+        return rolled;
+    }
+
+    // Window boundaries bounce a chain through the live path for a frame or two; only a reason that holds this long is logged.
+    private const int LiveFallbackLogAfterMs = 1500;
+
+    // Logs once per change, per chain: the live fallback with its reason and effect key, and the return to render-ahead.
+    private void NoteRollingMode(string macHex, IReadOnlyList<ResolvedZone> zones, bool rolled, string liveReason, double nowMs)
+    {
+        if (!_rolling.TryGetValue(macHex, out var st))
+        {
+            return;
+        }
+        if (rolled)
+        {
+            if (st.LiveLogged)
+            {
+                Console.WriteLine($"[lianli-wireless-lighting-writer] {macHex} back on render-ahead (was live: {st.LiveReason})");
+            }
+            st.LiveReason = "";
+            st.LiveLogged = false;
+            return;
+        }
+        var changed = st.LiveReason != liveReason;
+        if (changed)
+        {
+            st.LiveReason = liveReason;
+            st.LiveSinceMs = nowMs;
+        }
+        if (st.LiveLogged ? changed : nowMs - st.LiveSinceMs >= LiveFallbackLogAfterMs)
+        {
+            st.LiveLogged = true;
+            Console.WriteLine($"[lianli-wireless-lighting-writer] {macHex} live path, not render-ahead: {liveReason}; effect {DescribeEffectKey(zones)}");
+        }
+    }
+
+    // The pin key of the first pinned zone on the chain, else the global effect name.
+    private string DescribeEffectKey(IReadOnlyList<ResolvedZone> zones)
+    {
+        var pins = _store.Load().Lighting.DevicePins;
+        foreach (var z in zones)
+        {
+            if (pins.TryGetValue(z.Id, out var pin))
+            {
+                return $"pin {pin.Kind} {pin.Effect}";
+            }
+        }
+        return $"global {_engine.CurrentEffectName}";
+    }
+
+    private bool TickRollingCore(
+        string macHex, DeviceStructure structure, IReadOnlyList<ResolvedZone> zones,
+        List<string> disabled, List<string> uncontrolled, Dictionary<string, LightingDevicePreference> prefs,
+        MasterLevel globalBrightness, long nowTicks, double nowMs, out string liveReason)
+    {
+        liveReason = "";
         if (!_rolling.TryGetValue(macHex, out var st))
         {
             st = new ChainRolling();
@@ -544,8 +606,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.StateSig = sig;
             st.LiveUntilMs = nowMs + StateSettleMs;
         }
-        if (nowMs < st.LiveUntilMs || !_engine.CanRenderAhead(ids))
+        string blockedBy = "";
+        if (nowMs < st.LiveUntilMs || !_engine.CanRenderAhead(ids, out blockedBy))
         {
+            liveReason = nowMs < st.LiveUntilMs ? (identifying ? "identify or state change settling" : "chain state change settling") : blockedBy;
             st.WindowFirstFrame = long.MinValue;
             return false;
         }
@@ -571,10 +635,15 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 return true;
             }
         }
-        return st.WindowFirstFrame != long.MinValue
+        var covered = st.WindowFirstFrame != long.MinValue
             && TryCurrentFrame(nowMs, out var current)
             && current >= st.WindowFirstFrame
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
+        if (!covered)
+        {
+            liveReason = st.Failing ? "window upload failing" : "no uploaded window covers the current frame";
+        }
+        return covered;
     }
 
     private void FreezeRollingChains()

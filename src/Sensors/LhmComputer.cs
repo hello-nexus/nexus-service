@@ -45,6 +45,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Computer _computer;
     private readonly Task _openTask;
     private readonly object _updateLock = new();
+    // Diagnostics: which hardware item the Update walk is inside, and when it entered, so a stuck walk can be named.
+    private volatile string? _walkHolder;
+    private long _walkHolderSinceTicks;
+    private long _lockHeldWarnedAtTicks;
+    private const int SlowUpdateWarnMs = 2000;
+    private const int LockHeldWarnMs = 5000;
+    private const long LockHeldWarnIntervalMs = 30_000;
     private readonly object _readerLock = new();
     private long _lastUpdateTicks;
     private const long UpdateErrorLogIntervalMs = 60_000;
@@ -241,7 +248,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // Open() and ApplySpdGate rebuild the bus list and the DIMM set under these.
         if (!_openTask.Wait(budget) || !Monitor.TryEnter(_updateLock, budget > clock.Elapsed ? budget - clock.Elapsed : TimeSpan.Zero))
         {
-            Console.WriteLine("[lhm] DIMM SPD page reset skipped: LHM busy past the shutdown budget");
+            Console.WriteLine($"[lhm] DIMM SPD page reset skipped: LHM busy past the shutdown budget (walk in {_walkHolder ?? "none"})");
             return 0;
         }
         try
@@ -345,7 +352,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         var smartDemand = SmartPollDemand.Capture(_gates, settings, SmartLiveConsumers.Any(_hub));
         _smartActive.Observe(smartDemand.IsActive(StorageIdentifiers()));
 
-        lock (_updateLock)
+        if (!Monitor.TryEnter(_updateLock, LockHeldWarnMs))
+        {
+            WarnLockHeld();
+            Monitor.Enter(_updateLock);
+        }
+
+        try
         {
             var now = Environment.TickCount64;
             if (refresh != SensorRefresh.Force && now - _lastUpdateTicks < floorMs)
@@ -375,12 +388,35 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 }
             }
         }
+        finally
+        {
+            _walkHolder = null;
+            Monitor.Exit(_updateLock);
+        }
+    }
+
+    // Logs at most once per interval, naming the item the walk is inside; the holder is read racily, which is fine for a diagnostic.
+    private void WarnLockHeld()
+    {
+        var now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lockHeldWarnedAtTicks) < LockHeldWarnIntervalMs)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _lockHeldWarnedAtTicks, now);
+        var holder = _walkHolder;
+        var heldMs = holder is null ? 0 : now - Interlocked.Read(ref _walkHolderSinceTicks);
+        ServiceLog.Warn($"[lhm] update lock held over {LockHeldWarnMs} ms by {holder ?? "a non-walk holder"} (in item {heldMs} ms)");
     }
 
     // One unplugged or busy HID cooler (KrakenV2/V3 throw from Update) must not
     // fail the walk for every other device or the routes that triggered it.
     private void TryUpdate(IHardware hw)
     {
+        var clock = Stopwatch.StartNew();
+        _walkHolder = $"{hw.HardwareType} {hw.Name}";
+        Interlocked.Exchange(ref _walkHolderSinceTicks, Environment.TickCount64);
         try
         {
             hw.Update();
@@ -394,6 +430,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
             _updateErrorLoggedAt[key] = now;
             ServiceLog.Warn($"[lhm] update failed for {hw.Name}: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (clock.ElapsedMilliseconds > SlowUpdateWarnMs)
+            {
+                ServiceLog.Warn($"[lhm] slow update: {hw.HardwareType} {hw.Name} took {clock.ElapsedMilliseconds} ms");
+            }
         }
     }
 

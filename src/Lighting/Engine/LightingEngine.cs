@@ -1234,11 +1234,21 @@ public sealed partial class LightingEngine : IDisposable
     /// path. Also false while paused, frozen, blacked out, ramping, in an LED editor overlay, key-reactive, or inside
     /// the settle window of a change to anything the window shows.
     /// </summary>
-    public bool CanRenderAhead(IReadOnlyList<string> deviceIds)
+    public bool CanRenderAhead(IReadOnlyList<string> deviceIds) => CanRenderAhead(deviceIds, out _);
+
+    /// <summary>As <see cref="CanRenderAhead(IReadOnlyList{string})"/>; <paramref name="blockedBy"/> names the first blocking condition, empty when none.</summary>
+    public bool CanRenderAhead(IReadOnlyList<string> deviceIds, out string blockedBy)
     {
+        blockedBy = "";
         var current = _currentEffect;
         if (current is null || _studioOverlay is not null || _paused || _frozen || _blackout || _wakeDurationMs > 0)
         {
+            blockedBy = current is null ? "no effect"
+                : _studioOverlay is not null ? "editor overlay"
+                : _paused ? "paused"
+                : _frozen ? "frozen"
+                : _blackout ? "blackout"
+                : "wake ramp";
             return false;
         }
         var pinState = _pinAhead;
@@ -1255,12 +1265,14 @@ public sealed partial class LightingEngine : IDisposable
                 || d.PreviewLayout is not null || d.PreviewLedCount is not null;
             if (editing)
             {
+                blockedBy = "led editing or test pattern";
                 return false;
             }
             if (pinState.TryGetValue(d.Id, out var pin))
             {
                 if (!pin.Ok)
                 {
+                    blockedBy = "pinned source not time-pure or not rendering";
                     return false;
                 }
                 needsGlobal |= pin.UsesGlobal;
@@ -1274,6 +1286,7 @@ public sealed partial class LightingEngine : IDisposable
             // Reactions follow live key presses, which a pre-rendered loop cannot know.
             if (KeyReactive?.IsEnabled(Nexus.Service.Lighting.KeyReactive.KeyReactiveOverlay.ConfigKey(d)) == true)
             {
+                blockedBy = "key reactive";
                 return false;
             }
         }
@@ -1281,6 +1294,7 @@ public sealed partial class LightingEngine : IDisposable
         {
             if (!IsTimePure(current))
             {
+                blockedBy = "global effect is not time-pure";
                 return false;
             }
             settledAfter = Math.Max(settledAfter, Volatile.Read(ref _aheadParamsChangedMs));
@@ -1288,9 +1302,15 @@ public sealed partial class LightingEngine : IDisposable
         // Without a shader or an animating pin the content is constant, and the live path sends nothing for it.
         if (!animates && !(needsGlobal && current is Gpu.ShaderEffect))
         {
+            blockedBy = "content is static";
             return false;
         }
-        return Environment.TickCount64 - settledAfter >= AheadParamSettleMs;
+        if (Environment.TickCount64 - settledAfter < AheadParamSettleMs)
+        {
+            blockedBy = "parameter change settling";
+            return false;
+        }
+        return true;
     }
 
     // Shaders that read no audio and the clock-only effects depend on the clock and their settings alone.

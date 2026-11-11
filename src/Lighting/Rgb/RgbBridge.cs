@@ -130,6 +130,8 @@ public sealed class RgbBridge : IDisposable
     private long _detectionActivityTicks;
     // 1 between a STARTED seen on this session and its COMPLETE.
     private int _detectionStartedSeen;
+    // Diagnostics: TickCount64 when the open detection pass began (spawn, re-detect request or STARTED); 0 when none is open. Interlocked.
+    private long _detectionPassBeganMs;
     // When the outstanding re-detect was requested; 0 when none or once COMPLETE arrives. UtcNow ticks, Interlocked.
     private long _redetectRequestedTicks;
     // Addresses of the committed list, compared against the cheap poll. Guarded by _lock.
@@ -473,6 +475,9 @@ public sealed class RgbBridge : IDisposable
             // this only drives the scanning spinner.
             Volatile.Write(ref _detectionStartedSeen, 0);
             MarkDetectionActivity();
+            // A previous daemon may have died mid-pass; this is a fresh one.
+            Interlocked.Exchange(ref _detectionPassBeganMs, 0);
+            LogDetectionPassBegan("daemon spawned");
 
             _proc.Start();
 
@@ -937,6 +942,24 @@ public sealed class RgbBridge : IDisposable
         return true;
     }
 
+    // One line when a pass opens and one when it closes, so a stalled pass shows as a start with no matching finish.
+    private void LogDetectionPassBegan(string trigger)
+    {
+        var now = Environment.TickCount64;
+        var openedAt = Interlocked.CompareExchange(ref _detectionPassBeganMs, now, 0);
+        ServiceLog.Info(openedAt == 0
+            ? $"[rgb-bridge] OpenRGB detection pass started ({trigger})"
+            : $"[rgb-bridge] OpenRGB detection pass: {trigger} {now - openedAt} ms after the pass began");
+    }
+
+    private void LogDetectionPassEnded()
+    {
+        var openedAt = Interlocked.Exchange(ref _detectionPassBeganMs, 0);
+        ServiceLog.Info(openedAt == 0
+            ? "[rgb-bridge] OpenRGB detection pass finished (start not seen by the service)"
+            : $"[rgb-bridge] OpenRGB detection pass finished after {Environment.TickCount64 - openedAt} ms");
+    }
+
     private void MarkDetectionActivity()
     {
         Interlocked.Exchange(ref _detectionActivityTicks, DateTime.UtcNow.Ticks);
@@ -978,10 +1001,14 @@ public sealed class RgbBridge : IDisposable
     {
         if (detecting)
         {
-            Volatile.Write(ref _detectionStartedSeen, 1);
+            if (Interlocked.Exchange(ref _detectionStartedSeen, 1) == 0)
+            {
+                LogDetectionPassBegan("daemon reported STARTED");
+            }
             MarkDetectionActivity();
             return;
         }
+        LogDetectionPassEnded();
         Volatile.Write(ref _detectionStartedSeen, 0);
         OpenRgbDetectorMap.EndHold();
         Interlocked.Exchange(ref _detectionActivityTicks, 0);
