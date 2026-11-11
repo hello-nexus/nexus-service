@@ -884,6 +884,14 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
+    public void IsPinnedByDefault_PinsHydroShiftIiPumpAndFans_ButNotQSeriesFanPorts()
+    {
+        Assert.True(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "lianli-hydroshift2:fan1", Kind = FanKinds.Fan }));
+        Assert.True(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "lianli-hydroshift2:pump", Kind = FanKinds.Pump }));
+        Assert.False(FanProfiles.IsPinnedByDefault(new FanChannel { Id = "qseries:S1:p2:1", Kind = FanKinds.Fan, IsAio = true }));
+    }
+
+    [Fact]
     public void ExplicitPinOverride_KeepsAnAioFanPinned_AndCollapsesWhenEqualToDefault()
     {
         var rad = new FanChannel { Id = "rad", IsAio = true };

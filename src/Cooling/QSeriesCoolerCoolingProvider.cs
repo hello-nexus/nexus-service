@@ -53,6 +53,14 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     private readonly Dictionary<string, int> _fanDuty = new(StringComparer.Ordinal);
     private int _pumpDuty = 50;
 
+    // Fan writes force the hub into software mode, which takes the pump off the
+    // cooler's firmware curve. While no pump assignment drives it, the pump is
+    // held on that stored curve instead; these track what was last commanded.
+    private int? _curvePumpDuty;
+    private byte? _curvePumpWire;
+    private QSeriesFirmwareCurvePoint[]? _storedCurve;
+    private long _curveRetryAtMs;
+
     // Serials whose legacy ":fans" assignment has already been migrated (or confirmed
     // absent). Concurrent so overlapping GetFanChannels calls from different requests
     // never race the underlying set's internals.
@@ -93,7 +101,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         lock (_ctrlLock)
         {
             pumpSw = _softwareControlled.Contains(pumpId);
-            pumpDuty = _pumpDuty;
+            pumpDuty = pumpSw ? _pumpDuty : _curvePumpDuty ?? 0;
         }
 
         var deviceId = _hub.DeviceId;
@@ -107,7 +115,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 Kind = FanKinds.Pump,
                 ReadOnly = false,
                 Rpm = _hub.State.PumpRpm,
-                DutyPercent = pumpSw ? pumpDuty : 0,
+                DutyPercent = pumpDuty,
                 Mode = pumpSw ? FanModes.Manual : FanModes.Auto,
                 DeviceId = deviceId,
                 DeviceName = deviceName,
@@ -272,6 +280,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     public void OnHubConnected()
     {
         if (!_gates.Cooling) return;
+        _storedCurve = null;
         if (HasPersistedAssignments()) return;
         HandBack(dropUserPin: false);
     }
@@ -310,6 +319,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     // cannot slip between it and the control write.
     private void HandBack(bool dropUserPin)
     {
+        lock (_ctrlLock) { _curvePumpDuty = null; _curvePumpWire = null; }
         if (!_hub.IsConnected) return;
         _hub.HandBackControlMode(HandBackMode(), NothingDriven, dropUserPin);
     }
@@ -415,7 +425,12 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         // the software-control set so GetFanChannels reports its pinned state.
         if (_hub.DesiredControlMode is byte pinned && pinned != QSeriesCoolerProtocol.ControlModeSoftware)
         {
-            lock (_ctrlLock) _softwareControlled.Remove(channelId);
+            lock (_ctrlLock)
+            {
+                _softwareControlled.Remove(channelId);
+                _curvePumpDuty = null;
+                _curvePumpWire = null;
+            }
             return;
         }
 
@@ -432,6 +447,9 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             _hub.SetPumpSpeed(duty);
             return;
         }
+        bool pumpDriven;
+        lock (_ctrlLock) pumpDriven = _softwareControlled.Contains(PumpId(_hub.State.Serial, "pump"));
+        if (!pumpDriven) HoldPumpOnStoredCurve();
 
         // Snapshot once: reading the property twice in this method could observe two
         // different published lists if PollTelemetry runs concurrently.
@@ -457,6 +475,42 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 dev.FanCount >= 3 ? DutyOf(serial, channel, dev, 3) : 0);
         }
         _hub.SetChannelFanSpeeds((byte)channel, slots);
+    }
+
+    // Runs on every engine fan write; touches the wire only when the pump byte changes
+    // or the hub is not yet in software mode. Unreadable curve falls back to 100%.
+    private void HoldPumpOnStoredCurve()
+    {
+        var curve = StoredCurve();
+        var inC = _hub.State.CoolantTempInC;
+        var outC = _hub.State.CoolantTempOutC;
+        float? coolant = inC is { } a ? (outC is { } b ? Math.Max(a, b) : a) : outC;
+        var duty = curve is null ? 100 : QSeriesCoolerProtocol.StoredCurvePumpDuty(curve, coolant);
+        var wire = QSeriesCoolerProtocol.MapPumpDutyToWire(duty, _hub.State.TurboOn);
+        lock (_ctrlLock)
+        {
+            if (_curvePumpWire == wire && _hub.State.ControlMode == QSeriesCoolerProtocol.ControlModeSoftware)
+            {
+                _curvePumpDuty = duty;
+                return;
+            }
+        }
+        if (!_hub.SetPumpSpeed(duty)) return;
+        lock (_ctrlLock)
+        {
+            _curvePumpDuty = duty;
+            _curvePumpWire = wire;
+        }
+    }
+
+    // Read once per connect (OnHubConnected clears it); a failed read retries after a pause.
+    private QSeriesFirmwareCurvePoint[]? StoredCurve()
+    {
+        if (_storedCurve is { } cached) return cached;
+        if (Environment.TickCount64 < _curveRetryAtMs) return null;
+        if (_hub.TryReadFirmwareCurve(out var points) && points.Length > 0) return _storedCurve = points;
+        _curveRetryAtMs = Environment.TickCount64 + 30_000;
+        return null;
     }
 
     private int DutyOf(string serial, int channel, QSeriesLinkDevice dev, int fanIdx)

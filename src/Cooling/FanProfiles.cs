@@ -50,6 +50,7 @@ public static class FanProfiles
     /// <item>GPU fans, because a preset curve reads a CPU temperature sensor
     /// (<see cref="PreferredInput"/>), so pointing it at the graphics card's
     /// fans tracks the wrong die.</item>
+    /// <item>HydroShift II fans, which share one frame with the pump.</item>
     /// </list>
     /// Every other fan channel, including hub, AIO radiator and Q-series fan
     /// ports, follows the active preset. Each pinned channel keeps whatever
@@ -57,7 +58,9 @@ public static class FanProfiles
     /// fan card.
     /// </summary>
     public static bool IsPinnedByDefault(FanChannel ch) =>
-        ch.Kind == FanKinds.Pump || ch.IsGpu;
+        ch.Kind == FanKinds.Pump || ch.IsGpu
+        // HydroShift II sends the pump and fans in one frame, so driving a fan changes the pump.
+        || HydroShift2CoolingProvider.IsHydroShift2Id(ch.Id);
 
     /// <summary>
     /// Write ch's pin override, collapsing to "no entry" when the requested

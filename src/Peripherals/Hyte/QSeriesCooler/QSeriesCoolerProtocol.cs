@@ -612,6 +612,46 @@ public static class QSeriesCoolerProtocol
         return d > 55 ? (byte)55 : PumpDutyToWire[d];
     }
 
+    /// <summary>Lowest pump duty <see cref="MapPumpDutyToWire"/> maps to a running (non-zero) wire byte.</summary>
+    public const int PumpSoftwareFloorDuty = 46;
+
+    /// <summary>
+    /// Pump duty for software mode that follows the cooler's stored firmware pump curve at
+    /// <paramref name="coolantC"/>: linear between points, clamped to the end points, never
+    /// below <see cref="PumpSoftwareFloorDuty"/>. An empty curve gives 100; an unknown coolant
+    /// temp gives the curve's highest pump duty, so no fallback runs the pump low.
+    /// </summary>
+    public static int StoredCurvePumpDuty(ReadOnlySpan<QSeriesFirmwareCurvePoint> curve, float? coolantC)
+    {
+        if (curve.IsEmpty) return 100;
+        var pts = new List<(int Temp, int Duty)>(curve.Length);
+        foreach (var p in curve) pts.Add((p.PumpTempC, p.PumpDutyPercent));
+        pts.Sort((a, b) => a.Temp.CompareTo(b.Temp));
+        double duty;
+        if (coolantC is not { } t)
+        {
+            duty = 0;
+            foreach (var p in pts) duty = Math.Max(duty, p.Duty);
+        }
+        else if (t <= pts[0].Temp)
+        {
+            duty = pts[0].Duty;
+        }
+        else if (t >= pts[^1].Temp)
+        {
+            duty = pts[^1].Duty;
+        }
+        else
+        {
+            var i = 1;
+            while (pts[i].Temp < t) i++;
+            var (t0, d0) = pts[i - 1];
+            var (t1, d1) = pts[i];
+            duty = t1 == t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0);
+        }
+        return Math.Clamp((int)Math.Round(duty), PumpSoftwareFloorDuty, 100);
+    }
+
     // Index = pump duty %, value = firmware voltage-% wire byte. Zero below 46%
     // (the pump's minimum). HYTE _pumpSpeedPercentageToVoltagePercentage.
     private static readonly byte[] PumpDutyToWire =
