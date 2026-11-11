@@ -2256,9 +2256,11 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         var needNetwork = false;
         // The only two categories that can hold a fan tach sensor.
         var needFanNames = false;
+        var needHub = false;
         foreach (var category in categories)
         {
             needFanNames |= category is "motherboard" or "gpu";
+            needHub |= Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(category);
             if (SensorSnapshotResolver.CategoryUsesExtras(category))
             {
                 needExtras = true;
@@ -2276,7 +2278,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         }
 
         var extras = needExtras ? _sensors.GetSensorExtras() : null;
-        if (extras is not null) Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
+        if (extras is not null && needHub) Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
         return new SensorSnapshotSources(
             extras,
             needFps ? _fps?.GetComponent().Sensors : null,

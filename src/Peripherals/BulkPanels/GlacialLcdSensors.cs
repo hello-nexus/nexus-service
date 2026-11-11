@@ -59,7 +59,10 @@ public static class GlacialLcdSensors
         if (SensorSnapshotResolver.CategoryUsesExtras(category))
         {
             extras = sensors.GetSensorExtras();
-            Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, fans);
+            if (Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(category))
+            {
+                Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, fans);
+            }
             if (category == "network")
             {
                 network = SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics);

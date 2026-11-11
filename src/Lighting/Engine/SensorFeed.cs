@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Persistence;
@@ -206,7 +207,10 @@ public sealed class SensorFeed : IDisposable
                     try
                     {
                         var extras = _sensors.GetSensorExtras();
-                        Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans?.Invoke());
+                        if (wanted.Any(kv => Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(kv.Key[..kv.Key.IndexOf('\n')])))
+                        {
+                            Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
+                        }
                         sources = new SensorSnapshotSources(Extras: extras);
                     }
                     catch (Exception ex)

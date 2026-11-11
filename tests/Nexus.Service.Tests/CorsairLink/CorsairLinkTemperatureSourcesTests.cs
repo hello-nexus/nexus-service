@@ -84,7 +84,7 @@ public class CorsairLinkTemperatureSourcesTests
     {
         var (provider, _) = Build(Qx(1, 20f));
         var extras = new Nexus.Service.Models.Sensors.SensorExtras();
-        HubCoolerSensors.Merge(extras, null);
+        HubCoolerSensors.Merge(extras, (IFanControlProvider?)null);
         Assert.Empty(extras.FanSensors);
         HubCoolerSensors.Merge(extras, provider);
         Assert.Single(Assert.Single(extras.FanSensors).Sensors);

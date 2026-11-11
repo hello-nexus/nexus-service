@@ -1624,8 +1624,10 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         var needExtras = false;
         var needNetwork = false;
+        var needHub = false;
         foreach (var item in items)
         {
+            needHub |= Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(item.Device);
             if (SensorSnapshotResolver.CategoryUsesExtras(item.Device))
             {
                 needExtras = true;
@@ -1637,7 +1639,10 @@ public sealed class TryxPanoramaHub : IDisposable
             return default;
         }
         var extras = _sensors.GetSensorExtras();
-        Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans?.Invoke());
+        if (needHub)
+        {
+            Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
+        }
         return new SensorSnapshotSources(
             extras,
             NetworkSensors: needNetwork ? SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics) : null);

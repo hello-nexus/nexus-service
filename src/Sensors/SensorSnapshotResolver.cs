@@ -58,7 +58,7 @@ public static class SensorSnapshotResolver
         string sensorId,
         SensorSnapshotSources sources = default)
     {
-        var list = GetCategorySensors(sensors, category, sources);
+        var list = ListFor(sensors, ref category, ref sensorId, sources);
         for (var i = 0; i < list.Count; i++)
         {
             if (list[i].Id == sensorId)
@@ -79,7 +79,7 @@ public static class SensorSnapshotResolver
         string sensorId,
         SensorSnapshotSources sources = default)
     {
-        var list = GetCategorySensors(sensors, category, sources);
+        var list = ListFor(sensors, ref category, ref sensorId, sources);
         var match = FindById(list, sensorId)
             ?? FindByName(list, sensorId)
             ?? FindByFanHeaderName(list, sensorId, sources.FanHeaderNames);
@@ -120,7 +120,7 @@ public static class SensorSnapshotResolver
         string sensorId,
         SensorSnapshotSources sources)
     {
-        var list = GetCategorySensors(sensors, category, sources);
+        var list = ListFor(sensors, ref category, ref sensorId, sources);
         if (list.Count == 0)
         {
             return null;
@@ -144,6 +144,8 @@ public static class SensorSnapshotResolver
                 // paint a reading on the physical key that the touch tile
                 // renders as "--".
                 "fps" => null,
+                // Mirrors resolveSensor: a saved extras sensor that is gone resolves to nothing, never to another one.
+                "memoryModule" or "battery" or "cooler" or "fanSensors" or "psu" or "embeddedController" => null,
                 _ => list[0],
             };
         }
@@ -154,6 +156,39 @@ public static class SensorSnapshotResolver
             "memory" => FindByName(list, "Memory Usage") ?? list[0],
             _ => list[0],
         };
+    }
+
+    /// <summary>
+    /// Fan probes were stored under "cooler" (with their id, or the old "iCUE LINK QX RGB probe (...)" name)
+    /// before they had a category of their own. A saved cooler key that names one resolves through the fan
+    /// sensors; no data migration. Mirrors nexus-web's resolveSensor alias.
+    /// </summary>
+    private static IReadOnlyList<HardwareSensor> ListFor(
+        ISensorProvider sensors, ref string category, ref string sensorId, SensorSnapshotSources sources)
+    {
+        if (category == "cooler" && !string.IsNullOrEmpty(sensorId))
+        {
+            var extras = Extras(sensors, sources);
+            sources = sources with { Extras = extras };
+            var fans = FlattenComponents(extras.FanSensors);
+            var current = LegacyFanProbeName(sensorId);
+            if (FindById(fans, sensorId) is not null || FindByName(fans, current) is not null)
+            {
+                category = "fanSensors";
+                sensorId = current;
+                return fans;
+            }
+        }
+        return GetCategorySensors(sensors, category, sources);
+    }
+
+    /// <summary>The name an iCUE LINK QX probe carried before it was a fan sensor, mapped to its current one; any other text unchanged.</summary>
+    internal static string LegacyFanProbeName(string name)
+    {
+        const string prefix = "iCUE LINK QX RGB probe (";
+        return name.StartsWith(prefix, StringComparison.Ordinal) && name.EndsWith(')')
+            ? $"QX fan ({name[prefix.Length..^1]})"
+            : name;
     }
 
     /// <summary>Matches a key that holds a renamed header's custom name back to its tach sensor.</summary>
