@@ -68,6 +68,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     internal static readonly TimeSpan UnavailableAfter = TimeSpan.FromSeconds(10);
     private const int MaxHistory = 100;
     private static readonly TimeSpan SmartInterval = TimeSpan.FromMinutes(1);
+    // The first read after service start returns no drives until the hardware walk has run.
+    private static readonly TimeSpan SmartEmptyRetry = TimeSpan.FromSeconds(10);
     private const string NoticeKind = "sensorAlert";
 
     private readonly IConfigStore _store;
@@ -454,7 +456,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         // Drive temperatures exist only under smart, and each read wakes sleeping drives, so it is sampled slowly.
         if (category == "smart")
         {
-            if (_smart is { } cached && now - cached.At < SmartInterval)
+            if (_smart is { } cached && now - cached.At < (cached.List.Count == 0 ? SmartEmptyRetry : SmartInterval))
             {
                 return cached.List;
             }

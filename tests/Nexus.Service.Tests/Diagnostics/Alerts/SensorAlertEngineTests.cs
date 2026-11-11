@@ -62,7 +62,8 @@ public class SensorAlertEngineTests
         public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";
-        public IReadOnlyDictionary<string, StorageComponent> GetStorageComponents(bool includeSmart = true) => new Dictionary<string, StorageComponent>();
+        public Dictionary<string, StorageComponent> Storage { get; } = new();
+        public IReadOnlyDictionary<string, StorageComponent> GetStorageComponents(bool includeSmart = true) => Storage;
         public IReadOnlyList<string> GetStoragePartitions() => Array.Empty<string>();
         public IReadOnlyList<StorageDriveInfo> GetStorageInfo() => Array.Empty<StorageDriveInfo>();
         public string GetStorageBrandModel() => "";
@@ -887,11 +888,31 @@ public class SensorAlertEngineTests
         var rule = TempRule();
         rule.Sensor.Category = "smart";
         rig.AddRule(rule);
+        rig.Sensors.Storage["smart/nvme/0"] = new StorageComponent { Id = "smart/nvme/0", Sensors = new List<HardwareSensor> { Temp("cpu/temp", "CPU Package", 50) } };
 
         rig.Seconds(30);
         Assert.Equal(1, rig.Sensors.SmartReads);
         rig.Seconds(31);
 
+        Assert.Equal(2, rig.Sensors.SmartReads);
+    }
+
+    [Fact]
+    public void Engine_retries_an_empty_smart_read_after_ten_seconds()
+    {
+        var rig = new Rig();
+        var rule = TempRule();
+        rule.Sensor.Category = "smart";
+        rig.AddRule(rule);
+
+        rig.Seconds(9);
+        Assert.Equal(1, rig.Sensors.SmartReads);
+        rig.Sensors.Storage["smart/nvme/0"] = new StorageComponent { Id = "smart/nvme/0", Sensors = new List<HardwareSensor> { Temp("cpu/temp", "CPU Package", 50) } };
+        rig.Seconds(2);
+        Assert.Equal(2, rig.Sensors.SmartReads);
+        Assert.Equal("ok", rig.Engine.States().Single().State);
+
+        rig.Seconds(30);
         Assert.Equal(2, rig.Sensors.SmartReads);
     }
 
