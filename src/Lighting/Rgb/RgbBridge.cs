@@ -1937,9 +1937,13 @@ public sealed class RgbBridge : IDisposable
     /// Compares as bytes: RgbColor has no IEquatable, so Span.SequenceEqual over
     /// the structs themselves would fall back to reflective ValueType.Equals and
     /// cost more than the push it saves.</summary>
+    // Set by the last ShouldPush call: the frame was held back by the rate cap, not by dedupe.
+    private bool _pushDroppedByCap;
+
     internal bool ShouldPush(int physIdx, RgbColor[] buf, int capHz = 0, long? nowMs = null, bool saveOnly = false)
     {
         var now = nowMs ?? Environment.TickCount64;
+        _pushDroppedByCap = false;
         if (_lastPushed.TryGetValue(physIdx, out var last)
             && last.Length == buf.Length
             && _lastPushTicks.TryGetValue(physIdx, out var when)
@@ -1955,6 +1959,7 @@ public sealed class RgbBridge : IDisposable
         // the then-current buffer again and sends it once the gap has elapsed.
         if (capHz > 0 && !_pushLimiter.TryPass(physIdx, capHz, now))
         {
+            _pushDroppedByCap = true;
             return false;
         }
 
@@ -2591,7 +2596,7 @@ public sealed class RgbBridge : IDisposable
         });
     }
 
-    private void OnFrame(ReadOnlyMemory<byte> frameMem)
+    internal void OnFrame(ReadOnlyMemory<byte> frameMem)
     {
         if (!IsActive)
         {
@@ -2645,6 +2650,8 @@ public sealed class RgbBridge : IDisposable
         var nowTicks = DateTime.UtcNow.Ticks;
 
         _touchedPhysicals.Clear();
+        _liveStaged.Clear();
+        _liveCapped.Clear();
         ComputeFullyUncontrolledPhysicals(deviceFrames, _bridgeFrameIds, uncontrolled, _physFullyUncontrolled);
         ComputePhysicalCaps(deviceFrames, _bridgeFrameIds, _physStableIds, settings.Devices.LightingMaxRates, _physCapsHz, _defaultRatesHz);
 
@@ -2685,6 +2692,7 @@ public sealed class RgbBridge : IDisposable
             if (uncontrolledCount > 0 && _physFullyUncontrolled.TryGetValue(dev.PhysicalIndex, out var physUncontrolled) && physUncontrolled)
             {
                 ForgetBaseline(dev.PhysicalIndex);
+                _engine.Live.ReportNone(dev.Id);
                 pos += rgbSize;
                 continue;
             }
@@ -2779,19 +2787,47 @@ public sealed class RgbBridge : IDisposable
                     buffer[zoneOffset + led] = new RgbColor(frame[off2], frame[off2 + 1], frame[off2 + 2]).Scale(brightnessMul);
                 }
             }
+            if (_engine.Live.Enabled)
+            {
+                _engine.Live.Stage(dev.Id, frame.Slice(pos, writeLen * 3), writeLen, isOff ? 0.0 : brightnessMul, adjust,
+                    hasIdentify && !isOff, idOverride.startTicks, nowTicks, Math.Max(1, IdentifyFlashPeriodMs / 2));
+                _liveStaged.Add((dev.PhysicalIndex, dev.Id));
+            }
             _touchedPhysicals.Add(dev.PhysicalIndex);
             pos += rgbSize;
         }
 
         foreach (var physIdx in _touchedPhysicals)
         {
+            _pushDroppedByCap = false;
             if (_physBuffers.TryGetValue(physIdx, out var buf)
                 && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx)))
             {
                 _ = _controller.PushFrameAsync(physIdx, buf);
             }
+            else if (_pushDroppedByCap)
+            {
+                _liveCapped.Add(physIdx);
+            }
+        }
+
+        // A deduped frame equals the last push, so it publishes; only a rate-capped one keeps the previous output on show.
+        foreach (var (physIdx, id) in _liveStaged)
+        {
+            if (_liveCapped.Contains(physIdx))
+            {
+                _engine.Live.Touch(id);
+            }
+            else
+            {
+                _engine.Live.Commit(id);
+            }
         }
     }
+
+    // Per-frame scratch for the dashboard copy; OnFrame is serialized by the engine.
+    private readonly List<(int Phys, string Id)> _liveStaged = new();
+    private readonly HashSet<int> _liveCapped = new();
 
     /// <summary>
     /// True when a wire-frame-matched DeviceFrame is one of this bridge's own

@@ -263,4 +263,70 @@ public class SegmentFrameComposerTests
         }
         Assert.Equal(default, buffers[1][5]);
     }
+
+    // Dashboard bytes must equal the composed segment buffers before the channel swap, for every zone.
+    [Theory]
+    [InlineData("RGB", 100, false)]
+    [InlineData("GRB", 55, true)]
+    [InlineData("BGR", 0, false)]
+    public void Live_sink_matches_composed_buffers_before_the_color_order(string order, int brightness, bool trim)
+    {
+        var structure = KeebZoneSupport.BuildStructure(HubId, KeebKeyMap.Ansi);
+        var zones = ZoneResolution.Resolve(structure, new NexusSettings());
+        var keys = Frame(HubId + ":keys", KeebKeyMap.Ansi.LedCount, seed: 10);
+        var underglow = Frame(HubId + ":underglow", KeebLayout.SurroundLedCount, seed: 90);
+        var prefs = new Dictionary<string, LightingDevicePreference>();
+        foreach (var id in new[] { HubId + ":keys", HubId + ":underglow" })
+        {
+            prefs[id] = new LightingDevicePreference { Brightness = brightness, ColorOrder = order };
+            if (trim)
+            {
+                prefs[id].AdjustRed = 1.2f;
+                prefs[id].AdjustBlue = 0.7f;
+                prefs[id].AdjustSaturation = 1.4f;
+            }
+        }
+        var buffers = Buffers(structure);
+        var sink = new LiveLedSink { Enabled = true };
+
+        SegmentFrameComposer.Compose(
+            structure, zones, new[] { keys, underglow }, new List<string>(), new List<string>(), prefs,
+            new MasterLevel(1f, false), masterMul: 0.8, nowTicks: DateTime.UtcNow.Ticks, identify: null, buffers, sink);
+
+        for (var seg = 0; seg < 2; seg++)
+        {
+            var id = seg == 0 ? HubId + ":keys" : HubId + ":underglow";
+            var live = sink.TryGetFresh(id)!;
+            Assert.Equal(buffers[seg].Length * 3, live.Length);
+            for (var i = 0; i < buffers[seg].Length; i++)
+            {
+                var c = buffers[seg][i];
+                var wire = new[] { c.R, c.G, c.B };
+                var unordered = new[] { live[i * 3], live[i * 3 + 1], live[i * 3 + 2] };
+                byte r = unordered[0], g = unordered[1], b = unordered[2];
+                DeviceColorAdjust.ReorderChannels(order, ref r, ref g, ref b);
+                Assert.Equal(wire, new[] { r, g, b });
+            }
+        }
+    }
+
+    [Fact]
+    public void Segment_gated_fully_uncontrolled_zone_reports_nothing_but_ungated_reports_black()
+    {
+        var structure = KeebZoneSupport.BuildStructure(HubId, KeebKeyMap.Ansi);
+        var zones = ZoneResolution.Resolve(structure, new NexusSettings());
+        var keys = Frame(HubId + ":keys", KeebKeyMap.Ansi.LedCount, seed: 10);
+        var uncontrolled = new List<string> { HubId + ":keys" };
+        var sink = new LiveLedSink { Enabled = true };
+
+        SegmentFrameComposer.Compose(
+            structure, zones, new[] { keys }, new List<string>(), uncontrolled, new Dictionary<string, LightingDevicePreference>(),
+            new MasterLevel(1f, false), 1.0, DateTime.UtcNow.Ticks, null, Buffers(structure), sink, segmentGated: true);
+        Assert.Null(sink.TryGetFresh(HubId + ":keys"));
+
+        SegmentFrameComposer.Compose(
+            structure, zones, new[] { keys }, new List<string>(), uncontrolled, new Dictionary<string, LightingDevicePreference>(),
+            new MasterLevel(1f, false), 1.0, DateTime.UtcNow.Ticks, null, Buffers(structure), sink);
+        Assert.All(sink.TryGetFresh(HubId + ":keys")!, v => Assert.Equal(0, v));
+    }
 }
