@@ -45,6 +45,11 @@ public sealed class AppProxyService
     /// <summary>Cap for a binary body (map tiles and the like); text and JSON keep <see cref="MaxBodyBytes"/>.</summary>
     public const int MaxBinaryBodyBytes = 4 * 1024 * 1024;
     public const int MaxRequestsPerMinute = 300;
+    /// <summary>Upstream requests one app may have in flight; bounds buffered body memory to this times <see cref="MaxBinaryBodyBytes"/>.</summary>
+    public const int MaxConcurrentPerApp = 6;
+
+    /// <summary>How long a request waits for an in-flight slot before it is refused.</summary>
+    internal TimeSpan ConcurrencyWait { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
     /// Handler for the named client: no redirects (a followed hop escapes the
@@ -91,6 +96,7 @@ public sealed class AppProxyService
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly AppRegistry _registry;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _inFlight = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RateBucket> _rateBuckets = new(StringComparer.Ordinal);
 
     public AppProxyService(IHttpClientFactory httpFactory, AppRegistry registry)
@@ -205,6 +211,12 @@ public sealed class AppProxyService
             msg.Content = content;
         }
 
+        var gate = _inFlight.GetOrAdd(req.AppId, _ => new SemaphoreSlim(MaxConcurrentPerApp, MaxConcurrentPerApp));
+        if (!await gate.WaitAsync(ConcurrencyWait, ct))
+        {
+            resp.Error = "too many concurrent requests; try again";
+            return resp;
+        }
         try
         {
             using var upstream = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -278,6 +290,10 @@ public sealed class AppProxyService
         catch (HttpRequestException ex)
         {
             resp.Error = ex.Message;
+        }
+        finally
+        {
+            gate.Release();
         }
         return resp;
     }

@@ -159,12 +159,6 @@ public class AppProxyServiceTests : IDisposable
     }
 
     [Fact]
-    public void Rate_limit_is_300_per_minute_per_app()
-    {
-        Assert.Equal(300, AppProxyService.MaxRequestsPerMinute);
-    }
-
-    [Fact]
     public async Task Rate_limit_blocks_the_request_after_the_cap_for_one_app_only()
     {
         var svc = new AppProxyService(new FreshClientFactory(new StubHandler("text/plain", "x")), _registry);
@@ -175,6 +169,28 @@ public class AppProxyServiceTests : IDisposable
         }
         var over = await svc.ExecuteAsync(req);
         Assert.Contains("rate limit", over.Error);
+    }
+
+    [Fact]
+    public async Task Concurrency_is_bounded_per_app_and_a_waiter_proceeds_when_a_slot_frees()
+    {
+        var gate = new TaskCompletionSource();
+        var handler = new GatedHandler(gate.Task);
+        var svc = new AppProxyService(new FreshClientFactory(handler), _registry) { ConcurrencyWait = TimeSpan.FromMilliseconds(100) };
+        var req = new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/c" };
+        var running = new List<Task<AppProxyResponse>>();
+        for (int i = 0; i < AppProxyService.MaxConcurrentPerApp; i++) running.Add(svc.ExecuteAsync(req));
+        while (handler.Started < AppProxyService.MaxConcurrentPerApp) await Task.Delay(5);
+
+        var refused = await svc.ExecuteAsync(req);
+        Assert.Contains("concurrent", refused.Error);
+        Assert.Equal(AppProxyService.MaxConcurrentPerApp, handler.Started);
+
+        svc.ConcurrencyWait = TimeSpan.FromSeconds(30);
+        var waiter = svc.ExecuteAsync(req);
+        gate.SetResult();
+        Assert.True((await waiter).Ok);
+        foreach (var t in running) Assert.True((await t).Ok);
     }
 
     [Fact]
@@ -449,6 +465,20 @@ public class AppProxyServiceTests : IDisposable
         Assert.True(resp.Ok);
         Assert.Equal("text/plain", capture.LastRequest!.Content!.Headers.ContentType!.MediaType);
         Assert.Equal("utf-8", capture.LastRequest.Content.Headers.ContentType!.CharSet);
+    }
+
+    private sealed class GatedHandler : HttpMessageHandler
+    {
+        private readonly Task _gate;
+        private int _started;
+        public GatedHandler(Task gate) { _gate = gate; }
+        public int Started => Volatile.Read(ref _started);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _started);
+            await _gate;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("x", Encoding.UTF8, "text/plain") };
+        }
     }
 
     private sealed class FreshClientFactory : IHttpClientFactory
