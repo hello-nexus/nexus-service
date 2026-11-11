@@ -47,7 +47,7 @@ public class ColorSamplingTests
         }
     }
 
-    // One pixel in nine is pure red (11%), the rest black.
+    // A sparse grid of pure red pixels on black.
     private static void ElevenPercentRed(CanvasBuffer c)
     {
         c.Clear();
@@ -76,17 +76,17 @@ public class ColorSamplingTests
     }
 
     // The read paths: the 1-LED spot, the full-frame sweep box, and the area cell.
-    public static TheoryData<string, string?, bool> Paths() => new()
+    public static TheoryData<string?, bool> Paths() => new()
     {
-        { "spot", null, false },
-        { "box", null, true },
-        { "area", "nearest", false },
-        { "area-sweep", "nearest", true },
+        { null, false },
+        { null, true },
+        { "nearest", false },
+        { "nearest", true },
     };
 
     [Theory]
     [MemberData(nameof(Paths))]
-    public async Task IgnoreBlack_KeepsTheLitPixelsAtFullValue(string path, string? area, bool fullFrame)
+    public async Task IgnoreBlack_KeepsTheLitPixelsAtFullValue(string? area, bool fullFrame)
     {
         var leds = await Render(One(), ElevenPercentRed, ColorSamplings.IgnoreBlack, area, fullFrame);
         Assert.Equal(255, leds[0]);
@@ -94,31 +94,28 @@ public class ColorSamplingTests
         Assert.Equal(0, leds[2]);
         var plain = await Render(One(), ElevenPercentRed, ColorSamplings.Standard, area, fullFrame);
         Assert.InRange(plain[0], 1, 200);
-        Assert.NotNull(path);
     }
 
     [Theory]
     [MemberData(nameof(Paths))]
-    public async Task IgnoreBlack_FallsBackToThePlainMean_WhenEveryPixelIsNearBlack(string path, string? area, bool fullFrame)
+    public async Task IgnoreBlack_FallsBackToThePlainMean_WhenEveryPixelIsNearBlack(string? area, bool fullFrame)
     {
         var leds = await Render(One(), NearBlack, ColorSamplings.IgnoreBlack, area, fullFrame);
         Assert.Equal((byte)8, leds[0]);
         Assert.Equal((byte)3, leds[1]);
         Assert.Equal((byte)0, leds[2]);
-        Assert.NotNull(path);
     }
 
     [Theory]
-    [InlineData("box", null, true)]
-    [InlineData("area", "nearest", false)]
-    [InlineData("area-sweep", "nearest", true)]
-    public async Task HalfBlackHalfWhite_IsStandard127_Vivid188(string path, string? area, bool fullFrame)
+    [InlineData(null, true)]
+    [InlineData("nearest", false)]
+    [InlineData("nearest", true)]
+    public async Task HalfBlackHalfWhite_IsStandard127_Vivid188(string? area, bool fullFrame)
     {
         var standard = await Render(One(), HalfWhite, ColorSamplings.Standard, area, fullFrame);
         var vivid = await Render(One(), HalfWhite, ColorSamplings.Vivid, area, fullFrame);
         Assert.Equal(127, standard[0]);
         Assert.Equal(188, vivid[0]);
-        Assert.NotNull(path);
     }
 
     [Fact]
