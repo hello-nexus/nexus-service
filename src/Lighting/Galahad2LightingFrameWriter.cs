@@ -171,6 +171,9 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
             outerR = 0; outerG = 0; outerB = 0;
         }
 
+        // One color per ring goes out, so every LED of the ring shows it. The ring's own brightness step is a device-side level and is not reflected.
+        ReportRing("lianli-aio:ring:inner", devices, innerR, innerG, innerB);
+        ReportRing("lianli-aio:ring:outer", devices, outerR, outerG, outerB);
         DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:inner"), ref innerR, ref innerG, ref innerB);
         DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:outer"), ref outerR, ref outerG, ref outerB);
 
@@ -188,6 +191,18 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastInnerR = innerR; _lastInnerG = innerG; _lastInnerB = innerB;
         _lastOuterR = outerR; _lastOuterG = outerG; _lastOuterB = outerB;
         _lastWasCanvas = true;
+    }
+
+    private void ReportRing(string id, DeviceFrame[] devices, byte r, byte g, byte b)
+    {
+        foreach (var frame in devices)
+        {
+            if (frame.Id == id && frame.LedCount > 0)
+            {
+                _engine.Live.ReportSolid(id, r, g, b, frame.LedCount);
+                return;
+            }
+        }
     }
 
     private void CommitFirmwareMode(Galahad2LightingSettings ls, Galahad2ModeInfo mode, byte brightnessRaw, string? innerOrder, string? outerOrder)

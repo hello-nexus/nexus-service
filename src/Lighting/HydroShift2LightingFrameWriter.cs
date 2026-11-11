@@ -114,6 +114,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             _effectSignature = null;
             DropLoop();
             Array.Fill(_ring, (byte)255);
+            _engine.Live.ReportSolid(id, 255, 255, 255, _ring.Length / 3);
             _aio.SetRing(_ring);
             return;
         }
@@ -151,6 +152,13 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         if (!settings.Devices.DisabledLightingDevices.Contains(id))
         {
             ToRing(settings, id, frame.LedBytes, _ring);
+            settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
+            _engine.Live.Report(id, frame.LedBytes, _ring.Length / 3,
+                MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0), DeviceColorAdjust.For(pref));
+        }
+        else
+        {
+            _engine.Live.ReportSolid(id, 0, 0, 0, _ring.Length / 3);
         }
         _aio.SetRing(_ring);
     }

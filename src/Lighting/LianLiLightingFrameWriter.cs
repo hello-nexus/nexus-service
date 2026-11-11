@@ -525,7 +525,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             }
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live);
 
             for (var seg = 0; seg < structure.Segments.Count; seg++)
             {

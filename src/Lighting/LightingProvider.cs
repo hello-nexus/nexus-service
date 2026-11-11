@@ -91,7 +91,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return;
         }
-        var length = LiveLedFrameComposer.Compose(frame.Span, _engine.Devices, _engine.Live, _store.Load(), ref _dashboardFrame);
+        var length = LiveLedFrameComposer.Compose(frame.Span, _engine.Devices, _engine.Live, ref _dashboardFrame);
         _ = length > 0
             ? _hub.BroadcastBinaryAsync(new ReadOnlyMemory<byte>(_dashboardFrame, 0, length))
             : _hub.BroadcastBinaryAsync(frame);
@@ -131,6 +131,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         _screenPP.Set(s.ScreenEffect.Hue, s.ScreenEffect.Colorize, s.ScreenEffect.Saturation, s.ScreenEffect.Contrast, s.ScreenEffect.FlipX, s.ScreenEffect.FlipY, s.ScreenEffect.Reactive, s.ScreenEffect.Reactivity, s.ScreenEffect.Intensity);
         _mediaPP.Set(s.MediaEffect.Hue, s.MediaEffect.Colorize, s.MediaEffect.Saturation, s.MediaEffect.Contrast, s.MediaEffect.FlipX, s.MediaEffect.FlipY);
 
+        _hub.OnFirstClient += () => _engine.Live.Enabled = true;
+        _hub.OnAllClientsGone += () => _engine.Live.Enabled = false;
         _engine.OnFrame += BroadcastDashboardFrame;
         _engine.OnEffectChanged += ReconcileAudioCapture;
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.

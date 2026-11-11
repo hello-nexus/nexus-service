@@ -2355,6 +2355,8 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
+    internal void SerializeForTest() => SerializeAndBroadcast();
+
     private void SerializeAndBroadcast()
     {
         var devices = _devices;

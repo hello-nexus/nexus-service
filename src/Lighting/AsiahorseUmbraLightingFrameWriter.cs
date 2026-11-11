@@ -168,6 +168,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
                 anyFrame = true;
                 var mul = NollieLightingFrameWriter.ComputeBrightnessMul(id, disabled, uncontrolled, prefs, master, out var adjust);
                 NollieLightingFrameWriter.FillSlice(_buffer, offset, count, frame, mul, adjust, false, 0, 0);
+                _engine.Live.Report(id, frame.LedBytes, count, mul, adjust);
             }
             offset += count;
         }

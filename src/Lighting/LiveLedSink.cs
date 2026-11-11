@@ -21,11 +21,6 @@ public sealed class LiveLedSink
     private sealed record Entry(byte[] Bytes, long StampMs);
 
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
-    // Ids an instrumented writer has ever reported. A covered id with no fresh
-    // entry is not being driven; an id outside this set belongs to a writer that
-    // does not report yet, and the composer falls back to the engine bytes.
-    private readonly ConcurrentDictionary<string, bool> _covered = new(StringComparer.Ordinal);
-
     internal Func<long> Clock { get; set; } = () => Environment.TickCount64;
 
     /// <summary>Set while at least one dashboard client is connected.</summary>
@@ -71,25 +66,51 @@ public sealed class LiveLedSink
         Store(id, rgb.ToArray());
     }
 
-    /// <summary>Mark a device as covered but not driven this tick (no per-LED output).</summary>
+    /// <summary>Drop a device's output at once: it is not being driven (handed back to firmware).</summary>
     public void ReportNone(string id)
     {
         if (!Enabled)
         {
             return;
         }
-        _covered[id] = true;
         _entries.TryRemove(id, out _);
+    }
+
+    /// <summary>Report one color shown on every LED of a device, for rings the writer drives with a single color.</summary>
+    public void ReportSolid(string id, byte r, byte g, byte b, int ledCount)
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+        var bytes = new byte[Math.Max(0, ledCount) * 3];
+        for (var i = 0; i < bytes.Length; i += 3)
+        {
+            bytes[i] = r;
+            bytes[i + 1] = g;
+            bytes[i + 2] = b;
+        }
+        Store(id, bytes);
+    }
+
+    /// <summary>Black out part of an already reported device, for LEDs a writer blanks after composing.</summary>
+    public void BlankRange(string id, int firstLed, int count)
+    {
+        if (!Enabled || !_entries.TryGetValue(id, out var entry))
+        {
+            return;
+        }
+        var bytes = (byte[])entry.Bytes.Clone();
+        var from = Math.Min(bytes.Length, firstLed * 3);
+        var to = Math.Min(bytes.Length, (firstLed + count) * 3);
+        Array.Clear(bytes, from, to - from);
+        _entries[id] = entry with { Bytes = bytes };
     }
 
     private void Store(string id, byte[] bytes)
     {
-        _covered[id] = true;
         _entries[id] = new Entry(bytes, Clock());
     }
-
-    /// <summary>True when an instrumented writer owns this id.</summary>
-    public bool IsCovered(string id) => _covered.ContainsKey(id);
 
     /// <summary>The latest fresh report for <paramref name="id"/>, or null when the device is not being driven.</summary>
     public byte[]? TryGetFresh(string id) =>

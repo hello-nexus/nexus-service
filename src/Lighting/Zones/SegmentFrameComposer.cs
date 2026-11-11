@@ -36,7 +36,9 @@ public static class SegmentFrameComposer
         double masterMul,
         long nowTicks,
         Np50IdentifyTracker? identify,
-        RgbColor[][] segmentBuffers)
+        RgbColor[][] segmentBuffers,
+        LiveLedSink? live = null,
+        bool segmentGated = false)
     {
         var touched = new bool[structure.Segments.Count];
         for (var s = 0; s < segmentBuffers.Length; s++)
@@ -63,7 +65,8 @@ public static class SegmentFrameComposer
             var mul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust) * masterMul;
             var identifying = false;
             var identifyOn = false;
-            if (identify is not null && identify.TryGetActive(zone.Id, nowTicks, out var startTicks))
+            long startTicks = 0;
+            if (identify is not null && identify.TryGetActive(zone.Id, nowTicks, out startTicks))
             {
                 identifying = true;
                 var elapsedMs = (nowTicks - startTicks) / TimeSpan.TicksPerMillisecond;
@@ -71,6 +74,23 @@ public static class SegmentFrameComposer
             }
 
             var src = frame.LedBytes;
+            if (live is { Enabled: true })
+            {
+                var zoneLeds = 0;
+                foreach (var slice in zone.Slices)
+                {
+                    zoneLeds += slice.Count;
+                }
+                if (segmentGated && SegmentsHandedBack(zone, zones, uncontrolled))
+                {
+                    // The writer skips a fully uncontrolled segment, so nothing per-LED is sent for it.
+                    live.ReportNone(zone.Id);
+                }
+                else
+                {
+                    live.Report(zone.Id, src, zoneLeds, mul, adjust, identifying, startTicks, nowTicks);
+                }
+            }
             var zoneLocal = 0;
             foreach (var slice in zone.Slices)
             {
@@ -128,6 +148,22 @@ public static class SegmentFrameComposer
             }
         }
         return touched;
+    }
+
+    private static bool SegmentsHandedBack(ResolvedZone zone, IReadOnlyList<ResolvedZone> zones, IReadOnlyList<string> uncontrolled)
+    {
+        if (zone.Slices.Count == 0)
+        {
+            return false;
+        }
+        foreach (var slice in zone.Slices)
+        {
+            if (!ZoneResolution.IsSegmentFullyUncontrolled(zones, slice.Segment, uncontrolled))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>Allocate / resize one color buffer per segment, sized to the hardware-reported counts.</summary>

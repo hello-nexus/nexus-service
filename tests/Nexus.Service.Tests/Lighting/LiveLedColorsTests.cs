@@ -217,7 +217,6 @@ public class LiveLedColorsTests
     {
         var sink = new LiveLedSink();
         sink.Report("dev", Source(), Leds, 1.0, DeviceColorAdjust.Identity);
-        Assert.False(sink.IsCovered("dev"));
         Assert.Null(sink.TryGetFresh("dev"));
     }
 
@@ -264,36 +263,28 @@ public class LiveLedColorsTests
     }
 
     [Fact]
-    public void Composer_ReportedUnreportedAndUndriven()
+    public void Composer_ReportedAndUnreportedDevices()
     {
         var src = Source();
-        var driven = new DeviceFrame(1, "driven", Leds);
-        var fallback = new DeviceFrame(2, "fallback", Leds);
-        var dark = new DeviceFrame(3, "dark", Leds);
-        foreach (var d in new[] { driven, fallback, dark })
-        {
-            for (var i = 0; i < Leds; i++)
-            {
-                d.SetLed(i, src[i * 3], src[i * 3 + 1], src[i * 3 + 2]);
-            }
-            d.Publish();
-        }
-        var devices = new[] { driven, fallback, dark };
-        var settings = new NexusSettings();
-        settings.Devices.LightingDevicePrefs["fallback"] = new LightingDevicePreference { Brightness = 50 };
+        var driven = FrameWith(src);
+        var silent = new DeviceFrame(2, "silent", Leds);
+        var cleared = new DeviceFrame(3, "cleared", Leds);
+        var devices = new[] { driven, silent, cleared };
         var sink = new LiveLedSink { Enabled = true };
-        sink.Report("driven", driven.LedBytes, Leds, 0.5, DeviceColorAdjust.Identity);
-        sink.ReportNone("dark");
+        sink.Report("f", driven.LedBytes, Leds, 0.5, DeviceColorAdjust.Identity);
+        sink.Report("cleared", src, Leds, 1.0, DeviceColorAdjust.Identity);
+        sink.ReportNone("cleared");
 
         var wire = WireFrame(devices, new byte[3]);
         var dst = Array.Empty<byte>();
-        var length = LiveLedFrameComposer.Compose(wire, devices, sink, settings, ref dst);
+        var length = LiveLedFrameComposer.Compose(wire, devices, sink, ref dst);
         var parsed = Parse(dst, length);
 
-        Assert.Equal(Sink(src, 0.5, DeviceColorAdjust.Identity), parsed[1]);
-        Assert.Equal(Sink(src, MasterBrightness.Resolve(settings).Combine(0.5), DeviceColorAdjust.Identity), parsed[2]);
+        Assert.Equal(Sink(src, 0.5, DeviceColorAdjust.Identity), parsed[0]);
+        // No writer reports for these, so the dashboard gets a zero-length section.
+        Assert.Empty(parsed[2]);
         Assert.Empty(parsed[3]);
-        Assert.NotEqual(src, parsed[1]);
+        Assert.NotEqual(src, parsed[0]);
     }
 
     [Fact]
@@ -307,11 +298,22 @@ public class LiveLedColorsTests
         sink.Report("f", src, Leds, 0.0, DeviceColorAdjust.Identity);
         var wire = WireFrame(devices, new byte[3]);
         var dst = Array.Empty<byte>();
-        var length = LiveLedFrameComposer.Compose(wire, devices, sink, new NexusSettings(), ref dst);
+        var length = LiveLedFrameComposer.Compose(wire, devices, sink, ref dst);
         Assert.Equal(new byte[Leds * 3], Parse(dst, length)[0]);
 
         clock = LiveLedSink.FreshMs + 1;
-        length = LiveLedFrameComposer.Compose(wire, devices, sink, new NexusSettings(), ref dst);
+        length = LiveLedFrameComposer.Compose(wire, devices, sink, ref dst);
         Assert.Empty(Parse(dst, length)[0]);
     }
+
+    [Fact]
+    public void Solid_and_BlankRange_AdjustTheReportedBytes()
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.ReportSolid("ring", 10, 20, 30, 5);
+        Assert.Equal(new byte[] { 10, 20, 30, 10, 20, 30, 10, 20, 30, 10, 20, 30, 10, 20, 30 }, sink.TryGetFresh("ring"));
+        sink.BlankRange("ring", 1, 2);
+        Assert.Equal(new byte[] { 10, 20, 30, 0, 0, 0, 0, 0, 0, 10, 20, 30, 10, 20, 30 }, sink.TryGetFresh("ring"));
+    }
+
 }

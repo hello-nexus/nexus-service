@@ -1,6 +1,5 @@
 using System;
 using Nexus.Service.Lighting.Engine;
-using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Lighting;
 
@@ -16,7 +15,7 @@ public static class LiveLedFrameComposer
     /// Writes the composed frame into <paramref name="dst"/> (resized as needed) and returns its length,
     /// or 0 when <paramref name="frame"/> is not a v3 frame, in which case the caller sends it unchanged.
     /// </summary>
-    public static int Compose(ReadOnlySpan<byte> frame, DeviceFrame[] devices, LiveLedSink sink, NexusSettings settings, ref byte[] dst)
+    public static int Compose(ReadOnlySpan<byte> frame, DeviceFrame[] devices, LiveLedSink sink, ref byte[] dst)
     {
         if (frame.Length < 6 || frame[0] != 0x03)
         {
@@ -39,10 +38,6 @@ public static class LiveLedFrameComposer
         var read = pos + 1;
         var write = pos + 1;
 
-        var disabled = settings.Devices.DisabledLightingDevices;
-        var uncontrolled = settings.Devices.UncontrolledLightingDevices;
-        var master = MasterBrightness.Resolve(settings);
-
         for (var d = 0; d < count && read + 3 <= frame.Length; d++)
         {
             var index = frame[read];
@@ -52,7 +47,6 @@ public static class LiveLedFrameComposer
             {
                 break;
             }
-            var src = frame.Slice(read + 3, sectionBytes);
             read += 3 + sectionBytes;
 
             var dev = Find(devices, index);
@@ -67,10 +61,6 @@ public static class LiveLedFrameComposer
                     written = Math.Min(fresh.Length, sectionBytes);
                     fresh.AsSpan(0, written).CopyTo(dst.AsSpan(body));
                 }
-                else if (!sink.IsCovered(dev.Id))
-                {
-                    written = Fallback(src, dev.Id, disabled, uncontrolled, settings, master, dst.AsSpan(body, sectionBytes));
-                }
             }
             written -= written % 3;
             dst[write + 1] = (byte)((written / 3) & 0xFF);
@@ -78,49 +68,6 @@ public static class LiveLedFrameComposer
             write = body + written;
         }
         return write;
-    }
-
-    // Writers that do not report yet: brightness and trim from the same preference the writers read.
-    private static int Fallback(ReadOnlySpan<byte> src, string id, System.Collections.Generic.IReadOnlyList<string> disabled,
-        System.Collections.Generic.IReadOnlyList<string> uncontrolled, NexusSettings settings, MasterLevel master, Span<byte> dst)
-    {
-        for (var i = 0; i < uncontrolled.Count; i++)
-        {
-            if (uncontrolled[i] == id)
-            {
-                return 0;
-            }
-        }
-        var mul = 0.0;
-        var adjust = DeviceColorAdjust.Identity;
-        var off = false;
-        for (var i = 0; i < disabled.Count; i++)
-        {
-            if (disabled[i] == id)
-            {
-                off = true;
-                break;
-            }
-        }
-        if (!off)
-        {
-            var devBrightness = 100;
-            try
-            {
-                if (settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref) && pref is not null)
-                {
-                    devBrightness = pref.Brightness;
-                    adjust = DeviceColorAdjust.For(pref);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // A writer is inserting a preference; this tick shows the untrimmed color.
-            }
-            mul = master.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
-        }
-        LiveLedSink.Compute(dst, src, src.Length / 3, mul, adjust);
-        return src.Length;
     }
 
     private static DeviceFrame? Find(DeviceFrame[] devices, byte index)

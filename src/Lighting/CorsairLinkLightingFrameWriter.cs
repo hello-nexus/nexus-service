@@ -161,13 +161,17 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             devIdx++;
             SegmentFrameComposer.EnsureBuffers(structure, ref _segBuf);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, effectiveBrightness, 1.0, nowTicks, _identify, _segBuf);
+                structure, zones, devices, disabled, uncontrolled, prefs, effectiveBrightness, 1.0, nowTicks, _identify, _segBuf, _engine.Live);
 
             // Segment 0 holds all LEDs for this device; copy as R,G,B (no swap).
             var buf = _segBuf[0];
             if (dev.Class == CorsairLinkClass.Aio && hubHasLcd)
             {
                 ApplyAioInnerRingBlank(buf);
+                if (zones.Count == 1)
+                {
+                    _engine.Live.BlankRange(zones[0].Id, 16, 4);
+                }
             }
             for (var i = 0; i < buf.Length; i++)
             {

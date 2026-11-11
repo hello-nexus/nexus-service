@@ -310,7 +310,7 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
             settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
-            now * TimeSpan.TicksPerMillisecond, _identify, _segmentBuffers);
+            now * TimeSpan.TicksPerMillisecond, _identify, _segmentBuffers, _engine.Live);
 
         var swap = settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var l) && l.UpDownSwap && unit.Family == FlexFamily.TlFlex;
         var total = FillWire(unit.Family, unit.Fans, structure, swap);

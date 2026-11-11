@@ -226,7 +226,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live);
 
             var totalLeds = FillWireBuffer(macHex, structure);
             if (totalLeds == 0) continue;
