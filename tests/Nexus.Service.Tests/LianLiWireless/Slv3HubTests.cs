@@ -1306,6 +1306,23 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void Unbound_hydroshift_is_marked_usb_present_only_while_the_usb_unit_is_unread()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = new byte[6], RxType = 0, DevType = 11, FanCount = 0 });
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("102030405060"), MasterMac = new byte[6], RxType = 0, DevType = 1, FanCount = 3 });
+        hub.UsbAioPresent = () => true;
+
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(FanMac)).UsbPresent);
+        Assert.False(hub.State.Fans.Single(f => f.Mac == "102030405060").UsbPresent);
+
+        hub.UsbAioMac = () => "102030405060";
+        Assert.True(hub.DriveTick());
+        Assert.False(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(FanMac)).UsbPresent);
+    }
+
+    [Fact]
     public void Screen_held_hydroshift_is_switched_again_after_an_unbind_and_rebind()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

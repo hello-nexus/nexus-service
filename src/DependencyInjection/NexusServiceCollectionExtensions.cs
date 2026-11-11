@@ -117,7 +117,7 @@ public static class NexusServiceCollectionExtensions
 #error No ISensorProvider for this target - wire one when adding a platform.
 #endif
         // Idle until a lighting shader reads a sensor uniform; see SensorFeed.
-        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>()));
+        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>(), () => sp.GetService<IFanControlProvider>()));
         services.AddSingleton<ProcessMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<ProcessMonitor>());
         services.AddSingleton<Nexus.Service.Activity.GpuProcessMonitor>();
@@ -1296,6 +1296,11 @@ public static class NexusServiceCollectionExtensions
             var usbAio = new Lazy<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio?>(
                 () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
             hub.UsbAioMac = () => usbAio.Value?.Params?.Mac;
+            var presence = sp.GetService<Nexus.Service.Devices.Detection.HardwarePresence>();
+            hub.UsbAioPresent = () => presence?.UsbPresent(
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.VendorId,
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.ProductIdSquare,
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.ProductIdCircle) == true;
             return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
         });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
@@ -2033,7 +2038,8 @@ public static class NexusServiceCollectionExtensions
 #endif
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
                 sp.GetRequiredService<Nexus.Service.Fps.IFpsProvider>(),
-                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>())));
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                () => sp.GetService<IFanControlProvider>())));
         services.AddSingleton<Nexus.Service.Cooling.TryxCoolingProvider>();
         services.AddSingleton<Nexus.Service.Peripherals.Tryx.Panorama.TryxPanoramaHeartbeatWorker>();
         services.AddHostedService(sp =>
@@ -2613,10 +2619,7 @@ public static class NexusServiceCollectionExtensions
         // escape the proxy's host allowlist and carry the build credential off
         // our own API host, so the widget receives the 3xx instead.
         services.AddHttpClient(Nexus.Service.Widgets.AppProxyService.ClientName)
-            .ConfigurePrimaryHttpMessageHandler(static () => new System.Net.Http.HttpClientHandler
-            {
-                AllowAutoRedirect = false,
-            });
+            .ConfigurePrimaryHttpMessageHandler(static () => Nexus.Service.Widgets.AppProxyService.CreateHandler());
         services.AddSingleton<Nexus.Service.Widgets.AppInstaller>();
         services.AddSingleton<Nexus.Service.Store.StoreInstaller>(sp => new Nexus.Service.Store.StoreInstaller(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("StoreInstall"),

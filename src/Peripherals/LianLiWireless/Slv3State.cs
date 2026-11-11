@@ -84,6 +84,8 @@ public sealed class Slv3FanInfo
     public bool Stale { get; set; }
     /// <summary>A HydroShift II that is also on the USB link (same radio MAC), where its screen has its own panel page.</summary>
     public bool UsbConnected { get; set; }
+    /// <summary>A HydroShift II is on USB but its radio MAC is unread (Nexus Control off for it), so this record may be that unit.</summary>
+    public bool UsbPresent { get; set; }
     /// <summary>The fan is plugged in over USB and driven by its own handler, so the radio only lists it: no Bind, steering, lighting or PWM.</summary>
     public bool WiredOwned { get; set; }
     /// <summary>The fan is plugged in over USB and bound to this PC's radio: the radio drives its lighting and fan speed.</summary>

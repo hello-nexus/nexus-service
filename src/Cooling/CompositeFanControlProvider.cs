@@ -171,10 +171,9 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
 
     public IReadOnlyList<FanChannel> GetDevicePumpChannels()
     {
-        var combined = new List<FanChannel>(_np50.GetFanChannels());
-        combined.AddRange(_miniHub.GetFanChannels());
-        foreach (var e in Extras())
-            combined.AddRange(e.Provider.GetFanChannels());
+        var combined = new List<FanChannel>();
+        foreach (var source in GatedSources())
+            combined.AddRange(Call(source, "a pump read", source.GetFanChannels, Array.Empty<FanChannel>()));
         foreach (var ch in combined)
             InferPumpKind(ch);
         combined.RemoveAll(c => c.Kind != FanKinds.Pump || string.IsNullOrEmpty(c.DeviceId));

@@ -36,6 +36,7 @@ public sealed class TryxPanoramaHub : IDisposable
     private readonly ITryxPanoramaPanelDiscovery _discovery;
     private readonly Func<TryxPanoramaPortInfo, ITryxPanoramaTransport> _transportFactory;
     private readonly ISensorProvider _sensors;
+    private readonly Func<Nexus.Service.Cooling.IFanControlProvider?>? _fans;
     private readonly IFpsProvider _fps;
     private readonly IConfigStore _configStore;
     private readonly object _lock = new();
@@ -52,8 +53,10 @@ public sealed class TryxPanoramaHub : IDisposable
         Func<TryxPanoramaPortInfo, ITryxPanoramaTransport> transportFactory,
         ISensorProvider sensors,
         IFpsProvider fps,
-        IConfigStore configStore)
+        IConfigStore configStore,
+        Func<Nexus.Service.Cooling.IFanControlProvider?>? fans = null)
     {
+        _fans = fans;
         _discovery = discovery;
         _transportFactory = transportFactory;
         _sensors = sensors;
@@ -1621,8 +1624,10 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         var needExtras = false;
         var needNetwork = false;
+        var needHub = false;
         foreach (var item in items)
         {
+            needHub |= Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(item.Device);
             if (SensorSnapshotResolver.CategoryUsesExtras(item.Device))
             {
                 needExtras = true;
@@ -1634,6 +1639,10 @@ public sealed class TryxPanoramaHub : IDisposable
             return default;
         }
         var extras = _sensors.GetSensorExtras();
+        if (needHub)
+        {
+            Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
+        }
         return new SensorSnapshotSources(
             extras,
             NetworkSensors: needNetwork ? SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics) : null);

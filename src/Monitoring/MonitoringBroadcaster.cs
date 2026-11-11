@@ -385,12 +385,9 @@ public sealed class MonitoringBroadcaster : BackgroundService
             ? BuildSummaryComponent(cpuComponent!, gpuComponents!, memoryComponent!)
             : null;
         SensorExtras? extras = needExtras ? _sensors.GetSensorExtras() : null;
-        if (extras is not null && _fans is not null)
+        if (extras is not null)
         {
-            // Hub state is walked lock-free while its poll thread mutates it, so a torn read can
-            // throw. Contain it to the coolers list rather than losing every topic this cycle.
-            try { extras.Coolers.AddRange(HubCoolerSensors.Build(_fans.GetDeviceTemperatureSources(), _fans.GetDevicePumpChannels())); }
-            catch (Exception ex) { Console.Error.WriteLine($"[monitoring-broadcaster] hub coolers skipped: {ex.GetType().Name}: {ex.Message}"); }
+            HubCoolerSensors.Merge(extras, _fans);
         }
         string cpuModel = cpuComponent?.Name ?? "";
         _gpuModelsBuf.Clear();
