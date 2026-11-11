@@ -1402,7 +1402,7 @@ public sealed class RgbBridge : IDisposable
     private IOneShot? _settleTimer;
     // 1 while a settle check found no daemon session and waits for the connect; Interlocked.
     private int _settleWaitsForConnect;
-    // Looks since the last restart that found nothing to act on; capped so a daemon that never answers is not re-checked forever.
+    // Looks that found the stall due and could not act; reset by a fresh arm and capped so a daemon that never answers is not re-checked forever. Guarded by _settleTimerLock.
     private int _settleRechecks;
     private const int SettleMaxRechecks = 12;
     internal Task? LastSettleDeadlineCheck { get; private set; }
