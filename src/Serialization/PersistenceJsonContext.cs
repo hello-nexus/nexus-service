@@ -103,6 +103,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(DiagnosticsComponents))]
 [JsonSerializable(typeof(SensorAlertRule))]
 [JsonSerializable(typeof(SensorRef))]
+[JsonSerializable(typeof(BuiltInSource))]
 [JsonSerializable(typeof(System.Collections.Generic.List<SensorAlertRule>))]
 [JsonSerializable(typeof(FeaturesSettings))]
 [JsonSerializable(typeof(SentrySettings))]

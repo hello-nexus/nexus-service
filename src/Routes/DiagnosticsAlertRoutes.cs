@@ -40,11 +40,21 @@ public static class DiagnosticsAlertRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
+            body.Source = null;
             body.Id = Guid.NewGuid().ToString("N");
+            // Read outside the store lock: it can walk hardware.
+            var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
+            var candidateResolves = engine.IdResolves(body.Sensor);
+            SensorAlertRule? tracker = null;
             var full = false;
             store.Update(s =>
             {
                 s.Diagnostics.SensorAlerts ??= new List<SensorAlertRule>();
+                tracker = SensorAlertRules.FindTracker(body.Sensor, candidateResolves, builtIns.Concat(s.Diagnostics.SensorAlerts.Where(r => r.BuiltIn is null)), null);
+                if (tracker is not null)
+                {
+                    return;
+                }
                 if (s.Diagnostics.SensorAlerts.Count(r => r.BuiltIn is null) >= SensorAlertRules.MaxRules)
                 {
                     full = true;
@@ -52,13 +62,17 @@ public static class DiagnosticsAlertRoutes
                 }
                 s.Diagnostics.SensorAlerts.Add(body);
             });
+            if (tracker is not null)
+            {
+                return Results.Conflict(SensorAlertRules.AlreadyTracked(tracker));
+            }
             if (full)
             {
                 return Results.Conflict(ApiResponse.Fail($"At most {SensorAlertRules.MaxRules} rules are allowed."));
             }
             engine.Reconcile();
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
-        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status409Conflict);
+        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status409Conflict).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
         app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {
@@ -67,6 +81,7 @@ public static class DiagnosticsAlertRoutes
                 return Results.BadRequest(ApiResponse.Fail("A rule is required."));
             }
             body.Id = id;
+            body.Source = null;
             if (BuiltInSensorRules.IsBuiltInId(id))
             {
                 // Identity and sensor come from the stored rule, never the client; only a detected device has one.
@@ -87,6 +102,8 @@ public static class DiagnosticsAlertRoutes
             }
             // Read outside the store lock: it can walk hardware.
             var bodyIdResolves = engine.IdResolves(body.Sensor);
+            var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
+            SensorAlertRule? tracker = null;
             var found = false;
             var sensorChanged = false;
             store.Update(s =>
@@ -98,9 +115,22 @@ public static class DiagnosticsAlertRoutes
                     return;
                 }
                 sensorChanged = !SensorAlertRules.SameSensor(list[index].Sensor, body.Sensor, bodyIdResolves);
-                list[index] = body;
+                // Only a re-point is checked, so a rule that already duplicated another keeps its limits editable. A built-in's sensor is pinned.
+                if (sensorChanged && body.BuiltIn is null)
+                {
+                    tracker = SensorAlertRules.FindTracker(body.Sensor, bodyIdResolves, builtIns.Concat(list.Where(r => r.BuiltIn is null)), id);
+                    if (tracker is not null)
+                    {
+                        return;
+                    }
+                }
+                list[index] = body.Clone();
                 found = true;
             });
+            if (tracker is not null)
+            {
+                return Results.Conflict(SensorAlertRules.AlreadyTracked(tracker));
+            }
             if (!found)
             {
                 return Results.NotFound(ApiResponse.Fail("Unknown rule."));
@@ -110,8 +140,10 @@ public static class DiagnosticsAlertRoutes
                 DropHistory(id, history, buffer);
             }
             engine.Reconcile();
+            // The stored copy has no source; the response carries the one feeding the rule now.
+            body.Source = engine.Rules().FirstOrDefault(r => r.Id == id)?.Source;
             return Results.Ok(body);
-        }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound);
+        }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
         app.MapDelete("/diagnostics/alerts/{id}", (string id, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {

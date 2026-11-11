@@ -70,10 +70,10 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         return client;
     }
 
-    private static object Rule(double? low = null, double? high = 80, string severity = "watch", int repeat = 0) => new
+    private static object Rule(double? low = null, double? high = 80, string severity = "watch", int repeat = 0, string sensorId = "cpu/temp") => new
     {
         enabled = true,
-        sensor = new { category = "cpu", id = "cpu/temp", name = "CPU Package", type = "Temperature", parentName = "CPU" },
+        sensor = new { category = "cpu", id = sensorId, name = "CPU Package " + sensorId, type = "Temperature", parentName = "CPU" },
         low,
         high,
         raiseAfterSeconds = 5,
@@ -134,10 +134,10 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         var client = Client();
         for (var i = 0; i < 20; i++)
         {
-            Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule())).StatusCode);
+            Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(sensorId: $"cpu/t{i}"))).StatusCode);
         }
 
-        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule())).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(sensorId: "cpu/t20"))).StatusCode);
     }
 
     [Theory]
@@ -199,6 +199,119 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         Assert.Equal(new double[] { 100, 100, 90 }, rules.Take(3).Select(r => r.GetProperty("high").GetDouble()).ToArray());
         Assert.Equal(JsonValueKind.Null, rules[3].GetProperty("builtIn").ValueKind);
         Assert.Equal(4, rules.Count);
+    }
+
+    private static object OnSensor(string category, string id, string name, string parent = "p") => new
+    {
+        enabled = true,
+        sensor = new { category, id, name, type = "Temperature", parentName = parent },
+        low = (double?)null, high = (double?)80, raiseAfterSeconds = 5, clearAfterSeconds = 5, severity = "watch", notifyDesktop = true, showInHealth = true, repeatMinutes = 0,
+    };
+
+    [Fact]
+    public async Task Built_ins_expose_the_exact_underlying_sensor_in_the_picker_identity()
+    {
+        var list = await Client().GetFromJsonAsync<JsonElement>("/diagnostics/alerts");
+
+        var rules = list.GetProperty("rules").EnumerateArray().ToList();
+        var cpu = rules.Single(r => r.GetProperty("id").GetString() == CpuRule).GetProperty("source");
+        Assert.Equal("sensor", cpu.GetProperty("kind").GetString());
+        Assert.Equal("cpu", cpu.GetProperty("sensor").GetProperty("category").GetString());
+        Assert.Equal("cpu/pkg", cpu.GetProperty("sensor").GetProperty("id").GetString());
+        Assert.Equal("CPU Package", cpu.GetProperty("sensor").GetProperty("name").GetString());
+        Assert.Equal("p", cpu.GetProperty("sensor").GetProperty("parentName").GetString());
+        var gpu = rules.Single(r => r.GetProperty("id").GetString() == GpuRule).GetProperty("source");
+        Assert.Equal("gpu", gpu.GetProperty("sensor").GetProperty("category").GetString());
+        Assert.Equal("gpu-rtx/core", gpu.GetProperty("sensor").GetProperty("id").GetString());
+        Assert.Equal("RTX 5080", gpu.GetProperty("hardwareName").GetString());
+    }
+
+    [Fact]
+    public async Task A_user_rule_has_no_source_and_a_built_in_put_returns_one_without_storing_it()
+    {
+        var client = Client();
+        var created = await (await client.PostAsJsonAsync("/diagnostics/alerts", Rule())).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(created.TryGetProperty("source", out _));
+
+        var put = await (await client.PutAsJsonAsync($"/diagnostics/alerts/{CpuRule}", BuiltInBody(high: 88))).Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal("cpu/pkg", put.GetProperty("source").GetProperty("sensor").GetProperty("id").GetString());
+        var store = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        store.Read(st => Assert.All(st.Diagnostics.SensorAlerts, r => Assert.Null(r.Source)));
+    }
+
+    [Fact]
+    public async Task Creating_a_rule_on_a_sensor_a_built_in_tracks_is_a_409_naming_that_rule()
+    {
+        var res = await Client().PostAsJsonAsync("/diagnostics/alerts", OnSensor("gpu", "gpu-rtx/core", "GPU Core"));
+
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("error").GetBoolean());
+        Assert.Equal("sensor_already_tracked", body.GetProperty("code").GetString());
+        Assert.Equal(GpuRule, body.GetProperty("ruleId").GetString());
+        Assert.Equal("RTX 5080", body.GetProperty("ruleName").GetString());
+        Assert.True(body.GetProperty("builtIn").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Creating_a_rule_on_a_sensor_another_custom_rule_tracks_is_a_409_and_a_different_sensor_is_fine()
+    {
+        var client = Client();
+        var first = await (await client.PostAsJsonAsync("/diagnostics/alerts", OnSensor("motherboard", "mb/1", "VRM"))).Content.ReadFromJsonAsync<JsonElement>();
+
+        var dup = await client.PostAsJsonAsync("/diagnostics/alerts", OnSensor("motherboard", "mb/1", "VRM"));
+
+        Assert.Equal(HttpStatusCode.Conflict, dup.StatusCode);
+        var body = await dup.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("sensor_already_tracked", body.GetProperty("code").GetString());
+        Assert.Equal(first.GetProperty("id").GetString(), body.GetProperty("ruleId").GetString());
+        Assert.False(body.GetProperty("builtIn").GetBoolean());
+        Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/diagnostics/alerts", OnSensor("motherboard", "mb/2", "VRM B"))).StatusCode);
+    }
+
+    [Fact]
+    public async Task Re_pointing_a_rule_at_a_tracked_sensor_is_a_409_but_editing_its_limits_is_not()
+    {
+        var client = Client();
+        var a = await (await client.PostAsJsonAsync("/diagnostics/alerts", OnSensor("motherboard", "mb/1", "VRM"))).Content.ReadFromJsonAsync<JsonElement>();
+        var b = await (await client.PostAsJsonAsync("/diagnostics/alerts", OnSensor("motherboard", "mb/2", "VRM B"))).Content.ReadFromJsonAsync<JsonElement>();
+        var bId = b.GetProperty("id").GetString();
+
+        var toA = await client.PutAsJsonAsync($"/diagnostics/alerts/{bId}", OnSensor("motherboard", "mb/1", "VRM"));
+        var toBuiltIn = await client.PutAsJsonAsync($"/diagnostics/alerts/{bId}", OnSensor("cpu", "cpu/pkg", "CPU Package"));
+        var limits = await client.PutAsJsonAsync($"/diagnostics/alerts/{bId}", OnSensor("motherboard", "mb/2", "VRM B"));
+
+        Assert.Equal(HttpStatusCode.Conflict, toA.StatusCode);
+        Assert.Equal(a.GetProperty("id").GetString(), (await toA.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("ruleId").GetString());
+        Assert.Equal(HttpStatusCode.Conflict, toBuiltIn.StatusCode);
+        Assert.Equal(CpuRule, (await toBuiltIn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("ruleId").GetString());
+        Assert.Equal(HttpStatusCode.OK, limits.StatusCode);
+    }
+
+    [Fact]
+    public async Task Existing_duplicates_load_and_their_limits_stay_editable()
+    {
+        var client = Client();
+        var store = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        store.Update(st =>
+        {
+            foreach (var id in new[] { "dup1", "dup2" })
+            {
+                st.Diagnostics.SensorAlerts.Add(new Nexus.Service.Persistence.SensorAlertRule
+                {
+                    Id = id,
+                    Sensor = new Nexus.Service.Persistence.SensorRef { Category = "motherboard", Id = "mb/9", Name = "VRM", Type = "Temperature", ParentName = "p" },
+                    High = 80,
+                });
+            }
+        });
+
+        var list = await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts");
+        Assert.Equal(2, list.GetProperty("rules").EnumerateArray().Count(r => r.GetProperty("id").GetString()!.StartsWith("dup")));
+
+        var edit = await client.PutAsJsonAsync("/diagnostics/alerts/dup2", OnSensor("motherboard", "mb/9", "VRM"));
+        Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
     }
 
     [Fact]

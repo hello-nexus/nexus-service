@@ -457,6 +457,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     {
                         var copy = rule.Clone();
                         copy.Sensor.Name = device.Name;
+                        copy.Source = device.Source;
                         builtInRules.Add(copy);
                     }
                 }
@@ -708,7 +709,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return;
         }
         var name = Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveCpuTempName(_sensors.GetCpuModel());
-        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, ""), temp.Value, temp.Stale);
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name)), temp.Value, temp.Stale);
     }
 
     private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
@@ -721,7 +722,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 continue;
             }
             var seriesId = BuiltInSensorRules.GpuSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(gpu.Id);
-            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id), temp.Value, temp.Stale);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name)), temp.Value, temp.Stale);
         }
     }
 
@@ -734,7 +735,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
         var fresh = usable.Where(IsUsable).ToList();
         var value = fresh.Count == 0 ? float.NaN : fresh.Average(x => x.Value);
-        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.RamTemp, BuiltInSensorRules.MemorySeriesId, "Memory Temperature", false, ""), value, fresh.Count == 0);
+        // One contributing sensor is that sensor; several are a mean no single sensor id describes.
+        var source = fresh.Count == 1
+            ? SingleSource("memory", fresh[0], "Memory")
+            : new BuiltInSource { Kind = "average", Sensors = fresh.Select(x => Ref("memory", x)).ToList(), HardwareName = "Memory" };
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.RamTemp, BuiltInSensorRules.MemorySeriesId, "Memory Temperature", false, "", source), value, fresh.Count == 0);
     }
 
     private void DiscoverDrives(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
@@ -747,9 +752,27 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         foreach (var drive in smart.Drives.Where(d => d.TemperatureC is not null).OrderBy(d => d.Id, StringComparer.Ordinal))
         {
             var seriesId = BuiltInSensorRules.DriveSeriesPrefix + Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveUniqueSanitizedId(drive.Id, used);
-            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.StorageTemp, seriesId, drive.Name, false, drive.Id), (float)drive.TemperatureC!.Value, false);
+            // The SMART health poll, not an LHM sensor of the picker's smart category, so there is no picker id to give.
+            var source = new BuiltInSource { Kind = "drive", Sensor = null, HardwareName = drive.Name };
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.StorageTemp, seriesId, drive.Name, false, drive.Id, source), (float)drive.TemperatureC!.Value, false);
         }
     }
+
+    private static SensorRef Ref(string category, HardwareSensor s) => new()
+    {
+        Category = category,
+        Id = s.Id,
+        Name = s.Name,
+        Type = s.Type,
+        ParentName = s.Parent.Name,
+    };
+
+    private static BuiltInSource SingleSource(string category, HardwareSensor s, string hardwareName) => new()
+    {
+        Kind = "sensor",
+        Sensor = Ref(category, s),
+        HardwareName = hardwareName,
+    };
 
     private static void Add(List<BuiltInDevice> devices, List<HardwareSensor> sensors, BuiltInDevice device, float value, bool stale)
     {

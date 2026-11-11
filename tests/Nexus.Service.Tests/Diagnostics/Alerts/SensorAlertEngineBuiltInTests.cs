@@ -53,6 +53,121 @@ public partial class SensorAlertEngineTests
     private static void EditStored(Rig rig, string id, Action<SensorAlertRule> edit) =>
         rig.Store.Update(s => edit(s.Diagnostics.SensorAlerts.Single(r => r.Id == id)));
 
+    // ---- underlying sensor identity ----
+
+    [Fact]
+    public void A_cpu_entry_reports_the_package_sensor_in_the_picker_identity()
+    {
+        var rig = BuiltInRig(r => r.Sensors.Cpu = new[] { Temp("cpu/core", "CPU Core #1", 50), Temp("cpu/pkg", "CPU Package", 60) });
+
+        var source = rig.Engine.Rules().Single().Source!;
+
+        Assert.Equal("sensor", source.Kind);
+        Assert.Equal(new SensorRef { Category = "cpu", Id = "cpu/pkg", Name = "CPU Package", Type = "Temperature", ParentName = "CPU" }, source.Sensor, SensorRefComparer.Instance);
+        Assert.Equal("TestCPU", source.HardwareName);
+    }
+
+    [Fact]
+    public void The_reported_cpu_sensor_follows_the_fallback_when_there_is_no_package_sensor()
+    {
+        var rig = BuiltInRig(r => r.Sensors.Cpu = new[] { Temp("cpu/core", "CPU Core #1", 50) });
+
+        Assert.Equal("cpu/core", rig.Engine.Rules().Single().Source!.Sensor!.Id);
+
+        CpuHot(rig, 55);
+        rig.Engine.Tick();
+
+        Assert.Equal("cpu/pkg", rig.Engine.Rules().Single().Source!.Sensor!.Id);
+    }
+
+    [Fact]
+    public void A_gpu_entry_reports_its_core_temperature_sensor()
+    {
+        var rig = BuiltInRig(r => r.Sensors.Gpus.Add(Gpu("RTX 5080", integrated: false, 40)));
+
+        var source = rig.Engine.Rules().Single(x => x.BuiltIn == "gpuTemp").Source!;
+
+        Assert.Equal("gpu", source.Sensor!.Category);
+        Assert.Equal("RTX 5080/t", source.Sensor.Id);
+        Assert.Equal("RTX 5080", source.HardwareName);
+    }
+
+    [Fact]
+    public void Memory_reports_the_contributing_sensors_not_a_single_id()
+    {
+        var rig = BuiltInRig(r => r.Sensors.Memory = new[] { Temp("m0", "DIMM #1 Temperature", 40), Temp("m1", "DIMM #2 Temperature", 80), Temp("m2", "Chipset Temperature", 99) });
+
+        var source = rig.Engine.Rules().Single(x => x.BuiltIn == "ramTemp").Source!;
+
+        Assert.Equal("average", source.Kind);
+        Assert.Null(source.Sensor);
+        Assert.Equal(new[] { "m0", "m1" }, source.Sensors.Select(x => x.Id));
+        Assert.All(source.Sensors, x => Assert.Equal("memory", x.Category));
+    }
+
+    [Fact]
+    public void A_single_memory_sensor_is_reported_as_that_sensor()
+    {
+        var rig = BuiltInRig(r => r.Sensors.Memory = new[] { Temp("m0", "DIMM #1 Temperature", 40) });
+
+        var source = rig.Engine.Rules().Single(x => x.BuiltIn == "ramTemp").Source!;
+
+        Assert.Equal("sensor", source.Kind);
+        Assert.Equal("m0", source.Sensor!.Id);
+    }
+
+    [Fact]
+    public void A_drive_reports_the_smart_reading_with_no_picker_id()
+    {
+        var rig = BuiltInRig(r => r.Smart.Drives.Add(Drive("storage:a", "WDS200", 35)));
+
+        var source = rig.Engine.Rules().Single(x => x.BuiltIn == "storageTemp").Source!;
+
+        Assert.Equal("drive", source.Kind);
+        Assert.Null(source.Sensor);
+        Assert.Equal("WDS200", source.HardwareName);
+    }
+
+    [Fact]
+    public void The_source_is_never_stored()
+    {
+        var rig = BuiltInRig(r => CpuHot(r, 50));
+        rig.Engine.Rules();
+
+        Assert.All(rig.Store.Load().Diagnostics.SensorAlerts, x => Assert.Null(x.Source));
+    }
+
+    [Fact]
+    public void A_built_in_and_a_custom_rule_on_the_same_sensor_read_the_same_value_and_state()
+    {
+        var rig = BuiltInRig(r => CpuHot(r, 50));
+        rig.AddRule(new SensorAlertRule
+        {
+            Id = "custom",
+            Sensor = new SensorRef { Category = "cpu", Id = "cpu/pkg", Name = "CPU Package", Type = "Temperature", ParentName = "CPU" },
+            High = 90,
+            RaiseAfterSeconds = 5,
+        });
+        EditStored(rig, CpuId, x => x.High = 90);
+
+        CpuHot(rig, 95);
+        rig.Seconds(6);
+
+        Assert.Equal(StateOf(rig, "custom").Value, StateOf(rig, CpuId).Value);
+        Assert.Equal(StateOf(rig, "custom").State, StateOf(rig, CpuId).State);
+        Assert.Equal(SensorAlertStates.Active, StateOf(rig, CpuId).State);
+    }
+
+    private sealed class SensorRefComparer : IEqualityComparer<SensorRef?>
+    {
+        public static readonly SensorRefComparer Instance = new();
+
+        public bool Equals(SensorRef? a, SensorRef? b) =>
+            a is not null && b is not null && a.Category == b.Category && a.Id == b.Id && a.Name == b.Name && a.Type == b.Type && a.ParentName == b.ParentName;
+
+        public int GetHashCode(SensorRef? r) => r?.Id.GetHashCode() ?? 0;
+    }
+
     // ---- per-device seeding ----
 
     [Fact]

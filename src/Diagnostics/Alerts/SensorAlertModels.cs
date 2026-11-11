@@ -59,6 +59,22 @@ public sealed class SensorAlertsResponse
     public List<SensorAlertHistoryEntry> History { get; set; } = new();
 }
 
+/// <summary>409 body when a custom rule would track a sensor another rule already tracks.</summary>
+public sealed class SensorAlreadyTrackedResponse
+{
+    public const string ErrorCode = "sensor_already_tracked";
+
+    public bool Error { get; set; } = true;
+    public string Msg { get; set; } = "";
+    public string Code { get; set; } = ErrorCode;
+    /// <summary>Id of the rule that already tracks the sensor.</summary>
+    public string RuleId { get; set; } = "";
+    /// <summary>Display name of that rule: the device name for a built-in, else the sensor's name.</summary>
+    public string RuleName { get; set; } = "";
+    /// <summary>True when the existing rule is a built-in.</summary>
+    public bool BuiltIn { get; set; }
+}
+
 /// <summary>Inline payload of the diagnostics/alerts topic.</summary>
 public sealed class SensorAlertsFrame
 {
@@ -85,6 +101,42 @@ public static class SensorAlertRules
         a.Category == b.Category
         && string.Equals(a.Type, b.Type, StringComparison.OrdinalIgnoreCase)
         && (a.Id == b.Id || (!bIdResolves && a.Name == b.Name && a.ParentName == b.ParentName));
+
+    /// <summary>
+    /// The first rule other than <paramref name="excludeId"/> that already tracks <paramref name="candidate"/>: a user rule by its
+    /// stored sensor, a built-in by the sensor currently feeding it (<see cref="SensorAlertRule.Source"/>; a drive or a memory mean has none).
+    /// Ids decide; a name and parent match only when the candidate's id does not resolve, as in <see cref="SameSensor"/>.
+    /// </summary>
+    public static SensorAlertRule? FindTracker(SensorRef candidate, bool candidateIdResolves, IEnumerable<SensorAlertRule> rules, string? excludeId)
+    {
+        foreach (var rule in rules)
+        {
+            if (rule.Id == excludeId)
+            {
+                continue;
+            }
+            var other = rule.BuiltIn is not null ? rule.Source?.Sensor : rule.Sensor;
+            if (other is null || other.Category != candidate.Category || !string.Equals(other.Type, candidate.Type, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var byId = !string.IsNullOrEmpty(candidate.Id) && other.Id == candidate.Id;
+            var byName = !candidateIdResolves && !string.IsNullOrEmpty(candidate.Name) && other.Name == candidate.Name && other.ParentName == candidate.ParentName;
+            if (byId || byName)
+            {
+                return rule;
+            }
+        }
+        return null;
+    }
+
+    public static SensorAlreadyTrackedResponse AlreadyTracked(SensorAlertRule existing) => new()
+    {
+        Msg = $"'{SensorAlertText.DisplayName(existing)}' is already tracked.",
+        RuleId = existing.Id,
+        RuleName = SensorAlertText.DisplayName(existing),
+        BuiltIn = existing.BuiltIn is not null,
+    };
 
     /// <summary>Clamps the delay fields in place. Run before <see cref="Validate"/> and before storing.</summary>
     public static void Normalize(SensorAlertRule rule)

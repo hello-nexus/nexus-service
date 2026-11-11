@@ -7,7 +7,7 @@ using Nexus.Service.Persistence;
 namespace Nexus.Service.Diagnostics.Alerts;
 
 /// <summary>A detected device whose temperature the Cooling history plots. <see cref="SeriesId"/> is the monitoring history series id; <see cref="ComponentId"/> is the raw id the ignore list uses.</summary>
-public sealed record BuiltInDevice(string Kind, string SeriesId, string Name, bool Integrated, string ComponentId);
+public sealed record BuiltInDevice(string Kind, string SeriesId, string Name, bool Integrated, string ComponentId, BuiltInSource? Source = null);
 
 /// <summary>
 /// One temperature rule per detected CPU, GPU, drive and (when the machine reports one) memory, id <c>builtin:&lt;history series id&gt;</c>.

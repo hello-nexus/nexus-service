@@ -251,6 +251,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Persistence.DiagnosticsComponents))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.SensorAlertRule))]
 [JsonSerializable(typeof(Nexus.Service.Persistence.SensorRef))]
+[JsonSerializable(typeof(Nexus.Service.Persistence.BuiltInSource))]
+[JsonSerializable(typeof(Nexus.Service.Diagnostics.Alerts.SensorAlreadyTrackedResponse))]
 [JsonSerializable(typeof(System.Collections.Generic.List<Nexus.Service.Persistence.SensorAlertRule>))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.Alerts.SensorAlertState))]
 [JsonSerializable(typeof(Nexus.Service.Diagnostics.Alerts.SensorAlertHistoryEntry))]

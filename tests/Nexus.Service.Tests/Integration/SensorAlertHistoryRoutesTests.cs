@@ -45,10 +45,10 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
         return client;
     }
 
-    private static object Rule(string id = "cpu/temp", double? high = 80) => new
+    private static object Rule(string id = "cpu/temp", double? high = 80, string name = "CPU Package") => new
     {
         enabled = true,
-        sensor = new { category = "cpu", id, name = "CPU Package", type = "Temperature", parentName = "CPU" },
+        sensor = new { category = "cpu", id, name, type = "Temperature", parentName = "CPU" },
         low = (double?)null,
         high,
         raiseAfterSeconds = 5,
@@ -97,7 +97,7 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
     {
         var client = Client();
         var id = await Create(client, Rule());
-        await Create(client, Rule("cpu/other"));
+        await Create(client, Rule("cpu/other", name: "CPU Other"));
         var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 600;
         Store.Append(Enumerable.Range(0, 10).Select(i => Sample(t0 + i, (id, 50 + i))).ToList(), null);
 
@@ -122,7 +122,7 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
     {
         var client = Client();
         var a = await Create(client, Rule());
-        var b = await Create(client, Rule("cpu/other"));
+        var b = await Create(client, Rule("cpu/other", name: "CPU Other"));
         var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 600;
         Store.Append(new[] { Sample(t0, (a, 1), (b, 2)) }, null);
 
