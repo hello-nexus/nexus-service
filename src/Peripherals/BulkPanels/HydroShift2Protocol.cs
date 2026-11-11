@@ -13,6 +13,7 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// </summary>
 public static class HydroShift2Protocol
 {
+    public const int VendorId = 0x1CBE;
     public const int ProductIdSquare = 0xA034;
     public const int ProductIdCircle = 0xA021;
     public const int Width = 480;

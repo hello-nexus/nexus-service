@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Nexus.Service.Common;
 using Nexus.Service.Media;
 using Nexus.Service.Models.Gallery;
 using Nexus.Service.Persistence;
@@ -440,7 +441,7 @@ public sealed class GalleryLibrary
                     continue;
                 }
 
-                picked.Sort((x, y) => StringComparer.OrdinalIgnoreCase.Compare(x.Full, y.Full));
+                picked.Sort((x, y) => NaturalStringComparer.Instance.Compare(x.Full, y.Full));
                 foreach (var (full, id) in picked)
                 {
                     AddItem(full, id, source.Id, name: null);

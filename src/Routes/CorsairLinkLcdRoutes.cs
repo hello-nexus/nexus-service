@@ -97,13 +97,14 @@ public static partial class DevicesRoutes
         app.MapPut("/devices/corsair/lcd/settings", (
             LcdSettingsRequest body,
             CorsairLinkLcd lcd,
-            IConfigStore store) =>
+            IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow) =>
         {
             var storedSetting = store.Load().Devices.Corsair;
             // While the lock holds the glass dark the new value is stored only; the worker
             // applies it on unlock.
             if (body.Brightness.HasValue && !lcd.IsLockSleeping(() => storedSetting.SleepWhenLocked))
-                lcd.SetBrightness(body.Brightness.Value);
+                lcd.SetBrightness((byte)follow.Scale(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd, body.Brightness.Value));
             if (body.Rotation.HasValue) lcd.SetRotation(body.Rotation.Value);
 
             store.Update(s =>

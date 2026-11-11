@@ -787,14 +787,19 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
-    public void HighResolution_persists_and_hardware_reset_clears_it()
+    public void A_persisted_legacy_highResolution_false_loads_and_the_patch_field_is_ignored()
     {
-        var record = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+        var record = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"id\":\"p1\",\"highResolution\":false}",
+            Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+        Assert.NotNull(record);
+        Assert.DoesNotContain("highResolution", System.Text.Json.JsonSerializer.Serialize(
+            record, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord));
 
-        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { HighResolution = true })!.HighResolution);
-        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.HighResolution);
+        var allocated = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+        var patched = _registry.Patch(allocated.Id, new PanelDevicePatch { HighResolution = false, DisplayName = "Renamed" })!;
 
-        Assert.Null(_registry.ResetHardwareSettings(record.Id)!.HighResolution);
+        Assert.Equal("Renamed", patched.DisplayName);
     }
 
     [Fact]

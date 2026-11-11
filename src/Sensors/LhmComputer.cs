@@ -50,6 +50,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
     private readonly IConfigStore _config;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
     private readonly DeviceControlGate _gate;
     private readonly FeatureGates _gates;
     private readonly Nexus.Service.Sockets.MultiplexHub? _hub;
@@ -57,6 +58,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
+    private volatile bool _opened;
     private volatile bool _disposed;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
@@ -73,9 +75,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // floor would feed it the same cached value four times.
     private const long FastFloorMs = 100;
 
-    public LhmComputer(IConfigStore config, DeviceControlGate gate, FeatureGates? gates = null, Nexus.Service.Sockets.MultiplexHub? hub = null)
+    public LhmComputer(IConfigStore config, DeviceControlGate gate, FeatureGates? gates = null, Nexus.Service.Sockets.MultiplexHub? hub = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
         _hub = hub;
+        _kraken = kraken;
         _smartActive = new SmartActiveFlip(() => { if (_hub is not null) Nexus.Service.Sockets.PanelTopics.BroadcastSmartPoll(_hub); });
         _gates = gates ?? FeatureGates.AllEnabled;
         _config = config;
@@ -115,6 +118,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             IsNetworkEnabled = true,
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
+            // Opens matching STM32 serial ports to probe for a WireView Pro II.
+            IsPowerMonitorEnabled = config.Load().PowerMonitorsEnabled,
         };
         _openTask = Task.Run(async () =>
         {
@@ -136,6 +141,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 if (!_testHost)
                 {
                     _computer.Open();
+                    _opened = true;
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
                 }
             }
@@ -153,9 +159,16 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // A toggle between the reads above and these subscriptions would otherwise
         // hold until the next restart.
         ScheduleSpdApply();
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
     }
 
     public Computer Instance => _computer;
+
+    /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
+    internal bool IsHubDriven(IHardware hw) =>
+        hw.HardwareType == HardwareType.Cooler
+        && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name, 1)
+        && _computer.Hardware.Count(h => h.HardwareType == HardwareType.Cooler && h.Name == hw.Name) == 1;
 
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
@@ -168,13 +181,43 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     private void OnConfigChanged()
     {
-        var setting = _config.Load().ReadRamTemperatures;
-        if (setting == _settingSeen)
+        var snapshot = _config.Load();
+        var setting = snapshot.ReadRamTemperatures;
+        if (setting != _settingSeen)
+        {
+            _settingSeen = setting;
+            ScheduleSpdApply();
+        }
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
+    }
+
+    /// <summary>Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.</summary>
+    private void ApplyPowerMonitors()
+    {
+        if (_testHost)
         {
             return;
         }
-        _settingSeen = setting;
-        ScheduleSpdApply();
+        try
+        {
+            bool want;
+            lock (_updateLock)
+            {
+                want = _config.Load().PowerMonitorsEnabled;
+                if (_disposed || _computer.IsPowerMonitorEnabled == want)
+                {
+                    return;
+                }
+                _computer.IsPowerMonitorEnabled = want;
+            }
+            Console.WriteLine(_opened
+                ? $"[lhm] power monitors {(want ? "on" : "off")}"
+                : $"[lhm] power monitors setting stored: {(want ? "on" : "off")}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[lhm] power monitor apply failed: {ex.Message}");
+        }
     }
 
     // The swap needs Open() finished; the open task never faults, so the
@@ -381,6 +424,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // fail the walk for every other device or the routes that triggered it.
     private void TryUpdate(IHardware hw)
     {
+        // A Kraken the hub drives is not polled here. Everything that reads its entries
+        // takes the hub's values instead, because LHM's stay at their last reading.
+        if (IsHubDriven(hw))
+        {
+            return;
+        }
         try
         {
             hw.Update();

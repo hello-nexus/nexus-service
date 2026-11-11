@@ -18,12 +18,12 @@ public class BulkPanelTouchReaderTests
         using var stop = new CancellationTokenSource();
         var contacts = new ConcurrentQueue<TouchContactTracker.Injection>();
 
-        using var first = new BulkPanelTouchReader(hub, 1120, 540, () => (false, false), i => { contacts.Enqueue(i); return true; }, "t", stop.Token);
+        using var first = new BulkPanelTouchReader(hub, 1120, 540, () => (0, false), i => { contacts.Enqueue(i); return true; }, "t", stop.Token);
         first.Start();
         Assert.True(pipe.FirstReadEntered.Wait(5000));
         stop.Cancel();
 
-        using var second = new BulkPanelTouchReader(hub, 1120, 540, () => (false, false), i => { contacts.Enqueue(i); return true; }, "t");
+        using var second = new BulkPanelTouchReader(hub, 1120, 540, () => (0, false), i => { contacts.Enqueue(i); return true; }, "t");
         second.Start();
         Assert.True(SpinWait.SpinUntil(() => hub.InputReadersWaiting == 1, 5000));
         Assert.Equal(1, pipe.ReadCalls);
@@ -38,7 +38,7 @@ public class BulkPanelTouchReaderTests
     public void Disposing_a_reader_that_never_started_does_not_throw()
     {
         using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
-        var reader = new BulkPanelTouchReader(hub, 1120, 540, () => (false, false), _ => true, "t");
+        var reader = new BulkPanelTouchReader(hub, 1120, 540, () => (0, false), _ => true, "t");
         reader.Dispose();
         reader.Start();
         reader.Dispose();

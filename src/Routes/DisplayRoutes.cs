@@ -449,6 +449,8 @@ public static class DisplayRoutes
             PanelDeviceRegistry registry,
             XeneonEdgeOrientationWorker xeneon,
             MultiplexHub hub,
+            IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
             CancellationToken ct) =>
         {
             var record = registry.FindByDisplayId(id);
@@ -458,10 +460,16 @@ public static class DisplayRoutes
             var block = await xeneon.ReadSettingsAsync(ct);
             if (block is null)
                 return Results.UnprocessableEntity(ApiResponse.Fail("could not read the panel's settings"));
+            // While the schedule dims the panel the register reads the scaled value; the slider is what the user set.
+            var followKey = record.DisplayId ?? id;
+            var shownBrightness = follow.Multiplier(followKey) < 1.0
+                && store.Load().Devices.DisplaySliderBrightness.TryGetValue(followKey, out var rememberedSlider)
+                ? rememberedSlider
+                : block.Value.Brightness;
 
             var dto = new XeneonEdgeSettingsDto
             {
-                Brightness = block.Value.Brightness,
+                Brightness = shownBrightness,
                 Backlight = block.Value.Backlight,
                 Contrast = block.Value.Contrast,
                 Red = block.Value.Red,
@@ -479,6 +487,8 @@ public static class DisplayRoutes
             PanelDeviceRegistry registry,
             XeneonEdgeOrientationWorker xeneon,
             MultiplexHub hub,
+            IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
             CancellationToken ct) =>
         {
             var record = registry.FindByDisplayId(id);
@@ -503,9 +513,13 @@ public static class DisplayRoutes
 
             if (body.Brightness.HasValue)
             {
-                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Brightness, body.Brightness.Value, ct);
+                // The slider is the ceiling: remembered as the user's value, and the schedule-scaled level goes to the panel.
+                var slider = Math.Clamp(body.Brightness.Value, 0, 100);
+                var followKey = record.DisplayId ?? id;
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Brightness, follow.Scale(followKey, slider), ct);
                 if (v is null) return Fail("failed to set brightness");
-                applied.Brightness = v;
+                store.Update(s => s.Devices.DisplaySliderBrightness[followKey] = slider);
+                applied.Brightness = slider;
                 wrote = true;
             }
             if (body.Backlight.HasValue)

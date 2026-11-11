@@ -148,6 +148,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
             var preUsbMonitor = _cached.SchemaVersion < Nexus.Service.Panel.UsbMonitorPanelMigration.SchemaVersion;
+            // Read before the fold: the rotation takes a stored legacy flag into account too.
+            var movesLayout = _cached.SchemaVersion < Nexus.Service.Panel.PanelLayoutSlotsMigration.SchemaVersion
+                && Nexus.Service.Panel.PanelLayoutSlotsMigration.WouldMove(_cached);
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
             if (preUsbMonitor && _cached.UsbMonitorPanelPairs is not null)
@@ -164,6 +167,22 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"[nexus-service] could not keep the pre-v29 settings: {ex.Message}");
+                }
+            }
+            if (movesLayout)
+            {
+                // The v32 pass rewrites layouts and rotations in place; keep the file it was read from, once.
+                try
+                {
+                    var backup = SettingsPath + ".pre-v32";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, json);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[nexus-service] could not keep the pre-v32 settings: {ex.Message}");
                 }
             }
             Persist(_cached);
@@ -198,6 +217,16 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 recovered = true;
             }
             if (Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached))
+            {
+                recovered = true;
+            }
+            // A downgrade to a pre-rotation build writes the flags back at the current schema version.
+            if (Nexus.Service.Panel.PanelRotationMigration.Apply(_cached))
+            {
+                recovered = true;
+            }
+            // Same for a build that stored the strip's layout as one and dropped the marker.
+            if (Nexus.Service.Panel.PanelLayoutSlotsMigration.Apply(_cached))
             {
                 recovered = true;
             }
@@ -311,6 +340,8 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// v23: the removed Game Sync mode becomes static.
     /// v24: Lighting.RenderBackend "wgl" (the old default, always persisted) becomes "angle".
     /// v25: a stored Keeb.FirmwareLighting.Brightness equal to the old default (always persisted) moves to the new default. Profile files are covered by ProfileManager.
+    /// v31: panel records' Flip180/Portrait fold into one clockwise Rotation (PanelRotationMigration).
+    /// v32: the 8.8 inch strip's single layout moves to the slot of its mounted orientation (PanelLayoutSlotsMigration).
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -427,6 +458,15 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < 30)
         {
             Nexus.Service.Lighting.AnimateSimpleMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < Nexus.Service.Panel.PanelRotationMigration.SchemaVersion)
+        {
+            Nexus.Service.Panel.PanelRotationMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < Nexus.Service.Panel.PanelLayoutSlotsMigration.SchemaVersion)
+        {
+            Nexus.Service.Panel.PanelLayoutSlotsMigration.ClampRectangular(doc);
+            Nexus.Service.Panel.PanelLayoutSlotsMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

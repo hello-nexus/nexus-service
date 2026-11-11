@@ -43,8 +43,10 @@ public class ThermalGuardEngineTests
             h?.Invoke();
             return Array.Empty<TemperatureSource>();
         }
+        public readonly HashSet<string> MissingSensors = new();
         public float? ReadTemperature(string sensorId) =>
-            sensorId == "boom" ? throw new InvalidOperationException("sensor failure") : CpuTemp;
+            sensorId == "boom" ? throw new InvalidOperationException("sensor failure")
+            : MissingSensors.Contains(sensorId) ? null : CpuTemp;
         public readonly List<(string Id, int Duty)> Order = new();
         public int SetFanSpeed(string channelId, int dutyPercent)
         {
@@ -532,6 +534,40 @@ public class ThermalGuardEngineTests
         Trip(engine, fans, clock);
         Assert.Equal(100, LastDuty(fans, "f1"));
         Assert.Equal(100, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void ATrippedGuardOutranksTheMissingSourceFallback()
+    {
+        var (engine, fans, store, clock) = Build();
+        fans.MissingSensors.Add("qx");
+        store.Update(s =>
+        {
+            s.Cooling.Curves.Clear();
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c-f1",
+                Name = "c-f1",
+                Type = "Linear",
+                Input = new CurveInputDocument { Id = "qx", Type = "Temperature" },
+                Outputs = { new CurveOutputDocument { Id = "f1", Type = "Fan" } },
+                Linear = new LinearCurveData { ResponseTime = 0, MinTemp = 20, MaxTemp = 60, MinSpeed = 20, MaxSpeed = 60 },
+            });
+        });
+
+        Trip(engine, fans, clock);
+        for (var i = 0; i < 4; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+
+        var trip = store.Load().Cooling.LastThermalTrip;
+        Assert.NotNull(trip);
+        Assert.Null(trip!.EndedAtUtcMs);
+        // The source has been missing past the grace, yet the fan runs at the guard's duty, never the fallback's.
+        Assert.Equal(100, fans.Order.Last(o => o.Id == "f1").Duty);
+        Assert.DoesNotContain(fans.Order.Skip(fans.Order.FindLastIndex(o => o.Id == "f1" && o.Duty == 100)), o => o.Id == "f1" && o.Duty == 70);
     }
 
     [Fact]

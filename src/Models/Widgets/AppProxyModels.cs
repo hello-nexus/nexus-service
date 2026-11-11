@@ -42,5 +42,11 @@ public sealed class AppProxyResponse
     public JsonElement? Body { get; set; }
     /// <summary>Raw text body when the upstream wasn't JSON.</summary>
     public string? BodyText { get; set; }
+    /// <summary>
+    /// Base64 of the exact upstream bytes when the content type is binary
+    /// (anything that is not text, JSON, XML or script). Null for text bodies,
+    /// which keep arriving in <see cref="Body"/> or <see cref="BodyText"/>.
+    /// </summary>
+    public string? BodyBase64 { get; set; }
     public string? Error { get; set; }
 }

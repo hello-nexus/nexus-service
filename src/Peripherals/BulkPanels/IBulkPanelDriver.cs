@@ -116,4 +116,7 @@ public interface IBulkPanelDriver
 
     /// <summary>The geometry <see cref="Connect"/> negotiated no longer matches the panel's settings, so the handshake must run again.</summary>
     bool GeometryStale => false;
+
+    /// <summary>The session should end so <see cref="Disconnect"/> reboots the panel; the worker then reconnects.</summary>
+    bool RebootWanted => false;
 }

@@ -267,6 +267,7 @@ public static class ProfileRoutes
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
                 ReadRamTemperatures = s.ReadRamTemperatures,
+                PowerMonitorsEnabled = s.PowerMonitorsEnabled,
                 AmdGpuLighting = OperatingSystem.IsLinux() && s.AmdGpuLighting,
                 AmdGpuLightingApplicable = OperatingSystem.IsLinux(),
                 Features = s.Features,
@@ -610,6 +611,10 @@ public static class ProfileRoutes
                 if (body.ReadRamTemperatures is { } readRam)
                 {
                     s.ReadRamTemperatures = readRam;
+                }
+                if (body.PowerMonitorsEnabled is { } powerMonitors)
+                {
+                    s.PowerMonitorsEnabled = powerMonitors;
                 }
                 if (body.AmdGpuLighting is { } amdGpu && OperatingSystem.IsLinux() && amdGpu != s.AmdGpuLighting)
                 {

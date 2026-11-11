@@ -156,7 +156,7 @@ public class CorsairLinkLcdPanelTests
         Assert.False(lcd.IsStreamLive);
     }
 
-    private static (CorsairLinkLcd lcd, RecordingHidDevice device) AttachLcd()
+    internal static (CorsairLinkLcd lcd, RecordingHidDevice device) AttachLcd()
     {
         var device = new RecordingHidDevice();
         var info = new HidDeviceInfo
@@ -174,7 +174,7 @@ public class CorsairLinkLcdPanelTests
         return (lcd, device);
     }
 
-    private sealed class RecordingHidDevice : IHidDevice
+    internal sealed class RecordingHidDevice : IHidDevice
     {
         public List<byte[]> Writes { get; } = new();
         public List<byte[]> Features { get; } = new();

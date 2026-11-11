@@ -108,6 +108,19 @@ public sealed class CorsairLinkHub : IDisposable
     private readonly int[] _owedReplies = new int[256];
     private readonly long[] _owedSinceMs = new long[256];
     private bool _traceQuiet;
+    private bool _listDiagLogged;
+    private bool _truncationLogged;
+    internal int TruncationWarnings { get; private set; }
+    // Last device list that parsed completely; stands in when a later continuation read fails.
+    private (int Channels, List<CorsairLinkProtocol.DiscoveredDevice> Devices)? _lastCompleteList;
+
+    private sealed class DeviceListRead
+    {
+        public List<CorsairLinkProtocol.DiscoveredDevice> Devices = new();
+        public CorsairLinkProtocol.DeviceListInfo Info;
+        public bool Continued;
+        public bool ContinuationRejected;
+    }
 
     /// <summary>Listens without writing for the whole window. A report echoing a command whose reply Nexus is still owed is discounted once and its hex put in <paramref name="ownHeard"/>; any other report is another host and its hex goes in <paramref name="heard"/>.</summary>
     public bool HearsOtherHost(IHidDevice device, int listenMs, out string heard, out string ownHeard)
@@ -215,6 +228,9 @@ public sealed class CorsairLinkHub : IDisposable
             _colorReopenDue = false;
             _redetecting = false;
             _redetectRequested = false;
+            _listDiagLogged = false;
+            _truncationLogged = false;
+            _lastCompleteList = null;
         }
     }
 
@@ -330,9 +346,22 @@ public sealed class CorsairLinkHub : IDisposable
         if (refused) TraceNote("software mode refused");
         _softwareMode = true;
 
+        // A timed-out reply arrives late and would answer the firmware read, shifting every later reply by one.
+        for (var i = 0; softwareN <= 0 && i < 2 && !ForeignHostSeen && _owedReplies[CorsairLinkProtocol.CmdSoftwareMode[0]] > 0; i++)
+        {
+            if (ReadStrippedLocked(ReadTimeoutMs) <= 0) break;
+            if (_read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdSoftwareMode[0]) TraceNote("drained late software-mode reply");
+        }
+
         TraceNote("step=firmware");
         var fw = Transfer(CorsairLinkProtocol.CmdGetFirmware);
-        if (fw >= 8)
+        // A stray reply answered the read and the firmware major gates the port mapping. The real reply may already be queued behind it, so read that first; ask again only when nothing is queued.
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] != CorsairLinkProtocol.CmdGetFirmware[0])
+        {
+            var queued = ReadStrippedLocked(ReadTimeoutMs);
+            fw = queued > 0 ? queued : Transfer(CorsairLinkProtocol.CmdGetFirmware);
+        }
+        if (fw >= 8 && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdGetFirmware[0])
         {
             State.Firmware = $"{_read[4]}.{_read[5]}.{_read[6] | (_read[7] << 8)}";
             _firmwareMajor = _read[4];
@@ -614,14 +643,36 @@ public sealed class CorsairLinkHub : IDisposable
 
     private bool RefreshLocked()
     {
-        var devResp = ReadEndpointLocked(CorsairLinkProtocol.ModeGetDevices, CorsairLinkProtocol.DataGetDevices);
+        var listRead = new DeviceListRead();
+        var devResp = ReadEndpointLocked(CorsairLinkProtocol.ModeGetDevices, CorsairLinkProtocol.DataGetDevices, listRead);
         if (devResp == null)
         {
             TraceNote("0x36 read returned no device list");
             return false;
         }
-        var discovered = CorsairLinkProtocol.ParseDevices(devResp);
+        var discovered = listRead.Devices;
+        var listInfo = listRead.Info;
+        if (listInfo.Truncated && !_truncationLogged)
+        {
+            _truncationLogged = true;
+            TruncationWarnings++;
+            ServiceLog.Warn($"[corsair] device list cut off after ch{listInfo.LastChannel} of {listInfo.Channels} channels; later channels stay dark");
+        }
+        if (!listInfo.Truncated)
+        {
+            _lastCompleteList = (listInfo.Channels, discovered);
+        }
+        else if (_lastCompleteList is { } previous && previous.Channels == listInfo.Channels)
+        {
+            discovered = previous.Devices;
+        }
         TraceNote($"0x36 devices={discovered.Count}");
+        if (!_listDiagLogged)
+        {
+            _listDiagLogged = true;
+            var continuation = listRead.Continued ? "read" : listRead.ContinuationRejected ? "failed" : "none";
+            ServiceLog.Info($"[corsair] device list: channels={listInfo.Channels} bytes={listInfo.BytesUsed}/{listInfo.BytesAvailable} continuation={continuation}");
+        }
 
         // Resolve dynamic LED counts for variable-LED devices (adapters, Commander Duo).
         var ledCounts = new int[CorsairLinkProtocol.SensorArrayLength];
@@ -665,6 +716,7 @@ public sealed class CorsairLinkHub : IDisposable
                 LedCount = meta.LedCount > 0 ? meta.LedCount : dynamicLeds,
                 HasSpeed = meta.HasSpeed,
                 HasTemperature = meta.HasTemperature,
+                FanProbe = meta.FanProbe,
                 Serial = d.Serial,
                 PortId = CorsairLinkProtocol.PortIdForChannel(d.Channel, _firmwareMajor),
                 Rpm = d.Channel < speeds.Length ? speeds[d.Channel] : -1,
@@ -727,7 +779,10 @@ public sealed class CorsairLinkHub : IDisposable
 
     // close -> open -> read one endpoint; returns a copy of the response (the
     // shared _read buffer is clobbered by the trailing close), or null on failure.
-    private byte[]? ReadEndpointLocked(byte mode, ReadOnlySpan<byte> dataType)
+    // With a list, a first report whose device list runs past its end is followed
+    // by a second read whose data past the header is appended; a list that fits
+    // sends no extra command.
+    private byte[]? ReadEndpointLocked(byte mode, ReadOnlySpan<byte> dataType, DeviceListRead? list = null)
     {
         Span<byte> m = stackalloc byte[] { mode };
         _traceQuiet = mode != CorsairLinkProtocol.ModeGetDevices;
@@ -739,6 +794,33 @@ public sealed class CorsairLinkHub : IDisposable
         if (n > 0 && _read[4] == dataType[0] && _read[5] == dataType[1])
         {
             copy = _read.AsSpan(0, CorsairLinkProtocol.ReportLength).ToArray();
+            if (list != null)
+            {
+                list.Devices = CorsairLinkProtocol.ParseDevices(copy, out var first);
+                list.Info = first;
+                if (first.Truncated)
+                {
+                    var n2 = Transfer(CorsairLinkProtocol.CmdRead, m);
+                    var accepted = n2 > CorsairLinkProtocol.ContinuationHeaderSize
+                        && _read[CorsairLinkProtocol.ResponseCommandOffset] == CorsairLinkProtocol.CmdRead[0]
+                        && _read[CorsairLinkProtocol.ResponseStatusOffset] == 0;
+                    if (accepted)
+                    {
+                        var extra = CorsairLinkProtocol.ReportLength - CorsairLinkProtocol.ContinuationHeaderSize;
+                        var joined = new byte[CorsairLinkProtocol.ReportLength + extra];
+                        copy.CopyTo(joined, 0);
+                        _read.AsSpan(CorsairLinkProtocol.ContinuationHeaderSize, extra).CopyTo(joined.AsSpan(CorsairLinkProtocol.ReportLength));
+                        copy = joined;
+                        list.Devices = CorsairLinkProtocol.ParseDevices(copy, out var joinedInfo);
+                        list.Info = joinedInfo;
+                        list.Continued = true;
+                    }
+                    else
+                    {
+                        list.ContinuationRejected = true;
+                    }
+                }
+            }
         }
         else
         {
@@ -765,10 +847,10 @@ public sealed class CorsairLinkHub : IDisposable
     }
 
     // Bare interrupt-IN read with no command write, report-id stripped like Transfer.
-    private int ReadStrippedLocked()
+    private int ReadStrippedLocked(int timeoutMs = ResyncReadTimeoutMs)
     {
         if (_device == null) return -1;
-        var n = _device.Read(_readRaw, ResyncReadTimeoutMs);
+        var n = _device.Read(_readRaw, timeoutMs);
         if (n <= 0) return n;
         if (_trace != null) TraceNote(_traceQuiet ? $"drain n={n}" : $"drain n={n} {Hex(_readRaw.AsSpan(1), TraceReplyBytes)}");
         _readRaw.AsSpan(1, CorsairLinkProtocol.ReportLength).CopyTo(_read);

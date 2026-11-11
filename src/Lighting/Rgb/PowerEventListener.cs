@@ -29,15 +29,15 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
     private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? _curve;
-    private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? _hydroShift2;
+    private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? _aio;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? hydroShift2 = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null)
     {
         _curve = curve;
-        _hydroShift2 = hydroShift2;
+        _aio = aio;
         _slv3 = slv3;
         _bridge = bridge;
         _blackout = blackout;
@@ -94,8 +94,10 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             _bridge.OnSystemResume();
             _lianLi?.OnSystemResumed();
             _slv3?.OnSystemResumed();
-            _curve?.OnSystemResumed();
-            _hydroShift2?.ClearScreenOverlay(Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio.WakeOverlaySettleMs);
+            try { _curve?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II Curve resume failed: {ex.Message}"); }
+            try { _aio?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II resume failed: {ex.Message}"); }
         }
     }
 #endif
