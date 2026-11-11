@@ -12,7 +12,7 @@ public class CorsairLinkTemperatureSourcesTests
     private static CorsairLinkDevice Qx(int channel, float temp) => new()
     {
         Channel = channel, Type = 1, Name = "iCUE LINK QX RGB", Class = CorsairLinkClass.Fan,
-        HasSpeed = true, HasTemperature = true, TempC = temp,
+        HasSpeed = true, HasTemperature = true, FanProbe = true, TempC = temp,
     };
 
     private static CorsairLinkDevice Rx(int channel) => new()
@@ -36,7 +36,7 @@ public class CorsairLinkTemperatureSourcesTests
         var (provider, _) = Build(Qx(1, 18.9f), Rx(2), Qx(3, 24f));
         var sources = provider.GetTemperatureSources();
         Assert.Equal(new[] { "corsair:ch1:temp", "corsair:ch3:temp" }, sources.Select(s => s.Id));
-        Assert.Equal(new[] { "iCUE LINK QX RGB probe (Port 1)", "iCUE LINK QX RGB probe (Port 3)" }, sources.Select(s => s.Name));
+        Assert.Equal(new[] { "QX fan (Port 1)", "QX fan (Port 3)" }, sources.Select(s => s.Name));
     }
 
     [Fact]
@@ -67,10 +67,38 @@ public class CorsairLinkTemperatureSourcesTests
     }
 
     [Fact]
+    public void An_aio_probe_stays_under_cooler_and_out_of_fan_sensors()
+    {
+        var (provider, _) = Build(new CorsairLinkDevice
+        {
+            Channel = 1, Type = 7, Name = "iCUE LINK H150i", Class = CorsairLinkClass.Aio,
+            HasSpeed = true, HasTemperature = true, TempC = 30f,
+        });
+        var sources = provider.GetTemperatureSources();
+        Assert.Empty(HubCoolerSensors.BuildFanSensors(sources));
+        Assert.Single(Assert.Single(HubCoolerSensors.Build(sources)).Sensors);
+    }
+
+    [Fact]
+    public void Merge_fills_both_lists_of_an_extras_snapshot_and_survives_no_provider()
+    {
+        var (provider, _) = Build(Qx(1, 20f));
+        var extras = new Nexus.Service.Models.Sensors.SensorExtras();
+        HubCoolerSensors.Merge(extras, null);
+        Assert.Empty(extras.FanSensors);
+        HubCoolerSensors.Merge(extras, provider);
+        Assert.Single(Assert.Single(extras.FanSensors).Sensors);
+        Assert.Empty(extras.Coolers);
+    }
+
+    [Fact]
     public void Probes_land_in_one_hub_component_with_the_curve_source_ids()
     {
         var (provider, _) = Build(Qx(1, 20f), Qx(2, 21f));
-        var component = Assert.Single(HubCoolerSensors.Build(provider.GetTemperatureSources()));
+        var sources = provider.GetTemperatureSources();
+        Assert.All(sources, s => Assert.Equal("Fan sensors", s.Category));
+        Assert.Empty(HubCoolerSensors.Build(sources));
+        var component = Assert.Single(HubCoolerSensors.BuildFanSensors(sources));
         Assert.Equal("corsair", component.Id);
         Assert.Equal(new[] { "corsair:ch1:temp", "corsair:ch2:temp" }, component.Sensors.Select(s => s.Id));
     }

@@ -399,6 +399,7 @@ public sealed class CurveEngine : BackgroundService
         // Mixed reads other curves' output and Sync reads a channel another
         // curve may drive, so evaluate in dependency order.
         var rawByCurve = new Dictionary<string, double>(StringComparer.Ordinal);
+        var fellBack = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var curveDoc in CurveOrdering.Sort(snapshot))
         {
@@ -413,12 +414,17 @@ public sealed class CurveEngine : BackgroundService
                 {
                     temp = _fans.ReadTemperature(curveDoc.Input.Id);
                 }
-                if (temp is null && NeedsTemperature(curveDoc.Type))
+                // A source that reads nothing (hub unplugged, not detected yet) drives the curve's fans at a
+                // fixed safe duty instead of leaving them at their last one. A mix falls back only when every
+                // member did. The guard still owns the final duty below, so it wins over this.
+                var missingSource = (temp is null && NeedsTemperature(curveDoc.Type))
+                    || (curveDoc.Type == "Mixed" && AllMembersFellBack(curveDoc.Mixed, fellBack));
+                if (missingSource)
                 {
-                    continue;
+                    fellBack.Add(curveDoc.Id);
                 }
 
-                double? rawSpeed = curveDoc.Type switch
+                double? rawSpeed = missingSource ? MissingSourceDuty : curveDoc.Type switch
                 {
                     "Flat" => EvaluateFlat(curveDoc.Flat),
                     "Linear" => EvaluateLinear(curveDoc.Linear, temp!.Value),
@@ -434,18 +440,32 @@ public sealed class CurveEngine : BackgroundService
                     continue;
                 }
 
-                rawByCurve[curveDoc.Id] = rawSpeed.Value;
-                lock (_lastRaw) { _lastRaw[curveDoc.Id] = rawSpeed.Value; }
+                // A fallback duty is not a reading: mixes skip it as a missing member, and the scale
+                // and smoothing that shape a curve's output would only delay the safe duty.
+                if (!missingSource)
+                {
+                    rawByCurve[curveDoc.Id] = rawSpeed.Value;
+                    lock (_lastRaw) { _lastRaw[curveDoc.Id] = rawSpeed.Value; }
+                }
 
                 // Sync mirrors a channel whose duty already carries the global
                 // boost; applying it again would compound it. The guard curve is a
                 // safety curve and is never scaled.
-                var modifiedSpeed = CoolingConfigLint.IsGlobalModifierExempt(curveDoc)
+                var modifiedSpeed = missingSource || CoolingConfigLint.IsGlobalModifierExempt(curveDoc)
                     ? Math.Clamp(rawSpeed.Value, 0, 100)
                     : Math.Clamp(rawSpeed.Value * globalMod, 0, 100);
 
                 var responseTime = GetResponseTime(curveDoc);
-                var smoothedSpeed = ApplySmoothing(curveDoc.Id, modifiedSpeed, responseTime);
+                double smoothedSpeed;
+                if (missingSource)
+                {
+                    _lastSpeed[curveDoc.Id] = modifiedSpeed;
+                    smoothedSpeed = modifiedSpeed;
+                }
+                else
+                {
+                    smoothedSpeed = ApplySmoothing(curveDoc.Id, modifiedSpeed, responseTime);
+                }
 
                 // Apply to all output channels. Dedup against the last duty we
                 // wrote to that channel and rate-limit per-channel writes so we
@@ -488,6 +508,11 @@ public sealed class CurveEngine : BackgroundService
                     });
                 }
 
+                if (missingSource)
+                {
+                    continue;
+                }
+
                 calculations.Add(new CurveCalculation
                 {
                     CurveId = curveDoc.Id,
@@ -503,6 +528,8 @@ public sealed class CurveEngine : BackgroundService
                 Console.Error.WriteLine($"[curve-engine] curve '{curveDoc.Id}' failed: {ex.Message}");
             }
         }
+
+        LogFallbackTransitions(fellBack);
 
         Isolated("guard orphan pass", () => ApplyGuardToOrphanOutputs(activePlan, manualSnapshot, present, owned, drivenChannels));
 
@@ -935,6 +962,49 @@ public sealed class CurveEngine : BackgroundService
     /// <summary>Curve types driven by a temperature sensor. Flat, Mixed and Sync have no input of their own.</summary>
     internal static bool NeedsTemperature(string type) =>
         type is "Linear" or "Graph" or "Trigger" or "Auto";
+
+    /// <summary>The duty a temperature-driven curve holds while its source reads nothing.</summary>
+    internal const double MissingSourceDuty = 70;
+
+    /// <summary>True when a mix has members and every one of them is in the fallback set.</summary>
+    internal static bool AllMembersFellBack(MixedCurveData? mixed, IReadOnlySet<string> fellBack)
+    {
+        if (mixed is null || mixed.CurveIds.Count == 0)
+        {
+            return false;
+        }
+        foreach (var id in mixed.CurveIds)
+        {
+            if (!fellBack.Contains(id))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Curves currently on the fallback duty, so entering and leaving log once rather than every tick.
+    private readonly HashSet<string> _fallbackActive = new(StringComparer.Ordinal);
+
+    private void LogFallbackTransitions(HashSet<string> fellBack)
+    {
+        foreach (var id in fellBack)
+        {
+            if (_fallbackActive.Add(id))
+            {
+                Console.Error.WriteLine($"[curve-engine] curve '{id}' source has no reading, holding {MissingSourceDuty:0}%");
+            }
+        }
+        _fallbackActive.RemoveWhere(id =>
+        {
+            if (fellBack.Contains(id))
+            {
+                return false;
+            }
+            Console.Error.WriteLine($"[curve-engine] curve '{id}' source reading is back, resuming the curve");
+            return true;
+        });
+    }
 
     /// <summary>
     /// Combine member curves' raw output. A member that did not evaluate this

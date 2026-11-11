@@ -2276,6 +2276,7 @@ public sealed partial class StreamDeckConnectionWorker : BackgroundService, IDec
         }
 
         var extras = needExtras ? _sensors.GetSensorExtras() : null;
+        if (extras is not null) Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
         return new SensorSnapshotSources(
             extras,
             needFps ? _fps?.GetComponent().Sensors : null,

@@ -209,7 +209,7 @@ public static class SensorSnapshotResolver
     /// <summary>Every category <see cref="GetCategorySensors"/> reads, so a caller can validate one without a second list.</summary>
     public static bool IsSupportedCategory(string category) => category is
         "quick" or "cpu" or "gpu" or "memory" or "motherboard" or "storage" or "smart"
-        or "memoryModule" or "battery" or "cooler" or "psu" or "embeddedController" or "network" or "fps";
+        or "memoryModule" or "battery" or "cooler" or "fanSensors" or "psu" or "embeddedController" or "network" or "fps";
 
     public static IReadOnlyList<HardwareSensor> GetCategorySensors(
         ISensorProvider sensors,
@@ -230,6 +230,7 @@ public static class SensorSnapshotResolver
         "memoryModule" => FlattenComponents(Extras(sensors, sources).MemoryModules),
         "battery" => FlattenComponents(Extras(sensors, sources).Batteries),
         "cooler" => FlattenComponents(Extras(sensors, sources).Coolers),
+        "fanSensors" => FlattenComponents(Extras(sensors, sources).FanSensors),
         "psu" => FlattenComponents(Extras(sensors, sources).Psus),
         "embeddedController" => FlattenComponents(Extras(sensors, sources).EmbeddedControllers),
         "network" => sources.NetworkSensors ?? FlattenComponents(Extras(sensors, sources).Nics),
@@ -239,7 +240,7 @@ public static class SensorSnapshotResolver
 
     /// <summary>Categories <see cref="GetCategorySensors"/> reads out of <see cref="SensorExtras"/>, so a caller knows when gathering it is worth the walk. Mirrors nexus-web's deckCategoryUsesExtras.</summary>
     public static bool CategoryUsesExtras(string category) =>
-        category is "network" or "memoryModule" or "battery" or "cooler" or "psu" or "embeddedController";
+        category is "network" or "memoryModule" or "battery" or "cooler" or "fanSensors" or "psu" or "embeddedController";
 
     /// <summary>Categories whose sensors come from IFpsProvider, which this class does not depend on. Mirrors nexus-web's deckCategoryUsesFps.</summary>
     public static bool CategoryUsesFps(string category) => category == "fps";
