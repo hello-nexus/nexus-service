@@ -62,7 +62,10 @@ public class SmbusMutexReclaimerTests
             held.Set();
             release.Wait();
             keep.ReleaseMutex();
-        });
+        })
+        {
+            IsBackground = true,
+        };
         owner.Start();
         Assert.True(held.Wait(TimeSpan.FromSeconds(5)));
         Assert.Equal(SmbusMutexReclaimer.Outcome.HeldByOther, SmbusMutexReclaimer.Reclaim(name, TimeSpan.FromMilliseconds(100)));
