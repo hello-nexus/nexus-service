@@ -317,7 +317,7 @@ public class AreaSamplingTests
     }
 
     [Fact]
-    public async Task LinearLightMean_OfHalfBlackHalfWhiteCell_IsAbout188()
+    public async Task PlainMean_OfHalfBlackHalfWhiteCell_Is127()
     {
         var dev = new DeviceFrame(0, "one", 1, x: 0, y: 0, w: 1000, h: 600);
         var leds = await RenderOnce(dev, c =>
@@ -331,7 +331,7 @@ public class AreaSamplingTests
                 }
             }
         }, area: true);
-        Assert.InRange(leds[0], 187, 189);
+        Assert.Equal(127, leds[0]);
     }
 
     [Fact]
@@ -341,7 +341,7 @@ public class AreaSamplingTests
         var plain = await RenderOnce(dev, c => { c.Clear(); c.SetPixel(10, 10, 255, 255, 255); }, area: false, fullFrame: true);
         var dev2 = new DeviceFrame(0, "one", 1, x: 400, y: 250, w: 100, h: 100);
         var area = await RenderOnce(dev2, c => { c.Clear(); c.SetPixel(10, 10, 255, 255, 255); }, area: true, fullFrame: true);
-        // one lit pixel of the whole canvas: the cell is the whole canvas, so the linear mean is tiny but not above the plain box read
+        // one lit pixel of the whole canvas: the cell is the whole canvas, so the mean is tiny but not above the plain box read
         Assert.True(area[0] <= 30);
         Assert.NotNull(plain);
     }
