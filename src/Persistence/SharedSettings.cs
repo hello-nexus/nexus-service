@@ -222,14 +222,13 @@ public sealed class DiagnosticsThresholdsPatch
 
 /// <summary>Master + per-category native-notification toggles for diagnostics
 /// alerts, plus the minimum gap between repeat alerts for the same
-/// component. Every toggle defaults off; DiagnosticsAlertService only raises
+/// component. DiagnosticsAlertService only raises
 /// a native notification when Enabled and the reason's own category are
 /// both true.</summary>
 public sealed class DiagnosticsNotifications
 {
-    // Master switch stays off by default; the per-category flags default on, so
-    // turning notifications on notifies for every category without extra setup.
-    public bool Enabled { get; set; }
+    // On for a new install. JsonConfigStore forces it off for any stored file that lacks the key (older builds defaulted it off).
+    public bool Enabled { get; set; } = true;
     public bool HighTemp { get; set; } = true;
     public bool StorageHealth { get; set; } = true;
     public bool Cooling { get; set; } = true;

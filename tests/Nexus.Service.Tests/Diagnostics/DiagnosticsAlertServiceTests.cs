@@ -174,9 +174,9 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
-    public void DefaultSettings_AllTogglesOff_ProducesNoNotifications()
+    public void MasterSwitchOff_ProducesNoNotifications()
     {
-        var notifications = new DiagnosticsNotifications();
+        var notifications = new DiagnosticsNotifications { Enabled = false };
         var components = new[]
         {
             Component("storage:1", "storage", HealthStatuses.Act, HealthStatuses.Act),

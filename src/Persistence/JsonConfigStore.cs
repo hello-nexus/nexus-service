@@ -107,6 +107,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // for the v8 OnboardingCompleted migration, so route through
                 // Migrate() the same as any other pre-v8 document.
                 _cached = new NexusSettings { SchemaVersion = 0 };
+                _cached.Diagnostics.Notifications.Enabled = false;
                 Migrate(_cached);
                 Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false);
                 // Sign-ins and paired devices survive a reset of the rest of the file.
@@ -139,6 +140,12 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         // Pre-pin per-device locks and fan locks fold into pins before
         // anything reads the document; a no-op once migrated.
         var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
+        // The master switch defaults on for a new install only; a stored file without the key was written when it defaulted off.
+        if (!HasStoredNotificationsEnabled(json))
+        {
+            _cached.Diagnostics.Notifications.Enabled = false;
+            pinsMigrated = true;
+        }
         // A file with no schemaVersion key deserializes to the current
         // version and would skip Migrate(), yet it is not a fresh install.
         if (!HasTopLevelSchemaVersion(json))
@@ -282,6 +289,32 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     }
 
     /// <summary>True when the document is not an object, or its top level carries a schemaVersion property; a nested one does not count.</summary>
+    private static bool HasStoredNotificationsEnabled(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.ValueKind != JsonValueKind.Object
+            || (TryGetIgnoreCase(doc.RootElement, "diagnostics", out var d)
+                && TryGetIgnoreCase(d, "notifications", out var n)
+                && TryGetIgnoreCase(n, "enabled", out _));
+    }
+
+    private static bool TryGetIgnoreCase(JsonElement parent, string name, out JsonElement value)
+    {
+        if (parent.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in parent.EnumerateObject())
+            {
+                if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = prop.Value;
+                    return true;
+                }
+            }
+        }
+        value = default;
+        return false;
+    }
+
     private static bool HasTopLevelSchemaVersion(string json)
     {
         using var doc = JsonDocument.Parse(json);

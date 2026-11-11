@@ -350,7 +350,7 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_act_severity_is_not_urgent_like_cooling_and_notifyDesktop_off_stays_silent()
+    public void Engine_act_severity_is_urgent_watch_is_not_and_notifyDesktop_off_stays_silent()
     {
         var rig = new Rig();
         var loud = TempRule(raise: 0, id: "r1");
@@ -364,7 +364,7 @@ public partial class SensorAlertEngineTests
         rig.Seconds(1);
 
         var (notice, _) = Assert.Single(rig.Notices);
-        Assert.False(notice.Urgent);
+        Assert.True(notice.Urgent);
         Assert.Equal(SensorAlertStates.Active, rig.State("r2"));
     }
 

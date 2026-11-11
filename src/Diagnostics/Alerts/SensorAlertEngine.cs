@@ -1056,7 +1056,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         new(
             "Sensor alert",
             SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit, st.Source),
-            NoticeKind);
+            NoticeKind,
+            Urgent: rule.Severity == SensorAlertRules.Act);
 
     private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 }

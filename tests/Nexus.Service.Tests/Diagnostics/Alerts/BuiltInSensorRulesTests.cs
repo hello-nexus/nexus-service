@@ -108,6 +108,18 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         Assert.All(d.SensorAlerts, r => Assert.False(r.NotifyDesktop));
     }
 
+    [Fact]
+    public void An_upgrade_that_ignored_the_cooling_aggregate_seeds_every_built_in_disabled()
+    {
+        var d = new DiagnosticsSettings();
+        d.Notifications.Enabled = true;
+        d.IgnoredComponents.Add("cooling");
+
+        BuiltInSensorRules.Ensure(d, newInstall: false);
+
+        Assert.All(d.SensorAlerts, r => Assert.False(r.Enabled));
+    }
+
     [Theory]
     [InlineData(double.NaN, 100)]
     [InlineData(500, 105)]

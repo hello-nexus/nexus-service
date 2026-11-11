@@ -399,10 +399,9 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
         Assert.Equal(60, thresholds.GetProperty("ramC").GetDouble());
         Assert.Equal(0, diagnostics.GetProperty("warningLingerMinutes").GetInt32());
 
-        // Master switch off by default; every category on, so enabling
-        // notifications alerts for all of them without extra setup.
+        // Master switch and every category on by default.
         var notifications = diagnostics.GetProperty("notifications");
-        Assert.False(notifications.GetProperty("enabled").GetBoolean());
+        Assert.True(notifications.GetProperty("enabled").GetBoolean());
         Assert.True(notifications.GetProperty("highTemp").GetBoolean());
         Assert.True(notifications.GetProperty("storageHealth").GetBoolean());
         Assert.True(notifications.GetProperty("cooling").GetBoolean());

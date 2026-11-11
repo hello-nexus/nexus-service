@@ -182,6 +182,11 @@ public static class BuiltInSensorRules
         }
         // What the user effectively had: the old high-temperature toast needed both the master and its own category.
         rule.NotifyDesktop = d.Notifications.Enabled && d.Notifications.HighTemp;
+        // Ignoring the aggregate "cooling" component dropped every temperature warning, in health and notifications.
+        if (d.IgnoredComponents?.Contains("cooling") == true)
+        {
+            rule.Enabled = false;
+        }
         return rule;
     }
 
