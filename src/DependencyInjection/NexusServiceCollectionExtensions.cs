@@ -117,7 +117,7 @@ public static class NexusServiceCollectionExtensions
 #error No ISensorProvider for this target - wire one when adding a platform.
 #endif
         // Idle until a lighting shader reads a sensor uniform; see SensorFeed.
-        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>()));
+        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>(), () => sp.GetService<IFanControlProvider>()));
         services.AddSingleton<ProcessMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<ProcessMonitor>());
         services.AddSingleton<Nexus.Service.Activity.GpuProcessMonitor>();
@@ -2028,7 +2028,8 @@ public static class NexusServiceCollectionExtensions
 #endif
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
                 sp.GetRequiredService<Nexus.Service.Fps.IFpsProvider>(),
-                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>())));
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                () => sp.GetService<IFanControlProvider>())));
         services.AddSingleton<Nexus.Service.Cooling.TryxCoolingProvider>();
         services.AddSingleton<Nexus.Service.Peripherals.Tryx.Panorama.TryxPanoramaHeartbeatWorker>();
         services.AddHostedService(sp =>

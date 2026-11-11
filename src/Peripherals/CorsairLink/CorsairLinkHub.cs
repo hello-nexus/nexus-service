@@ -716,6 +716,7 @@ public sealed class CorsairLinkHub : IDisposable
                 LedCount = meta.LedCount > 0 ? meta.LedCount : dynamicLeds,
                 HasSpeed = meta.HasSpeed,
                 HasTemperature = meta.HasTemperature,
+                FanProbe = meta.FanProbe,
                 Serial = d.Serial,
                 PortId = CorsairLinkProtocol.PortIdForChannel(d.Channel, _firmwareMajor),
                 Rpm = d.Channel < speeds.Length ? speeds[d.Channel] : -1,
