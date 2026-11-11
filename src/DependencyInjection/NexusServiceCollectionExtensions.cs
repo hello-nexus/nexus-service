@@ -2131,6 +2131,17 @@ public static class NexusServiceCollectionExtensions
             // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
             // closes, since the frames and the connect handshake wipe what an earlier one drew.
             wireless.AioSwitched += _ => aio.ClearScreenOverlay();
+            // The USB link survives a lock sleep, so the firmware redraws its own layer over the stream until a push wipes it.
+            if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
+            {
+                lockState.Changed += locked =>
+                {
+                    if (!locked)
+                    {
+                        aio.ClearScreenOverlay(Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio.WakeOverlaySettleMs);
+                    }
+                };
+            }
             aio.ScreenOwnerChanged += (mac, ownScreen) =>
             {
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
