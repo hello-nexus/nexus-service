@@ -393,7 +393,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             // is ~188ms on a 12-core part - 57% of the whole walk, all of it
             // sleeping. Holding 1ms resolution across the walk turns each of
             // those into ~1-2ms.
-            _walkWatch.BeginWalk();
+            // The test host walks an empty tree; it must not arm the shared deadline.
+            if (!_testHost)
+            {
+                _walkWatch.BeginWalk();
+            }
             try
             {
                 using (WindowsTimerResolution.Elevate())
