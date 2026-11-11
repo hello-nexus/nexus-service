@@ -22,7 +22,6 @@ internal enum SensorAlertEffect
     None = 0,
     Raised = 1,
     Cleared = 2,
-    Repeated = 4,
     /// <summary>The reported state changed; subscribers should refetch.</summary>
     Changed = 8,
 }
@@ -41,7 +40,6 @@ internal sealed class SensorAlertRuntime
     public DateTimeOffset? InvalidSince;
     public DateTimeOffset? InvalidSinceUtc;
     public DateTimeOffset? ClearSince;
-    public DateTimeOffset LastNotified;
     public string Units = "";
     public string Reported = SensorAlertStates.Ok;
     public SensorAlertRule? Config;
@@ -84,7 +82,6 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
     private readonly Nexus.Service.Diagnostics.Storage.ISmartHealthSource? _drives;
-    private readonly Dictionary<string, DateTimeOffset> _lastToast = new(StringComparer.Ordinal);
     private readonly TimeProvider _time;
     private readonly long _stamp0;
     private readonly DateTimeOffset _wall0;
@@ -178,8 +175,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    /// <summary>Delivers a notice; the second argument is ignoreMaster.</summary>
-    public Action<DiagnosticsAlertNotice, bool>? NoticeSink { get; set; }
+    /// <summary>Delivers a notice. The second argument is the shared-cooldown key.</summary>
+    public Action<DiagnosticsAlertNotice, string>? NoticeSink { get; set; }
 
     /// <summary>Raised after a transition or a rule change, never for a plain value update.</summary>
     public event Action? Changed;
@@ -292,7 +289,6 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             st.Phase = SensorAlertStates.Active;
             st.PhaseSince = now;
             st.PhaseSinceUtc = stamp;
-            st.LastNotified = now;
             st.ClearSince = null;
             st.Acknowledged = false;
             st.Ended = null;
@@ -321,11 +317,6 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
 
         st.ClearSince = null;
-        if (rule.RepeatMinutes > 0 && !st.Acknowledged && now - st.LastNotified >= TimeSpan.FromMinutes(rule.RepeatMinutes))
-        {
-            st.LastNotified = now;
-            return SensorAlertEffect.Repeated;
-        }
         return SensorAlertEffect.None;
     }
 
@@ -433,7 +424,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
-    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, bool NotifyMaster, int CooldownMinutes)
+    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit)
     {
         public void Deconstruct(out List<SensorAlertRule> rules, out bool fahrenheit)
         {
@@ -446,12 +437,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     {
         var rules = new List<SensorAlertRule>();
         var fahrenheit = false;
-        var master = true;
-        var cooldown = 0;
         _store.Read(s =>
         {
-            master = s.Diagnostics.Notifications.SensorAlerts;
-            cooldown = Math.Max(0, s.Diagnostics.Notifications.SensorCooldownMinutes);
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
@@ -461,7 +448,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             }
             fahrenheit = string.Equals(s.Units.MonitoringTempUnit, "f", StringComparison.OrdinalIgnoreCase);
         });
-        return new Snap(rules, fahrenheit, master, cooldown);
+        return new Snap(rules, fahrenheit);
     }
 
     /// <summary>The configured rules, as copies.</summary>
@@ -476,7 +463,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var changed = ReconcileCore(rules, now);
 
         var enabled = rules.Where(r => r.Enabled).ToList();
-        var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify)>();
+        var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify, string Key)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
         var readings = new List<SeriesEntry>(enabled.Count);
         if (enabled.Count > 0)
@@ -522,11 +509,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
         // After the heal, so a healed id already matches the stored rule.
         DropStaleSeries();
-        foreach (var (notice, notify) in notices)
+        foreach (var (notice, notify, key) in notices)
         {
             if (notify)
             {
-                DeliverNotice(notice);
+                DeliverNotice(notice, key);
             }
         }
         if (changed)
@@ -724,7 +711,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         DateTimeOffset now,
         bool fahrenheit,
         Snap snap,
-        List<(DiagnosticsAlertNotice, bool)> notices)
+        List<(DiagnosticsAlertNotice, bool, string)> notices)
     {
         if (effect == SensorAlertEffect.None)
         {
@@ -749,23 +736,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 _history.RemoveAt(0);
             }
         }
-        if ((effect & (SensorAlertEffect.Raised | SensorAlertEffect.Repeated)) != 0)
+        if ((effect & SensorAlertEffect.Raised) != 0)
         {
-            var notify = rule.NotifyDesktop && snap.NotifyMaster;
-            if (notify && (effect & SensorAlertEffect.Raised) != 0)
-            {
-                // The cooldown spans episodes, so a value hovering at its limit does not toast on every dip and return. An act alert always toasts.
-                var mono = Mono();
-                if (rule.Severity != SensorAlertRules.Act && _lastToast.TryGetValue(rule.Id, out var last) && mono - last < TimeSpan.FromMinutes(snap.CooldownMinutes))
-                {
-                    notify = false;
-                }
-                else
-                {
-                    _lastToast[rule.Id] = mono;
-                }
-            }
-            notices.Add((BuildNotice(rule, st, fahrenheit), notify));
+            notices.Add((BuildNotice(rule, st, fahrenheit), rule.NotifyDesktop, "alert:" + rule.Id));
         }
         if ((effect & SensorAlertEffect.Cleared) != 0)
         {
@@ -778,11 +751,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return (effect & (SensorAlertEffect.Raised | SensorAlertEffect.Cleared | SensorAlertEffect.Changed)) != 0;
     }
 
-    private void DeliverNotice(DiagnosticsAlertNotice notice)
+    private void DeliverNotice(DiagnosticsAlertNotice notice, string key)
     {
         try
         {
-            NoticeSink?.Invoke(notice, true);
+            NoticeSink?.Invoke(notice, key);
         }
         catch (Exception ex)
         {
@@ -831,7 +804,6 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             {
                 EndEpisode(_states[id], wall);
                 _states.Remove(id);
-                _lastToast.Remove(id);
                 changed = true;
             }
             foreach (var rule in rules)
@@ -1083,8 +1055,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         new(
             "Sensor alert",
             SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit, st.Source),
-            NoticeKind,
-            Urgent: rule.Severity == SensorAlertRules.Act);
+            NoticeKind);
 
     private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 }

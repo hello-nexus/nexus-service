@@ -56,7 +56,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
         Assert.Equal(JsonValueKind.Array, list.GetProperty("history").ValueKind);
         Assert.Equal(JsonValueKind.Null, list.GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == id).GetProperty("low").ValueKind);
 
-        var updated = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", Rule(low: 10, high: 90, severity: "act", repeat: 15));
+        var updated = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", Rule(low: 10, high: 90, severity: "act"));
         Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
         var after = await updated.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(id, after.GetProperty("id").GetString());
@@ -106,12 +106,11 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
-    public async Task Bad_severity_and_repeat_are_a_400()
+    public async Task Bad_severity_is_a_400()
     {
         var client = Client();
 
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(severity: "loud"))).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(repeat: 7))).StatusCode);
     }
 
     [Fact]

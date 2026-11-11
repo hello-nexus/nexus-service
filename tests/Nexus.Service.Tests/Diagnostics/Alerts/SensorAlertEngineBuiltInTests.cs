@@ -277,53 +277,22 @@ public partial class SensorAlertEngineTests
         Assert.Single(rig.Engine.HealthComponents());
     }
 
-    // ---- notification master and cooldown ----
+    // ---- notification routing ----
 
     [Fact]
-    public void The_sensor_notification_master_silences_every_rule_but_not_the_state()
+    public void Each_episode_emits_a_notice_keyed_by_its_rule_and_a_rule_with_notifyDesktop_off_emits_none()
     {
-        var rig = BuiltInRig(s => s.Diagnostics.Notifications.SensorAlerts = false);
-        rig.SetTemp(104, "cpu/pkg", "CPU Package");
-
-        rig.Seconds(6);
-
-        Assert.Equal(SensorAlertStates.Active, rig.State("builtin-cpu"));
-        Assert.Empty(rig.Notices);
-    }
-
-    [Fact]
-    public void The_cooldown_suppresses_a_re_raise_of_the_same_rule_until_it_passes()
-    {
-        var rig = BuiltInRig(s => s.Diagnostics.Notifications.SensorCooldownMinutes = 30);
+        var rig = BuiltInRig(s => s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-gpu").NotifyDesktop = false);
+        rig.Sensors.Gpus.Add(Gpu("RTX", integrated: false, 95));
         rig.SetTemp(104, "cpu/pkg", "CPU Package");
         rig.Seconds(6);
         rig.SetTemp(60, "cpu/pkg", "CPU Package");
         rig.Seconds(7);
-        rig.SetTemp(104, "cpu/pkg", "CPU Package");
-        rig.Seconds(6);
-
-        Assert.Equal(SensorAlertStates.Active, rig.State("builtin-cpu"));
-        Assert.Single(rig.Notices);
-
-        rig.SetTemp(60, "cpu/pkg", "CPU Package");
-        rig.Seconds(7);
-        rig.Time.Advance(TimeSpan.FromMinutes(31));
         rig.SetTemp(104, "cpu/pkg", "CPU Package");
         rig.Seconds(6);
 
         Assert.Equal(2, rig.Notices.Count);
-    }
-
-    [Fact]
-    public void Notices_still_bypass_the_health_master()
-    {
-        var rig = BuiltInRig();
-        rig.Store.Update(s => s.Diagnostics.Notifications.Enabled = false);
-        rig.SetTemp(104, "cpu/pkg", "CPU Package");
-
-        rig.Seconds(6);
-
-        Assert.True(Assert.Single(rig.Notices).IgnoreMaster);
+        Assert.All(rig.Notices, n => Assert.Equal("alert:builtin-cpu", n.Key));
     }
 
     [Fact]
@@ -351,45 +320,6 @@ public partial class SensorAlertEngineTests
             new[] { component }, new DiagnosticsNotifications { Enabled = true }, new Dictionary<string, DateTime>(), DateTime.UtcNow);
         Assert.Empty(notices);
         Assert.Single(rig.Notices);
-    }
-
-    [Fact]
-    public void An_act_rule_always_toasts_on_a_re_raise_while_a_watch_rule_waits_out_the_cooldown()
-    {
-        var rig = BuiltInRig(s =>
-        {
-            s.Diagnostics.Notifications.SensorCooldownMinutes = 30;
-            s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-cpu").Severity = "act";
-        });
-        rig.Sensors.Gpus.Add(Gpu("RTX", integrated: false, 40));
-        for (var i = 0; i < 2; i++)
-        {
-            rig.SetTemp(104, "cpu/pkg", "CPU Package");
-            rig.Sensors.Gpus[0].Sensors[0].Value = 95;
-            rig.Seconds(6);
-            rig.SetTemp(60, "cpu/pkg", "CPU Package");
-            rig.Sensors.Gpus[0].Sensors[0].Value = 40;
-            rig.Seconds(7);
-        }
-
-        Assert.Equal(2, rig.Notices.Count(n => n.Notice.Text.StartsWith("CPU")));
-        Assert.Equal(1, rig.Notices.Count(n => n.Notice.Text.StartsWith("GPU")));
-    }
-
-    [Fact]
-    public void A_backward_wall_clock_step_does_not_extend_the_cooldown()
-    {
-        var rig = BuiltInRig(s => s.Diagnostics.Notifications.SensorCooldownMinutes = 30);
-        rig.SetTemp(104, "cpu/pkg", "CPU Package");
-        rig.Seconds(6);
-        rig.SetTemp(60, "cpu/pkg", "CPU Package");
-        rig.Seconds(7);
-        rig.Time.Advance(TimeSpan.FromMinutes(31));
-        rig.Time.JumpWall(TimeSpan.FromDays(-2));
-        rig.SetTemp(104, "cpu/pkg", "CPU Package");
-        rig.Seconds(6);
-
-        Assert.Equal(2, rig.Notices.Count);
     }
 
     [Fact]

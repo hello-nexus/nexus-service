@@ -75,8 +75,6 @@ public static class SensorAlertRules
     public const string Watch = "watch";
     public const string Act = "act";
 
-    private static readonly int[] AllowedRepeats = { 0, 5, 15, 60 };
-
     /// <summary>
     /// Whether two refs name the same sensor, so a series keeps its history. Ids decide. The one exception is a
     /// self-heal: the engine rewrites a stale Id server-side, so a client holding the old id sends the same name
@@ -142,10 +140,6 @@ public static class SensorAlertRules
         if (rule.Severity != Watch && rule.Severity != Act)
         {
             return "Severity must be 'watch' or 'act'.";
-        }
-        if (Array.IndexOf(AllowedRepeats, rule.RepeatMinutes) < 0)
-        {
-            return "Repeat must be 0, 5, 15 or 60 minutes.";
         }
         return null;
     }

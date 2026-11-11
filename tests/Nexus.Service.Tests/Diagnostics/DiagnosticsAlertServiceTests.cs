@@ -89,6 +89,68 @@ public class DiagnosticsAlertServiceTests
         Assert.False(fired);
     }
 
+    private sealed class StepTime : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = new(T0);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private static (DiagnosticsAlertService Service, List<DiagnosticsAlertNotice> Notices, StepTime Time, Nexus.Service.Tests.InMemoryConfigStore Store) SensorAlertService(bool master, int cooldownMinutes)
+    {
+        var store = new Nexus.Service.Tests.InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Diagnostics.Notifications.Enabled = master;
+            s.Diagnostics.Notifications.CooldownMinutes = cooldownMinutes;
+        });
+        var time = new StepTime();
+        var service = new DiagnosticsAlertService(null!, store, FeatureGates.AllEnabled, time);
+        var notices = new List<DiagnosticsAlertNotice>();
+        service.AlertNeedsAttention += notices.Add;
+        return (service, notices, time, store);
+    }
+
+    private static DiagnosticsAlertNotice SensorNotice() => new("Sensor alert", "CPU Package Temperature above 80", "sensorAlert");
+
+    [Fact]
+    public void RaiseCooled_MasterOff_SuppressesTheSensorToast()
+    {
+        var (service, notices, _, _) = SensorAlertService(master: false, cooldownMinutes: 60);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+
+        Assert.Empty(notices);
+    }
+
+    [Fact]
+    public void RaiseCooled_AppliesTheSharedCooldownPerKey()
+    {
+        var (service, notices, time, _) = SensorAlertService(master: true, cooldownMinutes: 60);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+        time.Now = time.Now.AddMinutes(30);
+        service.RaiseCooled("alert:r1", SensorNotice());
+        service.RaiseCooled("alert:r2", SensorNotice());
+        Assert.Equal(2, notices.Count);
+
+        time.Now = time.Now.AddMinutes(31);
+        service.RaiseCooled("alert:r1", SensorNotice());
+        Assert.Equal(3, notices.Count);
+    }
+
+    [Fact]
+    public void RaiseCooled_UsesTheSameCooldownSettingAsTheHealthNotices()
+    {
+        var (service, notices, time, store) = SensorAlertService(master: true, cooldownMinutes: 60);
+        store.Update(s => s.Diagnostics.Notifications.CooldownMinutes = 5);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+        time.Now = time.Now.AddMinutes(6);
+        service.RaiseCooled("alert:r1", SensorNotice());
+
+        Assert.Equal(2, notices.Count);
+    }
+
     private static HealthComponent Component(string id, string kind, string status, string reasonSeverity, string code = "x.reason") =>
         new()
         {

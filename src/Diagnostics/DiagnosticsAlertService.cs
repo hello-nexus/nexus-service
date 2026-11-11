@@ -41,6 +41,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
     private readonly HashSet<string> _alerted = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _lastNotifiedUtc = new(StringComparer.Ordinal);
     private readonly FeatureGates _gates;
+    private readonly TimeProvider _time;
 
     /// <summary>Raised when a component needs attention and the user's
     /// notification settings allow it. Platform bootstraps subscribe to
@@ -48,8 +49,9 @@ public sealed class DiagnosticsAlertService : BackgroundService
     /// Linux notify-send).</summary>
     public event Action<DiagnosticsAlertNotice>? AlertNeedsAttention;
 
-    public DiagnosticsAlertService(DiagnosticsHealthModel health, IConfigStore store, FeatureGates? gates = null)
+    public DiagnosticsAlertService(DiagnosticsHealthModel health, IConfigStore store, FeatureGates? gates = null, TimeProvider? time = null)
     {
+        _time = time ?? TimeProvider.System;
         _health = health;
         _store = store;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -70,6 +72,26 @@ public sealed class DiagnosticsAlertService : BackgroundService
         {
             ServiceLog.Warn($"[diagnostics-alert] notify subscriber failed: {ex.Message}");
         }
+    }
+
+    /// <summary>Raises a notice under the same gate as the health-poll notices: the master switch plus the shared cooldown, tracked per <paramref name="key"/> in the same table. The caller owns the category toggle.</summary>
+    public void RaiseCooled(string key, DiagnosticsAlertNotice notice)
+    {
+        var notifications = _store.Load().Diagnostics.Notifications;
+        if (!notifications.Enabled)
+        {
+            return;
+        }
+        var now = _time.GetUtcNow().UtcDateTime;
+        lock (_lastNotifiedUtc)
+        {
+            if (_lastNotifiedUtc.TryGetValue(key, out var last) && now - last < TimeSpan.FromMinutes(notifications.CooldownMinutes))
+            {
+                return;
+            }
+            _lastNotifiedUtc[key] = now;
+        }
+        Raise(notice);
     }
 
 #if DEV_TOOLS
@@ -139,7 +161,12 @@ public sealed class DiagnosticsAlertService : BackgroundService
             ServiceLog.Warn($"[diagnostics-alert] {component.Kind} issue: {component.Name} - {summary}");
         }
 
-        foreach (var notice in EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now))
+        IReadOnlyList<DiagnosticsAlertNotice> due;
+        lock (_lastNotifiedUtc)
+        {
+            due = EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now);
+        }
+        foreach (var notice in due)
         {
             try
             {

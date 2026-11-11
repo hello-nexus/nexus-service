@@ -498,7 +498,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
                 sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.ISmartHealthSource>());
             // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
-            engine.NoticeSink = (notice, ignoreMaster) => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().Raise(notice, ignoreMaster);
+            engine.NoticeSink = (notice, key) =>
+                sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().RaiseCooled(key, notice);
             return engine;
         });
         // The sampler records every enabled rule's reading as a tracked-sensor series.

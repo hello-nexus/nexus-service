@@ -99,7 +99,7 @@ public partial class SensorAlertEngineTests
         public InMemoryConfigStore Store { get; } = new();
         public StubSensors Sensors { get; } = new();
         public SensorAlertEngine Engine { get; }
-        public List<(DiagnosticsAlertNotice Notice, bool IgnoreMaster)> Notices { get; } = new();
+        public List<(DiagnosticsAlertNotice Notice, string Key)> Notices { get; } = new();
         public int ChangedCount { get; private set; }
 
         public StubSmart Smart { get; } = new();
@@ -107,7 +107,7 @@ public partial class SensorAlertEngineTests
         public Rig(TimeSpan? startupHold = null)
         {
             Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold, Smart);
-            Engine.NoticeSink = (n, ignore) => Notices.Add((n, ignore));
+            Engine.NoticeSink = (n, key) => Notices.Add((n, key));
             Engine.Changed += () => ChangedCount++;
         }
 
@@ -280,19 +280,6 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Step_repeat_renotifies_on_the_interval_only_while_breached()
-    {
-        var rule = TempRule(raise: 0);
-        rule.RepeatMinutes = 5;
-        var st = Fresh();
-        SensorAlertEngine.Step(rule, Ok(90), T0, st);
-
-        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(4), st));
-        Assert.True(SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(5), st).HasFlag(SensorAlertEffect.Repeated));
-        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(6), st));
-    }
-
-    [Fact]
     public void Step_no_repeat_means_once_per_episode()
     {
         var rule = TempRule(raise: 0);
@@ -341,8 +328,8 @@ public partial class SensorAlertEngineTests
         rig.Seconds(3);
 
         Assert.Equal(SensorAlertStates.Active, rig.State());
-        var (notice, ignoreMaster) = Assert.Single(rig.Notices);
-        Assert.True(ignoreMaster);
+        var (notice, key) = Assert.Single(rig.Notices);
+        Assert.Equal("alert:r1", key);
         Assert.Equal("sensorAlert", notice.Kind);
         Assert.Equal("CPU Package Temperature above 80 °C for 3 s (now 90 °C)", notice.Text);
         Assert.False(notice.Urgent);
@@ -363,7 +350,7 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_act_severity_is_urgent_and_notifyDesktop_off_stays_silent()
+    public void Engine_act_severity_is_not_urgent_like_cooling_and_notifyDesktop_off_stays_silent()
     {
         var rig = new Rig();
         var loud = TempRule(raise: 0, id: "r1");
@@ -377,7 +364,7 @@ public partial class SensorAlertEngineTests
         rig.Seconds(1);
 
         var (notice, _) = Assert.Single(rig.Notices);
-        Assert.True(notice.Urgent);
+        Assert.False(notice.Urgent);
         Assert.Equal(SensorAlertStates.Active, rig.State("r2"));
     }
 
@@ -683,19 +670,18 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_repeat_renotifies_while_active()
+    public void Engine_does_not_renotify_while_the_alert_stays_active()
     {
         var rig = new Rig();
-        var rule = TempRule(raise: 0);
-        rule.RepeatMinutes = 5;
-        rig.AddRule(rule);
+        rig.AddRule(TempRule(raise: 0));
         rig.SetTemp(90);
 
         rig.Seconds(1);
-        rig.Time.Advance(TimeSpan.FromMinutes(5));
+        rig.Time.Advance(TimeSpan.FromHours(3));
         rig.Engine.Tick();
+        rig.Seconds(5);
 
-        Assert.Equal(2, rig.Notices.Count);
+        Assert.Single(rig.Notices);
     }
 
     // ---- validation and persistence ----
@@ -711,16 +697,13 @@ public partial class SensorAlertEngineTests
     }
 
     [Theory]
-    [InlineData("loud", 0, false)]
-    [InlineData("watch", 7, false)]
-    [InlineData("act", 15, true)]
-    [InlineData("watch", 0, true)]
-    [InlineData("watch", 60, true)]
-    public void Validate_severity_and_repeat(string severity, int repeat, bool valid)
+    [InlineData("loud", false)]
+    [InlineData("act", true)]
+    [InlineData("watch", true)]
+    public void Validate_severity(string severity, bool valid)
     {
         var rule = TempRule();
         rule.Severity = severity;
-        rule.RepeatMinutes = repeat;
 
         Assert.Equal(valid, SensorAlertRules.Validate(rule) is null);
     }
@@ -758,7 +741,6 @@ public partial class SensorAlertEngineTests
             var store = new JsonConfigStore(path);
             var rule = TempRule(low: 10, high: null, raise: 7, clear: 9);
             rule.Severity = "act";
-            rule.RepeatMinutes = 15;
             store.Update(s => s.Diagnostics.SensorAlerts.Add(rule));
             store.FlushNow();
 
@@ -771,7 +753,7 @@ public partial class SensorAlertEngineTests
             Assert.Equal(7, back.RaiseAfterSeconds);
             Assert.Equal(9, back.ClearAfterSeconds);
             Assert.Equal("act", back.Severity);
-            Assert.Equal(15, back.RepeatMinutes);
+            Assert.Equal(0, back.RepeatMinutes);
             Assert.True(back.ShowInHealth);
             Assert.Equal("cpu/temp", back.Sensor.Id);
             Assert.Equal("CPU", back.Sensor.ParentName);
@@ -984,18 +966,6 @@ public partial class SensorAlertEngineTests
         var fps = TempRule();
         fps.Sensor.Category = "fps";
         Assert.NotNull(SensorAlertRules.Validate(fps));
-    }
-
-    [Fact]
-    public void Step_repeat_stops_after_acknowledge()
-    {
-        var rule = TempRule(raise: 0);
-        rule.RepeatMinutes = 5;
-        var st = Fresh();
-        SensorAlertEngine.Step(rule, Ok(90), T0, st);
-        st.Acknowledged = true;
-
-        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(6), st));
     }
 
     [Fact]
