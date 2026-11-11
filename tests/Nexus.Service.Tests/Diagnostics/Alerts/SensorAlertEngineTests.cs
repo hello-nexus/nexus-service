@@ -917,6 +917,12 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
+    public void Sensor_alert_toasts_open_the_sensors_tab()
+    {
+        Assert.Equal("/system/diagnostics/sensors", DiagnosticsAlertService.AlertPath("sensorAlert"));
+    }
+
+    [Fact]
     public void Engine_motherboard_rules_use_the_cached_read()
     {
         var rig = new Rig();
