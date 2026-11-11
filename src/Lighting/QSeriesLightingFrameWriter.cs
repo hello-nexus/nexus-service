@@ -158,6 +158,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             EnsureCapacity(ref _buffer, QSeriesCoolerHub.LedCount);
             var dst = _buffer!;
             FillBufferSlice(dst, 0, panelFrame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+            _engine.Live.Report(id, panelFrame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
             for (var i = ledCount; i < QSeriesCoolerHub.LedCount; i++) dst[i] = default;
             _hub.WriteLighting(new ReadOnlySpan<QColor>(dst, 0, QSeriesCoolerHub.LedCount));
         }
@@ -212,6 +213,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             var hasIdentify = _identify.TryGetActive(dev.Id, nowTicks, out var startTicks);
             var fillCount = Math.Min(dev.LedCount, blockWidth);
             FillBufferSlice(dst, offset, dev.LedBytes, fillCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+            _engine.Live.Report(dev.Id, dev.LedBytes, fillCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
             for (var i = fillCount; i < blockWidth && offset + i < dst.Length; i++) dst[offset + i] = default;
             offset += blockWidth;
         }
@@ -265,7 +267,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
         return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
-    private static void FillBufferSlice(QColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
+    internal static void FillBufferSlice(QColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
         double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)

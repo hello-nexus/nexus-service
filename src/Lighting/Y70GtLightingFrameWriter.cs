@@ -102,6 +102,8 @@ public sealed class Y70GtLightingFrameWriter : IHostedService, IDisposable
             {
                 Fill(_buffer, frame.LedBytes, Math.Min(frame.LedCount, Y70DisplayProtocol.BacklightLedCount), brightnessMul, adjust);
             }
+            _engine.Live.Report(id, frame.LedBytes, Math.Min(frame.LedCount, Y70DisplayProtocol.BacklightLedCount), brightnessMul, adjust,
+                _identify.TryGetActive(id, nowTicks, out var liveStart), liveStart, nowTicks, IdentifyFlashHalfPeriodMs);
         }
         _hub.WriteBacklight(_buffer);
     }

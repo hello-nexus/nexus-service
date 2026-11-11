@@ -120,6 +120,7 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
             var adjust = DeviceColorAdjust.For(pref);
             var bytes = adjust.IsIdentity ? frame.LedBytes : Trim(frame.LedBytes, frame.LedCount, adjust);
             _provider.SubmitEffectFrame(frame.Id, bytes, frame.LedCount, b01);
+            _engine.Live.Report(frame.Id, frame.LedBytes, frame.LedCount, b01, adjust);
             streamed = true;
         }
 

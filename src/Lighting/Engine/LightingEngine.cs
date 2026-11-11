@@ -133,6 +133,9 @@ public sealed partial class LightingEngine : IDisposable
     public string CurrentEffectName => _currentEffect?.Name ?? "none";
     public IEffect? CurrentEffect => _currentEffect;
     public DeviceFrame[] Devices => _devices;
+
+    /// <summary>Per-LED output the frame writers actually drive, collected for the dashboard preview.</summary>
+    public LiveLedSink Live { get; } = new();
     public bool Paused => _paused;
     public bool Frozen => _frozen;
     public bool Blackout => _blackout;

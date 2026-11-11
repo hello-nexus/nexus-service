@@ -190,6 +190,10 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
                 var brightnessMul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
                 var hasIdentify = _identify.TryGetActive(zone.Id, nowTicks, out var startTicks);
                 FillSlice(buf, offset, ledCount, frame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                if (frame is not null)
+                {
+                    _engine.Live.Report(zone.Id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                }
             }
             offset += ledCount;
         }

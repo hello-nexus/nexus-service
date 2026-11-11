@@ -2685,6 +2685,7 @@ public sealed class RgbBridge : IDisposable
             if (uncontrolledCount > 0 && _physFullyUncontrolled.TryGetValue(dev.PhysicalIndex, out var physUncontrolled) && physUncontrolled)
             {
                 ForgetBaseline(dev.PhysicalIndex);
+                _engine.Live.ReportNone(dev.Id);
                 pos += rgbSize;
                 continue;
             }
@@ -2779,6 +2780,8 @@ public sealed class RgbBridge : IDisposable
                     buffer[zoneOffset + led] = new RgbColor(frame[off2], frame[off2 + 1], frame[off2 + 2]).Scale(brightnessMul);
                 }
             }
+            _engine.Live.Report(dev.Id, frame.Slice(pos, writeLen * 3), writeLen, isOff ? 0.0 : brightnessMul, adjust,
+                hasIdentify && !isOff, idOverride.startTicks, nowTicks, Math.Max(1, IdentifyFlashPeriodMs / 2));
             _touchedPhysicals.Add(dev.PhysicalIndex);
             pos += rgbSize;
         }
