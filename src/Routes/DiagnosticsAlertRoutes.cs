@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Http;
 using Nexus.Service.Auth;
 using Nexus.Service.Diagnostics.Alerts;
 using Nexus.Service.Models;
+using Nexus.Service.Monitoring.History;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Routes;
 
@@ -53,7 +55,7 @@ public static class DiagnosticsAlertRoutes
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
         }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status409Conflict);
 
-        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine) =>
+        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {
             if (body is null)
             {
@@ -66,6 +68,7 @@ public static class DiagnosticsAlertRoutes
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
             var found = false;
+            var sensorChanged = false;
             store.Update(s =>
             {
                 var list = s.Diagnostics.SensorAlerts;
@@ -74,6 +77,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     return;
                 }
+                sensorChanged = SensorIdentityChanged(list[index].Sensor, body.Sensor);
                 list[index] = body;
                 found = true;
             });
@@ -81,16 +85,92 @@ public static class DiagnosticsAlertRoutes
             {
                 return Results.NotFound(ApiResponse.Fail("Unknown rule."));
             }
+            if (sensorChanged)
+            {
+                DropHistory(id, history, buffer);
+            }
             engine.Reconcile();
             return Results.Ok(body);
         }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound);
 
-        app.MapDelete("/diagnostics/alerts/{id}", (string id, IConfigStore store, SensorAlertEngine engine) =>
+        app.MapDelete("/diagnostics/alerts/{id}", (string id, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {
             store.Update(s => s.Diagnostics.SensorAlerts?.RemoveAll(r => r.Id == id));
+            DropHistory(id, history, buffer);
             engine.Reconcile();
             return Results.NoContent();
         }).Produces(StatusCodes.Status204NoContent);
+
+        app.MapGet("/diagnostics/alerts/history-series", (
+            long? from, long? to, int? maxPoints, string? ruleId,
+            IConfigStore store, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
+        {
+            if (from is null || to is null || to < from)
+            {
+                return Results.BadRequest(ApiResponse.Fail("from and to are required and to must be >= from"));
+            }
+
+            var fromSec = from.Value / 1000;
+            var toSec = to.Value / 1000;
+            var clamped = Math.Clamp(maxPoints ?? MonitoringHistoryRoutes.DefaultMaxPoints, MonitoringHistoryRoutes.MinMaxPoints, MonitoringHistoryRoutes.MaxMaxPoints);
+            var step = MetricsDecimation.StepSecondsFor(Math.Max(0, toSec - fromSec), clamped);
+            // The raw tier only reaches back a couple of days; an older window has to read the minute rollup.
+            var rawFloor = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - Monitoring.History.Binary.BinaryMetricsHistoryStore.SensorSeriesRawDays * 86_400L;
+            if (step < 60 && fromSec < rawFloor)
+            {
+                step = 60;
+            }
+
+            var names = new Dictionary<string, string>(StringComparer.Ordinal);
+            store.Read(s =>
+            {
+                foreach (var rule in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
+                {
+                    if (string.IsNullOrEmpty(ruleId) || rule.Id == ruleId)
+                    {
+                        names[rule.Id] = rule.Sensor.Name;
+                    }
+                }
+            });
+
+            try
+            {
+                // Tail first, then the store: see /monitoring/history for why the order matters.
+                var tail = buffer.SnapshotRange(fromSec, toSec);
+                var db = history.QuerySensorSeriesDecimated(fromSec, toSec, step);
+                var series = new List<MetricSeriesWire>();
+                foreach (var (id, name) in names.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                {
+                    var dbPoints = db.Where(sl => sl.SeriesId == id).Select(sl => (sl.Slot, (double?)sl.Avg, (double?)sl.Max));
+                    var tailPoints = MetricsDecimation.Decimate(
+                        tail.Select(t => new MetricSamplePoint(t.TsSec, t.SensorReadings.FirstOrDefault(r => r.Id == id)?.Value)),
+                        fromSec, toSec, step);
+                    var merged = MonitoringHistoryRoutes.MergeDecimatedSlots(dbPoints, tailPoints);
+                    if (merged.Count == 0)
+                    {
+                        continue;
+                    }
+                    series.Add(new MetricSeriesWire
+                    {
+                        Id = id,
+                        Kind = "sensorAlert",
+                        Name = name,
+                        Points = MonitoringHistoryRoutes.ToWirePoints(merged, wholeNumbers: false),
+                    });
+                }
+                return Results.Ok(new MetricsHistoryResponse
+                {
+                    RetentionDays = MetricsHistory.TempRetentionDays,
+                    StepSeconds = step,
+                    Series = series,
+                });
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[sensor-alerts] history-series query failed: {ex.Message}");
+                return Results.Ok(new MetricsHistoryResponse { Supported = false });
+            }
+        }).AllowPanel().Produces<MetricsHistoryResponse>().Produces<ApiResponse>(StatusCodes.Status400BadRequest);
 
         app.MapPost("/diagnostics/alerts/{id}/acknowledge", (string id, IConfigStore store, SensorAlertEngine engine) =>
         {
@@ -107,5 +187,15 @@ public static class DiagnosticsAlertRoutes
             engine.ClearHistory();
             return Results.NoContent();
         }).Produces(StatusCodes.Status204NoContent);
+    }
+
+    // Category, id and type name the series; a rename or parent change does not make it a different sensor.
+    private static bool SensorIdentityChanged(SensorRef before, SensorRef after) =>
+        before.Category != after.Category || before.Id != after.Id || !string.Equals(before.Type, after.Type, StringComparison.OrdinalIgnoreCase);
+
+    private static void DropHistory(string ruleId, IMetricsHistoryStore history, MetricsSampleBuffer buffer)
+    {
+        buffer.RemoveSensorSeries(ruleId);
+        history.DeleteSensorSeries(ruleId, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
 }

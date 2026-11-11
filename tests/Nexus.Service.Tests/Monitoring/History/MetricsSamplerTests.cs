@@ -129,6 +129,8 @@ public class MetricsSamplerTests
         public IReadOnlyList<FanDecimatedSlot> QueryFanDecimated(long fromSec, long toSec, int stepSeconds) =>
             Array.Empty<FanDecimatedSlot>();
 
+        public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<SensorSeriesDecimatedSlot>();
+        public void DeleteSensorSeries(string seriesId, long nowSec) { }
         public IReadOnlyList<ComponentTempDecimatedSlot> QueryComponentTempDecimated(long fromSec, long toSec, int stepSeconds) =>
             Array.Empty<ComponentTempDecimatedSlot>();
 

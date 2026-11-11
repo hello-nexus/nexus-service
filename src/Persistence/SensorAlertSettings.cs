@@ -14,7 +14,7 @@ public sealed class SensorRef
     public string ParentName { get; set; } = "";
 }
 
-/// <summary>One user threshold rule. Low and High are in the sensor's native unit (temperature is always Celsius); a null bound is not checked.</summary>
+/// <summary>One user threshold rule. Low and High are in the sensor's native unit (temperature is always Celsius); a null bound is not checked, and a rule with neither bound only tracks the sensor's history.</summary>
 public sealed class SensorAlertRule
 {
     public string Id { get; set; } = "";

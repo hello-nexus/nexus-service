@@ -71,6 +71,19 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
+    public async Task A_rule_without_bounds_is_a_valid_tracked_sensor()
+    {
+        var client = Client();
+
+        var res = await client.PostAsJsonAsync("/diagnostics/alerts", Rule(low: null, high: null));
+
+        Assert.Equal(HttpStatusCode.Created, res.StatusCode);
+        var rule = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Null, rule.GetProperty("low").ValueKind);
+        Assert.Equal(JsonValueKind.Null, rule.GetProperty("high").ValueKind);
+    }
+
+    [Fact]
     public async Task The_eleventh_rule_is_a_409()
     {
         var client = Client();
@@ -83,7 +96,6 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Theory]
-    [InlineData(null, null)]
     [InlineData(90.0, 80.0)]
     [InlineData(80.0, 80.0)]
     public async Task Bad_bounds_are_a_400(double? low, double? high)

@@ -500,6 +500,9 @@ public static class NexusServiceCollectionExtensions
             engine.NoticeSink = (notice, ignoreMaster) => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().Raise(notice, ignoreMaster);
             return engine;
         });
+        // The sampler records every enabled rule's reading as a tracked-sensor series.
+        services.AddSingleton<Nexus.Service.Monitoring.History.ISensorSeriesSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>());
         services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());

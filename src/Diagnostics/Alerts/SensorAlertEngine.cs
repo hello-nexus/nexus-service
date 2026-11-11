@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -62,7 +63,7 @@ internal sealed class SensorAlertRuntime
 /// changes through <see cref="Changed"/>, so this type depends on neither the
 /// alert service nor the socket hub.
 /// </summary>
-public sealed class SensorAlertEngine
+public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensorSeriesSource
 {
     internal static readonly TimeSpan UnavailableAfter = TimeSpan.FromSeconds(10);
     private const int MaxHistory = 100;
@@ -79,6 +80,19 @@ public sealed class SensorAlertEngine
     private readonly List<SensorAlertHistoryEntry> _history = new();
     private readonly LogThrottle _warnings = new(TimeSpan.FromMinutes(1));
     private (DateTimeOffset At, IReadOnlyList<HardwareSensor> List)? _smart;
+
+    // Latest resolved reading per enabled rule, swapped whole each tick; the
+    // metrics sampler stamps it onto its own 1 Hz samples.
+    private static readonly TimeSpan SeriesMaxAge = TimeSpan.FromSeconds(3);
+    private sealed record SeriesSnapshot(DateTimeOffset At, IReadOnlyList<Nexus.Service.Monitoring.History.SensorSeriesReading> Readings);
+    private SeriesSnapshot _series = new(DateTimeOffset.MinValue, Array.Empty<Nexus.Service.Monitoring.History.SensorSeriesReading>());
+
+    /// <summary>Readings of the enabled rules from the latest tick, empty once that tick is stale (evaluation paused or no rules).</summary>
+    public IReadOnlyList<Nexus.Service.Monitoring.History.SensorSeriesReading> CurrentReadings(long tsSec)
+    {
+        var snapshot = Volatile.Read(ref _series);
+        return Mono() - snapshot.At <= SeriesMaxAge ? snapshot.Readings : Array.Empty<Nexus.Service.Monitoring.History.SensorSeriesReading>();
+    }
 
     /// <summary>Delivers a notice; the second argument is ignoreMaster.</summary>
     public Action<DiagnosticsAlertNotice, bool>? NoticeSink { get; set; }
@@ -356,6 +370,7 @@ public sealed class SensorAlertEngine
         var enabled = rules.Where(r => r.Enabled).ToList();
         var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
+        var readings = new List<Nexus.Service.Monitoring.History.SensorSeriesReading>(enabled.Count);
         if (enabled.Count > 0)
         {
             var lists = ReadCategories(enabled, now);
@@ -375,12 +390,17 @@ public sealed class SensorAlertEngine
                     {
                         heals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, healed));
                     }
+                    if (sample.Valid && double.IsFinite(sample.Value))
+                    {
+                        readings.Add(new Nexus.Service.Monitoring.History.SensorSeriesReading(rule.Id, sample.Value));
+                    }
                     var effect = Step(rule, sample, now, st, wall);
                     changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, notices);
                 }
             }
         }
 
+        Volatile.Write(ref _series, new SeriesSnapshot(now, readings));
         if (heals.Count > 0)
         {
             HealSensorIds(heals);
@@ -701,26 +721,6 @@ public sealed class SensorAlertEngine
         return result;
     }
 
-    private static DiagnosticsAlertNotice BuildNotice(SensorAlertRule rule, SensorAlertRuntime st, bool fahrenheit) =>
-        new(
-            "Sensor alert",
-            SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit),
-            NoticeKind,
-            Urgent: rule.Severity == SensorAlertRules.Act);
-
-    private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
-}
-
-/// <summary>Allows one log line per key per interval, so a persistent failure does not log on every tick.</summary>
-internal sealed class LogThrottle
-{
-    private readonly TimeSpan _interval;
-    private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.Ordinal);
-
-    public LogThrottle(TimeSpan interval) => _interval = interval;
-
-    public bool ShouldLog(string key, DateTimeOffset now)
-    {
     // Values are native units (temperature in Celsius); the UI converts for display.
     private static Dictionary<string, string> ThresholdParams(SensorAlertRule rule, SensorAlertRuntime st)
     {
@@ -741,6 +741,26 @@ internal sealed class LogThrottle
         return p;
     }
 
+    private static DiagnosticsAlertNotice BuildNotice(SensorAlertRule rule, SensorAlertRuntime st, bool fahrenheit) =>
+        new(
+            "Sensor alert",
+            SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit),
+            NoticeKind,
+            Urgent: rule.Severity == SensorAlertRules.Act);
+
+    private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+}
+
+/// <summary>Allows one log line per key per interval, so a persistent failure does not log on every tick.</summary>
+internal sealed class LogThrottle
+{
+    private readonly TimeSpan _interval;
+    private readonly Dictionary<string, DateTimeOffset> _last = new(StringComparer.Ordinal);
+
+    public LogThrottle(TimeSpan interval) => _interval = interval;
+
+    public bool ShouldLog(string key, DateTimeOffset now)
+    {
         lock (_last)
         {
             if (_last.TryGetValue(key, out var last) && now - last < _interval)

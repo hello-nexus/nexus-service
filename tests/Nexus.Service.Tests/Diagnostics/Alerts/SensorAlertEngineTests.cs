@@ -662,10 +662,10 @@ public class SensorAlertEngineTests
     // ---- validation and persistence ----
 
     [Fact]
-    public void Validate_requires_a_bound_and_low_below_high()
+    public void Validate_orders_two_bounds_and_accepts_one_or_none()
     {
         Assert.Null(SensorAlertRules.Validate(TempRule(low: 10, high: 80)));
-        Assert.NotNull(SensorAlertRules.Validate(TempRule(low: null, high: null)));
+        Assert.Null(SensorAlertRules.Validate(TempRule(low: null, high: null)));
         Assert.NotNull(SensorAlertRules.Validate(TempRule(low: 80, high: 80)));
         Assert.NotNull(SensorAlertRules.Validate(TempRule(low: 90, high: 80)));
         Assert.Null(SensorAlertRules.Validate(TempRule(low: 10, high: null)));
@@ -984,5 +984,122 @@ public class SensorAlertEngineTests
         var text = System.Text.Encoding.UTF8.GetString(envelope.Span);
         Assert.Contains("diagnostics/alerts", text);
         Assert.Contains("\"state\":\"active\"", text);
+    }
+
+    // ---- Tracked sensors ----
+
+    [Fact]
+    public void A_track_only_rule_never_raises_and_stays_ok()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null, raise: 0));
+        rig.SetTemp(95);
+        rig.Seconds(30);
+
+        Assert.Equal("ok", rig.State());
+        Assert.Empty(rig.Notices);
+    }
+
+    [Fact]
+    public void A_track_only_rule_turns_unavailable_when_the_sensor_is_gone()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.SetTemp(50);
+        rig.Seconds(2);
+        rig.Sensors.Cpu = Array.Empty<HardwareSensor>();
+        rig.Seconds(12);
+
+        Assert.Equal("unavailable", rig.State());
+    }
+
+    [Fact]
+    public void Every_enabled_rule_contributes_its_reading_with_or_without_bounds()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null, id: "tracked"));
+        rig.AddRule(TempRule(high: 80, id: "bounded"));
+        rig.SetTemp(61.5f);
+        rig.Seconds(1);
+
+        var readings = rig.Engine.CurrentReadings(0);
+
+        Assert.Equal(new[] { "bounded", "tracked" }, readings.Select(r => r.Id).OrderBy(i => i).ToArray());
+        Assert.All(readings, r => Assert.Equal(61.5, r.Value));
+    }
+
+    [Fact]
+    public void A_disabled_rule_is_not_recorded()
+    {
+        var rig = new Rig();
+        var off = TempRule(low: null, high: null, id: "off");
+        off.Enabled = false;
+        rig.AddRule(off);
+        rig.AddRule(TempRule(id: "on"));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+
+        Assert.Equal(new[] { "on" }, rig.Engine.CurrentReadings(0).Select(r => r.Id).ToArray());
+    }
+
+    [Fact]
+    public void An_unavailable_sensor_is_not_recorded()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.Sensors.Cpu = new[] { Temp("cpu/temp", "CPU Package", 50, stale: true) };
+        rig.Seconds(1);
+        Assert.Empty(rig.Engine.CurrentReadings(0));
+
+        rig.Sensors.Cpu = new[] { Temp("cpu/temp", "CPU Package", float.NaN) };
+        rig.Seconds(1);
+        Assert.Empty(rig.Engine.CurrentReadings(0));
+    }
+
+    [Fact]
+    public void Readings_go_stale_when_evaluation_stops()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(low: null, high: null));
+        rig.SetTemp(50);
+        rig.Seconds(1);
+        Assert.Single(rig.Engine.CurrentReadings(0));
+
+        rig.Time.Advance(TimeSpan.FromSeconds(10));
+
+        Assert.Empty(rig.Engine.CurrentReadings(0));
+    }
+
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(null, 80.0, true)]
+    [InlineData(10.0, null, true)]
+    [InlineData(80.0, 10.0, false)]
+    public void Validate_accepts_no_bound_at_all_but_still_orders_two(double? low, double? high, bool valid)
+    {
+        var rule = TempRule(low, high);
+
+        Assert.Equal(valid, SensorAlertRules.Validate(rule) is null);
+    }
+
+    [Fact]
+    public void The_health_reason_carries_invariant_params_in_native_units()
+    {
+        var rig = new Rig();
+        rig.AddRule(TempRule(high: 80, raise: 0));
+        rig.SetTemp(91.5f);
+        rig.Seconds(2);
+
+        var reason = Assert.Single(Assert.Single(rig.Engine.HealthComponents()).Reasons);
+
+        Assert.Equal("alerts.sensorThreshold", reason.Code);
+        var p = reason.Params!;
+        Assert.Equal("r1", p["ruleId"]);
+        Assert.Equal("cpu", p["category"]);
+        Assert.Equal("above", p["direction"]);
+        Assert.Equal("Temperature", p["type"]);
+        Assert.Equal("CPU Package", p["sensorName"]);
+        Assert.Equal("91.5", p["value"]);
+        Assert.Equal("80", p["threshold"]);
     }
 }

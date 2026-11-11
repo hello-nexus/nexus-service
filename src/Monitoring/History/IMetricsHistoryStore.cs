@@ -45,6 +45,17 @@ public interface IMetricsHistoryStore : IDisposable
     /// components to fast-path a wide window through.</summary>
     IReadOnlyList<ComponentTempDecimatedSlot> QueryComponentTempDecimated(long fromSec, long toSec, int stepSeconds);
 
+    /// <summary>Slot-aggregated tracked-sensor history (MetricSample.SensorReadings),
+    /// one row per (rule id, slot) that has data. Steps of a whole minute or more
+    /// read a minute rollup that keeps MetricsHistory.TempRetentionDays; narrower
+    /// steps read a short raw tier.</summary>
+    IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds);
+
+    /// <summary>Deletes one tracked sensor's history. Readings for it stamped at or
+    /// before nowSec that are still unflushed are discarded on Append, so a flush
+    /// racing the delete cannot bring it back.</summary>
+    void DeleteSensorSeries(string seriesId, long nowSec);
+
     /// <summary>One bucket for one temperature component (cpu / gpu:&lt;id&gt;
     /// / storage:&lt;serial&gt; / ram:&lt;id&gt;), bucket-aligned (see
     /// MetricsHistory.TempBucketMinutes), read from the 90-day temp_buckets
@@ -101,3 +112,6 @@ public readonly record struct FanDecimatedSlot(
 public readonly record struct ComponentTempDecimatedSlot(
     string ComponentId, string Kind, string Name, long Slot,
     double? Avg, double? Max);
+
+/// <summary>One tracked sensor's slot-aggregated value.</summary>
+public readonly record struct SensorSeriesDecimatedSlot(string SeriesId, long Slot, double Avg, double Max);

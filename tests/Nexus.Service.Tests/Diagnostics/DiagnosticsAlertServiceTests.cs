@@ -57,6 +57,8 @@ public class DiagnosticsAlertServiceTests
         public IReadOnlyList<GpuDecimatedSlot> QueryGpuDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<GpuDecimatedSlot>();
         public IReadOnlyList<TemperatureBucketRow> QueryTemperatureBuckets(long fromUtcMs, long toUtcMs) => Array.Empty<TemperatureBucketRow>();
         public IReadOnlyList<FanDecimatedSlot> QueryFanDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<FanDecimatedSlot>();
+        public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<SensorSeriesDecimatedSlot>();
+        public void DeleteSensorSeries(string seriesId, long nowSec) { }
         public IReadOnlyList<ComponentTempDecimatedSlot> QueryComponentTempDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<ComponentTempDecimatedSlot>();
         public int ResetAll() => 0;
         public int BlankFpsSeries() => 0;

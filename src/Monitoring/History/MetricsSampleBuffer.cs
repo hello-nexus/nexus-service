@@ -62,6 +62,23 @@ public sealed class MetricsSampleBuffer
         }
     }
 
+    /// <summary>Strips one tracked sensor's readings from every buffered
+    /// sample, for a rule that was deleted or re-pointed.</summary>
+    public void RemoveSensorSeries(string seriesId)
+    {
+        lock (_lock)
+        {
+            foreach (var ts in _samples.Keys.ToList())
+            {
+                var sample = _samples[ts];
+                if (sample.SensorReadings.Any(r => r.Id == seriesId))
+                {
+                    _samples[ts] = sample with { SensorReadings = sample.SensorReadings.Where(r => r.Id != seriesId).ToList() };
+                }
+            }
+        }
+    }
+
     /// <summary>Drops every buffered sample with ts &lt;= throughSec. Called
     /// after a successful store commit so the tail only ever holds what
     /// hasn't reached disk yet.</summary>

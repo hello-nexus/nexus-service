@@ -90,10 +90,6 @@ public static class SensorAlertRules
         {
             return $"Unknown sensor category '{sensor.Category}'.";
         }
-        if (rule.Low is null && rule.High is null)
-        {
-            return "Set a low or a high limit.";
-        }
         if ((rule.Low is { } l && !double.IsFinite(l)) || (rule.High is { } h && !double.IsFinite(h)))
         {
             return "Limits must be finite numbers.";
