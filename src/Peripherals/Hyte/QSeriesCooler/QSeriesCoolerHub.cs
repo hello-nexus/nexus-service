@@ -37,6 +37,17 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     // Last software-commanded pump duty, echoed when toggling turbo or switching
     // to software so the pump isn't reset by an unrelated fan-channel write.
     private int _lastPumpDuty = 50;
+    // Set while Nexus holds the pump on the cooler's stored curve (wire scale, uncapped);
+    // null whenever _lastPumpDuty drives it. Cleared by any user duty and on mode change.
+    private byte? _curvePumpWire;
+    private int _firmwareCurveVersion;
+
+    /// <summary>Bumped when the stored firmware curve is rewritten, so cached copies go stale.</summary>
+    public int FirmwareCurveVersion => Volatile.Read(ref _firmwareCurveVersion);
+
+    private byte PumpWireFor(bool turboOn) => _curvePumpWire is { } w
+        ? (turboOn ? w : Math.Min(w, QSeriesCoolerProtocol.PumpOffTurboWireCap))
+        : QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn);
     // Last channel topology the INF log line reported, so a poll that finds no
     // model/LED-count change stays silent. Null until the first successful parse,
     // so an initially empty channel still logs "(none)" once.
@@ -299,6 +310,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             _transport = null;
             _rgbInSwControl = false;
             _portName = "";
+            _curvePumpWire = null;
         }
     }
 
@@ -459,6 +471,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, wire, turboByte, port0));
                 t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, wire, turboByte, port0));
                 _lastPumpDuty = Math.Clamp(dutyPercent, 0, 100);
+                _curvePumpWire = null;
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
                 return true;
             }
@@ -467,6 +480,44 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 Console.Error.WriteLine($"[qseries-cooler] set pump speed failed: {ex.GetType().Name}: {ex.Message}");
                 Disconnect();
                 return false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Hold the pump in software mode at the wire byte the cooler's stored <paramref name="curve"/>
+    /// gives at <paramref name="coolantC"/>. Writes only when that byte changes or the hub is not
+    /// yet in software mode. Returns the commanded curve wire byte, null when nothing was written
+    /// because the hub is unreachable.
+    /// </summary>
+    public int? HoldPumpOnCurve(IReadOnlyList<QSeriesFirmwareCurvePoint> curve, float? coolantC)
+    {
+        var wire = (byte)QSeriesCoolerProtocol.StoredCurvePumpWire(curve.ToArray(), coolantC);
+        lock (_lock)
+        {
+            if (!EnsureConnected()) return null;
+            var t = _transport;
+            if (t is null) return null;
+            if (_curvePumpWire == wire && State.ControlMode == QSeriesCoolerProtocol.ControlModeSoftware) return wire;
+            try
+            {
+                var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
+                if (!ReadPort0(port0)) return null;
+                _curvePumpWire = wire;
+                var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
+                var sent = PumpWireFor(turboOn);
+                var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
+                if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
+                    t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, sent, turboByte, port0));
+                t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, sent, turboByte, port0));
+                State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
+                return wire;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[qseries-cooler] hold pump on curve failed: {ex.GetType().Name}: {ex.Message}");
+                Disconnect();
+                return null;
             }
         }
     }
@@ -518,7 +569,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 // stall it while bringing the fan channel under control.
                 if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
                 {
-                    var pumpWire = QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn);
+                    var pumpWire = PumpWireFor(turboOn);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, pumpWire, turboByte, port0));
                 }
@@ -557,12 +608,17 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 if (!ReadPort0(port0)) return false;
                 if (QSeriesCoolerProtocol.ControlModeOf(port0) != mode)
                 {
-                    t.Write(QSeriesCoolerProtocol.BuildSetControl(
-                        mode, 0,
-                        QSeriesCoolerProtocol.TurboOnOf(port0) ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
-                        port0));
+                    var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
+                    var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
+                    var software = mode == QSeriesCoolerProtocol.ControlModeSoftware;
+                    var pumpWire = software ? PumpWireFor(turboOn) : (byte)0;
+                    t.Write(QSeriesCoolerProtocol.BuildSetControl(mode, pumpWire, turboByte, port0));
+                    // Software mode takes the pump speed from a second frame with the mode byte cleared.
+                    if (software)
+                        t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, pumpWire, turboByte, port0));
                 }
                 State.ControlMode = mode;
+                if (mode != QSeriesCoolerProtocol.ControlModeSoftware) _curvePumpWire = null;
                 if (pin) _desiredControlMode = mode; // pin: a user-chosen mode the engine must not override
                 // The live control byte alone doesn't engage the onboard curve;
                 // firmware mode also needs the EEPROM default flipped to Temperature
@@ -637,7 +693,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 var port0 = new byte[QSeriesCoolerProtocol.Port0ResponseLength];
                 if (!ReadPort0(port0)) return false;
                 var mode = QSeriesCoolerProtocol.ControlModeOf(port0);
-                var wire = QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, on);
+                var wire = PumpWireFor(on);
                 var turboByte = on ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                 t.Write(QSeriesCoolerProtocol.BuildSetControl(mode, wire, turboByte, port0));
                 t.Write(QSeriesCoolerProtocol.BuildSetTurboMcu(turboByte));
@@ -717,7 +773,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
                 t.Write(QSeriesCoolerProtocol.BuildSetControlWithAnimation(
                     QSeriesCoolerProtocol.ControlModeOf(port0),
-                    QSeriesCoolerProtocol.MapPumpDutyToWire(_lastPumpDuty, turboOn),
+                    PumpWireFor(turboOn),
                     turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte,
                     animation, r, g, b, brightness));
                 t.Write(QSeriesCoolerProtocol.BuildWriteFirmwareAnimation(animation, r, g, b, brightness));
@@ -813,6 +869,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 if (hasCurrent && CurveEquals(current, arr)) return true;
                 var mode = hasCurrent ? currentMode : QSeriesCoolerProtocol.FwDefaultModeMotherboard;
                 t.Write(QSeriesCoolerProtocol.BuildSetFirmwareMode(mode, arr));
+                Interlocked.Increment(ref _firmwareCurveVersion);
                 return true;
             }
             catch (Exception ex)

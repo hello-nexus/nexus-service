@@ -601,27 +601,33 @@ public static class QSeriesCoolerProtocol
 
     /// <summary>
     /// Map a 0-100 pump duty to the firmware's voltage-percentage wire byte.
-    /// The pump is off below 46% and ramps non-linearly above; off-turbo the
-    /// wire byte is additionally capped at 55. Matches PQSeriesCommand
+    /// The pump is off below the table's first running duty and ramps non-linearly
+    /// above; off-turbo the wire byte is additionally capped at
+    /// <see cref="PumpOffTurboWireCap"/>. Matches PQSeriesCommand
     /// .SetPumpSpeedCommand over SmartDeviceMethods._pumpSpeedPercentageToVoltagePercentage.
     /// </summary>
     public static byte MapPumpDutyToWire(int dutyPercent, bool turboOn)
     {
         var d = Math.Clamp(dutyPercent, 0, 100);
         if (turboOn) return PumpDutyToWire[d];
-        return d > 55 ? (byte)55 : PumpDutyToWire[d];
+        return d > PumpOffTurboWireCap ? PumpOffTurboWireCap : PumpDutyToWire[d];
     }
 
-    /// <summary>Lowest pump duty <see cref="MapPumpDutyToWire"/> maps to a running (non-zero) wire byte.</summary>
-    public const int PumpSoftwareFloorDuty = 46;
+    /// <summary>Highest pump wire byte allowed while turbo is off.</summary>
+    public const byte PumpOffTurboWireCap = 55;
+
+    /// <summary>Lowest pump wire byte that still runs the pump (the duty table maps its first running duty here).</summary>
+    public const byte PumpMinRunningWire = 31;
 
     /// <summary>
-    /// Pump duty for software mode that follows the cooler's stored firmware pump curve at
-    /// <paramref name="coolantC"/>: linear between points, clamped to the end points, never
-    /// below <see cref="PumpSoftwareFloorDuty"/>. An empty curve gives 100; an unknown coolant
-    /// temp gives the curve's highest pump duty, so no fallback runs the pump low.
+    /// Pump wire byte for software mode that follows the cooler's stored firmware pump curve at
+    /// <paramref name="coolantC"/>. The stored pump points are already wire-scale (measured on a Q60:
+    /// software wire at a point's value matches the firmware-mode RPM there), so they are not
+    /// run through <see cref="MapPumpDutyToWire"/>. Linear between points, clamped to the end
+    /// points, never below <see cref="PumpMinRunningWire"/>. An empty curve gives the maximum;
+    /// an unknown coolant temp gives the curve's highest pump point, so no fallback runs the pump low.
     /// </summary>
-    public static int StoredCurvePumpDuty(ReadOnlySpan<QSeriesFirmwareCurvePoint> curve, float? coolantC)
+    public static int StoredCurvePumpWire(ReadOnlySpan<QSeriesFirmwareCurvePoint> curve, float? coolantC)
     {
         if (curve.IsEmpty) return 100;
         var pts = new List<(int Temp, int Duty)>(curve.Length);
@@ -649,7 +655,7 @@ public static class QSeriesCoolerProtocol
             var (t1, d1) = pts[i];
             duty = t1 == t0 ? d1 : d0 + (d1 - d0) * (t - t0) / (t1 - t0);
         }
-        return Math.Clamp((int)Math.Round(duty), PumpSoftwareFloorDuty, 100);
+        return Math.Clamp((int)Math.Round(duty), PumpMinRunningWire, 100);
     }
 
     // Index = pump duty %, value = firmware voltage-% wire byte. Zero below 46%
