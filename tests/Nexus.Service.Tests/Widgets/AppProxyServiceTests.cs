@@ -124,6 +124,63 @@ public class AppProxyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Binary_body_arrives_byte_exact_as_base64()
+    {
+        var bytes = new byte[256];
+        for (int i = 0; i < bytes.Length; i++) bytes[i] = (byte)i;
+        var svc = MakeService(new BytesHandler("application/vnd.mapbox-vector-tile", bytes));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/tile" });
+        Assert.True(resp.Ok);
+        Assert.Null(resp.BodyText);
+        Assert.Null(resp.Body);
+        Assert.Equal(bytes, Convert.FromBase64String(resp.BodyBase64!));
+    }
+
+    [Fact]
+    public async Task Binary_body_over_cap_is_truncated_with_error()
+    {
+        var bytes = new byte[AppProxyService.MaxBodyBytes + 500];
+        var svc = MakeService(new BytesHandler("application/octet-stream", bytes));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/big" });
+        Assert.Contains("truncated", resp.Error);
+        Assert.Equal(AppProxyService.MaxBodyBytes, Convert.FromBase64String(resp.BodyBase64!).Length);
+    }
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData("text/html")]
+    [InlineData("application/json")]
+    [InlineData("application/ld+json")]
+    [InlineData("application/xml")]
+    [InlineData("image/svg+xml")]
+    [InlineData("application/javascript")]
+    [InlineData("application/x-www-form-urlencoded")]
+    [InlineData("")]
+    public void Text_media_types_are_not_binary(string mediaType)
+    {
+        Assert.False(AppProxyService.IsBinaryMediaType(mediaType));
+    }
+
+    [Theory]
+    [InlineData("application/vnd.mapbox-vector-tile")]
+    [InlineData("application/octet-stream")]
+    [InlineData("image/png")]
+    [InlineData("application/x-protobuf")]
+    public void Other_media_types_are_binary(string mediaType)
+    {
+        Assert.True(AppProxyService.IsBinaryMediaType(mediaType));
+    }
+
+    [Fact]
+    public async Task Text_body_never_carries_base64()
+    {
+        var svc = MakeService(new StubHandler("text/plain", "hello"));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/t" });
+        Assert.Equal("hello", resp.BodyText);
+        Assert.Null(resp.BodyBase64);
+    }
+
+    [Fact]
     public async Task Json_body_is_decoded_into_Body()
     {
         var svc = MakeService(new StubHandler("application/json", "{\"a\": [1, 2], \"b\": \"hi\"}"));
@@ -330,6 +387,19 @@ public class AppProxyServiceTests : IDisposable
                 Content = new StringContent(_body, Encoding.UTF8, _contentType),
             };
             return Task.FromResult(msg);
+        }
+    }
+
+    private sealed class BytesHandler : HttpMessageHandler
+    {
+        private readonly string _contentType;
+        private readonly byte[] _body;
+        public BytesHandler(string contentType, byte[] body) { _contentType = contentType; _body = body; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var content = new ByteArrayContent(_body);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(_contentType);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
     }
 

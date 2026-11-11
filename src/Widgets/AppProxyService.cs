@@ -247,6 +247,10 @@ public sealed class AppProxyService
                     resp.BodyText = Encoding.UTF8.GetString(rawBytes);
                 }
             }
+            else if (IsBinaryMediaType(contentType))
+            {
+                resp.BodyBase64 = Convert.ToBase64String(rawBytes);
+            }
             else
             {
                 resp.BodyText = Encoding.UTF8.GetString(rawBytes);
@@ -263,6 +267,23 @@ public sealed class AppProxyService
         }
         return resp;
     }
+
+    /// <summary>
+    /// True for a declared content type whose body is not text. A missing type
+    /// stays text so existing apps see no change.
+    /// </summary>
+    internal static bool IsBinaryMediaType(string mediaType)
+    {
+        if (string.IsNullOrEmpty(mediaType)) return false;
+        if (mediaType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (var marker in TextMediaMarkers)
+        {
+            if (mediaType.Contains(marker, StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        return true;
+    }
+
+    private static readonly string[] TextMediaMarkers = { "json", "xml", "javascript", "ecmascript", "x-www-form-urlencoded" };
 
     private bool CheckRate(string widgetId)
     {
