@@ -790,7 +790,7 @@ public sealed partial class LightingEngine : IDisposable
                 dev.Clear();
             }
 
-            // Stopped before the final black frame so a render tick still in flight cannot publish a lit frame after it; that one frame is marked final and still reports.
+            // Stopped before the final black frame so the dashboard feed drops frames that arrive after it; that one frame is marked final and still reports. A tick racing this on the shared frame buffer is not excluded.
             _stopped = true;
             try
             { SerializeAndBroadcast(final: true); }

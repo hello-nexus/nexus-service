@@ -24,7 +24,7 @@ internal sealed class LiveLedDashboardFeed
         _sendRaw = sendRaw;
     }
 
-    // Stop and the render tick can both serialize a frame, so deciding, composing and handing off are serialized. Each send gets its own copy because section lengths change per frame and the send outlives the lock. Once the engine is stopped only its final frame goes out, so a late lit frame cannot replace the black one.
+    // Stop and the render tick can both serialize a frame, so deciding, composing and handing off are serialized. Each send gets its own copy because section lengths change per frame and the send outlives the lock. Once the engine is stopped only its final frame goes out, so frames arriving after it are dropped; a render tick still racing Stop on the engine's shared frame buffer can leak lit colors into the final frame itself.
     public void OnFrame(ReadOnlyMemory<byte> frame, DeviceFrame[] devices, bool final)
     {
         var connected = _clientCount() > 0;

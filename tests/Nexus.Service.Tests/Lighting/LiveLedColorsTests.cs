@@ -532,7 +532,7 @@ public class LiveLedColorsTests
     }
 
     [Fact]
-    public void Feed_DropsALitFrameThatArrivesAfterStop_AndKeepsReportingOnUntilTheFinalFrameIsDone()
+    public void Feed_SendsTheFinalFrameOnStop_ThenDropsFramesThatArriveAfterIt()
     {
         var engine = new LightingEngine();
         var frame = FrameWith(Source());
@@ -543,6 +543,7 @@ public class LiveLedColorsTests
         engine.Live.Enabled = true;
         engine.Stop();
         var afterFinal = sent.Count;
+        Assert.True(afterFinal > 0);
 
         // A render tick that was already in flight serializes a lit frame after Stop's black one.
         var lit = WireFrame(new[] { frame }, new byte[3]);
