@@ -29,8 +29,7 @@ public static class BuiltInSensorRules
 
     private sealed record Spec(string Kind, string Id, string SensorId, string SensorName, double LimitMin, double LimitMax, double NewInstallHigh);
 
-    // Order is the display order and the stored order (built-ins first). New-install limits sit at the throttle region of the
-    // component (Intel runs the package near its limit under load by design; Zen desktop parts peak in the mid 90s), so only a real thermal event alerts.
+    // Order is the display order and the stored order (built-ins first). New-install limits sit in each component's throttle region (Intel runs the package near its limit under load by design), so only a real thermal event alerts.
     private static readonly Spec[] Specs =
     {
         new(CpuTemp, "builtin-cpu", "cpu", "CPU", 60, 105, 100),
@@ -80,6 +79,19 @@ public static class BuiltInSensorRules
             changed = true;
         }
         var list = diagnostics.SensorAlerts;
+        // A hand-edited file can hold null or id-less entries; they would break every lookup below.
+        if (list.RemoveAll(r => r is null || string.IsNullOrEmpty(r.Id)) > 0)
+        {
+            changed = true;
+        }
+        foreach (var rule in list)
+        {
+            if (rule.Sensor is null)
+            {
+                rule.Sensor = new SensorRef();
+                changed = true;
+            }
+        }
         foreach (var spec in Specs)
         {
             var index = list.FindIndex(r => r.Id == spec.Id);

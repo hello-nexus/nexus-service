@@ -61,7 +61,8 @@ public partial class SensorAlertEngineTests
         public List<GpuReadout> Gpus { get; } = new();
         public IReadOnlyList<GpuReadout> GetGpus() => Gpus;
         public IReadOnlyList<HardwareSensor> Memory { get; set; } = Array.Empty<HardwareSensor>();
-        public IReadOnlyList<HardwareSensor> GetMemorySensors() => Memory;
+        public Func<IReadOnlyList<HardwareSensor>>? MemoryRead { get; set; }
+        public IReadOnlyList<HardwareSensor> GetMemorySensors() => MemoryRead?.Invoke() ?? Memory;
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";
         public Dictionary<string, StorageComponent> Storage { get; } = new();

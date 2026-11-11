@@ -71,14 +71,39 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Gpu_builtin_falls_back_to_the_integrated_gpu_when_no_discrete_one_reads()
+    public void Gpu_builtin_ignores_integrated_graphics_and_is_unavailable_without_a_dedicated_gpu()
     {
         var rig = BuiltInRig();
-        rig.Sensors.Gpus.Add(Gpu("Radeon Graphics", integrated: true, 70));
+        rig.Sensors.Gpus.Add(Gpu("Radeon Graphics", integrated: true, 99));
 
-        rig.Seconds(1);
+        rig.Seconds(12);
 
-        Assert.Equal(70, StateOf(rig, "builtin-gpu").Value);
+        Assert.Equal(SensorAlertStates.Unavailable, rig.State("builtin-gpu"));
+        Assert.Empty(rig.Notices);
+    }
+
+    [Fact]
+    public void One_failing_source_leaves_the_other_built_ins_live()
+    {
+        var rig = BuiltInRig();
+        rig.Sensors.MemoryRead = () => throw new InvalidOperationException("memory source down");
+        rig.SetTemp(104, "cpu/pkg", "CPU Package");
+
+        rig.Seconds(6);
+
+        Assert.Equal(SensorAlertStates.Active, rig.State("builtin-cpu"));
+    }
+
+    [Fact]
+    public void A_pending_built_in_survives_another_sources_failure()
+    {
+        var rig = BuiltInRig();
+        rig.Sensors.MemoryRead = () => throw new InvalidOperationException("memory source down");
+        rig.SetTemp(104, "cpu/pkg", "CPU Package");
+
+        rig.Seconds(3);
+
+        Assert.Equal(SensorAlertStates.Pending, rig.State("builtin-cpu"));
     }
 
     [Fact]
@@ -326,5 +351,55 @@ public partial class SensorAlertEngineTests
             new[] { component }, new DiagnosticsNotifications { Enabled = true }, new Dictionary<string, DateTime>(), DateTime.UtcNow);
         Assert.Empty(notices);
         Assert.Single(rig.Notices);
+    }
+
+    [Fact]
+    public void An_act_rule_always_toasts_on_a_re_raise_while_a_watch_rule_waits_out_the_cooldown()
+    {
+        var rig = BuiltInRig(s =>
+        {
+            s.Diagnostics.Notifications.SensorCooldownMinutes = 30;
+            s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-cpu").Severity = "act";
+        });
+        rig.Sensors.Gpus.Add(Gpu("RTX", integrated: false, 40));
+        for (var i = 0; i < 2; i++)
+        {
+            rig.SetTemp(104, "cpu/pkg", "CPU Package");
+            rig.Sensors.Gpus[0].Sensors[0].Value = 95;
+            rig.Seconds(6);
+            rig.SetTemp(60, "cpu/pkg", "CPU Package");
+            rig.Sensors.Gpus[0].Sensors[0].Value = 40;
+            rig.Seconds(7);
+        }
+
+        Assert.Equal(2, rig.Notices.Count(n => n.Notice.Text.StartsWith("CPU")));
+        Assert.Equal(1, rig.Notices.Count(n => n.Notice.Text.StartsWith("GPU")));
+    }
+
+    [Fact]
+    public void A_backward_wall_clock_step_does_not_extend_the_cooldown()
+    {
+        var rig = BuiltInRig(s => s.Diagnostics.Notifications.SensorCooldownMinutes = 30);
+        rig.SetTemp(104, "cpu/pkg", "CPU Package");
+        rig.Seconds(6);
+        rig.SetTemp(60, "cpu/pkg", "CPU Package");
+        rig.Seconds(7);
+        rig.Time.Advance(TimeSpan.FromMinutes(31));
+        rig.Time.JumpWall(TimeSpan.FromDays(-2));
+        rig.SetTemp(104, "cpu/pkg", "CPU Package");
+        rig.Seconds(6);
+
+        Assert.Equal(2, rig.Notices.Count);
+    }
+
+    [Fact]
+    public void The_finished_alert_text_carries_units()
+    {
+        var rig = RaisedCpuRig(out var cool);
+        cool();
+
+        var text = Assert.Single(rig.Engine.HealthComponents()).Reasons[0].Summary;
+
+        Assert.Contains("100 °C", text);
     }
 }

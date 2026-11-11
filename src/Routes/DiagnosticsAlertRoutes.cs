@@ -129,7 +129,7 @@ public static class DiagnosticsAlertRoutes
             return Results.NoContent();
         }).Produces(StatusCodes.Status204NoContent).Produces<ApiResponse>(StatusCodes.Status409Conflict);
 
-        // Writes the factory state back (the series is kept: it is the same sensor). No id resets all four.
+        // Writes the factory state back (the series is kept: it is the same sensor). No id resets every built-in.
         app.MapPost("/diagnostics/alerts/builtins/reset", (string? id, IConfigStore store, SensorAlertEngine engine) =>
         {
             if (!string.IsNullOrEmpty(id) && !BuiltInSensorRules.IsBuiltInId(id))

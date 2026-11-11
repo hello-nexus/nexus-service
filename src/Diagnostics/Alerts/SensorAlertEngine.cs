@@ -13,7 +13,7 @@ namespace Nexus.Service.Diagnostics.Alerts;
 /// <summary>One resolved reading. Valid is false for a missing, stale, non-finite or implausible sensor.</summary>
 internal readonly record struct SensorSample(bool Valid, double Value, string Units, string Source = "");
 
-/// <summary>A finished alert the user has not dismissed yet. Time is wall clock, for display and the one-day expiry.</summary>
+/// <summary>A finished alert the user has not dismissed yet. Time is wall clock, for display and the expiry.</summary>
 internal sealed record EndedAlert(DateTimeOffset EndedUtc, double Peak, double Threshold, string Direction);
 
 [Flags]
@@ -46,7 +46,7 @@ internal sealed class SensorAlertRuntime
     public string Reported = SensorAlertStates.Ok;
     public SensorAlertRule? Config;
     public SensorAlertHistoryEntry? Episode;
-    /// <summary>Set when an unacknowledged alert clears; kept until dismissed or a day old. A new raise or a rule edit drops it.</summary>
+    /// <summary>Set when an unacknowledged alert clears; kept until dismissed or it ages out. A new raise or a rule edit drops it.</summary>
     public EndedAlert? Ended;
     /// <summary>Device a built-in's reading comes from (hottest GPU or drive); empty otherwise.</summary>
     public string Source = "";
@@ -609,74 +609,93 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>
-    /// One synthetic temperature sensor per component, from the same picks the temperature history records: the CPU package
-    /// (else the first CPU temperature), the hottest discrete GPU (an integrated one only when there is none), the hottest
-    /// drive that is not ignored (the SMART cache, so no drive wakes) and the hottest memory-module sensor.
+    /// One synthetic temperature sensor per component, from the same picks the temperature history uses: the CPU package
+    /// (else the first CPU temperature), the hottest dedicated GPU (none means no GPU reading, so a SoC or APU graphics
+    /// die never duplicates the CPU), the hottest drive that is not ignored (the SMART cache, so no drive wakes) and the
+    /// hottest memory-module sensor. Each component reads on its own, so one failing source leaves the others live.
     /// </summary>
     private IReadOnlyList<HardwareSensor> ReadBuiltIns()
     {
         var list = new List<HardwareSensor>(4);
-        if (SummarySensors.PickCpuTemp(_sensors.GetCpuSensors()) is { } cpu)
-        {
-            list.Add(Synthetic("cpu", "CPU", cpu.Value, cpu.Stale, string.IsNullOrEmpty(cpu.Parent.Name) ? "CPU" : cpu.Parent.Name));
-        }
+        var now = Mono();
+        TryAdd(list, "cpu", now, ReadCpuBuiltIn);
+        TryAdd(list, "gpu", now, ReadGpuBuiltIn);
+        TryAdd(list, "storage", now, ReadStorageBuiltIn);
+        TryAdd(list, "ram", now, ReadRamBuiltIn);
+        return list;
+    }
 
-        HardwareSensor? gpuTemp = null;
-        var gpuName = "";
-        var gpuDiscrete = false;
+    private void TryAdd(List<HardwareSensor> list, string key, DateTimeOffset now, Func<HardwareSensor?> read)
+    {
+        try
+        {
+            if (read() is { } sensor)
+            {
+                list.Add(sensor);
+            }
+        }
+        catch (Exception ex)
+        {
+            Warn("builtin-" + key, $"[sensor-alerts] built-in {key} read failed: {ex.Message}", now);
+        }
+    }
+
+    private HardwareSensor? ReadCpuBuiltIn() =>
+        SummarySensors.PickCpuTemp(_sensors.GetCpuSensors()) is { } cpu
+            ? Synthetic("cpu", "CPU", cpu.Value, cpu.Stale, string.IsNullOrEmpty(cpu.Parent.Name) ? "CPU" : cpu.Parent.Name)
+            : null;
+
+    private HardwareSensor? ReadGpuBuiltIn()
+    {
+        HardwareSensor? hottest = null;
+        var name = "";
         foreach (var gpu in _sensors.GetGpus())
         {
-            var temp = gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase) && x.Name.Contains("Core", StringComparison.OrdinalIgnoreCase))
-                ?? gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase));
-            if (temp is null || !IsUsable(temp))
+            if (gpu.Integrated)
             {
                 continue;
             }
-            var discrete = !gpu.Integrated;
-            if (gpuTemp is null || (discrete && !gpuDiscrete) || (discrete == gpuDiscrete && temp.Value > gpuTemp.Value))
+            var temp = gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase) && x.Name.Contains("Core", StringComparison.OrdinalIgnoreCase))
+                ?? gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase));
+            if (temp is not null && IsUsable(temp) && (hottest is null || temp.Value > hottest.Value))
             {
-                gpuTemp = temp;
-                gpuName = gpu.Name;
-                gpuDiscrete = discrete;
+                hottest = temp;
+                name = gpu.Name;
             }
         }
-        if (gpuTemp is not null)
-        {
-            list.Add(Synthetic("gpu", "GPU", gpuTemp.Value, false, gpuName));
-        }
+        return hottest is null ? null : Synthetic("gpu", "GPU", hottest.Value, false, name);
+    }
 
-        if (_drives?.Snapshot() is { Supported: true } smart)
+    private HardwareSensor? ReadStorageBuiltIn()
+    {
+        if (_drives?.Snapshot() is not { Supported: true } smart)
         {
-            var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
-            Nexus.Service.Diagnostics.Storage.SmartDriveInfo? hottest = null;
-            foreach (var drive in smart.Drives)
+            return null;
+        }
+        var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+        Nexus.Service.Diagnostics.Storage.SmartDriveInfo? hottest = null;
+        foreach (var drive in smart.Drives)
+        {
+            if (drive.TemperatureC is { } c && double.IsFinite(c) && !ignored.Contains(drive.Id, StringComparer.Ordinal)
+                && (hottest is null || c > hottest.TemperatureC))
             {
-                if (drive.TemperatureC is { } c && double.IsFinite(c) && !ignored.Contains(drive.Id, StringComparer.Ordinal)
-                    && (hottest is null || c > hottest.TemperatureC))
-                {
-                    hottest = drive;
-                }
-            }
-            if (hottest?.TemperatureC is { } driveC)
-            {
-                list.Add(Synthetic("storage", "Storage", (float)driveC, false, hottest.Name));
+                hottest = drive;
             }
         }
+        return hottest?.TemperatureC is { } driveC ? Synthetic("storage", "Storage", (float)driveC, false, hottest.Name) : null;
+    }
 
-        var ram = Nexus.Service.Monitoring.History.SystemMetricsSource.FindRamTempSensors(_sensors.GetMemorySensors());
-        HardwareSensor? ramHot = null;
-        foreach (var sensor in ram)
+    private HardwareSensor? ReadRamBuiltIn()
+    {
+        HardwareSensor? hottest = null;
+        foreach (var sensor in Nexus.Service.Monitoring.History.SystemMetricsSource.FindRamTempSensors(_sensors.GetMemorySensors()))
         {
-            if (IsUsable(sensor) && (ramHot is null || sensor.Value > ramHot.Value))
+            if (IsUsable(sensor) && (hottest is null || sensor.Value > hottest.Value))
             {
-                ramHot = sensor;
+                hottest = sensor;
             }
         }
-        if (ramHot is not null)
-        {
-            list.Add(Synthetic("ram", "Memory", ramHot.Value, false, ramHot.Name));
-        }
-        return list;
+        return hottest is null ? null : Synthetic("ram", "Memory", hottest.Value, false, hottest.Name);
     }
 
     private static HardwareSensor Synthetic(string id, string name, float value, bool stale, string source) => new()
@@ -735,14 +754,15 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             var notify = rule.NotifyDesktop && snap.NotifyMaster;
             if (notify && (effect & SensorAlertEffect.Raised) != 0)
             {
-                // The cooldown spans episodes, so a value hovering at its limit does not toast on every dip and return.
-                if (_lastToast.TryGetValue(rule.Id, out var last) && now - last < TimeSpan.FromMinutes(snap.CooldownMinutes))
+                // The cooldown spans episodes, so a value hovering at its limit does not toast on every dip and return. An act alert always toasts.
+                var mono = Mono();
+                if (rule.Severity != SensorAlertRules.Act && _lastToast.TryGetValue(rule.Id, out var last) && mono - last < TimeSpan.FromMinutes(snap.CooldownMinutes))
                 {
                     notify = false;
                 }
                 else
                 {
-                    _lastToast[rule.Id] = now;
+                    _lastToast[rule.Id] = mono;
                 }
             }
             notices.Add((BuildNotice(rule, st, fahrenheit), notify));
@@ -961,7 +981,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     /// <summary>
     /// One component per rule that opted into health and is either active and not acknowledged (the rule's severity) or
-    /// finished and not yet dismissed (watch, like the thermal guard, for a day at most).
+    /// finished and not yet dismissed (watch, like the thermal guard, until it ages out).
     /// </summary>
     internal List<HealthComponent> HealthComponents()
     {
@@ -987,7 +1007,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 }
                 else if (st.Ended is { } ended && wall - ended.EndedUtc < SensorAlertRules.EndedLinger)
                 {
-                    var text = SensorAlertText.DescribeEnded(rule, ended, fahrenheit, st.Source);
+                    var text = SensorAlertText.DescribeEnded(rule, ended, fahrenheit, st.Source, st.Units);
                     result.Add(Component(rule, HealthStatuses.Watch, "alerts.sensorThresholdEnded", text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={ended.Direction}",
                         EndedParams(rule, ended, st.Units, st.Source)));
                 }
@@ -1119,11 +1139,11 @@ internal static class SensorAlertText
     }
 
     /// <summary>The sentence for a finished alert that still waits for the user.</summary>
-    internal static string DescribeEnded(SensorAlertRule rule, EndedAlert ended, bool fahrenheit, string source)
+    internal static string DescribeEnded(SensorAlertRule rule, EndedAlert ended, bool fahrenheit, string source, string units)
     {
         var type = rule.Sensor.Type;
         var below = ended.Direction == "below";
-        return $"{WithSource(rule, source)} was {(below ? "below" : "above")} {Format(ended.Threshold, type, "", fahrenheit)} (peak {Format(ended.Peak, type, "", fahrenheit)}), back to normal";
+        return $"{WithSource(rule, source)} was {(below ? "below" : "above")} {Format(ended.Threshold, type, units, fahrenheit)} (peak {Format(ended.Peak, type, units, fahrenheit)}), back to normal";
     }
 
     // A built-in has no name of its own to say which GPU or drive it follows.

@@ -416,7 +416,7 @@ public static class DiagnosticsHealthRoutes
                     BuiltInSensorRules.RamTemp => "ram",
                     _ => null,
                 };
-                if (kind is not null && rule.High is { } high)
+                if (kind is not null && rule is { Enabled: true, High: { } high })
                 {
                     limits[kind] = high;
                 }

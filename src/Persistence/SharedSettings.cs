@@ -239,7 +239,7 @@ public sealed class DiagnosticsNotifications
     public int CooldownMinutes { get; set; } = 60;
     /// <summary>Master switch for sensor-alert desktop notifications (each rule still has its own notifyDesktop). Independent of <see cref="Enabled"/>, which gates only the health-check notifications.</summary>
     public bool SensorAlerts { get; set; } = true;
-    /// <summary>Minimum gap between two notifications for the same sensor rule across episodes, so a value that flaps around its limit does not notify again and again. A rule's own repeat setting still applies inside one episode.</summary>
+    /// <summary>Minimum gap between two notifications for the same sensor rule across episodes, so a value that flaps around its limit does not notify again and again. A rule's own repeat setting still applies inside one episode. Act rules ignore it.</summary>
     public int SensorCooldownMinutes { get; set; } = 60;
 }
 

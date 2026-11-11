@@ -288,4 +288,39 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         using var reopened = new JsonConfigStore(path);
         Assert.Equal(first, Serialize(reopened.Load()));
     }
+
+    [Fact]
+    public void Null_and_malformed_entries_in_a_hand_edited_list_are_dropped_instead_of_wiping_the_settings()
+    {
+        var path = CopyFixture("v32-main-t1-edited");
+        var raw = JsonNode.Parse(File.ReadAllText(path))!;
+        var rules = raw["diagnostics"]!["sensorAlerts"]!.AsArray();
+        rules.Insert(0, null);
+        rules.Add(new JsonObject { ["enabled"] = true });
+        rules.Add(new JsonObject { ["id"] = "no-sensor", ["high"] = 70 });
+        raw["ui"]!["sidebarCollapsed"] = true;
+        File.WriteAllText(path, raw.ToJsonString());
+        using var store = new JsonConfigStore(path);
+
+        var loaded = store.Load();
+
+        Assert.True(loaded.Ui.SidebarCollapsed);
+        Assert.Equal(Ids, loaded.Diagnostics.SensorAlerts.Take(4).Select(r => r.Id).ToArray());
+        Assert.Equal(15, loaded.Diagnostics.SensorAlerts.Count);
+        Assert.All(loaded.Diagnostics.SensorAlerts, r => Assert.NotNull(r.Sensor));
+        Assert.Equal(95, Rule(loaded.Diagnostics, "builtin-cpu").High);
+    }
+
+    [Fact]
+    public void An_unreadable_file_falls_back_to_defaults_seeded_as_an_upgrade_not_a_new_install()
+    {
+        var path = Path.Combine(_dir, "settings.json");
+        File.WriteAllText(path, "{ not json");
+        using var store = new JsonConfigStore(path);
+
+        var d = store.Load().Diagnostics;
+
+        Assert.Equal(new double?[] { 90, 85, 70, 60 }, d.SensorAlerts.Select(r => r.High).ToArray());
+        Assert.All(d.SensorAlerts, r => Assert.False(r.NotifyDesktop));
+    }
 }

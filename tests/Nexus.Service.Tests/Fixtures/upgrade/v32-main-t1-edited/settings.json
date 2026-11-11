@@ -517,8 +517,8 @@
   "ddcDisabledDisplays": [],
   "scheduleFollowing": [],
   "displaySliderBrightness": {
-   "DELA0B8-5-293b9414-3-UID4355": 100,
-   "DELA0B8-5-293b9414-3-UID4353": 100
+   "DEL0001-5-00000001-3-UID0001": 100,
+   "DEL0001-5-00000001-3-UID0002": 100
   },
   "uncontrolledLightingDevices": [],
   "nexusControlDisabled": [],
@@ -1153,8 +1153,8 @@
   "armed": false
  },
  "panelDevices": {
-  "kGR-OBUnm2CE": {
-   "id": "kGR-OBUnm2CE",
+  "Panel0000001": {
+   "id": "Panel0000001",
    "displayName": "CRX ED00",
    "firstSeenAt": 1794360168131,
    "lastSeenAt": 1794360470491,
@@ -1168,7 +1168,7 @@
     "dpi": 183,
     "family": "xeneon-edge"
    },
-   "displayId": "CRXED00-5-293b9414-3-UID4353",
+   "displayId": "DEL0001-5-00000001-3-UID0002",
    "displayFingerprint": {
     "manufacturer": "CRX",
     "product": "ED00",
@@ -1176,7 +1176,7 @@
     "serialText": "000000000000"
    },
    "siblingDisplayIds": [
-    "DELA0B8-5-293b9414-3-UID4355"
+    "DEL0001-5-00000001-3-UID0001"
    ],
    "autoOrient": true,
    "kioskViewport": {

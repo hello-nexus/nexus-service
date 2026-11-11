@@ -108,7 +108,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // Migrate() the same as any other pre-v8 document.
                 _cached = new NexusSettings { SchemaVersion = 0 };
                 Migrate(_cached);
-                Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: true);
+                Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false);
                 // Sign-ins and paired devices survive a reset of the rest of the file.
                 if (TryReadAuth(json) is { } auth)
                 {

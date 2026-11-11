@@ -107,5 +107,9 @@ public class TemperatureRouteResponseTests
         var limits = DiagnosticsHealthRoutes.BuiltInLimits(store);
 
         Assert.Equal(new Dictionary<string, double> { ["cpu"] = 100, ["gpu"] = 90, ["storage"] = 66, ["ram"] = 75 }, limits);
+
+        store.Update(s => s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-gpu").Enabled = false);
+
+        Assert.DoesNotContain("gpu", DiagnosticsHealthRoutes.BuiltInLimits(store).Keys);
     }
 }
