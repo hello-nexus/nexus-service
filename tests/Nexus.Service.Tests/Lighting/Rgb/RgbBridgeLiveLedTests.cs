@@ -190,4 +190,66 @@ public class RgbBridgeLiveLedTests : IDisposable
         Push();
         Assert.NotNull(_engine.Live.TryGetFresh(frame.Id));
     }
+
+    private sealed class FillEffect : IEffect
+    {
+        public string Name => "fill";
+        public void RenderFrame(CanvasBuffer canvas, double tickMs)
+        {
+            for (var y = 0; y < canvas.Height; y++)
+            {
+                for (var x = 0; x < canvas.Width; x++)
+                {
+                    canvas.SetPixel(x, y, 10, 200, 30);
+                }
+            }
+        }
+        public void Dispose() { }
+    }
+
+    // Runs the real engine tick (overlays, publish, serialize) with the bridge subscribed, then reads what the dashboard sink holds.
+    private async Task<byte[]?> LiveAfterTicksAsync(DeviceFrame frame)
+    {
+        _engine.Live.Enabled = true;
+        _engine.FrameIntervalMs = 10;
+        _engine.SetEffect(new FillEffect());
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        byte[]? live = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(30);
+            live = _engine.Live.TryGetFresh(frame.Id);
+            if (live is not null && live.Length >= 3 && live[..3].SequenceEqual(new byte[] { 255, 255, 255 }))
+            {
+                break;
+            }
+        }
+        return live;
+    }
+
+    [Fact]
+    public async Task An_editor_highlight_reports_white_on_the_selected_leds_and_black_on_the_rest()
+    {
+        var frame = await ActivateAsync();
+        frame.HighlightLeds = new HashSet<int> { 0, 2 };
+
+        var live = await LiveAfterTicksAsync(frame);
+
+        Assert.NotNull(live);
+        Assert.Equal(new byte[] { 255, 255, 255, 0, 0, 0, 255, 255, 255, 0, 0, 0 }, live);
+    }
+
+    [Fact]
+    public async Task A_sweep_test_pattern_reports_the_bytes_the_engine_sends()
+    {
+        var frame = await ActivateAsync();
+        frame.TestPattern = "none";
+
+        _engine.Live.Enabled = true;
+        _engine.FrameIntervalMs = 10;
+        _engine.SetEffect(new FillEffect());
+        await Task.Delay(300);
+
+        Assert.Equal(new byte[frame.LedCount * 3], _engine.Live.TryGetFresh(frame.Id));
+    }
 }
