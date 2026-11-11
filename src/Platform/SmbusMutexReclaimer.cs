@@ -39,6 +39,10 @@ internal static class SmbusMutexReclaimer
         {
             ServiceLog.Warn($"[smbus] reclaimed an abandoned SMBus mutex ({reason})");
         }
+        else if (outcome is Outcome.HeldByOther or Outcome.Failed)
+        {
+            ServiceLog.Info($"[smbus] mutex not reclaimed ({reason}): {outcome}");
+        }
         return outcome;
     }
 
@@ -77,7 +81,14 @@ internal static class SmbusMutexReclaimer
                 {
                     abandoned = true;
                 }
-                mutex.ReleaseMutex();
+                try
+                {
+                    mutex.ReleaseMutex();
+                }
+                catch (ApplicationException)
+                {
+                    return Outcome.Failed;
+                }
                 return abandoned ? Outcome.Reclaimed : Outcome.Clean;
             }
         }

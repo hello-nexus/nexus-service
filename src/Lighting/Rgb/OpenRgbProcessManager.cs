@@ -630,6 +630,8 @@ public sealed class OpenRgbProcessManager : IDisposable
 
             CleanupProcessLocked();
             CleanupOrphans();
+            // A child that exited on its own can leave the mutex abandoned too, and no kill path ran for it.
+            SmbusMutexReclaimer.Reclaim("before OpenRGB spawn");
 
             // Use a service-owned config directory so we don't collide with any
             // user-installed OpenRGB. Lives under %ProgramData%\Nexus on Windows.
