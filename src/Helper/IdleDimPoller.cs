@@ -68,8 +68,8 @@ public sealed class IdleDimPoller : IDisposable
                 var lii = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
                 // A failed call must not read as "idle for ever".
                 if (!GetLastInputInfo(ref lii)) return;
-                // Unchecked on purpose: both ticks wrap together every 49 days.
-                var idleMs = unchecked((uint)Environment.TickCount - lii.dwTime);
+                // dwTime counts sleep, as SystemUptime does, and Environment.TickCount no longer does. Both wrap together.
+                var idleMs = unchecked((uint)Nexus.Service.Lifecycle.SystemUptime.BootElapsedMs - lii.dwTime);
                 idle = idleMs / 1000 >= (uint)_thresholdSeconds;
                 if (_reported == idle) return;
                 _reported = idle;

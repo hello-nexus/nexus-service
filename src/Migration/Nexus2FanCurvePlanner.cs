@@ -594,7 +594,9 @@ internal static class Nexus2FanCurvePlanner
         return points[^1].Speed;
     }
 
-    private static double Round(double value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+    // Scale then round, as Math.Round(value, digits, mode) did before .NET 11. Its exact rounding
+    // moves some imported curve points by one step, so this keeps the import output unchanged.
+    private static double Round(double value) => Math.Round(value * 100, MidpointRounding.AwayFromZero) / 100;
 
     // ── Sensor ──
 

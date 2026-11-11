@@ -254,7 +254,7 @@ internal static class GpuRenderSelect
             }
         }
         catch (Exception) { }
-        var booted = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+        var booted = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Nexus.Service.Lifecycle.SystemUptime.BootElapsedMs);
         return "t" + (booted.ToUnixTimeSeconds() / 60).ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 

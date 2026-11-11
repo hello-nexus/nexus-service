@@ -38,7 +38,7 @@ internal static class StartupDelayGate
     /// from the first wait.
     /// </summary>
     public static void ArmForBootStart(int seconds) =>
-        ArmForBootStart(seconds, TimeSpan.FromMilliseconds(Environment.TickCount64));
+        ArmForBootStart(seconds, TimeSpan.FromMilliseconds(SystemUptime.BootElapsedMs));
 
     internal static void ArmForBootStart(int seconds, TimeSpan sinceBoot)
     {

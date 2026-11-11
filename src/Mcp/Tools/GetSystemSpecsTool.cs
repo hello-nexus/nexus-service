@@ -32,7 +32,7 @@ public sealed class GetSystemSpecsTool : IMcpTool
     public async Task<McpToolExecutionResult> ExecuteAsync(JsonElement? args, CancellationToken ct)
     {
         var specs = await _specs.GetAsync(ct).ConfigureAwait(false);
-        var uptimeMs = Environment.TickCount64;
+        var uptimeMs = Nexus.Service.Lifecycle.SystemUptime.BootElapsedMs;
 
         var result = new McpSystemSpecsResult
         {

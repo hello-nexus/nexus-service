@@ -3,10 +3,10 @@
   <PropertyGroup>
     <!-- Windows builds target a Win10-versioned TFM so we can use C#/WinRT
          projections (Windows.Media.Control for GSMTC media sessions, etc).
-         macOS/Linux stay on plain net10.0. The condition keys on RID first so
+         macOS/Linux stay on plain net11.0. The condition keys on RID first so
          cross-compilation from Mac (`-r win-x64`) picks the Windows TFM. -->
-    <TargetFramework Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</TargetFramework>
-    <TargetFramework Condition="!$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">net10.0</TargetFramework>
+    <TargetFramework Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">net11.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework Condition="!$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">net11.0</TargetFramework>
     <SupportedOSPlatformVersion Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">10.0.19041.0</SupportedOSPlatformVersion>
     <EnableWindowsTargeting Condition="!$([MSBuild]::IsOSPlatform('Windows'))">true</EnableWindowsTargeting>
     <Nullable>enable</Nullable>
@@ -22,6 +22,9 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <PublishAot>true</PublishAot>
+    <!-- .NET 11 skips the full Build target on an AOT publish. Opting out keeps the Build-hooked targets
+         below (web bundle, firmware check) running on publish. -->
+    <UseOptimizedPublish>false</UseOptimizedPublish>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
@@ -163,7 +166,7 @@
        Windows package brings native serial helpers; on Linux we read /dev/ttyACM
        directly. AOT-compatible since .NET 7. -->
   <ItemGroup>
-    <PackageReference Include="System.IO.Ports" Version="10.0.12" />
+    <PackageReference Include="System.IO.Ports" Version="11.0.0" />
   </ItemGroup>
 
   <!-- QRCoder: pure-managed QR code SVG generation for the panel phone pairing flow. -->
@@ -172,15 +175,15 @@
   </ItemGroup>
 
   <!-- OpenAPI document generation for docs/openapi.json (the REST-route
-       inventory). The .NET 10 stack is AOT-compatible; the doc is produced by
+       inventory). The .NET 11 stack is AOT-compatible; the doc is produced by
        the emit-openapi CLI path. The generator, MapOpenApi() and both packages
        are Debug-only, so a release build carries none of them.
        AspNetCore.OpenApi tracks the ASP.NET runtime;
-       Microsoft.OpenApi is pinned directly to 2.7.5 (overriding the 2.0.0 the
+       Microsoft.OpenApi is pinned directly to a 3.x release (overriding the version the
        former pulls transitively) to clear advisory GHSA-v5pm-xwqc-g5wc. -->
   <ItemGroup Condition="'$(Configuration)' == 'Debug'">
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.8" />
-    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="11.0.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="3.11.0" />
   </ItemGroup>
 
   <!-- SIPSorcery: WebRTC DataChannel direct P2P transport for the phone panel
@@ -440,20 +443,13 @@
            Text="macOS publish requires PublishAot=true. Non-AOT macOS builds are not shipped. Drop any -p:PublishAot=false override and re-run." />
   </Target>
 
-  <!-- Both Apple linkers fail this link on an Xcode 26 toolchain: ld-prime
-       asserts "too many large addends" (dotnet/runtime#119380, fixed only in
-       .NET 11's object writer) and its ld_classic asserts in dylibToOrdinal.
-       CI's runner toolchain still links fine with ld_classic, so that stays
-       the default; a machine with Homebrew lld links with ld64.lld instead,
-       and -p:NexusMacLdPath overrides the probe outright. -->
-  <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) AND '$(NexusMacLdPath)' == '' AND '$(GITHUB_ACTIONS)' != 'true'">
-    <NexusMacLdPath Condition="Exists('/opt/homebrew/opt/lld/bin/ld64.lld')">/opt/homebrew/opt/lld/bin/ld64.lld</NexusMacLdPath>
-    <NexusMacLdPath Condition="'$(NexusMacLdPath)' == '' AND Exists('/usr/local/opt/lld/bin/ld64.lld')">/usr/local/opt/lld/bin/ld64.lld</NexusMacLdPath>
-  </PropertyGroup>
+  <!-- A local macOS publish links with Apple's default linker. Homebrew lld crashes on the object
+       the .NET 11 writer emits (misaligned __eh_frame anchor), so it is not probed. CI's runner
+       toolchain keeps ld_classic. -p:NexusMacLdPath forces a specific linker. -->
   <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) AND '$(NexusMacLdPath)' != ''">
     <LinkerArg Include="--ld-path=&quot;$(NexusMacLdPath)&quot;" />
   </ItemGroup>
-  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) AND '$(NexusMacLdPath)' == ''">
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) AND '$(NexusMacLdPath)' == '' AND '$(GITHUB_ACTIONS)' == 'true'">
     <LinkerArg Include="-Wl,-ld_classic" />
   </ItemGroup>
 

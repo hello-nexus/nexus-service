@@ -153,13 +153,13 @@ public static class SystemRoutes
             new SystemAccentResponse { Accent = accent.GetAccentHex() ?? "" }).AllowPanel();
 
         // Boot id for the web UI once-per-boot greeting check. Derived from OS
-        // uptime (Environment.TickCount64), not process start, so it survives a
+        // OS uptime (SystemUptime), not process start, so it survives a
         // service restart within the same boot. Quantized so tick jitter does not
         // shift it; still wall-clock-derived, so a clock step mid-boot can change
         // it (at worst a repeat greeting).
         app.MapGet("/system/boot", () =>
         {
-            var bootTime = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+            var bootTime = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Nexus.Service.Lifecycle.SystemUptime.BootElapsedMs);
             var quantizedSeconds = (bootTime.ToUnixTimeSeconds() / 60) * 60;
             return new SystemBootResponse { BootId = quantizedSeconds.ToString() };
         }).AllowPanel();

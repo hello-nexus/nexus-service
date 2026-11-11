@@ -91,7 +91,7 @@ public sealed class McpSystemSpecsResult
     public string Monitor { get; set; } = "";
     public string SoundCard { get; set; } = "";
     public string NetworkCard { get; set; } = "";
-    /// <summary>Unix milliseconds the OS booted, derived from Environment.TickCount64.</summary>
+    /// <summary>Unix milliseconds the OS booted, derived from SystemUptime.</summary>
     public long BootTimeUnixMs { get; set; }
     public double UptimeSeconds { get; set; }
 }

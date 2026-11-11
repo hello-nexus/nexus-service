@@ -9,9 +9,9 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <!-- Mirror the service's conditional TFM so the project reference resolves
-         on Windows (net10.0-windows) and macOS/Linux (net10.0) alike. -->
-    <TargetFramework Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</TargetFramework>
-    <TargetFramework Condition="!$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">net10.0</TargetFramework>
+         on Windows (net11.0-windows) and macOS/Linux (net11.0) alike. -->
+    <TargetFramework Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">net11.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework Condition="!$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>

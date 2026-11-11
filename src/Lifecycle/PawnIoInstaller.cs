@@ -65,7 +65,7 @@ public static class PawnIoInstaller
 
     // Two boot-time readings taken minutes apart on the same boot can differ
     // by a little clock drift; this tolerance is generous enough to absorb
-    // that while still catching an actual reboot (which shifts TickCount64's
+    // that while still catching an actual reboot (which shifts the uptime
     // baseline by however long the machine was down, always far more than this).
     private static readonly TimeSpan BootTimeMatchTolerance = TimeSpan.FromSeconds(30);
 
@@ -198,7 +198,7 @@ public static class PawnIoInstaller
         return !deviceAvailable && !ShouldUpgrade(installed, bundled);
     }
 
-    private static DateTime GetBootTimeUtc() => DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+    private static DateTime GetBootTimeUtc() => DateTime.UtcNow - TimeSpan.FromMilliseconds(SystemUptime.BootElapsedMs);
 
     /// <summary>
     /// True when an elevated upgrade run should be prompted for. False when

@@ -970,6 +970,13 @@ catch (OperationCanceledException) when (stopping.IsCancellationRequested)
 {
     // Stopped (SIGTERM, /service/stop) before the host finished starting: a clean exit, not a crash.
 }
+catch (Exception ex) when (ex is not OperationCanceledException && stopping.IsCancellationRequested)
+{
+    // Since .NET 11 a BackgroundService that threw from ExecuteAsync rethrows here once the host stops.
+    // The host already logged it and stopped; keep the exit clean instead of raising a crash report.
+    // A failure before any stop was requested (a startup failure) still propagates.
+    Nexus.Service.Platform.ServiceLog.Error($"host stopped after a background service failed: {ex}");
+}
 return 0;
 
 // ── Local functions ─────────────────────────────────────────────────────────

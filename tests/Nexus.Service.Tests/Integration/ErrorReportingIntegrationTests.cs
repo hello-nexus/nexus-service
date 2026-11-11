@@ -237,7 +237,8 @@ public sealed class ErrorReportingIntegrationTests : IClassFixture<NexusAppFacto
         await host.StartAsync();
         for (var i = 0; i < 100 && reporter.PendingCount == 0; i++)
             await Task.Delay(50);
-        await host.StopAsync();
+        // Since .NET 11 the failed worker's exception is rethrown from StopAsync.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => host.StopAsync());
 
         Assert.Equal(1, reporter.PendingCount);
     }

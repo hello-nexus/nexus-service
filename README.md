@@ -43,7 +43,7 @@ are in [`docs/network-transport.md`](docs/network-transport.md).
 
 ## Develop
 
-Prerequisites: .NET 10 SDK. Node.js 22 if you want the embedded dashboard;
+Prerequisites: .NET 11 SDK. Node.js 22 if you want the embedded dashboard;
 the build pulls it in from a sibling `nexus-web` checkout.
 
 ```sh
@@ -130,8 +130,8 @@ tests/
 
 ## Build
 
-One AOT binary per OS. Windows targets `net10.0-windows10.0.19041.0`; macOS
-and Linux target `net10.0`.
+One AOT binary per OS. Windows targets `net11.0-windows10.0.19041.0`; macOS
+and Linux target `net11.0`.
 
 ```sh
 dotnet publish -c Release -r win-x64   -o publish-win     # cross-compiles from macOS too
