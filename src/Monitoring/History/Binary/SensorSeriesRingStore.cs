@@ -28,9 +28,9 @@ namespace Nexus.Service.Monitoring.History.Binary;
 /// </summary>
 internal sealed class SensorSeriesRingStore : IDisposable
 {
-    // Rules cap at 10; the slack absorbs delete-then-create churn between
+    // Rules cap at 20 (built-ins included); the slack absorbs delete-then-create churn between
     // prunes and keeps a corrupt id list from filling the disk.
-    internal const int MaxSeries = 32;
+    internal const int MaxSeries = 48;
 
     private const int SecondBodyLength = sizeof(float);
     private const int SumOffset = 0;

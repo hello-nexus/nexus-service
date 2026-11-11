@@ -11,7 +11,10 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Diagnostics.Alerts;
 
 /// <summary>One resolved reading. Valid is false for a missing, stale, non-finite or implausible sensor.</summary>
-internal readonly record struct SensorSample(bool Valid, double Value, string Units);
+internal readonly record struct SensorSample(bool Valid, double Value, string Units, string Source = "");
+
+/// <summary>A finished alert the user has not dismissed yet. Time is wall clock, for display and the one-day expiry.</summary>
+internal sealed record EndedAlert(DateTimeOffset EndedUtc, double Peak, double Threshold, string Direction);
 
 [Flags]
 internal enum SensorAlertEffect
@@ -43,6 +46,10 @@ internal sealed class SensorAlertRuntime
     public string Reported = SensorAlertStates.Ok;
     public SensorAlertRule? Config;
     public SensorAlertHistoryEntry? Episode;
+    /// <summary>Set when an unacknowledged alert clears; kept until dismissed or a day old. A new raise or a rule edit drops it.</summary>
+    public EndedAlert? Ended;
+    /// <summary>Device a built-in's reading comes from (hottest GPU or drive); empty otherwise.</summary>
+    public string Source = "";
 
     public void ResetToOk()
     {
@@ -76,6 +83,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
+    private readonly Nexus.Service.Diagnostics.Storage.ISmartHealthSource? _drives;
+    private readonly Dictionary<string, DateTimeOffset> _lastToast = new(StringComparer.Ordinal);
     private readonly TimeProvider _time;
     private readonly long _stamp0;
     private readonly DateTimeOffset _wall0;
@@ -175,14 +184,18 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>Raised after a transition or a rule change, never for a plain value update.</summary>
     public event Action? Changed;
 
-    public SensorAlertEngine(IConfigStore store, ISensorProvider sensors) : this(store, sensors, TimeProvider.System)
+    public SensorAlertEngine(IConfigStore store, ISensorProvider sensors, Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null)
+        : this(store, sensors, TimeProvider.System, null, drives)
     {
     }
 
-    internal SensorAlertEngine(IConfigStore store, ISensorProvider sensors, TimeProvider time, TimeSpan? startupHold = null)
+    internal SensorAlertEngine(
+        IConfigStore store, ISensorProvider sensors, TimeProvider time, TimeSpan? startupHold = null,
+        Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null)
     {
         _store = store;
         _sensors = sensors;
+        _drives = drives;
         _time = time;
         _stamp0 = time.GetTimestamp();
         _wall0 = time.GetUtcNow();
@@ -269,7 +282,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 open.Direction = st.Direction ?? open.Direction;
                 open.Threshold = (st.Direction == "below" ? rule.Low : rule.High) ?? open.Threshold;
             }
-            effect |= StepActive(rule, v, now, st);
+            effect |= StepActive(rule, v, now, stamp, st);
             return Finish(st, now, effect);
         }
 
@@ -282,12 +295,13 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             st.LastNotified = now;
             st.ClearSince = null;
             st.Acknowledged = false;
+            st.Ended = null;
             effect |= SensorAlertEffect.Raised;
         }
         return Finish(st, now, effect);
     }
 
-    private static SensorAlertEffect StepActive(SensorAlertRule rule, double v, DateTimeOffset now, SensorAlertRuntime st)
+    private static SensorAlertEffect StepActive(SensorAlertRule rule, double v, DateTimeOffset now, DateTimeOffset wall, SensorAlertRuntime st)
     {
         var hyst = SensorAlertRules.Hysteresis(rule);
         var inside = (rule.High is not { } hi || v <= hi - hyst) && (rule.Low is not { } lo || v >= lo + hyst);
@@ -296,6 +310,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             st.ClearSince ??= now;
             if (now - st.ClearSince.Value >= TimeSpan.FromSeconds(rule.ClearAfterSeconds))
             {
+                // An alert the user already dismissed leaves nothing behind.
+                st.Ended = st.Acknowledged
+                    ? null
+                    : new EndedAlert(wall, st.Extreme ?? v, (st.Direction == "below" ? rule.Low : rule.High) ?? 0, st.Direction ?? "above");
                 st.ResetToOk();
                 return SensorAlertEffect.Cleared;
             }
@@ -397,7 +415,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             return new SensorSample(false, 0, "");
         }
-        return new SensorSample(IsUsable(found), found.Value, found.Units);
+        return new SensorSample(IsUsable(found), found.Value, found.Units, found.Parent.Name);
     }
 
     private static bool IsUsable(HardwareSensor s)
@@ -415,12 +433,25 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
-    private (List<SensorAlertRule> Rules, bool Fahrenheit) Snapshot()
+    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, bool NotifyMaster, int CooldownMinutes)
+    {
+        public void Deconstruct(out List<SensorAlertRule> rules, out bool fahrenheit)
+        {
+            rules = Rules;
+            fahrenheit = Fahrenheit;
+        }
+    }
+
+    private Snap Snapshot()
     {
         var rules = new List<SensorAlertRule>();
         var fahrenheit = false;
+        var master = true;
+        var cooldown = 0;
         _store.Read(s =>
         {
+            master = s.Diagnostics.Notifications.SensorAlerts;
+            cooldown = Math.Max(0, s.Diagnostics.Notifications.SensorCooldownMinutes);
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
@@ -430,7 +461,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             }
             fahrenheit = string.Equals(s.Units.MonitoringTempUnit, "f", StringComparison.OrdinalIgnoreCase);
         });
-        return (rules, fahrenheit);
+        return new Snap(rules, fahrenheit, master, cooldown);
     }
 
     /// <summary>The configured rules, as copies.</summary>
@@ -439,7 +470,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>Evaluates every enabled rule once. Does nothing, and reads no sensor, without one.</summary>
     public void Tick()
     {
-        var (rules, fahrenheit) = Snapshot();
+        var snap = Snapshot();
+        var (rules, fahrenheit) = snap;
         var now = Mono();
         var changed = ReconcileCore(rules, now);
 
@@ -473,11 +505,16 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         readings.Add(new SeriesEntry(rule.Id, sample.Value, healed is null ? rule.Sensor : WithId(rule.Sensor, healed)));
                     }
                     var effect = Step(rule, sample, now, st, wall);
-                    changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, notices);
+                    if (sample.Valid)
+                    {
+                        st.Source = sample.Source;
+                    }
+                    changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, snap, notices);
                 }
             }
         }
 
+        changed |= ExpireEnded(_time.GetUtcNow());
         Volatile.Write(ref _series, new SeriesSnapshot(now, readings));
         if (heals.Count > 0)
         {
@@ -496,6 +533,23 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             Changed?.Invoke();
         }
+    }
+
+    private bool ExpireEnded(DateTimeOffset wall)
+    {
+        var any = false;
+        lock (_lock)
+        {
+            foreach (var st in _states.Values)
+            {
+                if (st.Ended is { } ended && wall - ended.EndedUtc >= SensorAlertRules.EndedLinger)
+                {
+                    st.Ended = null;
+                    any = true;
+                }
+            }
+        }
+        return any;
     }
 
     private Dictionary<string, IReadOnlyList<HardwareSensor>> ReadCategories(List<SensorAlertRule> enabled, DateTimeOffset now)
@@ -531,6 +585,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private IReadOnlyList<HardwareSensor> ReadCategory(string category, SensorSnapshotSources sources, DateTimeOffset now)
     {
+        if (category == BuiltInSensorRules.Category)
+        {
+            return ReadBuiltIns();
+        }
         // Drive temperatures exist only under smart, and each read wakes sleeping drives, so it is sampled slowly.
         if (category == "smart")
         {
@@ -550,6 +608,88 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return SensorSnapshotResolver.GetCategorySensors(_sensors, category, sources);
     }
 
+    /// <summary>
+    /// One synthetic temperature sensor per component, from the same picks the temperature history records: the CPU package
+    /// (else the first CPU temperature), the hottest discrete GPU (an integrated one only when there is none), the hottest
+    /// drive that is not ignored (the SMART cache, so no drive wakes) and the hottest memory-module sensor.
+    /// </summary>
+    private IReadOnlyList<HardwareSensor> ReadBuiltIns()
+    {
+        var list = new List<HardwareSensor>(4);
+        if (SummarySensors.PickCpuTemp(_sensors.GetCpuSensors()) is { } cpu)
+        {
+            list.Add(Synthetic("cpu", "CPU", cpu.Value, cpu.Stale, string.IsNullOrEmpty(cpu.Parent.Name) ? "CPU" : cpu.Parent.Name));
+        }
+
+        HardwareSensor? gpuTemp = null;
+        var gpuName = "";
+        var gpuDiscrete = false;
+        foreach (var gpu in _sensors.GetGpus())
+        {
+            var temp = gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase) && x.Name.Contains("Core", StringComparison.OrdinalIgnoreCase))
+                ?? gpu.Sensors.FirstOrDefault(x => string.Equals(x.Type, "Temperature", StringComparison.OrdinalIgnoreCase));
+            if (temp is null || !IsUsable(temp))
+            {
+                continue;
+            }
+            var discrete = !gpu.Integrated;
+            if (gpuTemp is null || (discrete && !gpuDiscrete) || (discrete == gpuDiscrete && temp.Value > gpuTemp.Value))
+            {
+                gpuTemp = temp;
+                gpuName = gpu.Name;
+                gpuDiscrete = discrete;
+            }
+        }
+        if (gpuTemp is not null)
+        {
+            list.Add(Synthetic("gpu", "GPU", gpuTemp.Value, false, gpuName));
+        }
+
+        if (_drives?.Snapshot() is { Supported: true } smart)
+        {
+            var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+            Nexus.Service.Diagnostics.Storage.SmartDriveInfo? hottest = null;
+            foreach (var drive in smart.Drives)
+            {
+                if (drive.TemperatureC is { } c && double.IsFinite(c) && !ignored.Contains(drive.Id, StringComparer.Ordinal)
+                    && (hottest is null || c > hottest.TemperatureC))
+                {
+                    hottest = drive;
+                }
+            }
+            if (hottest?.TemperatureC is { } driveC)
+            {
+                list.Add(Synthetic("storage", "Storage", (float)driveC, false, hottest.Name));
+            }
+        }
+
+        var ram = Nexus.Service.Monitoring.History.SystemMetricsSource.FindRamTempSensors(_sensors.GetMemorySensors());
+        HardwareSensor? ramHot = null;
+        foreach (var sensor in ram)
+        {
+            if (IsUsable(sensor) && (ramHot is null || sensor.Value > ramHot.Value))
+            {
+                ramHot = sensor;
+            }
+        }
+        if (ramHot is not null)
+        {
+            list.Add(Synthetic("ram", "Memory", ramHot.Value, false, ramHot.Name));
+        }
+        return list;
+    }
+
+    private static HardwareSensor Synthetic(string id, string name, float value, bool stale, string source) => new()
+    {
+        Id = id,
+        Name = name,
+        Type = "Temperature",
+        Value = value,
+        Units = "°C",
+        Stale = stale,
+        Parent = new SensorParent { Id = id, Name = source },
+    };
+
     private void Warn(string key, string message, DateTimeOffset now)
     {
         if (_warnings.ShouldLog(key, now))
@@ -564,6 +704,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         SensorAlertEffect effect,
         DateTimeOffset now,
         bool fahrenheit,
+        Snap snap,
         List<(DiagnosticsAlertNotice, bool)> notices)
     {
         if (effect == SensorAlertEffect.None)
@@ -591,7 +732,20 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
         if ((effect & (SensorAlertEffect.Raised | SensorAlertEffect.Repeated)) != 0)
         {
-            notices.Add((BuildNotice(rule, st, fahrenheit), rule.NotifyDesktop));
+            var notify = rule.NotifyDesktop && snap.NotifyMaster;
+            if (notify && (effect & SensorAlertEffect.Raised) != 0)
+            {
+                // The cooldown spans episodes, so a value hovering at its limit does not toast on every dip and return.
+                if (_lastToast.TryGetValue(rule.Id, out var last) && now - last < TimeSpan.FromMinutes(snap.CooldownMinutes))
+                {
+                    notify = false;
+                }
+                else
+                {
+                    _lastToast[rule.Id] = now;
+                }
+            }
+            notices.Add((BuildNotice(rule, st, fahrenheit), notify));
         }
         if ((effect & SensorAlertEffect.Cleared) != 0)
         {
@@ -657,6 +811,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             {
                 EndEpisode(_states[id], wall);
                 _states.Remove(id);
+                _lastToast.Remove(id);
                 changed = true;
             }
             foreach (var rule in rules)
@@ -678,6 +833,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 st.InvalidSinceUtc = null;
                 st.Value = null;
                 st.Reported = SensorAlertStates.Ok;
+                st.Ended = null;
                 st.Config = rule.Clone();
                 changed = true;
             }
@@ -712,16 +868,27 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    /// <summary>Marks an active alert as seen; its health component goes away until it clears and raises again.</summary>
+    /// <summary>Dismisses an active alert (its banner and health entry go until it raises again) or a finished one that is still waiting for the user.</summary>
     public bool Acknowledge(string ruleId)
     {
         lock (_lock)
         {
-            if (!_states.TryGetValue(ruleId, out var st) || st.Phase != SensorAlertStates.Active || st.Acknowledged)
+            if (!_states.TryGetValue(ruleId, out var st))
             {
                 return false;
             }
-            st.Acknowledged = true;
+            if (st.Phase == SensorAlertStates.Active && !st.Acknowledged)
+            {
+                st.Acknowledged = true;
+            }
+            else if (st.Ended is not null)
+            {
+                st.Ended = null;
+            }
+            else
+            {
+                return false;
+            }
         }
         Changed?.Invoke();
         return true;
@@ -783,57 +950,76 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             Since = since is { } s ? Iso(s) : null,
             Extreme = inEpisode ? st.Extreme : null,
             Direction = inEpisode ? st.Direction : null,
+            Threshold = inEpisode && st.Config is { } cfg ? (st.Direction == "below" ? cfg.Low : cfg.High) : null,
+            EndedAt = st.Ended is { } ended ? Iso(ended.EndedUtc) : null,
+            EndedPeak = st.Ended?.Peak,
+            EndedThreshold = st.Ended?.Threshold,
+            EndedDirection = st.Ended?.Direction,
             Acknowledged = st.Acknowledged,
         };
     }
 
-    /// <summary>One component per active, unacknowledged rule that opted into health.</summary>
+    /// <summary>
+    /// One component per rule that opted into health and is either active and not acknowledged (the rule's severity) or
+    /// finished and not yet dismissed (watch, like the thermal guard, for a day at most).
+    /// </summary>
     internal List<HealthComponent> HealthComponents()
     {
-        var (rules, fahrenheit) = Snapshot();
+        var snap = Snapshot();
+        var (rules, fahrenheit) = snap;
+        var wall = _time.GetUtcNow();
         var result = new List<HealthComponent>();
         lock (_lock)
         {
             foreach (var rule in rules)
             {
                 if (!rule.Enabled || !rule.ShowInHealth || !_states.TryGetValue(rule.Id, out var st)
-                    || st.Config is not { } cfg || !cfg.SameConfig(rule)
-                    || st.Phase != SensorAlertStates.Active || st.Acknowledged)
+                    || st.Config is not { } cfg || !cfg.SameConfig(rule))
                 {
                     continue;
                 }
-                var severity = rule.Severity == SensorAlertRules.Act ? HealthStatuses.Act : HealthStatuses.Watch;
-                var text = SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit);
-                result.Add(new HealthComponent
+                if (st.Phase == SensorAlertStates.Active && !st.Acknowledged)
                 {
-                    Id = $"alert:{rule.Id}",
-                    Kind = "alerts",
-                    Name = SensorAlertText.DisplayName(rule.Sensor),
-                    Status = severity,
-                    Reasons = new List<HealthComponentReason>
-                    {
-                        new("alerts.sensorThreshold", severity, text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={st.Direction}",
-                            ThresholdParams(rule, st)),
-                    },
-                });
+                    var severity = rule.Severity == SensorAlertRules.Act ? HealthStatuses.Act : HealthStatuses.Watch;
+                    var text = SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit, st.Source);
+                    result.Add(Component(rule, severity, "alerts.sensorThreshold", text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={st.Direction}",
+                        ThresholdParams(rule, st)));
+                }
+                else if (st.Ended is { } ended && wall - ended.EndedUtc < SensorAlertRules.EndedLinger)
+                {
+                    var text = SensorAlertText.DescribeEnded(rule, ended, fahrenheit, st.Source);
+                    result.Add(Component(rule, HealthStatuses.Watch, "alerts.sensorThresholdEnded", text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={ended.Direction}",
+                        EndedParams(rule, ended, st.Units, st.Source)));
+                }
             }
         }
         return result;
     }
 
+    private static HealthComponent Component(SensorAlertRule rule, string severity, string code, string text, string detail, Dictionary<string, string> p) => new()
+    {
+        Id = $"alert:{rule.Id}",
+        Kind = "alerts",
+        Name = SensorAlertText.DisplayName(rule),
+        Status = severity,
+        Reasons = new List<HealthComponentReason> { new(code, severity, text, detail, p) },
+    };
+
     // Values are native units (temperature in Celsius); the UI converts for display.
     private static Dictionary<string, string> ThresholdParams(SensorAlertRule rule, SensorAlertRuntime st)
     {
-        var p = new Dictionary<string, string>
+        var p = BaseParams(rule, st.Source, st.Units);
+        p["direction"] = st.Direction ?? "";
+        p["value"] = (st.Value ?? st.Extreme ?? 0).ToString(CultureInfo.InvariantCulture);
+        p["active"] = "true";
+        if (st.Extreme is { } peak)
         {
-            ["ruleId"] = rule.Id,
-            ["category"] = rule.Sensor.Category,
-            ["direction"] = st.Direction ?? "",
-            ["type"] = rule.Sensor.Type,
-            ["sensorName"] = rule.Sensor.Name,
-            ["value"] = (st.Value ?? st.Extreme ?? 0).ToString(CultureInfo.InvariantCulture),
-            ["units"] = st.Units,
-        };
+            p["peak"] = peak.ToString(CultureInfo.InvariantCulture);
+        }
+        if (st.PhaseSinceUtc is { } since)
+        {
+            p["since"] = since.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+        }
         if ((st.Direction == "below" ? rule.Low : rule.High) is { } threshold)
         {
             p["threshold"] = threshold.ToString(CultureInfo.InvariantCulture);
@@ -841,10 +1027,42 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return p;
     }
 
+    private static Dictionary<string, string> EndedParams(SensorAlertRule rule, EndedAlert ended, string units, string source)
+    {
+        var p = BaseParams(rule, source, units);
+        p["direction"] = ended.Direction;
+        p["active"] = "false";
+        p["peak"] = ended.Peak.ToString(CultureInfo.InvariantCulture);
+        p["threshold"] = ended.Threshold.ToString(CultureInfo.InvariantCulture);
+        p["ended"] = ended.EndedUtc.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+        return p;
+    }
+
+    private static Dictionary<string, string> BaseParams(SensorAlertRule rule, string source, string units)
+    {
+        var p = new Dictionary<string, string>
+        {
+            ["ruleId"] = rule.Id,
+            ["category"] = rule.Sensor.Category,
+            ["type"] = rule.Sensor.Type,
+            ["sensorName"] = rule.Sensor.Name,
+            ["units"] = units,
+        };
+        if (rule.BuiltIn is not null)
+        {
+            p["builtIn"] = rule.BuiltIn;
+        }
+        if (source.Length > 0)
+        {
+            p["sourceName"] = source;
+        }
+        return p;
+    }
+
     private static DiagnosticsAlertNotice BuildNotice(SensorAlertRule rule, SensorAlertRuntime st, bool fahrenheit) =>
         new(
             "Sensor alert",
-            SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit),
+            SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit, st.Source),
             NoticeKind,
             Urgent: rule.Severity == SensorAlertRules.Act);
 
@@ -877,19 +1095,42 @@ internal sealed class LogThrottle
 internal static class SensorAlertText
 {
     /// <summary>The sensor's name with its type appended unless the name already says it.</summary>
+    internal static string DisplayName(SensorAlertRule rule) => rule.BuiltIn switch
+    {
+        BuiltInSensorRules.CpuTemp => "CPU temperature",
+        BuiltInSensorRules.GpuTemp => "GPU temperature",
+        BuiltInSensorRules.StorageTemp => "Storage temperature",
+        BuiltInSensorRules.RamTemp => "Memory temperature",
+        _ => DisplayName(rule.Sensor),
+    };
+
     internal static string DisplayName(SensorRef sensor) =>
         sensor.Name.EndsWith(sensor.Type, StringComparison.OrdinalIgnoreCase) || sensor.Type.Length == 0
             ? sensor.Name
             : $"{sensor.Name} {sensor.Type}";
 
     /// <summary>The toast sentence: name, direction, limit, hold time and the current reading.</summary>
-    internal static string Describe(SensorAlertRule rule, string? direction, double value, string units, bool fahrenheit)
+    internal static string Describe(SensorAlertRule rule, string? direction, double value, string units, bool fahrenheit, string source = "")
     {
         var below = direction == "below";
         var threshold = (below ? rule.Low : rule.High) ?? 0;
         var delay = rule.RaiseAfterSeconds > 0 ? $" for {rule.RaiseAfterSeconds} s" : "";
-        return $"{DisplayName(rule.Sensor)} {(below ? "below" : "above")} {Format(threshold, rule.Sensor.Type, units, fahrenheit)}{delay} (now {Format(value, rule.Sensor.Type, units, fahrenheit)})";
+        return $"{WithSource(rule, source)} {(below ? "below" : "above")} {Format(threshold, rule.Sensor.Type, units, fahrenheit)}{delay} (now {Format(value, rule.Sensor.Type, units, fahrenheit)})";
     }
+
+    /// <summary>The sentence for a finished alert that still waits for the user.</summary>
+    internal static string DescribeEnded(SensorAlertRule rule, EndedAlert ended, bool fahrenheit, string source)
+    {
+        var type = rule.Sensor.Type;
+        var below = ended.Direction == "below";
+        return $"{WithSource(rule, source)} was {(below ? "below" : "above")} {Format(ended.Threshold, type, "", fahrenheit)} (peak {Format(ended.Peak, type, "", fahrenheit)}), back to normal";
+    }
+
+    // A built-in has no name of its own to say which GPU or drive it follows.
+    private static string WithSource(SensorAlertRule rule, string source) =>
+        rule.BuiltIn is BuiltInSensorRules.GpuTemp or BuiltInSensorRules.StorageTemp && source.Length > 0
+            ? $"{DisplayName(rule)} ({source})"
+            : DisplayName(rule);
 
     internal static string Format(double value, string type, string units, bool fahrenheit)
     {

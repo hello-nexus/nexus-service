@@ -219,7 +219,7 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
         Store.Append(new[] { Sample(t0, (id, 10)) }, null);
         // The engine healed the stored id; a client still holding the old one sends it back with the same name and parent.
         _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()
-            .Update(s => s.Diagnostics.SensorAlerts!.Single().Sensor.Id = "cpu/temp-healed");
+            .Update(s => s.Diagnostics.SensorAlerts!.Single(r => r.Id == id).Sensor.Id = "cpu/temp-healed");
 
         var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", Rule(id: "cpu/stale-old", high: 85));
 

@@ -73,6 +73,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // only a document from before it needs the v17 unswap.
                 _cached.Lighting.FreeRotationLayouts = true;
                 _cached.MaximizedCanvasDefaults = true;
+                Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: true);
                 Persist(_cached);
                 return _cached;
             }
@@ -107,6 +108,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // Migrate() the same as any other pre-v8 document.
                 _cached = new NexusSettings { SchemaVersion = 0 };
                 Migrate(_cached);
+                Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: true);
                 // Sign-ins and paired devices survive a reset of the rest of the file.
                 if (TryReadAuth(json) is { } auth)
                 {
@@ -185,11 +187,17 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Console.Error.WriteLine($"[nexus-service] could not keep the pre-v32 settings: {ex.Message}");
                 }
             }
+            Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false);
             Persist(_cached);
         }
         else
         {
             var recovered = pinsMigrated;
+            // Every load, not only on a version bump: a build without sensor alerts drops the list and keeps the schema version.
+            if (Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false))
+            {
+                recovered = true;
+            }
             if (NeedsDeckModesRecovery(_cached))
             {
                 // A downgrade to a pre-deck-modes build (then a re-upgrade)

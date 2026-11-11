@@ -237,6 +237,10 @@ public sealed class DiagnosticsNotifications
     public bool SystemDevices { get; set; } = true;
     public bool GpuThrottle { get; set; } = true;
     public int CooldownMinutes { get; set; } = 60;
+    /// <summary>Master switch for sensor-alert desktop notifications (each rule still has its own notifyDesktop). Independent of <see cref="Enabled"/>, which gates only the health-check notifications.</summary>
+    public bool SensorAlerts { get; set; } = true;
+    /// <summary>Minimum gap between two notifications for the same sensor rule across episodes, so a value that flaps around its limit does not notify again and again. A rule's own repeat setting still applies inside one episode.</summary>
+    public int SensorCooldownMinutes { get; set; } = 60;
 }
 
 public sealed class DiagnosticsNotificationsPatch
@@ -249,6 +253,8 @@ public sealed class DiagnosticsNotificationsPatch
     public bool? SystemDevices { get; set; }
     public bool? GpuThrottle { get; set; }
     public int? CooldownMinutes { get; set; }
+    public bool? SensorAlerts { get; set; }
+    public int? SensorCooldownMinutes { get; set; }
 }
 
 /// <summary>Per-area enable flag for diagnostics health status + alerts. A
@@ -277,8 +283,8 @@ public sealed class DiagnosticsComponentsPatch
 public sealed class DiagnosticsSettings
 {
     public DiagnosticsThresholds Thresholds { get; set; } = new();
-    /// <summary>Minutes an over-threshold warning is kept after the component
-    /// last measured hot. 0 = clears as soon as the latest sample cools.</summary>
+    /// <summary>Retired: the built-in sensor rules replaced it. Kept, frozen, so a downgrade
+    /// still finds the value the user had.</summary>
     public int WarningLingerMinutes { get; set; }
     public DiagnosticsNotifications Notifications { get; set; } = new();
     public DiagnosticsComponents Components { get; set; } = new();

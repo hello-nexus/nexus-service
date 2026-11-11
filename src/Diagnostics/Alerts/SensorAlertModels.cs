@@ -26,6 +26,18 @@ public sealed class SensorAlertState
     public double? Extreme { get; set; }
     /// <summary>"above" | "below" while pending or active.</summary>
     public string? Direction { get; set; }
+    /// <summary>The limit that was crossed, while pending or active.</summary>
+    public double? Threshold { get; set; }
+    /// <summary>
+    /// The alert still waiting for the user after its value came back inside the limit: ISO 8601 UTC time it ended.
+    /// The Ended* fields describe that finished episode. Null once it is dismissed (acknowledge) or a day after it ended.
+    /// </summary>
+    public string? EndedAt { get; set; }
+    public double? EndedPeak { get; set; }
+    public double? EndedThreshold { get; set; }
+    /// <summary>"above" | "below".</summary>
+    public string? EndedDirection { get; set; }
+    /// <summary>Active: the user dismissed the banner and health entry. Not set for an ended alert; dismissing that one clears the Ended* fields.</summary>
     public bool Acknowledged { get; set; }
 }
 
@@ -56,8 +68,10 @@ public sealed class SensorAlertsFrame
 /// <summary>Rule limits, validation and the per-type clear hysteresis.</summary>
 public static class SensorAlertRules
 {
-    public const int MaxRules = 10;
+    public const int MaxRules = 20;
     public const int MaxSeconds = 600;
+    /// <summary>How long a finished alert stays on the Summary banner and in health until the user dismisses it.</summary>
+    public static readonly TimeSpan EndedLinger = TimeSpan.FromHours(24);
     public const string Watch = "watch";
     public const string Act = "act";
 
@@ -96,14 +110,30 @@ public static class SensorAlertRules
         {
             return "A sensor with a category, type and id or name is required.";
         }
+        if (rule.BuiltIn is not null)
+        {
+            // The built-in's sensor is synthetic and fixed; BuiltInSensorRules.Pin put it there.
+            if (!BuiltInSensorRules.IsKind(rule.BuiltIn) || sensor.Category != BuiltInSensorRules.Category)
+            {
+                return "Unknown built-in sensor.";
+            }
+        }
+        else if (sensor.Category == BuiltInSensorRules.Category)
+        {
+            return "Built-in sensors cannot be created.";
+        }
         // The fps source lives outside the sensor provider, so a rule on it could never resolve.
-        if (sensor.Category == "fps" || !SensorSnapshotResolver.IsSupportedCategory(sensor.Category))
+        else if (sensor.Category == "fps" || !SensorSnapshotResolver.IsSupportedCategory(sensor.Category))
         {
             return $"Unknown sensor category '{sensor.Category}'.";
         }
         if ((rule.Low is { } l && !double.IsFinite(l)) || (rule.High is { } h && !double.IsFinite(h)))
         {
             return "Limits must be finite numbers.";
+        }
+        if (rule.BuiltIn is not null && rule.High is null)
+        {
+            return "A built-in sensor needs an upper limit.";
         }
         if (rule.Low is { } lo && rule.High is { } hi && lo >= hi)
         {

@@ -648,6 +648,9 @@ public static class ProfileRoutes
                         if (notifications.MemoryTest.HasValue)     s.Diagnostics.Notifications.MemoryTest     = notifications.MemoryTest.Value;
                         if (notifications.SystemDevices.HasValue)  s.Diagnostics.Notifications.SystemDevices  = notifications.SystemDevices.Value;
                         if (notifications.GpuThrottle.HasValue)    s.Diagnostics.Notifications.GpuThrottle    = notifications.GpuThrottle.Value;
+                        if (notifications.SensorAlerts.HasValue)   s.Diagnostics.Notifications.SensorAlerts   = notifications.SensorAlerts.Value;
+                        if (notifications.SensorCooldownMinutes.HasValue)
+                            s.Diagnostics.Notifications.SensorCooldownMinutes = Math.Max(0, notifications.SensorCooldownMinutes.Value);
                         if (notifications.CooldownMinutes.HasValue)
                             s.Diagnostics.Notifications.CooldownMinutes = Math.Max(0, notifications.CooldownMinutes.Value);
                     }

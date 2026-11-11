@@ -413,6 +413,7 @@ public class PanelRotationMigrationEquivalenceTests : IDisposable
     {
         var copy = JsonSerializer.Deserialize(JsonSerializer.Serialize(s, PersistenceJsonContext.Default.NexusSettings), PersistenceJsonContext.Default.NexusSettings)!;
         copy.PanelDevices.Clear();
+        copy.Diagnostics.SensorAlerts.Clear();
         copy.SchemaVersion = 0;
         return JsonSerializer.Serialize(copy, PersistenceJsonContext.Default.NexusSettings);
     }

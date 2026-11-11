@@ -12,7 +12,7 @@ using Xunit;
 
 namespace Nexus.Service.Tests.Diagnostics.Alerts;
 
-public class SensorAlertEngineTests
+public partial class SensorAlertEngineTests
 {
     private sealed class FakeTime : TimeProvider
     {
@@ -58,8 +58,10 @@ public class SensorAlertEngineTests
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 20f);
         public IReadOnlyList<string> GetGpuModels() => Array.Empty<string>();
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
-        public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
-        public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
+        public List<GpuReadout> Gpus { get; } = new();
+        public IReadOnlyList<GpuReadout> GetGpus() => Gpus;
+        public IReadOnlyList<HardwareSensor> Memory { get; set; } = Array.Empty<HardwareSensor>();
+        public IReadOnlyList<HardwareSensor> GetMemorySensors() => Memory;
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";
         public Dictionary<string, StorageComponent> Storage { get; } = new();
@@ -83,6 +85,13 @@ public class SensorAlertEngineTests
         public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
+    private sealed class StubSmart : Nexus.Service.Diagnostics.Storage.ISmartHealthSource
+    {
+        public List<Nexus.Service.Diagnostics.Storage.SmartDriveInfo> Drives { get; } = new();
+        public Nexus.Service.Diagnostics.Storage.SmartSnapshot Snapshot() => new() { Supported = true, Drives = Drives.ToList() };
+        public void ForceRefresh() { }
+    }
+
     private sealed class Rig
     {
         public FakeTime Time { get; } = new();
@@ -92,9 +101,11 @@ public class SensorAlertEngineTests
         public List<(DiagnosticsAlertNotice Notice, bool IgnoreMaster)> Notices { get; } = new();
         public int ChangedCount { get; private set; }
 
+        public StubSmart Smart { get; } = new();
+
         public Rig(TimeSpan? startupHold = null)
         {
-            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold);
+            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold, Smart);
             Engine.NoticeSink = (n, ignore) => Notices.Add((n, ignore));
             Engine.Changed += () => ChangedCount++;
         }
@@ -727,7 +738,7 @@ public class SensorAlertEngineTests
 
             var loaded = new JsonConfigStore(path).Load().Diagnostics.SensorAlerts;
 
-            var back = Assert.Single(loaded);
+            var back = Assert.Single(loaded, r => r.BuiltIn is null);
             Assert.Equal("r1", back.Id);
             Assert.Equal(10, back.Low);
             Assert.Null(back.High);
@@ -779,7 +790,6 @@ public class SensorAlertEngineTests
             new Nexus.Service.Diagnostics.Memory.MemoryDiagnosticOrchestrator(),
             new Nexus.Service.Diagnostics.SystemInfo.PnpProblemScanner(),
             rig.Sensors,
-            new Nexus.Service.Monitoring.History.InMemoryMetricsHistoryStore(),
             rig.Store,
             rig.Engine);
 

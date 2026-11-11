@@ -199,6 +199,24 @@ public class SensorSeriesStoreTests : IDisposable
     }
 
     [Fact]
+    public void Built_in_ids_are_safe_series_ids_that_a_prune_keeps_and_fit_under_the_cap()
+    {
+        var t0 = 1_800_000_000L;
+        Assert.All(Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ids, id => Assert.True(SensorSeriesRingStore.IsSafeId(id)));
+        Assert.True(SensorSeriesRingStore.MaxSeries >= Nexus.Service.Diagnostics.Alerts.SensorAlertRules.MaxRules);
+        using (var store = new BinaryMetricsHistoryStore(_dir))
+        {
+            store.Append(new[] { Sample(t0, ("builtin-cpu", 1), ("user-rule", 2), ("dead", 3)) }, null);
+        }
+
+        using var reopened = new BinaryMetricsHistoryStore(_dir);
+        var live = new System.Collections.Generic.HashSet<string>(Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ids) { "user-rule" };
+        reopened.PruneSensorSeries(live);
+
+        Assert.Equal(new[] { "builtin-cpu", "user-rule" }, reopened.QuerySensorSeriesDecimated(t0, t0, 1).Select(x => x.SeriesId).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public void An_old_delete_stops_filtering_once_it_is_older_than_the_buffer_can_replay()
     {
         var t0 = 1_800_000_000L;
