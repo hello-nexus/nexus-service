@@ -51,18 +51,19 @@ public static class BuiltInSensorRules
         return (spec.LimitMin, spec.LimitMax);
     }
 
-    /// <summary>Re-points a built-in at its fixed sensor, drops any lower bound and clamps the limit. The one place a client-sent built-in is made safe to store.</summary>
+    /// <summary>Re-points a built-in at its fixed sensor, and clamps each limit that is set; either may be null. The one place a client-sent built-in is made safe to store.</summary>
     public static void Pin(SensorAlertRule rule)
     {
         var spec = Specs.First(s => s.Kind == rule.BuiltIn);
         rule.Id = spec.Id;
         rule.Sensor = FixedSensor(spec);
-        rule.Low = null;
-        if (rule.High is { } high && double.IsFinite(high))
-        {
-            rule.High = Math.Clamp(high, spec.LimitMin, spec.LimitMax);
-        }
+        rule.Low = ClampLimit(rule.Low, spec);
+        rule.High = ClampLimit(rule.High, spec);
     }
+
+    /// <summary>A set limit is pulled into the kind's range; a non-finite one counts as unset.</summary>
+    private static double? ClampLimit(double? value, Spec spec) =>
+        value is { } v && double.IsFinite(v) ? Math.Clamp(v, spec.LimitMin, spec.LimitMax) : null;
 
     /// <summary>
     /// Adds each missing built-in and puts the built-ins first, in fixed order. Runs on every settings load: a version gate
@@ -132,16 +133,17 @@ public static class BuiltInSensorRules
             rule.Sensor = pinned;
             changed = true;
         }
-        if (rule.Low is not null)
+        // Both limits are optional (none = tracking only); a hand edit is only pulled into range, and a crossed band loses its low.
+        var high = ClampLimit(rule.High, spec);
+        var low = ClampLimit(rule.Low, spec);
+        if (low is { } lo && high is { } hi && lo >= hi)
         {
-            rule.Low = null;
-            changed = true;
+            low = null;
         }
-        // A hand edit can leave no limit or a non-finite one; a built-in always needs a usable upper limit.
-        var limit = rule.High is { } h && double.IsFinite(h) ? Math.Clamp(h, spec.LimitMin, spec.LimitMax) : spec.NewInstallHigh;
-        if (rule.High != limit)
+        if (rule.High != high || rule.Low != low)
         {
-            rule.High = limit;
+            rule.High = high;
+            rule.Low = low;
             changed = true;
         }
         return changed;

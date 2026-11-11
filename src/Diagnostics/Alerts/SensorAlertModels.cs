@@ -128,10 +128,6 @@ public static class SensorAlertRules
         {
             return "Limits must be finite numbers.";
         }
-        if (rule.BuiltIn is not null && rule.High is null)
-        {
-            return "A built-in sensor needs an upper limit.";
-        }
         if (rule.Low is { } lo && rule.High is { } hi && lo >= hi)
         {
             return "The low limit must be below the high limit.";

@@ -55,6 +55,36 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
+    public void A_built_in_with_a_low_limit_raises_below_it()
+    {
+        var rig = BuiltInRig(s => s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-cpu").Low = 70);
+        rig.Sensors.Cpu = new[] { Temp("cpu/pkg", "CPU Package", 65) };
+
+        rig.Seconds(6);
+
+        Assert.Equal(SensorAlertStates.Active, rig.State("builtin-cpu"));
+        Assert.Equal("below", StateOf(rig, "builtin-cpu").Direction);
+    }
+
+    [Fact]
+    public void A_built_in_with_no_limits_only_tracks_and_never_raises()
+    {
+        var rig = BuiltInRig(s =>
+        {
+            var cpu = s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-cpu");
+            cpu.High = null;
+            cpu.Low = null;
+        });
+        rig.Sensors.Cpu = new[] { Temp("cpu/pkg", "CPU Package", 110) };
+
+        rig.Seconds(10);
+
+        Assert.Equal(SensorAlertStates.Ok, rig.State("builtin-cpu"));
+        Assert.Empty(rig.Notices);
+        Assert.Empty(rig.Engine.HealthComponents());
+    }
+
+    [Fact]
     public void Gpu_builtin_follows_the_hottest_discrete_gpu_and_ignores_a_hotter_integrated_one()
     {
         var rig = BuiltInRig();

@@ -153,21 +153,40 @@ public sealed class BuiltInSensorRulesTests : IDisposable
     }
 
     [Fact]
-    public void Ensure_re_pins_a_tampered_built_in_sensor_and_drops_its_lower_bound()
+    public void Ensure_re_pins_a_tampered_built_in_sensor_and_keeps_its_limits_in_range()
     {
         var d = new DiagnosticsSettings();
         BuiltInSensorRules.Ensure(d, newInstall: true);
         var cpu = Rule(d, "builtin-cpu");
         cpu.Sensor = new SensorRef { Category = "gpu", Id = "elsewhere", Name = "x", Type = "Fan" };
         cpu.Low = 20;
-        cpu.High = null;
+        cpu.High = 300;
 
         Assert.True(BuiltInSensorRules.Ensure(d, newInstall: false));
 
         Assert.Equal("builtin", cpu.Sensor.Category);
         Assert.Equal("cpu", cpu.Sensor.Id);
+        Assert.Equal(60, cpu.Low);
+        Assert.Equal(105, cpu.High);
+    }
+
+    [Fact]
+    public void Ensure_keeps_a_built_in_with_no_limits_and_drops_a_crossed_low()
+    {
+        var d = new DiagnosticsSettings();
+        BuiltInSensorRules.Ensure(d, newInstall: true);
+        var cpu = Rule(d, "builtin-cpu");
+        cpu.High = null;
+        var gpu = Rule(d, "builtin-gpu");
+        gpu.Low = 100;
+        gpu.High = 80;
+
+        BuiltInSensorRules.Ensure(d, newInstall: false);
+
+        Assert.Null(cpu.High);
         Assert.Null(cpu.Low);
-        Assert.Equal(100, cpu.High);
+        Assert.Null(gpu.Low);
+        Assert.Equal(80, gpu.High);
     }
 
     // ---- real prior settings.json shapes through JsonConfigStore ----

@@ -178,7 +178,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
-    public async Task A_put_on_a_built_in_keeps_its_fixed_sensor_drops_the_lower_bound_and_takes_the_edits()
+    public async Task A_put_on_a_built_in_keeps_its_fixed_sensor_and_takes_the_edits()
     {
         var client = Client();
 
@@ -191,7 +191,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
         Assert.Equal("builtin", rule.GetProperty("sensor").GetProperty("category").GetString());
         Assert.Equal("gpu", rule.GetProperty("sensor").GetProperty("id").GetString());
         Assert.Equal("Temperature", rule.GetProperty("sensor").GetProperty("type").GetString());
-        Assert.Equal(JsonValueKind.Null, rule.GetProperty("low").ValueKind);
+        Assert.Equal(60, rule.GetProperty("low").GetDouble());
         Assert.Equal(88, rule.GetProperty("high").GetDouble());
         Assert.Equal(30, rule.GetProperty("raiseAfterSeconds").GetInt32());
         Assert.Equal("act", rule.GetProperty("severity").GetString());
@@ -199,14 +199,17 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
-    public async Task A_put_clamps_a_built_in_limit_and_needs_one()
+    public async Task A_put_clamps_a_built_in_limit_and_accepts_none()
     {
         var client = Client();
 
         var clamped = await (await client.PutAsJsonAsync("/diagnostics/alerts/builtin-cpu", BuiltInBody(high: 300))).Content.ReadFromJsonAsync<JsonElement>();
 
         Assert.Equal(105, clamped.GetProperty("high").GetDouble());
-        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync("/diagnostics/alerts/builtin-cpu", BuiltInBody(high: null))).StatusCode);
+        var none = await client.PutAsJsonAsync("/diagnostics/alerts/builtin-cpu", BuiltInBody(high: null));
+        Assert.Equal(HttpStatusCode.OK, none.StatusCode);
+        Assert.Equal(JsonValueKind.Null, (await none.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("high").ValueKind);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync("/diagnostics/alerts/builtin-cpu", BuiltInBody(high: 70, low: 80))).StatusCode);
     }
 
     [Fact]
@@ -225,14 +228,16 @@ public sealed class SensorAlertRoutesTests : IClassFixture<NexusAppFactory>
     {
         var client = Client();
         await client.PostAsJsonAsync("/diagnostics/alerts", Rule());
-        await client.PutAsJsonAsync("/diagnostics/alerts/builtin-gpu", BuiltInBody(high: 70));
+        await client.PutAsJsonAsync("/diagnostics/alerts/builtin-gpu", BuiltInBody(high: 70, low: 62));
         await client.PutAsJsonAsync("/diagnostics/alerts/builtin-cpu", BuiltInBody(high: 70));
 
         var one = await client.PostAsync("/diagnostics/alerts/builtins/reset?id=builtin-gpu", null);
 
         Assert.Equal(HttpStatusCode.OK, one.StatusCode);
         var afterOne = (await one.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("rules").EnumerateArray().ToList();
-        Assert.Equal(90, afterOne.Single(r => r.GetProperty("id").GetString() == "builtin-gpu").GetProperty("high").GetDouble());
+        var gpuAfter = afterOne.Single(r => r.GetProperty("id").GetString() == "builtin-gpu");
+        Assert.Equal(90, gpuAfter.GetProperty("high").GetDouble());
+        Assert.Equal(JsonValueKind.Null, gpuAfter.GetProperty("low").ValueKind);
         Assert.Equal(70, afterOne.Single(r => r.GetProperty("id").GetString() == "builtin-cpu").GetProperty("high").GetDouble());
 
         var all = await (await client.PostAsync("/diagnostics/alerts/builtins/reset", null)).Content.ReadFromJsonAsync<JsonElement>();
