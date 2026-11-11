@@ -84,7 +84,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly object _dashboardLock = new();
     private int _dashboardFrames;
 
-    // Stop and the render tick can both serialize a frame, so composing is serialized; the send itself still reads the shared buffer after the lock, as the engine's own frame buffer already does.
+    // Stop and the render tick can both serialize a frame, so composing is serialized. Each broadcast gets its own copy because section lengths change per frame and the send outlives the lock.
     private void BroadcastDashboardFrame(ReadOnlyMemory<byte> frame, DeviceFrame[] devices)
     {
         var connected = _hub.ClientCount > 0;
@@ -93,17 +93,16 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return;
         }
+        byte[]? copy;
         lock (_dashboardLock)
         {
-            var length = LiveLedFrameComposer.Compose(frame.Span, devices, _engine.Live, ref _dashboardFrame);
+            copy = LiveLedFrameComposer.ComposeCopy(frame.Span, devices, _engine.Live, ref _dashboardFrame);
             if ((++_dashboardFrames & 255) == 0)
             {
                 _engine.Live.Prune(devices);
             }
-            _ = length > 0
-                ? _hub.BroadcastBinaryAsync(new ReadOnlyMemory<byte>(_dashboardFrame, 0, length))
-                : _hub.BroadcastBinaryAsync(frame);
         }
+        _ = copy is not null ? _hub.BroadcastBinaryAsync(copy) : _hub.BroadcastBinaryAsync(frame);
     }
 
     public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null, SensorFeed? sensorFeed = null)

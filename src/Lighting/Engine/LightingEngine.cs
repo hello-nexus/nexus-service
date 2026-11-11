@@ -757,6 +757,8 @@ public sealed partial class LightingEngine : IDisposable
 
     public void Stop()
     {
+        // No frames are serialized after this, so the dashboard copy has nobody to wait on.
+        Live.Enabled = false;
         lock (_lock)
         {
             var old = _currentEffect;

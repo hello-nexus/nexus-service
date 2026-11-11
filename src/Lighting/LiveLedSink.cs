@@ -166,6 +166,7 @@ public sealed class LiveLedSink
             }
             Buffer.BlockCopy(e.Staged, 0, e.Bytes, 0, e.StagedLength);
             e.Length = e.StagedLength;
+            e.StagedLength = -1;
             e.StampMs = Clock();
         }
     }
@@ -191,6 +192,14 @@ public sealed class LiveLedSink
         for (var i = 0; i < zones.Count; i++)
         {
             Commit(zones[i].Id);
+        }
+    }
+
+    public void ReportNoneZones(IReadOnlyList<ResolvedZone> zones)
+    {
+        for (var i = 0; i < zones.Count; i++)
+        {
+            ReportNone(zones[i].Id);
         }
     }
 

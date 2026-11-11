@@ -152,16 +152,17 @@ public sealed class HydroShift2Aio : BackgroundService
     /// <summary>Sets the ring to one still frame of packed RGB; unchanged colours are not re-sent.</summary>
     public void SetRing(ReadOnlySpan<byte> rgb) => SetRingAnimation(rgb, 1, 1);
 
-    /// <summary>Sets the ring to an animation the firmware loops (packed RGB frames, interval in 0.625 ms ticks); an unchanged one is not re-sent.</summary>
-    public void SetRingAnimation(ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks)
+    /// <summary>Sets the ring to an animation the firmware loops (packed RGB frames, interval in 0.625 ms ticks); an unchanged one is not re-sent. Returns true when a new animation was queued.</summary>
+    public bool SetRingAnimation(ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks)
     {
         lock (_lock)
         {
-            if (_ring is not null && _ringFrames == frameCount && _ringInterval == intervalTicks && frames.SequenceEqual(_ring)) return;
+            if (_ring is not null && _ringFrames == frameCount && _ringInterval == intervalTicks && frames.SequenceEqual(_ring)) return false;
             _ring = frames.ToArray();
             _ringFrames = frameCount;
             _ringInterval = intervalTicks;
             _ringDirty = true;
+            return true;
         }
     }
 

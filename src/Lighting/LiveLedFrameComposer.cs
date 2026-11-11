@@ -6,6 +6,13 @@ namespace Nexus.Service.Lighting;
 /// <summary>Builds the dashboard frame from an engine frame: same v3 layout, each device's LED section replaced by what its writer drives, zero-length when nothing is.</summary>
 public static class LiveLedFrameComposer
 {
+    /// <summary>Composes into <paramref name="scratch"/> and returns an exact-size copy the caller may hold across an async send, or null when the frame is not v3.</summary>
+    public static byte[]? ComposeCopy(ReadOnlySpan<byte> frame, DeviceFrame[] devices, LiveLedSink sink, ref byte[] scratch)
+    {
+        var length = Compose(frame, devices, sink, ref scratch);
+        return length > 0 ? scratch.AsSpan(0, length).ToArray() : null;
+    }
+
     /// <summary>Writes the composed frame into <paramref name="dst"/> (grown as needed) and returns its length, or 0 when <paramref name="frame"/> is not v3 and should go out unchanged. Sections follow <paramref name="devices"/>, the snapshot the frame was serialized from.</summary>
     public static int Compose(ReadOnlySpan<byte> frame, DeviceFrame[] devices, LiveLedSink sink, ref byte[] dst)
     {

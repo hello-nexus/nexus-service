@@ -415,4 +415,78 @@ public class LiveLedColorsTests
     [InlineData(0, 200, 0)]
     public void Galahad2_ReportedColorFollowsTheBrightnessStep(int step, int channel, int expected) =>
         Assert.Equal(expected, Galahad2LightingFrameWriter.AtBrightnessStep((byte)channel, (byte)step));
+
+    [Fact]
+    public void ComposeCopy_KeepsAnInFlightFrameIntactAcrossTheNextCompose()
+    {
+        var devices = new[] { new DeviceFrame(0, "a", 2) };
+        var sink = new LiveLedSink { Enabled = true };
+        var scratch = Array.Empty<byte>();
+        var wire = WireFrame(devices, new byte[3]);
+
+        sink.ReportSolid("a", 1, 1, 1, 2);
+        var first = LiveLedFrameComposer.ComposeCopy(wire, devices, sink, ref scratch)!;
+        var snapshot = (byte[])first.Clone();
+
+        // The next frame has a different section length, written while the first is still being sent.
+        sink.ReportNone("a");
+        var second = LiveLedFrameComposer.ComposeCopy(wire, devices, sink, ref scratch)!;
+
+        Assert.Equal(snapshot, first);
+        Assert.NotEqual(first.Length, second.Length);
+        Assert.Equal(new byte[] { 1, 1, 1, 1, 1, 1 }, Parse(first, first.Length)[0]);
+        Assert.Empty(Parse(second, second.Length)[0]);
+    }
+
+    [Fact]
+    public void Commit_DoesNotRepublishBytesStagedInAnEarlierSession()
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.Stage("dev", Source(), Leds, 1.0, DeviceColorAdjust.Identity, false, 0, 0, 0);
+        sink.Commit("dev");
+        sink.ReportNone("dev");
+        // Nothing staged since, so a second commit must not bring the old bytes back.
+        sink.Commit("dev");
+        Assert.Null(sink.TryGetFresh("dev"));
+    }
+
+    private static List<IReadOnlyList<Nexus.Service.Lighting.Zones.ResolvedZone>> Groups(params string[] ids)
+    {
+        var groups = new List<IReadOnlyList<Nexus.Service.Lighting.Zones.ResolvedZone>>();
+        foreach (var id in ids)
+        {
+            groups.Add(new[] { new Nexus.Service.Lighting.Zones.ResolvedZone { Id = id } });
+        }
+        return groups;
+    }
+
+    [Fact]
+    public void LianLi_PacedTick_KeepsControlledGroupsAndGreysUncontrolledOnes()
+    {
+        var clock = 0L;
+        var sink = new LiveLedSink { Enabled = true, Clock = () => clock };
+        sink.ReportSolid("kept", 1, 2, 3, 1);
+        sink.ReportSolid("handed-back", 1, 2, 3, 1);
+
+        clock = 400;
+        LianLiLightingFrameWriter.HoldLive(sink, Groups("kept", "handed-back"), new List<string> { "handed-back" });
+        clock = 800;
+
+        Assert.NotNull(sink.TryGetFresh("kept"));
+        Assert.Null(sink.TryGetFresh("handed-back"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Corsair_PublishesOnlyWhenTheHubTookTheColors(bool sent)
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.ReportSolid("old", 9, 9, 9, 1);
+        sink.Stage("old", new byte[] { 1, 2, 3 }, 1, 1.0, DeviceColorAdjust.Identity, false, 0, 0, 0);
+
+        CorsairLinkLightingFrameWriter.PublishLive(sink, Groups("old"), sent);
+
+        Assert.Equal(sent ? new byte[] { 1, 2, 3 } : new byte[] { 9, 9, 9 }, sink.TryGetFresh("old"));
+    }
 }

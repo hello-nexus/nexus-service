@@ -201,14 +201,19 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             var (packed, count) = FitLoop(source, frames);
             var (upload, uploadCount, interval) = FitUpload(packed, count, LoopIntervalTicks);
             ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] ring loop: {uploadCount} frames from {frames.Count} rendered");
-            _aio.SetRingAnimation(upload, uploadCount, interval);
+            var queued = _aio.SetRingAnimation(upload, uploadCount, interval);
             // What the ring plays, before the channel swap, to index by playback time.
             settings.Devices.LightingDevicePrefs.TryGetValue(id, out var loopPref);
+            var hadLoop = _loopLive is not null;
             _loopLive = (byte[])upload.Clone();
             Unorder(loopPref?.ColorOrder, _loopLive);
             _loopLiveCount = uploadCount;
             _loopLiveFrameMs = interval * HydroShift2Protocol.RingTickMs;
-            _loopLiveStartMs = Environment.TickCount64;
+            // An identical upload is not re-sent, so the loop already running keeps its phase.
+            if (queued || !hadLoop)
+            {
+                _loopLiveStartMs = Environment.TickCount64;
+            }
             _loopContext = context;
             return;
         }

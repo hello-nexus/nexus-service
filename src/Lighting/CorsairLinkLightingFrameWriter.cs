@@ -180,11 +180,8 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             }
         }
 
-        hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
-        foreach (var tickZones in _tickZones)
-        {
-            _engine.Live.CommitZones(tickZones);
-        }
+        var sent = hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
+        PublishLive(_engine.Live, _tickZones, sent);
     }
 
     /// <summary>
@@ -252,10 +249,22 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         return 1.0f;
     }
 
-    /// <summary>
-    /// Zeros the AIO pump inner-ring LEDs (indices 16..19) when a pump LCD is present on the
-    /// chain, matching OpenLinkHub (lsh.go:5485).
-    /// </summary>
+    // The staged output publishes only when the hub took the colors.
+    internal static void PublishLive(LiveLedSink live, IReadOnlyList<IReadOnlyList<ResolvedZone>> groups, bool sent)
+    {
+        foreach (var zones in groups)
+        {
+            if (sent)
+            {
+                live.CommitZones(zones);
+            }
+            else
+            {
+                live.TouchZones(zones);
+            }
+        }
+    }
+
     internal const int AioInnerRingBlankFirst = 16;
     internal const int AioInnerRingBlankCount = 4;
 
@@ -282,6 +291,10 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Zeros the AIO pump inner-ring LEDs (<see cref="AioInnerRingBlankFirst"/> for <see cref="AioInnerRingBlankCount"/>) when a pump LCD is present on the
+    /// chain, matching OpenLinkHub (lsh.go:5485).
+    /// </summary>
     internal static void ApplyAioInnerRingBlank(RgbColor[] segment)
     {
         for (var i = AioInnerRingBlankFirst; i < AioInnerRingBlankFirst + AioInnerRingBlankCount && i < segment.Length; i++)

@@ -176,4 +176,18 @@ public class RgbBridgeLiveLedTests : IDisposable
 
         Assert.Equal(pushed, _engine.Live.TryGetFresh(frame.Id));
     }
+
+    [Fact]
+    public async Task A_deduped_frame_commits_what_the_device_already_shows()
+    {
+        var frame = await ActivateAsync();
+        _engine.Live.Enabled = true;
+        Push();
+
+        // A dashboard session starting later sees an identical frame deduped; it still gets the color, not grey.
+        _engine.Live.ReportNone(frame.Id);
+        Assert.Null(_engine.Live.TryGetFresh(frame.Id));
+        Push();
+        Assert.NotNull(_engine.Live.TryGetFresh(frame.Id));
+    }
 }

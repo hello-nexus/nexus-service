@@ -193,8 +193,10 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastWasCanvas = true;
     }
 
-    /// <summary>The writer builds the step as the requested level in quarters (<see cref="MasterLevel.CombineSteps"/> over four), so a step of N shows the color at N/4.</summary>
-    internal static byte AtBrightnessStep(byte channel, byte step) => (byte)(channel * (step / 4.0));
+    /// <summary>Assumes the step is linear in the level the writer asked for (<see cref="MasterLevel.CombineSteps"/> over the top step); the device's own step table is not documented.</summary>
+    private const double MaxBrightnessStep = 4.0;
+
+    internal static byte AtBrightnessStep(byte channel, byte step) => (byte)(channel * (step / MaxBrightnessStep));
 
     private void ReportRing(string id, DeviceFrame[] devices, byte r, byte g, byte b, byte step)
     {

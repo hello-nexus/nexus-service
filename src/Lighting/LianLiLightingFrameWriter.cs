@@ -511,10 +511,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs)
             {
                 // No frame goes out on a paced tick, so the last one stays on show.
-                foreach (var held in _customZones)
-                {
-                    _engine.Live.TouchZones(held);
-                }
+                HoldLive(_engine.Live, _customZones, uncontrolled);
                 return;
             }
             _lastCustomFrameMs = nowMs;
@@ -569,6 +566,22 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             // roughly 1 Hz once a fan is moved to a second port.
             _hub.SendFrameSync();
             if (!paced) Settle();
+        }
+    }
+
+    // A group handed back to firmware shows nothing; the rest keep their last frame on show.
+    internal static void HoldLive(LiveLedSink live, IReadOnlyList<IReadOnlyList<ResolvedZone>> groups, IReadOnlyList<string> uncontrolled)
+    {
+        foreach (var held in groups)
+        {
+            if (ZoneResolution.IsFullyUncontrolled(held, uncontrolled))
+            {
+                live.ReportNoneZones(held);
+            }
+            else
+            {
+                live.TouchZones(held);
+            }
         }
     }
 
