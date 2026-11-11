@@ -43,6 +43,7 @@ public class SupportBundleBuilderTests : IDisposable
         response.Setup.Case.RadiatorMount = "front";
         response.Setup.Resolved.CaseLayout = JsonDocument.Parse("{\"cooler\":\"aio\"}").RootElement.Clone();
         response.Setup.Items.Add(new() { Id = "a", Kind = "desk", Custom = new() { Name = "Alex's desk", WidthMm = 1200 } });
+        response.Setup.Resolved.Objects.Add(new() { Id = "a", Kind = "box", Label = "Alex's desk" });
         response.Setup.Items.Add(new() { Id = "b", Kind = "monitor", Catalog = new() { Title = "Some Monitor" } });
 
         var entries = Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources { PcSetup = response }));
@@ -55,8 +56,21 @@ public class SupportBundleBuilderTests : IDisposable
         Assert.Equal("Some Monitor", back.Setup.Items[1].Catalog!.Title);
         Assert.DoesNotContain("Alex", text);
         Assert.Equal("Alex's desk", response.Setup.Items[0].Custom!.Name);
+        Assert.Equal("Alex's desk", response.Setup.Resolved.Objects[0].Label);
 
         Assert.DoesNotContain("diagnostics/pc-setup.json", Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources())).Keys);
+    }
+
+    [Fact]
+    public void A_throwing_pc_setup_load_leaves_the_file_out_and_the_bundle_intact()
+    {
+        var pcSetup = Nexus.Service.Routes.DiagnosticsHealthRoutes.TryLoadPcSetup(() => throw new IOException("disk"));
+        Assert.Null(pcSetup);
+
+        var entries = Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources { PcSetup = pcSetup }));
+
+        Assert.Contains("support-info.json", entries.Keys);
+        Assert.DoesNotContain("diagnostics/pc-setup.json", entries.Keys);
     }
 
     [Fact]

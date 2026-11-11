@@ -179,6 +179,14 @@ public static class SupportBundleBuilder
                 custom.Name = "<redacted>";
             }
         }
+        // nexus-build derives each resolved object's label from the item's name.
+        foreach (var obj in copy.Setup.Resolved.Objects)
+        {
+            if (obj.Label is not null)
+            {
+                obj.Label = "<redacted>";
+            }
+        }
         return copy;
     }
 
