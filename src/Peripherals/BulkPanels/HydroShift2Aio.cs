@@ -279,9 +279,13 @@ public sealed class HydroShift2Aio : BackgroundService
             {
                 _rewipeAt = 0;
             }
-            if ((_overlayClear && now >= Volatile.Read(ref _overlayClearNotBefore)) || rewipe)
+            var clearDue = _overlayClear && now >= Volatile.Read(ref _overlayClearNotBefore);
+            if (clearDue || rewipe)
             {
-                _overlayClear = false;
+                if (clearDue)
+                {
+                    _overlayClear = false;
+                }
                 var attempted = false;
                 if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
                 {
