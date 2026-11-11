@@ -82,7 +82,8 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         Assert.False(Rule(d, "builtin-cpu").Enabled);
         Assert.True(Rule(d, "builtin-gpu").Enabled);
         Assert.False(Rule(d, "builtin-storage").Enabled);
-        Assert.Equal(new double?[] { 95, 85, 70, 55 }, d.SensorAlerts.Select(r => r.High).ToArray());
+        // CPU and memory were edited and stay; GPU and storage were untouched and take the new defaults.
+        Assert.Equal(new double?[] { 95, 90, 75, 55 }, d.SensorAlerts.Select(r => r.High).ToArray());
         Assert.All(d.SensorAlerts, r =>
         {
             Assert.True(r.NotifyDesktop);
@@ -108,7 +109,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
     }
 
     [Theory]
-    [InlineData(double.NaN, 90)]
+    [InlineData(double.NaN, 100)]
     [InlineData(500, 105)]
     [InlineData(-4, 60)]
     public void A_bad_legacy_limit_falls_back_or_clamps_to_the_old_slider_range(double legacy, double expected)
@@ -172,7 +173,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
     // ---- real prior settings.json shapes through JsonConfigStore ----
 
     [Fact]
-    public void A_real_t1_settings_file_loads_with_four_built_ins_that_keep_the_legacy_limits_and_nothing_notifies()
+    public void A_real_t1_settings_file_with_untouched_limits_loads_the_new_defaults_and_nothing_notifies()
     {
         var path = CopyFixture("v32-main-t1");
         using var store = new JsonConfigStore(path);
@@ -181,7 +182,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
 
         Assert.Equal(NexusSettings.CurrentSchemaVersion, loaded.SchemaVersion);
         Assert.Equal(Ids, loaded.Diagnostics.SensorAlerts.Select(r => r.Id).ToArray());
-        Assert.Equal(new double?[] { 90, 85, 70, 60 }, loaded.Diagnostics.SensorAlerts.Select(r => r.High).ToArray());
+        Assert.Equal(new double?[] { 100, 90, 75, 75 }, loaded.Diagnostics.SensorAlerts.Select(r => r.High).ToArray());
         Assert.All(loaded.Diagnostics.SensorAlerts, r =>
         {
             Assert.True(r.Enabled);
@@ -203,6 +204,8 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         Assert.Equal(Ids.Concat(rawRules).ToArray(), d.SensorAlerts.Select(r => r.Id).ToArray());
         Assert.False(Rule(d, "builtin-cpu").Enabled);
         Assert.Equal(95, Rule(d, "builtin-cpu").High);
+        // The other three limits were never edited in this file, so they take the new defaults.
+        Assert.Equal(new double?[] { 90, 75, 75 }, d.SensorAlerts.Skip(1).Take(3).Select(r => r.High).ToArray());
         Assert.True(Rule(d, "builtin-gpu").Enabled);
         // The master was on but the high-temperature category off: no toast before, none now.
         Assert.All(d.SensorAlerts.Take(4), r => Assert.False(r.NotifyDesktop));
@@ -320,7 +323,35 @@ public sealed class BuiltInSensorRulesTests : IDisposable
 
         var d = store.Load().Diagnostics;
 
-        Assert.Equal(new double?[] { 90, 85, 70, 60 }, d.SensorAlerts.Select(r => r.High).ToArray());
+        Assert.Equal(new double?[] { 100, 90, 75, 75 }, d.SensorAlerts.Select(r => r.High).ToArray());
         Assert.All(d.SensorAlerts, r => Assert.False(r.NotifyDesktop));
+    }
+
+    [Theory]
+    [InlineData(90, 100)]
+    [InlineData(91, 91)]
+    [InlineData(95, 95)]
+    public void A_cpu_limit_equal_to_the_old_default_takes_the_new_one_and_any_other_value_is_kept(double legacy, double expected)
+    {
+        var d = new DiagnosticsSettings();
+        d.Thresholds.CpuC = legacy;
+
+        BuiltInSensorRules.Ensure(d, newInstall: false);
+
+        Assert.Equal(expected, Rule(d, "builtin-cpu").High);
+    }
+
+    [Fact]
+    public void Each_component_compares_against_its_own_old_default()
+    {
+        var d = new DiagnosticsSettings();
+        d.Thresholds.GpuC = 85;
+        d.Thresholds.StorageC = 70;
+        d.Thresholds.RamC = 60;
+        d.Thresholds.CpuC = 85;
+
+        BuiltInSensorRules.Ensure(d, newInstall: false);
+
+        Assert.Equal(new double?[] { 85, 90, 75, 75 }, d.SensorAlerts.Select(r => r.High).ToArray());
     }
 }

@@ -69,7 +69,7 @@ public static class BuiltInSensorRules
     /// would never reseed after a build without sensor alerts dropped the list and kept the schema version. A present
     /// built-in is only re-pinned, so the user's edits survive. Returns whether anything changed.
     /// </summary>
-    /// <param name="newInstall">True for a settings file that did not exist: the new-install defaults. Otherwise a missing built-in is seeded from the legacy diagnostics fields, so an upgrade keeps the user's limits, toggles and notification choice.</param>
+    /// <param name="newInstall">True for a settings file that did not exist: the new-install defaults. Otherwise a missing built-in is seeded from the legacy diagnostics fields, so an upgrade keeps the user's edited limits, toggles and notification choice (a limit still at the old default takes the new one).</param>
     public static bool Ensure(DiagnosticsSettings diagnostics, bool newInstall)
     {
         var changed = false;
@@ -173,7 +173,11 @@ public static class BuiltInSensorRules
             _ => (d.Components.Ram, d.Thresholds.RamC, TemperatureInsights.RamThresholdC),
         };
         rule.Enabled = legacyEnabled;
-        rule.High = Math.Clamp(double.IsFinite(legacyLimit) ? legacyLimit : defaultLimit, spec.LimitMin, spec.LimitMax);
+        // A limit still at the old shipped default was never chosen by the user, so it moves to the new default; an edited one is kept.
+        if (double.IsFinite(legacyLimit) && legacyLimit != defaultLimit)
+        {
+            rule.High = Math.Clamp(legacyLimit, spec.LimitMin, spec.LimitMax);
+        }
         // What the user effectively had: the old high-temperature toast needed both the master and its own category.
         rule.NotifyDesktop = d.Notifications.Enabled && d.Notifications.HighTemp;
         return rule;
