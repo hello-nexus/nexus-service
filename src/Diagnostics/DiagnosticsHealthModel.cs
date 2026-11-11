@@ -81,10 +81,6 @@ public sealed class DiagnosticsHealthModel
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan EventWindow = TimeSpan.FromDays(30);
 
-    // Wider than the recency window Compute checks, so an episode that
-    // started before that window but still overlaps it is not truncated.
-    private static readonly TimeSpan TempEpisodeLookback = TimeSpan.FromHours(48);
-
     private readonly ISmartHealthSource _smart;
     private readonly CoolingStallDetector _cooling;
     private readonly GpuHealthMonitor _gpu;
@@ -92,7 +88,6 @@ public sealed class DiagnosticsHealthModel
     private readonly MemoryDiagnosticOrchestrator _memDiag;
     private readonly PnpProblemScanner _pnp;
     private readonly ISensorProvider _sensors;
-    private readonly IMetricsHistoryStore _tempStore;
     private readonly IConfigStore _store;
     private readonly Alerts.SensorAlertEngine? _alerts;
 
@@ -114,7 +109,6 @@ public sealed class DiagnosticsHealthModel
         MemoryDiagnosticOrchestrator memDiag,
         PnpProblemScanner pnp,
         ISensorProvider sensors,
-        IMetricsHistoryStore tempStore,
         IConfigStore store,
         Alerts.SensorAlertEngine? alerts = null)
     {
@@ -126,7 +120,6 @@ public sealed class DiagnosticsHealthModel
         _memDiag = memDiag;
         _pnp = pnp;
         _sensors = sensors;
-        _tempStore = tempStore;
         _store = store;
     }
 
@@ -234,14 +227,6 @@ public sealed class DiagnosticsHealthModel
             {
                 return _cached;
             }
-            var thresholdOverrides = new Dictionary<string, double>
-            {
-                ["cpu"] = diagnostics.Thresholds.CpuC,
-                ["gpu"] = diagnostics.Thresholds.GpuC,
-                ["storage"] = diagnostics.Thresholds.StorageC,
-                ["ram"] = diagnostics.Thresholds.RamC,
-            };
-
             var result = Compute(
                 smart: _smart.Snapshot(),
                 cooling: _cooling.Snapshot(),
@@ -252,7 +237,6 @@ public sealed class DiagnosticsHealthModel
                 knownGpuModels: _sensors.GetGpuModels(),
                 windowsSupported: OperatingSystem.IsWindows(),
                 generatedAtUtc: now,
-                tempEpisodes: TemperatureInsights.DetectEpisodes(QueryTempRows(now), thresholdOverrides),
                 diagnostics: diagnostics,
                 thermalTrip: _store.Load().Cooling.LastThermalTrip);
 
@@ -260,21 +244,6 @@ public sealed class DiagnosticsHealthModel
             _cachedAtUtc = now;
             _cachedIgnored = ignoredNow.ToList();
             return result;
-        }
-    }
-
-    private IReadOnlyList<TemperatureBucketRow> QueryTempRows(DateTime nowUtc)
-    {
-        try
-        {
-            var toMs = new DateTimeOffset(nowUtc).ToUnixTimeMilliseconds();
-            var fromMs = new DateTimeOffset(nowUtc - TempEpisodeLookback).ToUnixTimeMilliseconds();
-            return _tempStore.QueryTemperatureBuckets(fromMs, toMs);
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Warn($"[diagnostics-health] temperature query failed: {ex.Message}");
-            return Array.Empty<TemperatureBucketRow>();
         }
     }
 
@@ -306,7 +275,6 @@ public sealed class DiagnosticsHealthModel
         IReadOnlyList<string> knownGpuModels,
         bool windowsSupported,
         DateTime generatedAtUtc,
-        IReadOnlyList<TemperatureEpisode>? tempEpisodes = null,
         DiagnosticsSettings? diagnostics = null,
         ThermalGuardTripRecord? thermalTrip = null)
     {
@@ -344,7 +312,7 @@ public sealed class DiagnosticsHealthModel
                 AddSystemComponent(components, pnp);
             }
         }
-        AddCoolingComponents(components, cooling, tempEpisodes ?? Array.Empty<TemperatureEpisode>(), generatedAtUtc, diag, ignored);
+        AddCoolingComponents(components, cooling, diag);
         if (diag.Components.Cooling)
         {
             AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
@@ -417,39 +385,11 @@ public sealed class DiagnosticsHealthModel
     private static string MapReasonSeverity(ReasonSeverity severity) =>
         severity == ReasonSeverity.Act ? HealthStatuses.Act : HealthStatuses.Watch;
 
-    /// <summary>
-    /// A temperature episode counts as a current warning only while it is
-    /// still ongoing or just barely ended: recency window is the wider of one
-    /// bucket's width (accounts for the latest bucket not having flushed yet)
-    /// and the user's configured linger. Default linger 0 means only an
-    /// episode that is ongoing right now (or ended within one bucket) shows a
-    /// warning; the 24h+ episode history stays on GET /diagnostics/temperatures,
-    /// which calls TemperatureInsights.DetectEpisodes directly and never
-    /// passes through this recency filter.
-    ///
-    /// An episode whose ComponentId is an ignored component id is dropped
-    /// too: storage episodes carry the drive's own "storage:&lt;serial&gt;" id,
-    /// so an ignored drive that runs hot stays silent. (GPU episodes use the
-    /// adapter id, not the "gpu:&lt;n&gt;" health id, so they never match.)
-    /// </summary>
-    private static void AddCoolingComponents(
-        List<HealthComponent> components,
-        CoolingStallSnapshot cooling,
-        IReadOnlyList<TemperatureEpisode> tempEpisodes,
-        DateTime generatedAtUtc,
-        DiagnosticsSettings diagnostics,
-        IReadOnlySet<string> ignored)
+    /// <summary>Per-device fan and pump stalls, plus the aggregate "cooling" component. Heat is reported by the built-in sensor alerts, so the aggregate carries no reasons.</summary>
+    private static void AddCoolingComponents(List<HealthComponent> components, CoolingStallSnapshot cooling, DiagnosticsSettings diagnostics)
     {
-        var recencyMinutes = Math.Max(TemperatureInsights.NativeBucketMinutes, diagnostics.WarningLingerMinutes);
-        var cutoffUtc = generatedAtUtc.AddMinutes(-recencyMinutes);
-        var recentEpisodes = tempEpisodes
-            .Where(e => e.EndUtc >= cutoffUtc && e.StartUtc <= generatedAtUtc)
-            .Where(e => IsTempKindEnabled(e.Kind, diagnostics.Components))
-            .Where(e => !ignored.Contains(e.ComponentId))
-            .ToList();
-
         var stallEligible = diagnostics.Components.Cooling && cooling.Devices.Count > 0;
-        if (!stallEligible && recentEpisodes.Count == 0)
+        if (!stallEligible)
         {
             return;
         }
@@ -491,30 +431,14 @@ public sealed class DiagnosticsHealthModel
             }
         }
 
-        var reasons = recentEpisodes.Select(ep => new HealthComponentReason(
-            "cooling.sustainedHighTemp",
-            HealthStatuses.Watch,
-            $"{ep.Name} recently ran above {ep.ThresholdC:0} C",
-            $"componentId={ep.ComponentId} peakC={ep.PeakC:0.0} start={ep.StartUtc:O} end={ep.EndUtc:O}",
-            new Dictionary<string, string>
-            {
-                ["componentId"] = ep.ComponentId,
-                ["peakC"] = ReasonParams.Num(ep.PeakC, "0.0"),
-                ["start"] = ReasonParams.Ms(ep.StartUtc).ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["end"] = ReasonParams.Ms(ep.EndUtc).ToString(System.Globalization.CultureInfo.InvariantCulture),
-            })).ToList();
-
-        if (stallEligible || reasons.Count > 0)
+        components.Add(new HealthComponent
         {
-            components.Add(new HealthComponent
-            {
-                Id = "cooling",
-                Kind = "cooling",
-                Name = $"Cooling ({cooling.Devices.Count})",
-                Status = WorstReasonStatus(reasons, HealthStatuses.Ok),
-                Reasons = reasons,
-            });
-        }
+            Id = "cooling",
+            Kind = "cooling",
+            Name = $"Cooling ({cooling.Devices.Count})",
+            Status = HealthStatuses.Ok,
+            Reasons = Array.Empty<HealthComponentReason>(),
+        });
     }
 
     /// <summary>Act while the guard is tripped or escalated, watch for a day after it ends.</summary>
@@ -556,15 +480,6 @@ public sealed class DiagnosticsHealthModel
             },
         });
     }
-
-    private static bool IsTempKindEnabled(string kind, DiagnosticsComponents components) => kind switch
-    {
-        "cpu" => components.Cpu,
-        "gpu" => components.Gpu,
-        "storage" => components.Storage,
-        "ram" => components.Ram,
-        _ => true,
-    };
 
     private static string Fmt(double? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null";
 

@@ -32,7 +32,6 @@ public sealed class DevSimEvents
     public const string GuardGpuHandback = "guard.gpuHandback";
     public const string HealthFanStall = "health.fanStall";
     public const string HealthPumpStall = "health.pumpStall";
-    public const string HealthSustainedHighTemp = "health.sustainedHighTemp";
     public const string HealthGpuThrottle = "health.gpuThrottle";
     public const string HealthGpuTdr = "health.gpuTdr";
     public const string HealthSmartWarning = "health.smartWarning";
@@ -60,7 +59,6 @@ public sealed class DevSimEvents
         new(GuardGpuHandback, "guard", "Thermal guard: GPU fan handed back"),
         new(HealthFanStall, "health", "Health: fan stall"),
         new(HealthPumpStall, "health", "Health: pump stall"),
-        new(HealthSustainedHighTemp, "health", "Health: sustained high temperature"),
         new(HealthGpuThrottle, "health", "Health: GPU throttling"),
         new(HealthGpuTdr, "health", "Health: GPU driver reset (TDR)"),
         new(HealthSmartWarning, "health", "Health: SMART warning"),
@@ -305,12 +303,6 @@ public sealed class DevSimEvents
                 "Simulated AIO pump reports 0 RPM while driven", "rpm=0 targetDuty=70% (simulated)",
                 new Dictionary<string, string> { ["rpm"] = "0", ["targetDuty"] = "70" }));
         }
-        if (IsActive(HealthSustainedHighTemp))
-        {
-            list.Add(Component("cooling", "cooling", "Cooling", HealthStatuses.Watch, "cooling.sustainedHighTemp",
-                "Simulated CPU recently ran above 90 C", "componentId=sim peakC=94.0 (simulated)",
-                new Dictionary<string, string> { ["componentId"] = "sim", ["peakC"] = "94.0" }));
-        }
         if (IsActive(HealthGpuThrottle))
         {
             list.Add(Component("gpu:sim-throttle", "gpu", "Simulated GPU", HealthStatuses.Watch, "gpu.thermalThrottle",
@@ -398,7 +390,6 @@ public sealed class DevSimEvents
         {
             HealthFanStall => "cooling:sim-fan",
             HealthPumpStall => "cooling:sim-pump",
-            HealthSustainedHighTemp => "cooling",
             HealthGpuThrottle => "gpu:sim-throttle",
             HealthGpuTdr => "gpu:sim-tdr",
             HealthSmartWarning => "storage:sim-smart",

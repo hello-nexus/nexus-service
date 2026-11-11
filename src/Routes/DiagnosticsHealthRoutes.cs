@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Activity.Storage;
 using Nexus.Service.Auth;
 using Nexus.Service.Diagnostics;
+using Nexus.Service.Diagnostics.Alerts;
 using Nexus.Service.Diagnostics.Cooling;
 using Nexus.Service.Diagnostics.EventLog;
 using Nexus.Service.Diagnostics.Gpu;
@@ -19,6 +20,7 @@ using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting;
 using Nexus.Service.Models;
 using Nexus.Service.Monitoring.History;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
 #if WINDOWS
@@ -112,13 +114,13 @@ public static class DiagnosticsHealthRoutes
 
         // date (yyyy-MM-dd, service host's local calendar day) takes priority
         // over hours when both are present.
-        app.MapGet("/diagnostics/temperatures", (int? hours, string? date, IMetricsHistoryStore tempStore) =>
+        app.MapGet("/diagnostics/temperatures", (int? hours, string? date, IMetricsHistoryStore tempStore, IConfigStore store) =>
         {
             if (!TryResolveTemperatureWindow(hours, date, out var fromUtcMs, out var toUtcMs, out var tierWidthMinutes, out var error))
             {
                 return Results.BadRequest(ApiResponse.Fail(error!));
             }
-            return QueryTemperatures(tempStore, fromUtcMs, toUtcMs, tierWidthMinutes);
+            return QueryTemperatures(tempStore, fromUtcMs, toUtcMs, tierWidthMinutes, BuiltInLimits(store));
         }).AllowPanel();
 
         // App-usage overlay for the temperature chart: dominant foreground app
@@ -398,13 +400,38 @@ public static class DiagnosticsHealthRoutes
         }
     }
 
+    /// <summary>The limits of the built-in temperature rules keyed by history kind, so the chart bands follow the user's limits.</summary>
+    internal static Dictionary<string, double> BuiltInLimits(IConfigStore store)
+    {
+        var limits = new Dictionary<string, double>(StringComparer.Ordinal);
+        store.Read(s =>
+        {
+            foreach (var rule in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
+            {
+                var kind = rule.BuiltIn switch
+                {
+                    BuiltInSensorRules.CpuTemp => "cpu",
+                    BuiltInSensorRules.GpuTemp => "gpu",
+                    BuiltInSensorRules.StorageTemp => "storage",
+                    BuiltInSensorRules.RamTemp => "ram",
+                    _ => null,
+                };
+                if (kind is not null && rule.High is { } high)
+                {
+                    limits[kind] = high;
+                }
+            }
+        });
+        return limits;
+    }
+
     private static IResult QueryTemperatures(
-        IMetricsHistoryStore tempStore, long fromUtcMs, long toUtcMs, int tierWidthMinutes)
+        IMetricsHistoryStore tempStore, long fromUtcMs, long toUtcMs, int tierWidthMinutes, IReadOnlyDictionary<string, double> limits)
     {
         try
         {
             var rows = tempStore.QueryTemperatureBuckets(fromUtcMs, toUtcMs);
-            return Results.Ok(BuildTemperatureResponse(rows, tierWidthMinutes));
+            return Results.Ok(BuildTemperatureResponse(rows, tierWidthMinutes, limits));
         }
         catch (Exception ex)
         {
@@ -414,7 +441,7 @@ public static class DiagnosticsHealthRoutes
     }
 
     internal static TemperatureHistoryResponse BuildTemperatureResponse(
-        IReadOnlyList<TemperatureBucketRow> rows, int tierWidthMinutes)
+        IReadOnlyList<TemperatureBucketRow> rows, int tierWidthMinutes, IReadOnlyDictionary<string, double>? limits = null)
     {
         var widthMs = tierWidthMinutes * 60_000L;
         var series = rows
@@ -437,7 +464,7 @@ public static class DiagnosticsHealthRoutes
             .OrderBy(s => s.Id, StringComparer.Ordinal)
             .ToList();
 
-        var episodes = TemperatureInsights.DetectEpisodes(rows)
+        var episodes = TemperatureInsights.DetectEpisodes(rows, limits)
             .Select(e => e with { PeakC = Math.Round(e.PeakC, 1) })
             .ToList();
 

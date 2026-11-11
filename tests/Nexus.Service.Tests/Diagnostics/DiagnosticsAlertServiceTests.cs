@@ -79,7 +79,6 @@ public class DiagnosticsAlertServiceTests
             new MemoryDiagnosticOrchestrator(),
             new PnpProblemScanner(),
             new ThrowingSensorProvider(),
-            new EmptyMetricsHistoryStore(),
             configStore);
         var service = new DiagnosticsAlertService(health, configStore, new FeatureGates(configStore));
         var fired = false;
@@ -171,10 +170,10 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
-    public void CoolingAggregateId_MapsToHighTemp_NotCooling()
+    public void CoolingAggregateId_NeverNotifies()
     {
-        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = true, HighTemp = false };
-        var aggregate = Component("cooling", "cooling", HealthStatuses.Watch, HealthStatuses.Watch, "cooling.sustainedHighTemp");
+        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = true };
+        var aggregate = Component("cooling", "cooling", HealthStatuses.Watch, HealthStatuses.Watch, "cooling.fanStall");
 
         var notices = DiagnosticsAlertService.EvaluateNotifications(
             new[] { aggregate }, notifications, new Dictionary<string, DateTime>(), T0);
@@ -183,9 +182,9 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
-    public void PerDeviceStallId_MapsToCooling_NotHighTemp()
+    public void PerDeviceStallId_MapsToCooling()
     {
-        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = false, HighTemp = true };
+        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = false };
         var stall = Component("cooling:pump1", "cooling", HealthStatuses.Act, HealthStatuses.Act, "cooling.pumpStall");
 
         var notices = DiagnosticsAlertService.EvaluateNotifications(

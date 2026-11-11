@@ -77,4 +77,35 @@ public class TemperatureRouteResponseTests
         var episode = Assert.Single(response.Episodes);
         Assert.Equal("cpu", episode.ComponentId);
     }
+
+    [Fact]
+    public void BuildTemperatureResponse_BandsFollowTheUsersLimits()
+    {
+        var rows = new List<TemperatureBucketRow>
+        {
+            new("cpu", "cpu", "CPU", T0Ms, 96, 97, 10),
+            new("cpu", "cpu", "CPU", T0Ms + BucketMs, 96, 97, 10),
+        };
+
+        var lowered = DiagnosticsHealthRoutes.BuildTemperatureResponse(rows, 5, new Dictionary<string, double> { ["cpu"] = 95 });
+        var raised = DiagnosticsHealthRoutes.BuildTemperatureResponse(rows, 5, new Dictionary<string, double> { ["cpu"] = 100 });
+
+        Assert.Equal(95, Assert.Single(lowered.Episodes).ThresholdC);
+        Assert.Empty(raised.Episodes);
+    }
+
+    [Fact]
+    public void BuiltInLimits_ReadsTheHighOfEachBuiltInRuleByHistoryKind()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(s.Diagnostics, newInstall: true);
+            s.Diagnostics.SensorAlerts.Single(r => r.Id == "builtin-storage").High = 66;
+        });
+
+        var limits = DiagnosticsHealthRoutes.BuiltInLimits(store);
+
+        Assert.Equal(new Dictionary<string, double> { ["cpu"] = 100, ["gpu"] = 90, ["storage"] = 66, ["ram"] = 75 }, limits);
+    }
 }

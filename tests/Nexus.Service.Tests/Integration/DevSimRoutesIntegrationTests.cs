@@ -44,7 +44,7 @@ public sealed class DevSimRoutesIntegrationTests : IClassFixture<NexusAppFactory
         var client = Client();
 
         var catalog = await Json(await client.GetAsync("/dev/sim/events"));
-        Assert.Equal(22, catalog.GetProperty("catalog").GetArrayLength());
+        Assert.Equal(21, catalog.GetProperty("catalog").GetArrayLength());
         Assert.Equal(0, catalog.GetProperty("active").GetArrayLength());
 
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/dev/sim/events/nope.nothing", null)).StatusCode);

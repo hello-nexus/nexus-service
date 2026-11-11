@@ -212,21 +212,20 @@ public sealed class DiagnosticsAlertService : BackgroundService
     /// <summary>Maps a component to the notification category it belongs to.
     /// The "cooling" kind is split by id: per-device stall components
     /// (id "cooling:&lt;deviceId&gt;") are the cooling category, while the
-    /// aggregate (id "cooling") carries only sustained-high-temp reasons and
-    /// maps to highTemp.</summary>
+    /// aggregate (id "cooling") carries no reasons and maps to none. Sensor
+    /// alerts (kind "alerts") notify through the sensor alert engine.</summary>
     private static string? CategoryFor(HealthComponent component) => component.Kind switch
     {
         "storage" => "storageHealth",
         "gpu" => "gpuThrottle",
         "memory" => "memoryTest",
         "system" => "systemDevices",
-        "cooling" => component.Id == "cooling" ? "highTemp" : "cooling",
+        "cooling" => component.Id == "cooling" ? null : "cooling",
         _ => null,
     };
 
     private static bool CategoryEnabled(DiagnosticsNotifications notifications, string category) => category switch
     {
-        "highTemp" => notifications.HighTemp,
         "storageHealth" => notifications.StorageHealth,
         "cooling" => notifications.Cooling,
         "memoryTest" => notifications.MemoryTest,
