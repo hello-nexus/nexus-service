@@ -1955,6 +1955,7 @@ public sealed partial class LightingEngine : IDisposable
             var geo = LedSpotGeometry.Create(
                 rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, ledCount, devLedU, devLedV, fullFrame,
                 FullFrameStripBreadth);
+            var color = ColorModeOf(dev.Id);
             var areaMap = AreaMapFor(
                 dev.Id, ledCount, devLedU, devLedV, devLedDisabled, rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, geo,
                 fullFrame);
@@ -1967,14 +1968,14 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 if (areaMap is not null)
                 {
-                    var (ar, ag, ab) = SampleAreaCell(areaMap, i);
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i, color);
                     dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
                 geo.Center(i, out var sx, out var sy);
                 var (r, g, b) = fullFrame
-                    ? SampleLedBox(sx - geo.HalfW, sy - geo.HalfH, sx + geo.HalfW, sy + geo.HalfH)
-                    : SampleLedSpot(sx, sy, geo.HalfW, geo.HalfH);
+                    ? SampleLedBox(sx - geo.HalfW, sy - geo.HalfH, sx + geo.HalfW, sy + geo.HalfH, color)
+                    : SampleLedSpot(sx, sy, geo.HalfW, geo.HalfH, color);
                 dev.SetLed(i, r, g, b);
             }
         }
@@ -1993,6 +1994,7 @@ public sealed partial class LightingEngine : IDisposable
     {
         var hasUv = ledU is not null && ledV is not null && ledU.Length == ledCount && ledV.Length == ledCount;
         var runs = quads.Length;
+        var color = ColorModeOf(dev.Id);
         for (var k = 0; k < runs; k++)
         {
             var lo = k * ledCount / runs;
@@ -2057,7 +2059,7 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 if (areaMap is not null)
                 {
-                    var (ar, ag, ab) = SampleAreaCell(areaMap, i - lo);
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i - lo, color);
                     dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
@@ -2079,14 +2081,14 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 var sx = cx * kx;
                 var sy = cy * ky;
-                var (r, g, b) = SampleLedSpot(sx, sy, halfW, halfH);
+                var (r, g, b) = SampleLedSpot(sx, sy, halfW, halfH, color);
                 dev.SetLed(i, r, g, b);
             }
         }
     }
 
     /// <summary>
-    /// Color of one LED: the plain mean, black included, of a small spot of
+    /// Color of one LED: the mean (per its color sampling mode) of a small spot of
     /// canvas pixels centered on the LED's sample position (<paramref name="sx"/>,
     /// <paramref name="sy"/>, canvas pixels). The spot is
     /// <see cref="SpotSideOfCanvasWidth"/> of the canvas width on a side, centered
@@ -2095,24 +2097,21 @@ public sealed partial class LightingEngine : IDisposable
     /// in canvas pixels) when that is smaller, so dense neighbours do not blur
     /// together. Clamped at the canvas edges.
     /// </summary>
-    private (byte r, byte g, byte b) SampleLedSpot(float sx, float sy, float cellHalfW, float cellHalfH)
+    private (byte r, byte g, byte b) SampleLedSpot(float sx, float sy, float cellHalfW, float cellHalfH, ColorSampling color)
     {
         LedSpotGeometry.SpotRect(
             sx, sy, cellHalfW, cellHalfH, _sampleCanvas.Width, _sampleCanvas.Height, SpotSideOfCanvasWidth,
             out var ix0, out var iy0, out var ix1, out var iy1);
-        long n = 0, rSum = 0, gSum = 0, bSum = 0;
+        var acc = new ColorAccumulator(color);
         for (int py = iy0; py <= iy1; py++)
         {
             for (int px = ix0; px <= ix1; px++)
             {
                 var (r, g, b) = _sampleCanvas.GetPixel(px, py);
-                rSum += r;
-                gSum += g;
-                bSum += b;
-                n++;
+                acc.Add(r, g, b);
             }
         }
-        return ((byte)(rSum / n), (byte)(gSum / n), (byte)(bSum / n));
+        return acc.Result();
     }
 
     /// <summary>
@@ -2125,29 +2124,22 @@ public sealed partial class LightingEngine : IDisposable
     /// holds a steady mid tone). The per-LED spot read does not fit here: a
     /// sweep fills the frame and the cell is the unit.
     /// </summary>
-    private (byte r, byte g, byte b) SampleLedBox(float x0, float y0, float x1, float y1)
+    private (byte r, byte g, byte b) SampleLedBox(float x0, float y0, float x1, float y1, ColorSampling color)
     {
         var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _sampleCanvas.Width - 1);
         var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _sampleCanvas.Height - 1);
         var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _sampleCanvas.Width - 1);
         var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _sampleCanvas.Height - 1);
-        long n = 0, rSum = 0, gSum = 0, bSum = 0;
+        var acc = new ColorAccumulator(color);
         for (int py = iy0; py <= iy1; py++)
         {
             for (int px = ix0; px <= ix1; px++)
             {
                 var (r, g, b) = _sampleCanvas.GetPixel(px, py);
-                rSum += r;
-                gSum += g;
-                bSum += b;
-                n++;
+                acc.Add(r, g, b);
             }
         }
-        if (n == 0)
-        {
-            return (0, 0, 0);
-        }
-        return ((byte)(rSum / n), (byte)(gSum / n), (byte)(bSum / n));
+        return acc.Result();
     }
 
     /// <summary>
