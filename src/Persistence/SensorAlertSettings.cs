@@ -30,7 +30,8 @@ public sealed class SensorAlertRule
     /// <summary>"watch" | "act".</summary>
     public string Severity { get; set; } = "watch";
     public bool NotifyDesktop { get; set; } = true;
-    public bool ShowInHealth { get; set; } = true;
+    /// <summary>Wire and downgrade compatibility only: always true, any input is ignored.</summary>
+    public bool ShowInHealth { get => true; set { } }
     /// <summary>0 = notify once per episode; otherwise re-notify every N minutes while active.</summary>
     public int RepeatMinutes { get; set; }
     /// <summary>Null for a user rule; else the component this built-in rule watches: "cpuTemp" | "gpuTemp" | "storageTemp" | "ramTemp". A built-in keeps a fixed id and sensor, can be turned off but not deleted.</summary>
@@ -59,7 +60,6 @@ public sealed class SensorAlertRule
         && ClearAfterSeconds == other.ClearAfterSeconds
         && Severity == other.Severity
         && NotifyDesktop == other.NotifyDesktop
-        && ShowInHealth == other.ShowInHealth
         && RepeatMinutes == other.RepeatMinutes
         && BuiltIn == other.BuiltIn
         && Sensor.Category == other.Sensor.Category

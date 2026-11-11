@@ -993,7 +993,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             foreach (var rule in rules)
             {
-                if (!rule.Enabled || !rule.ShowInHealth || !_states.TryGetValue(rule.Id, out var st)
+                if (!rule.Enabled || !_states.TryGetValue(rule.Id, out var st)
                     || st.Config is not { } cfg || !cfg.SameConfig(rule))
                 {
                     continue;

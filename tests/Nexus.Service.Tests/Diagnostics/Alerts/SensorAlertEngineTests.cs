@@ -520,14 +520,11 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_showInHealth_off_and_act_severity_map_to_components()
+    public void Engine_act_severity_maps_to_an_act_component()
     {
         var rig = new Rig();
-        var hidden = TempRule(raise: 0, id: "r1");
-        hidden.ShowInHealth = false;
         var act = TempRule(raise: 0, id: "r2");
         act.Severity = "act";
-        rig.AddRule(hidden);
         rig.AddRule(act);
         rig.SetTemp(90);
 
@@ -536,6 +533,35 @@ public partial class SensorAlertEngineTests
         var component = Assert.Single(rig.Engine.HealthComponents());
         Assert.Equal("alert:r2", component.Id);
         Assert.Equal(HealthStatuses.Act, component.Status);
+    }
+
+    [Fact]
+    public void Engine_rule_stored_with_showInHealth_false_still_produces_the_component()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-sensor-alerts-" + Guid.NewGuid().ToString("N")[..8] + ".json");
+        try
+        {
+            var seed = new JsonConfigStore(path);
+            seed.Update(s => s.Diagnostics.SensorAlerts.Add(TempRule(raise: 0, id: "r1")));
+            seed.FlushNow();
+            System.IO.File.WriteAllText(path, System.IO.File.ReadAllText(path).Replace("\"showInHealth\": true", "\"showInHealth\": false"));
+
+            var loaded = new JsonConfigStore(path).Load().Diagnostics.SensorAlerts.Single(r => r.Id == "r1");
+            Assert.True(loaded.ShowInHealth);
+
+            var rig = new Rig();
+            var stored = TempRule(raise: 0, id: "r1");
+            stored.ShowInHealth = false;
+            rig.AddRule(stored);
+            rig.SetTemp(90);
+            rig.Seconds(1);
+
+            Assert.Equal("alert:r1", Assert.Single(rig.Engine.HealthComponents()).Id);
+        }
+        finally
+        {
+            try { System.IO.File.Delete(path); } catch { }
+        }
     }
 
     [Fact]
@@ -733,7 +759,6 @@ public partial class SensorAlertEngineTests
             var rule = TempRule(low: 10, high: null, raise: 7, clear: 9);
             rule.Severity = "act";
             rule.RepeatMinutes = 15;
-            rule.ShowInHealth = false;
             store.Update(s => s.Diagnostics.SensorAlerts.Add(rule));
             store.FlushNow();
 
@@ -747,7 +772,7 @@ public partial class SensorAlertEngineTests
             Assert.Equal(9, back.ClearAfterSeconds);
             Assert.Equal("act", back.Severity);
             Assert.Equal(15, back.RepeatMinutes);
-            Assert.False(back.ShowInHealth);
+            Assert.True(back.ShowInHealth);
             Assert.Equal("cpu/temp", back.Sensor.Id);
             Assert.Equal("CPU", back.Sensor.ParentName);
         }
