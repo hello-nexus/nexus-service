@@ -418,7 +418,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             }
             finally
             {
-                if (_walkWatch.EndWalk())
+                if (!_testHost && _walkWatch.EndWalk())
                 {
                     ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
                 }

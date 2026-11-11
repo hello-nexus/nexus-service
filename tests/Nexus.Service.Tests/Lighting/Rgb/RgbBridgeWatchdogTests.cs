@@ -1176,4 +1176,47 @@ public class RgbBridgeWatchdogTests : IDisposable
         Assert.Equal(arms, _deadlines.Single!.ArmCount);
         Assert.Equal(TimeSpan.FromSeconds(30), _deadlines.Single!.Due);
     }
+
+    [Fact]
+    public async Task A_disposed_bridge_does_not_arm_the_settle_deadline_again()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { ArmCount: 1 }, TimeSpan.FromSeconds(5)));
+        var deadline = _deadlines.Single!;
+
+        _bridge.Dispose();
+        _bridge.OnSystemResume();
+        deadline.Fire();
+
+        Assert.True(deadline.Disposed);
+        Assert.Equal(1, deadline.ArmCount);
+        Assert.Single(_deadlines.Created);
+    }
+
+    [Fact]
+    public async Task A_look_in_flight_when_the_bridge_deactivates_arms_nothing()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+        var gate = new TaskCompletionSource();
+        _controller.AddressGate = gate.Task;
+        _deadlines.Single!.Fire();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("addresses") >= 1, TimeSpan.FromSeconds(5)));
+        var arms = _deadlines.Single!.ArmCount;
+
+        _bridge.Deactivate();
+        _controller.AddressGate = null;
+        gate.SetResult();
+        await _bridge.LastSettleDeadlineCheck!;
+
+        Assert.False(_deadlines.Single!.Armed);
+        Assert.Equal(arms, _deadlines.Single!.ArmCount);
+        Assert.Equal(1, _controller.Count("disconnect"));
+    }
 }
