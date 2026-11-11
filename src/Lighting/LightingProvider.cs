@@ -81,9 +81,11 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly SensorFeed? _sensorFeed;
 
     private byte[] _dashboardFrame = Array.Empty<byte>();
+    private readonly object _dashboardLock = new();
+    private int _dashboardFrames;
 
-    // The dashboard sees each LED as the writers drive it; with no client connected the writers skip the extra work.
-    private void BroadcastDashboardFrame(ReadOnlyMemory<byte> frame)
+    // Stop and the render tick can both serialize a frame, so composing is serialized; the send itself still reads the shared buffer after the lock, as the engine's own frame buffer already does.
+    private void BroadcastDashboardFrame(ReadOnlyMemory<byte> frame, DeviceFrame[] devices)
     {
         var connected = _hub.ClientCount > 0;
         _engine.Live.Enabled = connected;
@@ -91,10 +93,17 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return;
         }
-        var length = LiveLedFrameComposer.Compose(frame.Span, _engine.Devices, _engine.Live, ref _dashboardFrame);
-        _ = length > 0
-            ? _hub.BroadcastBinaryAsync(new ReadOnlyMemory<byte>(_dashboardFrame, 0, length))
-            : _hub.BroadcastBinaryAsync(frame);
+        lock (_dashboardLock)
+        {
+            var length = LiveLedFrameComposer.Compose(frame.Span, devices, _engine.Live, ref _dashboardFrame);
+            if ((++_dashboardFrames & 255) == 0)
+            {
+                _engine.Live.Prune(devices);
+            }
+            _ = length > 0
+                ? _hub.BroadcastBinaryAsync(new ReadOnlyMemory<byte>(_dashboardFrame, 0, length))
+                : _hub.BroadcastBinaryAsync(frame);
+        }
     }
 
     public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null, SensorFeed? sensorFeed = null)
@@ -131,9 +140,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         _screenPP.Set(s.ScreenEffect.Hue, s.ScreenEffect.Colorize, s.ScreenEffect.Saturation, s.ScreenEffect.Contrast, s.ScreenEffect.FlipX, s.ScreenEffect.FlipY, s.ScreenEffect.Reactive, s.ScreenEffect.Reactivity, s.ScreenEffect.Intensity);
         _mediaPP.Set(s.MediaEffect.Hue, s.MediaEffect.Colorize, s.MediaEffect.Saturation, s.MediaEffect.Contrast, s.MediaEffect.FlipX, s.MediaEffect.FlipY);
 
-        _hub.OnFirstClient += () => _engine.Live.Enabled = true;
-        _hub.OnAllClientsGone += () => _engine.Live.Enabled = false;
-        _engine.OnFrame += BroadcastDashboardFrame;
+        _engine.FrameSerialized += BroadcastDashboardFrame;
         _engine.OnEffectChanged += ReconcileAudioCapture;
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.
         _store.OnChanged += RefreshPinnedLooks;

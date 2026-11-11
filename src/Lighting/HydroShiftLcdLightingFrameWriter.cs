@@ -114,11 +114,11 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
                 _payload[i + 1] = g;
                 _payload[i + 2] = b;
             }
-            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, brightness, adjust);
+            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, brightness, adjust, LiveScale.Adjust);
         }
         else
         {
-            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, 0.0, DeviceColorAdjust.Identity);
+            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, 0.0, DeviceColorAdjust.Identity, LiveScale.Adjust);
         }
         if (_haveLast && nowMs - _lastSentMs < ReassertMs && _payload.AsSpan().SequenceEqual(_last))
         {

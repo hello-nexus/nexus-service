@@ -79,7 +79,10 @@ public sealed class Galahad2LcdLightingFrameWriter : BackgroundService
         if (_identify.TryGetActive(id, DateTime.UtcNow.Ticks, out _))
         {
             r = g = b = 255;
-            _engine.Live.ReportSolid(id, 255, 255, 255, frame.LedCount);
+            if (_engine.Live.Enabled)
+            {
+                _engine.Live.ReportSolid(id, 255, 255, 255, frame.LedCount);
+            }
         }
         else if (!settings.Devices.DisabledLightingDevices.Contains(id))
         {
@@ -87,10 +90,13 @@ public sealed class Galahad2LcdLightingFrameWriter : BackgroundService
             var brightness = MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
             var src = frame.LedBytes;
             DeviceColorAdjust.For(pref).Apply(src[0], src[1], src[2], brightness, out r, out g, out b);
-            DeviceColorAdjust.For(pref).ApplyUnordered(src[0], src[1], src[2], brightness, out var lr, out var lg, out var lb);
-            _engine.Live.ReportSolid(id, lr, lg, lb, frame.LedCount);
+            if (_engine.Live.Enabled)
+            {
+                DeviceColorAdjust.For(pref).ApplyUnordered(src[0], src[1], src[2], brightness, out var lr, out var lg, out var lb);
+                _engine.Live.ReportSolid(id, lr, lg, lb, frame.LedCount);
+            }
         }
-        else
+        else if (_engine.Live.Enabled)
         {
             _engine.Live.ReportSolid(id, 0, 0, 0, frame.LedCount);
         }

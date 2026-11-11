@@ -223,7 +223,7 @@ public sealed class SmartHubLightingFrameWriter : IHostedService, IDisposable
                 var fromFrame = Math.Min(ledCount, frame.LedCount);
                 FillBufferSlice(dst, offset, frame.LedBytes, fromFrame,
                     brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
-                _engine.Live.Report(zone.Id, frame.LedBytes, fromFrame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                _engine.Live.Report(zone.Id, frame.LedBytes, fromFrame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
                 for (var k = fromFrame; k < ledCount && offset + k < dst.Length; k++) dst[offset + k] = default;
             }
             offset += ledCount;

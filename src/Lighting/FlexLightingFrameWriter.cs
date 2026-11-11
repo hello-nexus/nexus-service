@@ -310,15 +310,22 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
         SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
             settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
-            now * TimeSpan.TicksPerMillisecond, _identify, _segmentBuffers, _engine.Live);
+            now * TimeSpan.TicksPerMillisecond, _identify, _segmentBuffers, _engine.Live, stageLive: true);
 
         var swap = settings.Devices.FlexUnits.TryGetValue(unit.Mac, out var l) && l.UpDownSwap && unit.Family == FlexFamily.TlFlex;
         var total = FillWire(unit.Family, unit.Fans, structure, swap);
         var span = _wire.AsSpan(0, total * 3);
         var hash = HashOf(span);
         var due = !st.Streaming || hash != st.StreamHash || now - st.LastStreamMs >= StreamRefreshMs;
-        if (!due || now - st.LastStreamMs < MinStreamIntervalMs)
+        if (!due)
         {
+            // Unchanged since the last send, so the unit already shows it.
+            _engine.Live.CommitZones(zones);
+            return;
+        }
+        if (now - st.LastStreamMs < MinStreamIntervalMs)
+        {
+            _engine.Live.TouchZones(zones);
             return;
         }
         if (_hub.SendLive(unit.Mac, span))
@@ -326,6 +333,11 @@ public sealed class FlexLightingFrameWriter : IHostedService, IDisposable
             st.StreamHash = hash;
             st.LastStreamMs = now;
             st.Streaming = true;
+            _engine.Live.CommitZones(zones);
+        }
+        else
+        {
+            _engine.Live.TouchZones(zones);
         }
     }
 

@@ -508,7 +508,15 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         if (paced)
         {
             var nowMs = NowMs();
-            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs) return;
+            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs)
+            {
+                // No frame goes out on a paced tick, so the last one stays on show.
+                foreach (var held in _customZones)
+                {
+                    _engine.Live.TouchZones(held);
+                }
+                return;
+            }
             _lastCustomFrameMs = nowMs;
         }
 

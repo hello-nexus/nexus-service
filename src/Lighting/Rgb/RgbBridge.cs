@@ -2591,7 +2591,7 @@ public sealed class RgbBridge : IDisposable
         });
     }
 
-    private void OnFrame(ReadOnlyMemory<byte> frameMem)
+    internal void OnFrame(ReadOnlyMemory<byte> frameMem)
     {
         if (!IsActive)
         {
@@ -2645,6 +2645,8 @@ public sealed class RgbBridge : IDisposable
         var nowTicks = DateTime.UtcNow.Ticks;
 
         _touchedPhysicals.Clear();
+        _liveStaged.Clear();
+        _livePushed.Clear();
         ComputeFullyUncontrolledPhysicals(deviceFrames, _bridgeFrameIds, uncontrolled, _physFullyUncontrolled);
         ComputePhysicalCaps(deviceFrames, _bridgeFrameIds, _physStableIds, settings.Devices.LightingMaxRates, _physCapsHz, _defaultRatesHz);
 
@@ -2780,8 +2782,12 @@ public sealed class RgbBridge : IDisposable
                     buffer[zoneOffset + led] = new RgbColor(frame[off2], frame[off2 + 1], frame[off2 + 2]).Scale(brightnessMul);
                 }
             }
-            _engine.Live.Report(dev.Id, frame.Slice(pos, writeLen * 3), writeLen, isOff ? 0.0 : brightnessMul, adjust,
-                hasIdentify && !isOff, idOverride.startTicks, nowTicks, Math.Max(1, IdentifyFlashPeriodMs / 2));
+            if (_engine.Live.Enabled)
+            {
+                _engine.Live.Stage(dev.Id, frame.Slice(pos, writeLen * 3), writeLen, isOff ? 0.0 : brightnessMul, adjust,
+                    hasIdentify && !isOff, idOverride.startTicks, nowTicks, Math.Max(1, IdentifyFlashPeriodMs / 2));
+                _liveStaged.Add((dev.PhysicalIndex, dev.Id));
+            }
             _touchedPhysicals.Add(dev.PhysicalIndex);
             pos += rgbSize;
         }
@@ -2792,9 +2798,27 @@ public sealed class RgbBridge : IDisposable
                 && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx)))
             {
                 _ = _controller.PushFrameAsync(physIdx, buf);
+                _livePushed.Add(physIdx);
+            }
+        }
+
+        // A physical device skipped by dedupe or its rate cap keeps its last pushed output on show.
+        foreach (var (physIdx, id) in _liveStaged)
+        {
+            if (_livePushed.Contains(physIdx))
+            {
+                _engine.Live.Commit(id);
+            }
+            else
+            {
+                _engine.Live.Touch(id);
             }
         }
     }
+
+    // Per-frame scratch for the dashboard copy; OnFrame is serialized by the engine.
+    private readonly List<(int Phys, string Id)> _liveStaged = new();
+    private readonly HashSet<int> _livePushed = new();
 
     /// <summary>
     /// True when a wire-frame-matched DeviceFrame is one of this bridge's own

@@ -205,7 +205,7 @@ public sealed class KrakenLightingFrameWriter : IHostedService, IDisposable
                     var brightnessMul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
                     var hasIdentify = _identify.TryGetActive(zone.Id, nowTicks, out var startTicks);
                     FillSlice(payload, offset, take, frame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
-                    _engine.Live.Report(zone.Id, frame.LedBytes, take, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                    _engine.Live.Report(zone.Id, frame.LedBytes, take, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
                 }
             }
             offset += zoneLeds;

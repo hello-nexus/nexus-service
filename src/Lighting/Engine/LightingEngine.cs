@@ -126,6 +126,9 @@ public sealed partial class LightingEngine : IDisposable
     private IEffect? _lastRenderEffect;
 
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
+
+    /// <summary>The same frame as <see cref="OnFrame"/> with the device snapshot it was serialized from, section for section.</summary>
+    public event Action<ReadOnlyMemory<byte>, DeviceFrame[]>? FrameSerialized;
     public event Action? OnEffectChanged;
 
     /// <summary>Raised on the engine thread once per tick, after every device frame is published; handlers must not block.</summary>
@@ -2355,8 +2358,6 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
-    internal void SerializeForTest() => SerializeAndBroadcast();
-
     private void SerializeAndBroadcast()
     {
         var devices = _devices;
@@ -2394,6 +2395,7 @@ public sealed partial class LightingEngine : IDisposable
             pos += dev.LedCount * 3;
         }
         OnFrame?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos));
+        FrameSerialized?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos), devices);
     }
 
     /// <summary>

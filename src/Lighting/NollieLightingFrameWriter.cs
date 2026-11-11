@@ -192,7 +192,7 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
                 FillSlice(buf, offset, ledCount, frame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
                 if (frame is not null)
                 {
-                    _engine.Live.Report(zone.Id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                    _engine.Live.Report(zone.Id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
                 }
             }
             offset += ledCount;

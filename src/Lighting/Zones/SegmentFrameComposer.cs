@@ -38,7 +38,8 @@ public static class SegmentFrameComposer
         Np50IdentifyTracker? identify,
         RgbColor[][] segmentBuffers,
         LiveLedSink? live = null,
-        bool segmentGated = false)
+        bool segmentGated = false,
+        bool stageLive = false)
     {
         var touched = new bool[structure.Segments.Count];
         for (var s = 0; s < segmentBuffers.Length; s++)
@@ -86,9 +87,13 @@ public static class SegmentFrameComposer
                     // The writer skips a fully uncontrolled segment, so nothing per-LED is sent for it.
                     live.ReportNone(zone.Id);
                 }
+                else if (stageLive)
+                {
+                    live.Stage(zone.Id, src, zoneLeds, mul, adjust, identifying, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
+                }
                 else
                 {
-                    live.Report(zone.Id, src, zoneLeds, mul, adjust, identifying, startTicks, nowTicks);
+                    live.Report(zone.Id, src, zoneLeds, mul, adjust, identifying, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
                 }
             }
             var zoneLocal = 0;

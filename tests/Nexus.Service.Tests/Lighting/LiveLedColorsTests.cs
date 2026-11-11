@@ -54,10 +54,10 @@ public class LiveLedColorsTests
             ? DeviceColorAdjust.Create(1.2f, 0.9f, 0.7f, 0.3f, 1.4f, order)
             : DeviceColorAdjust.Create(1f, 1f, 1f, 0f, 1f, order);
 
-    private static byte[] Sink(byte[] src, double mul, DeviceColorAdjust adjust)
+    private static byte[] Sink(byte[] src, double mul, DeviceColorAdjust adjust, LiveScale scale = LiveScale.Banded)
     {
         var sink = new LiveLedSink { Enabled = true };
-        sink.Report("dev", src, Leds, mul, adjust);
+        sink.Report("dev", src, Leds, mul, adjust, scale);
         return sink.TryGetFresh("dev")!;
     }
 
@@ -72,10 +72,10 @@ public class LiveLedColorsTests
     }
 
     // Runs one writer family's filler and returns its wire bytes as RGB triplets.
-    private static void AssertFamily(Func<DeviceColorAdjust, byte[]> writer, double mul, bool trim, string order)
+    private static void AssertFamily(Func<DeviceColorAdjust, byte[]> writer, double mul, bool trim, string order, LiveScale scale = LiveScale.Banded)
     {
         var src = Source();
-        var live = Sink(src, mul, Adjust(trim, order));
+        var live = Sink(src, mul, Adjust(trim, order), scale);
         var unordered = writer(Adjust(trim, "RGB"));
         Assert.Equal(unordered, live);
         Assert.Equal(Permute(unordered, order), writer(Adjust(trim, order)));
@@ -178,7 +178,29 @@ public class LiveLedColorsTests
                 Y70GtLightingFrameWriter.Fill(dst, Source(), Leds, mul, a);
             }
             return dst;
-        }, mul, trim, order);
+        }, mul, trim, order, LiveScale.Direct);
+
+    // The ring and fan writers run the trim math even with no trim set, so a near-full level must not take the pass-through band.
+    [Theory, MemberData(nameof(Cases))]
+    public void AdjustScale_MatchesApplyWithoutTheBand(double mul, bool trim, string order) =>
+        AssertFamily(a =>
+        {
+            var dst = new byte[Leds * 3];
+            var src = Source();
+            for (var i = 0; i < Leds; i++)
+            {
+                a.Apply(src[i * 3], src[i * 3 + 1], src[i * 3 + 2], mul, out dst[i * 3], out dst[i * 3 + 1], out dst[i * 3 + 2]);
+            }
+            return dst;
+        }, mul, trim, order, LiveScale.Adjust);
+
+    [Fact]
+    public void DirectScale_HasNoPassThroughBand()
+    {
+        // 0.9995 is inside the banded pass-through but the Y70 writer still scales.
+        Assert.Equal((byte)(255 * 0.9995), Sink(new byte[Leds * 3].Select(_ => (byte)255).ToArray(), 0.9995, DeviceColorAdjust.Identity, LiveScale.Direct)[0]);
+        Assert.Equal(255, Sink(new byte[Leds * 3].Select(_ => (byte)255).ToArray(), 0.9995, DeviceColorAdjust.Identity)[0]);
+    }
 
     [Theory]
     [InlineData(1.0)]
@@ -206,9 +228,9 @@ public class LiveLedColorsTests
     {
         var sink = new LiveLedSink { Enabled = true };
         var start = DateTime.UtcNow.Ticks;
-        sink.Report("dev", Source(), Leds, 0.2, DeviceColorAdjust.Identity, true, start, start);
+        sink.Report("dev", Source(), Leds, 0.2, DeviceColorAdjust.Identity, true, start, start, 250);
         Assert.All(sink.TryGetFresh("dev")!, b => Assert.Equal(255, b));
-        sink.Report("dev", Source(), Leds, 0.2, DeviceColorAdjust.Identity, true, start, start + 300 * TimeSpan.TicksPerMillisecond);
+        sink.Report("dev", Source(), Leds, 0.2, DeviceColorAdjust.Identity, true, start, start + 300 * TimeSpan.TicksPerMillisecond, 250);
         Assert.All(sink.TryGetFresh("dev")!, b => Assert.Equal(0, b));
     }
 
@@ -244,22 +266,21 @@ public class LiveLedColorsTests
         return list.ToArray();
     }
 
-    // Returns each device's section length in LEDs, plus the bytes, from a composed frame.
-    private static Dictionary<byte, byte[]> Parse(byte[] frame, int length)
+    // Each device section's LED bytes, in frame order.
+    private static List<byte[]> Parse(byte[] frame, int length)
     {
-        var map = new Dictionary<byte, byte[]>();
+        var sections = new List<byte[]>();
         var pos = 5 + (frame[1] | (frame[2] << 8)) * (frame[3] | (frame[4] << 8)) * 3;
         var count = frame[pos++];
         for (var i = 0; i < count; i++)
         {
-            var index = frame[pos];
             var n = (frame[pos + 1] | (frame[pos + 2] << 8)) * 3;
             pos += 3;
-            map[index] = frame[pos..(pos + n)];
+            sections.Add(frame[pos..(pos + n)]);
             pos += n;
         }
         Assert.Equal(length, pos);
-        return map;
+        return sections;
     }
 
     [Fact]
@@ -275,24 +296,21 @@ public class LiveLedColorsTests
         sink.Report("cleared", src, Leds, 1.0, DeviceColorAdjust.Identity);
         sink.ReportNone("cleared");
 
-        var wire = WireFrame(devices, new byte[3]);
         var dst = Array.Empty<byte>();
-        var length = LiveLedFrameComposer.Compose(wire, devices, sink, ref dst);
+        var length = LiveLedFrameComposer.Compose(WireFrame(devices, new byte[3]), devices, sink, ref dst);
         var parsed = Parse(dst, length);
 
         Assert.Equal(Sink(src, 0.5, DeviceColorAdjust.Identity), parsed[0]);
         // No writer reports for these, so the dashboard gets a zero-length section.
+        Assert.Empty(parsed[1]);
         Assert.Empty(parsed[2]);
-        Assert.Empty(parsed[3]);
-        Assert.NotEqual(src, parsed[0]);
     }
 
     [Fact]
     public void Composer_StaleReportIsNotDriven_AndBlackStaysBlack()
     {
         var src = Source();
-        var a = FrameWith(src);
-        var devices = new[] { a };
+        var devices = new[] { FrameWith(src) };
         var clock = 0L;
         var sink = new LiveLedSink { Enabled = true, Clock = () => clock };
         sink.Report("f", src, Leds, 0.0, DeviceColorAdjust.Identity);
@@ -307,13 +325,94 @@ public class LiveLedColorsTests
     }
 
     [Fact]
-    public void Solid_and_BlankRange_AdjustTheReportedBytes()
+    public void Composer_MapsSectionsByPosition_SoWireByteCollisionsStayApart()
     {
+        // Index 1 and 257 share the low byte on the wire.
+        var devices = new[] { new DeviceFrame(1, "a", 1), new DeviceFrame(257, "b", 1) };
         var sink = new LiveLedSink { Enabled = true };
-        sink.ReportSolid("ring", 10, 20, 30, 5);
-        Assert.Equal(new byte[] { 10, 20, 30, 10, 20, 30, 10, 20, 30, 10, 20, 30, 10, 20, 30 }, sink.TryGetFresh("ring"));
-        sink.BlankRange("ring", 1, 2);
-        Assert.Equal(new byte[] { 10, 20, 30, 0, 0, 0, 0, 0, 0, 10, 20, 30, 10, 20, 30 }, sink.TryGetFresh("ring"));
+        sink.ReportSolid("a", 1, 1, 1, 1);
+        sink.ReportSolid("b", 2, 2, 2, 1);
+        var dst = Array.Empty<byte>();
+        var length = LiveLedFrameComposer.Compose(WireFrame(devices, new byte[3]), devices, sink, ref dst);
+        var parsed = Parse(dst, length);
+        Assert.Equal(new byte[] { 1, 1, 1 }, parsed[0]);
+        Assert.Equal(new byte[] { 2, 2, 2 }, parsed[1]);
     }
 
+    [Fact]
+    public void Solid_ReportsOneColorOnEveryLed()
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.ReportSolid("ring", 10, 20, 30, 3);
+        Assert.Equal(new byte[] { 10, 20, 30, 10, 20, 30, 10, 20, 30 }, sink.TryGetFresh("ring"));
+    }
+
+    [Fact]
+    public void Staged_output_publishes_only_on_commit_and_touch_keeps_the_last_alive()
+    {
+        var src = Source();
+        var clock = 0L;
+        var sink = new LiveLedSink { Enabled = true, Clock = () => clock };
+        sink.Stage("dev", src, Leds, 0.5, DeviceColorAdjust.Identity, false, 0, 0, 0);
+        Assert.Null(sink.TryGetFresh("dev"));
+        sink.Commit("dev");
+        var pushed = sink.TryGetFresh("dev");
+        Assert.Equal(Sink(src, 0.5, DeviceColorAdjust.Identity), pushed);
+
+        // A skipped push stages new bytes but publishes none; Touch keeps the pushed ones fresh past the window.
+        sink.Stage("dev", src, Leds, 1.0, DeviceColorAdjust.Identity, false, 0, 0, 0);
+        clock = 400;
+        sink.Touch("dev");
+        clock = 800;
+        Assert.Equal(pushed, sink.TryGetFresh("dev"));
+        clock = 800 + LiveLedSink.FreshMs + 1;
+        Assert.Null(sink.TryGetFresh("dev"));
+    }
+
+    [Fact]
+    public void BlankStaged_BlanksOnlyTheStagedBytes()
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.Stage("dev", new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 3, 1.0, DeviceColorAdjust.Identity, false, 0, 0, 0);
+        sink.BlankStaged("dev", 1, 1);
+        sink.Commit("dev");
+        Assert.Equal(new byte[] { 1, 2, 3, 0, 0, 0, 7, 8, 9 }, sink.TryGetFresh("dev"));
+    }
+
+    [Fact]
+    public void Prune_DropsDevicesThatLeftTheSet()
+    {
+        var sink = new LiveLedSink { Enabled = true };
+        sink.ReportSolid("gone", 1, 2, 3, 1);
+        sink.ReportSolid("kept", 1, 2, 3, 1);
+        sink.Prune(new[] { new DeviceFrame(0, "kept", 1) });
+        Assert.Null(sink.TryGetFresh("gone"));
+        Assert.NotNull(sink.TryGetFresh("kept"));
+    }
+
+    [Theory]
+    [InlineData("RGB")]
+    [InlineData("GRB")]
+    [InlineData("BRG")]
+    [InlineData("GBR")]
+    [InlineData("BGR")]
+    [InlineData("RBG")]
+    public void Unorder_UndoesTheChannelSwap(string order)
+    {
+        var original = new byte[] { 10, 20, 30, 40, 50, 60 };
+        var ordered = (byte[])original.Clone();
+        for (var i = 0; i < ordered.Length; i += 3)
+        {
+            DeviceColorAdjust.ReorderChannels(order, ref ordered[i], ref ordered[i + 1], ref ordered[i + 2]);
+        }
+        HydroShift2LightingFrameWriter.Unorder(order, ordered);
+        Assert.Equal(original, ordered);
+    }
+
+    [Theory]
+    [InlineData(4, 200, 200)]
+    [InlineData(2, 200, 100)]
+    [InlineData(0, 200, 0)]
+    public void Galahad2_ReportedColorFollowsTheBrightnessStep(int step, int channel, int expected) =>
+        Assert.Equal(expected, Galahad2LightingFrameWriter.AtBrightnessStep((byte)channel, (byte)step));
 }

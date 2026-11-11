@@ -93,7 +93,8 @@ public sealed class Y70GtLightingFrameWriter : IHostedService, IDisposable
                 id, settings.Devices.DisabledLightingDevices, settings.Devices.LightingDevicePrefs,
                 MasterBrightness.Resolve(settings), out var adjust);
             var nowTicks = DateTime.UtcNow.Ticks;
-            if (_identify.TryGetActive(id, nowTicks, out var startTicks))
+            var identifying = _identify.TryGetActive(id, nowTicks, out var startTicks);
+            if (identifying)
             {
                 var elapsedMs = (nowTicks - startTicks) / TimeSpan.TicksPerMillisecond;
                 if ((elapsedMs / IdentifyFlashHalfPeriodMs) % 2 == 0) Array.Fill(_buffer, (byte)255);
@@ -103,7 +104,7 @@ public sealed class Y70GtLightingFrameWriter : IHostedService, IDisposable
                 Fill(_buffer, frame.LedBytes, Math.Min(frame.LedCount, Y70DisplayProtocol.BacklightLedCount), brightnessMul, adjust);
             }
             _engine.Live.Report(id, frame.LedBytes, Math.Min(frame.LedCount, Y70DisplayProtocol.BacklightLedCount), brightnessMul, adjust,
-                _identify.TryGetActive(id, nowTicks, out var liveStart), liveStart, nowTicks, IdentifyFlashHalfPeriodMs);
+                identifying, startTicks, nowTicks, IdentifyFlashHalfPeriodMs, LiveScale.Direct);
         }
         _hub.WriteBacklight(_buffer);
     }

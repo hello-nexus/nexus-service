@@ -120,13 +120,39 @@ public sealed class SmartLightFrameWriter : IHostedService, IDisposable
             var adjust = DeviceColorAdjust.For(pref);
             var bytes = adjust.IsIdentity ? frame.LedBytes : Trim(frame.LedBytes, frame.LedCount, adjust);
             _provider.SubmitEffectFrame(frame.Id, bytes, frame.LedCount, b01);
-            _engine.Live.Report(frame.Id, frame.LedBytes, frame.LedCount, b01, adjust);
+            if (_engine.Live.Enabled)
+            {
+                ReportLive(frame, adjust, b01);
+            }
             streamed = true;
         }
 
         // Send this tick's batch to any session streamers (Hue Entertainment).
         _provider.FlushStreaming();
         if (streamed) _wasStreaming = true;
+    }
+
+    private byte[] _liveBuffer = Array.Empty<byte>();
+
+    // What the bulb shows: the trim, then one averaged color or the per-zone colors, at the bulb brightness b01.
+    internal void ReportLive(DeviceFrame frame, DeviceColorAdjust adjust, float b01)
+    {
+        var count = Math.Min(frame.LedCount, frame.LedBytes.Length / 3);
+        if (_liveBuffer.Length < count * 3)
+        {
+            _liveBuffer = new byte[count * 3];
+        }
+        var trimmed = _liveBuffer.AsSpan(0, count * 3);
+        LiveLedSink.Compute(trimmed, frame.LedBytes, count, 1.0, adjust, LiveScale.Adjust);
+        if (_provider.AveragesToSingle(frame.Id))
+        {
+            var (r, g, b) = SmartLightProvider.AverageRgb(trimmed, count);
+            _engine.Live.ReportSolid(frame.Id, (byte)(r * b01), (byte)(g * b01), (byte)(b * b01), frame.LedCount);
+        }
+        else
+        {
+            _engine.Live.Report(frame.Id, trimmed, count, b01, DeviceColorAdjust.Identity, LiveScale.Direct);
+        }
     }
 
     // Reused across ticks so a trimmed frame allocates nothing after the first.

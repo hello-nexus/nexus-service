@@ -74,6 +74,22 @@ public class RgbBridgeLiveLedTests : IDisposable
         return frame;
     }
 
+    // A v3 frame by hand: a one-pixel canvas, then each device's LED section.
+    private static ReadOnlyMemory<byte> Wire(DeviceFrame[] devices)
+    {
+        var bytes = new List<byte> { 0x03, 1, 0, 1, 0, 0, 0, 0, (byte)devices.Length };
+        foreach (var d in devices)
+        {
+            bytes.Add(DeviceFrameIndex.WireByte(d));
+            bytes.Add((byte)(d.LedCount & 0xFF));
+            bytes.Add((byte)(d.LedCount >> 8));
+            bytes.AddRange(d.LedBytes.ToArray());
+        }
+        return bytes.ToArray();
+    }
+
+    private void Push() => _bridge.OnFrame(Wire(_engine.Devices));
+
     private static byte[] Expected(DeviceFrame frame, double mul, DeviceColorAdjust adjust)
     {
         var bytes = new byte[frame.LedCount * 3];
@@ -97,7 +113,7 @@ public class RgbBridgeLiveLedTests : IDisposable
         var mul = MasterBrightness.Resolve(settings).Combine(0.6);
 
         _engine.Live.Enabled = true;
-        _engine.SerializeForTest();
+        Push();
 
         Assert.Equal(Expected(frame, mul, DeviceColorAdjust.For(pref)), _engine.Live.TryGetFresh(frame.Id));
     }
@@ -109,7 +125,7 @@ public class RgbBridgeLiveLedTests : IDisposable
         _engine.Live.Enabled = true;
 
         _store.Update(s => s.Devices.DisabledLightingDevices = new List<string> { frame.Id });
-        _engine.SerializeForTest();
+        Push();
         Assert.Equal(new byte[frame.LedCount * 3], _engine.Live.TryGetFresh(frame.Id));
 
         _store.Update(s =>
@@ -117,7 +133,47 @@ public class RgbBridgeLiveLedTests : IDisposable
             s.Devices.DisabledLightingDevices = new List<string>();
             s.Devices.UncontrolledLightingDevices = new List<string> { frame.Id };
         });
-        _engine.SerializeForTest();
+        Push();
         Assert.Null(_engine.Live.TryGetFresh(frame.Id));
+    }
+
+    [Fact]
+    public async Task A_deduped_push_keeps_the_last_pushed_output_on_show()
+    {
+        var frame = await ActivateAsync();
+        var clock = 0L;
+        _engine.Live.Clock = () => clock;
+        _engine.Live.Enabled = true;
+
+        Push();
+        var pushed = _engine.Live.TryGetFresh(frame.Id);
+        Assert.NotNull(pushed);
+
+        // The same frame again is deduped, so nothing is sent; the touch keeps the last push fresh past the window.
+        clock = 400;
+        Push();
+        clock = 800;
+        Assert.Equal(pushed, _engine.Live.TryGetFresh(frame.Id));
+    }
+
+    [Fact]
+    public async Task A_rate_capped_push_does_not_publish_the_bytes_it_skipped()
+    {
+        var frame = await ActivateAsync();
+        _engine.Live.Enabled = true;
+        _store.Update(s => s.Devices.LightingMaxRates[frame.Id] = 1);
+
+        // The first frame passes the cap and publishes; the next one inside the gap is held back.
+        frame.SetLed(0, 1, 2, 3);
+        frame.Publish();
+        Push();
+        var pushed = _engine.Live.TryGetFresh(frame.Id);
+        Assert.Equal(new byte[] { 1, 2, 3 }, pushed![..3]);
+
+        frame.SetLed(0, 9, 9, 9);
+        frame.Publish();
+        Push();
+
+        Assert.Equal(pushed, _engine.Live.TryGetFresh(frame.Id));
     }
 }

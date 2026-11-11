@@ -164,7 +164,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
         if (ledCount > 0 && frame is not null)
         {
             FillBufferSlice(dst, 0, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
-            _engine.Live.Report(id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+            _engine.Live.Report(id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
         }
         _hub.WriteLighting(channel, new ReadOnlySpan<MiniHubColor>(dst, 0, ledCount));
     }
@@ -214,7 +214,7 @@ public sealed class MiniHubLightingFrameWriter : IHostedService, IDisposable
             {
                 FillBufferSlice(dst, offset, frame.LedBytes, Math.Min(ledCount, frame.LedCount),
                     brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
-                _engine.Live.Report(zone.Id, frame.LedBytes, Math.Min(ledCount, frame.LedCount), brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                _engine.Live.Report(zone.Id, frame.LedBytes, Math.Min(ledCount, frame.LedCount), brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
             }
             offset += ledCount;
         }

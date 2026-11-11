@@ -199,7 +199,7 @@ public sealed class Np50LightingFrameWriter : IHostedService, IDisposable
         var brightnessMul = ComputeBrightnessMul(frame.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
         var hasIdentify = TryGetActiveIdentify(frame.Id, nowTicks, out var startTicks);
         FillBufferSlice(dst, dstStart, frame.LedBytes, writeLen, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
-        _engine.Live.Report(frame.Id, frame.LedBytes, writeLen, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+        _engine.Live.Report(frame.Id, frame.LedBytes, writeLen, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
     }
 
     // ── Helpers ──
