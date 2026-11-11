@@ -197,6 +197,7 @@ public static class DiagnosticsHealthRoutes
             {
                 ServiceLog.Warn($"[support-bundle] fan channels unavailable: {ex.Message}");
             }
+            var pcSetupFile = sp.GetService<Nexus.Service.Lighting.Scene.LightingSceneStore>()?.Setup.Load();
             var zipBytes = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
             {
                 LogsDirectory = ServiceLog.LogsDirectory,
@@ -234,6 +235,7 @@ public static class DiagnosticsHealthRoutes
                 Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
                 UsbTopology = UsbTopology.Collect((vid, pid) => SupportBundleExtras.IsKnownUsbId(handlers, vid, pid)),
+                PcSetup = pcSetupFile is null ? null : new Nexus.Service.Models.Lighting.PcSetupResponse { Rev = pcSetupFile.Rev, Setup = pcSetupFile.Setup },
                 UserNames = identity.UserNames,
                 AccountNames = identity.AccountNames,
                 OtherHostNames = identity.HostNames,
