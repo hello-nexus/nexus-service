@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -91,7 +92,6 @@ public sealed class RgbBridge : IDisposable
     private static readonly TimeSpan SettleStallTimeout = TimeSpan.FromSeconds(30);
     /// <summary>A resume older than this no longer justifies restarting the whole service.</summary>
     private static readonly TimeSpan SelfRestartWindow = TimeSpan.FromMinutes(15);
-    private const string SmbusMutexName = "Global\\Access_SMBUS.HTP.Method";
 
     // Covers the PawnIO install gate LhmComputer waits on plus the open itself.
     private static readonly TimeSpan LhmEnumerationWait = TimeSpan.FromSeconds(30);
@@ -140,8 +140,8 @@ public sealed class RgbBridge : IDisposable
     private long _selfRestartRefusedResume;
     private long _heldDiagResume;
     private long _quiesceProbeResume;
-    private int _selfRestartSampling;
-    internal bool SelfRestartSampling => Volatile.Read(ref _selfRestartSampling) != 0;
+    private int _selfRestartDeciding;
+    internal bool SelfRestartDeciding => Volatile.Read(ref _selfRestartDeciding) != 0;
     /// <summary>Restarts the service; the argument names what triggered it. Null where self-restart is not wired.</summary>
     internal Func<string, bool>? SelfRestart { get; set; }
     /// <summary>Clock for the detection-activity and settle-stall gates, replaceable so tests need no wall-clock waits.</summary>
@@ -1141,6 +1141,13 @@ public sealed class RgbBridge : IDisposable
             catch { }
             await Task.Delay(500).ConfigureAwait(false);
             _proc.Start();
+            // The one deadline that notices a daemon which never lists its devices; the commit or a finished pass disarms it.
+            if (Volatile.Read(ref _expectedDevices) > 0)
+            {
+                Volatile.Write(ref _settleRechecks, 0);
+                Volatile.Write(ref _settleWaitsForConnect, 0);
+                ArmSettleCheck(SettleStallTimeout);
+            }
             // The relaunch rewrote the overrides and detects from scratch.
             lock (_lock)
             {
@@ -1224,9 +1231,9 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>Walk age for the [resume] lines: the running walk if any, else time since the last one.</summary>
-    internal static string LhmWalkSummary()
+    internal static string LhmWalkSummary(LhmWalkWatch? source = null)
     {
-        var watch = LhmWalkWatch.Shared;
+        var watch = source ?? LhmWalkWatch.Shared;
         if (watch.CurrentWalkAge is { } running)
         {
             var item = watch.CurrentItem is { } at ? $", inside {at.Item} for {at.Age.TotalSeconds:F0}s" : "";
@@ -1239,9 +1246,9 @@ public sealed class RgbBridge : IDisposable
     /// Every condition must hold: a hook is wired, a resume happened within the window, devices were known
     /// before it, the SMBus mutex is held, and this resume has not already restarted the service.
     /// </summary>
-    internal bool MaybeSelfRestart(string source, bool idleOnly = true)
+    internal bool MaybeSelfRestart(string source)
     {
-        if (!SelfRestartPreconditions(out var restart, out var resume, out var devices) || !MutexHeldAcrossSamples(resume, idleOnly))
+        if (!SelfRestartPreconditions(out var restart, out var resume, out var devices) || !MutexHeldForWindow(resume))
         {
             return false;
         }
@@ -1249,7 +1256,7 @@ public sealed class RgbBridge : IDisposable
         {
             return false;
         }
-        return restart($"{source}, {devices} devices known before the suspend, smbus mutex=held, {LhmWalkSummary()}");
+        return restart($"{source}, {devices} devices known before the suspend, smbus mutex=held, {LhmWalkSummary(WalkWatch)}");
     }
 
     private bool SelfRestartPreconditions(out Func<string, bool> restart, out long resume, out int devices)
@@ -1262,7 +1269,7 @@ public sealed class RgbBridge : IDisposable
 
     /// <summary>
     /// First settle failure with the mutex held: a daemon restart has never released a held mutex, so restart the service now.
-    /// True means a self-restart is being decided and the daemon restart is skipped; sampling that refuses hands the
+    /// True means a self-restart is being decided and the daemon restart is skipped; a wait that finds the mutex free hands the
     /// resume back to the daemon-restart path.
     /// </summary>
     private bool EarlySelfRestart()
@@ -1272,12 +1279,7 @@ public sealed class RgbBridge : IDisposable
         {
             return false;
         }
-        // A sample taken while our own walk may hold the mutex says nothing, so the sampler decides.
-        if (SampleMutex(idleOnly: true) is (true, not "held", _))
-        {
-            return false;
-        }
-        if (Interlocked.CompareExchange(ref _selfRestartSampling, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _selfRestartDeciding, 1, 0) != 0)
         {
             return true;
         }
@@ -1288,94 +1290,55 @@ public sealed class RgbBridge : IDisposable
                 if (!MaybeSelfRestart("settle-stall, mutex held on the first settle check"))
                 {
                     Interlocked.Exchange(ref _selfRestartRefusedResume, resume);
+                    // Hand the resume back to the daemon restart now, not at the next poll.
+                    ArmSettleCheck(TimeSpan.Zero);
                 }
             }
             finally
             {
-                Interlocked.Exchange(ref _selfRestartSampling, 0);
+                Interlocked.Exchange(ref _selfRestartDeciding, 0);
             }
         });
         return true;
     }
 
-    /// <summary>One probe, counted only when our walk could not have been the holder before or after it.</summary>
-    private (bool Counted, string State, string Tag) SampleMutex(bool idleOnly)
-    {
-        var overlapBefore = WalkWatch.MaySelfHoldSmbus();
-        var wedged = WalkWatch.WedgedInSmbusItem(SmbusWedgeLimit);
-        var state = SmbusMutexProbe();
-        var overlap = overlapBefore || WalkWatch.MaySelfHoldSmbus();
-        var tag = wedged ? "lhm-wedged" : overlap ? "lhm-walk" : "lhm-idle";
-        // A walk inside a memory item is the one place our code takes the mutex, and its reads can starve the daemon's detection for minutes, so it stays evidence; only a sample between items says nothing.
-        return (!idleOnly || wedged || !overlap || WalkWatch.InSmbusItem(), state, tag);
-    }
-
-    /// <summary>How long our walk may sit in one memory item before a held mutex stops being explained by a normal SPD read.</summary>
-    internal TimeSpan SmbusWedgeLimit { get; set; } = TimeSpan.FromSeconds(10);
-
     internal LhmWalkWatch WalkWatch { get; set; } = LhmWalkWatch.Shared;
-    /// <summary>Counted samples that end sampling early.</summary>
-    internal int SelfRestartMutexSamples { get; set; } = 4;
-    /// <summary>Fewest counted samples that justify a restart when sampling runs out of time.</summary>
-    internal int SelfRestartMinCounted { get; set; } = 2;
-    /// <summary>Samples taken at most, which bounds the extended window to about ten seconds.</summary>
-    internal int SelfRestartMaxSamples { get; set; } = 7;
-    internal TimeSpan SelfRestartSampleSpacing { get; set; } = TimeSpan.FromMilliseconds(1500);
 
-    /// <summary>A monitoring tool can hold the mutex for a moment; only a hold that outlasts every sample justifies a restart.</summary>
-    private bool MutexHeldAcrossSamples(long resume, bool idleOnly)
+    /// <summary>How long the mutex must stay unavailable before a service restart is justified; a brief hold by a monitoring tool ends the wait early.</summary>
+    internal string? MutexWaitSummary { get; private set; }
+
+    internal TimeSpan SelfRestartMutexWindow { get; set; } = TimeSpan.FromMilliseconds(4500);
+
+    /// <summary>Waits the window out on the mutex itself: the wait ends the moment the mutex frees, and a timeout means it was held throughout.</summary>
+    private bool MutexHeldForWindow(long resume)
     {
-        var seen = new List<string>();
-        var counted = 0;
-        var heldAll = true;
-        var maxSamples = idleOnly ? SelfRestartMaxSamples : SelfRestartMutexSamples;
-        for (var i = 0; i < maxSamples && counted < SelfRestartMutexSamples; i++)
+        var walkAtStart = LhmWalkSummary(WalkWatch);
+        var state = SmbusMutexWait(SelfRestartMutexWindow);
+        var walkAtEnd = LhmWalkSummary(WalkWatch);
+        var held = state == "held";
+        MutexWaitSummary = $"smbus mutex wait {SelfRestartMutexWindow.TotalSeconds:F1}s: {state} (restart={held}); walk at start: {walkAtStart}; at end: {walkAtEnd}";
+        if (Interlocked.Exchange(ref _heldDiagResume, resume) != resume)
         {
-            if (i > 0 && SelfRestartSampleSpacing > TimeSpan.Zero)
-            {
-                Thread.Sleep(SelfRestartSampleSpacing);
-            }
-            var (isCounted, state, tag) = SampleMutex(idleOnly);
-            seen.Add($"{state}+{tag}");
-            if (!isCounted)
-            {
-                continue;
-            }
-            counted++;
-            if (state != "held")
-            {
-                heldAll = false;
-                break;
-            }
+            ServiceLog.Info($"[resume] {MutexWaitSummary}; holder process is not obtainable in-process");
         }
-        var decided = heldAll && counted >= (idleOnly ? SelfRestartMinCounted : SelfRestartMutexSamples);
-        if (decided && Interlocked.Exchange(ref _quiesceProbeResume, resume) != resume)
+        if (held && Interlocked.Exchange(ref _quiesceProbeResume, resume) != resume)
         {
             ProbeHolderByQuiesce();
         }
-        if (Interlocked.Exchange(ref _heldDiagResume, resume) != resume)
-        {
-            ServiceLog.Info($"[resume] smbus mutex samples after resume: {string.Join(",", seen)} (counted {counted}, restart={decided}); {LhmWalkSummary()}; holder process is not obtainable in-process");
-        }
-        return decided;
+        return held;
     }
 
     /// <summary>Pauses our own DIMM reads, waits for the walk to leave its memory item, and samples once: free means our reads held it, held means another process does.</summary>
     private void ProbeHolderByQuiesce()
     {
         WalkWatch.QuiesceSpdFor(SelfRestartQuiesceWait + TimeSpan.FromSeconds(7));
-        var waited = TimeSpan.Zero;
-        var step = TimeSpan.FromMilliseconds(100);
-        while (WalkWatch.InSmbusItem() && waited < SelfRestartQuiesceWait)
-        {
-            Thread.Sleep(step);
-            waited += step;
-        }
+        var started = Stopwatch.GetTimestamp();
+        var left = WalkWatch.WaitUntilOutsideSmbusItem(SelfRestartQuiesceWait);
+        var waited = Stopwatch.GetElapsedTime(started);
         var state = SmbusMutexProbe();
-        var stuck = WalkWatch.InSmbusItem() ? WalkWatch.CurrentItem : null;
-        HolderProbeResult = stuck is { } at
-            ? $"{state}; inconclusive, the walk was still inside {at.Item} after {waited.TotalSeconds:F1}s"
-            : $"{state}; holder is {(state == "held" ? "not our DIMM reads" : "our DIMM reads or a transient")}";
+        HolderProbeResult = left
+            ? $"{state}; holder is {(state == "held" ? "not our DIMM reads" : "our DIMM reads or a transient")}"
+            : $"{state}; inconclusive, the walk was still inside {WalkWatch.CurrentItem?.Item ?? "a memory item"} after {waited.TotalSeconds:F1}s";
         ServiceLog.Info($"[resume] smbus mutex after pausing our DIMM reads: {HolderProbeResult}");
     }
 
@@ -1383,9 +1346,12 @@ public sealed class RgbBridge : IDisposable
 
     internal TimeSpan SelfRestartQuiesceWait { get; set; } = TimeSpan.FromSeconds(3);
 
-    private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source, idleOnly: false));
+    private void ScheduleSelfRestart(string source) => _ = Task.Run(() => MaybeSelfRestart(source));
 
     internal Func<string> SmbusMutexProbe { get; set; } = ProbeSmbusMutex;
+
+    /// <summary>Blocks up to the timeout on the SMBus mutex: "held" on timeout, otherwise the state it was acquired in.</summary>
+    internal Func<TimeSpan, string> SmbusMutexWait { get; set; } = SmbusMutexReader.Wait;
 
     /// <summary>A wedged LHM walk may hold the SMBus mutex the daemon's DIMM detection waits on; a daemon-held mutex is released by restarting it.</summary>
     internal void OnLhmWalkStalled(TimeSpan age)
@@ -1417,6 +1383,133 @@ public sealed class RgbBridge : IDisposable
     {
         Volatile.Write(ref _expectedDevices, 0);
         Volatile.Write(ref _settleStallBounces, 0);
+        Volatile.Write(ref _settleWaitsForConnect, 0);
+        lock (_settleTimerLock)
+        {
+            _settleTimer?.Disarm();
+        }
+    }
+
+    private readonly object _settleTimerLock = new();
+    private IOneShot? _settleTimer;
+    // 1 while a settle check found no daemon session and waits for the connect; Interlocked.
+    private int _settleWaitsForConnect;
+    // Looks since the last restart that found nothing to act on; capped so a daemon that never answers is not re-checked forever.
+    private int _settleRechecks;
+    private const int SettleMaxRechecks = 12;
+    internal Task? LastSettleDeadlineCheck { get; private set; }
+
+    /// <summary>Creates the deadline timers; replaceable so tests fire them by hand.</summary>
+    internal Func<Action, IOneShot> OneShotFactory { get; set; } = fire => new TimerOneShot(fire);
+
+    private void ArmSettleCheck(TimeSpan due)
+    {
+        lock (_settleTimerLock)
+        {
+            if (Volatile.Read(ref _expectedDevices) == 0)
+            {
+                return;
+            }
+            (_settleTimer ??= OneShotFactory(OnSettleDeadline)).Arm(due);
+        }
+    }
+
+    private void OnSettleDeadline() => LastSettleDeadlineCheck = Task.Run(async () =>
+    {
+        try
+        {
+            if (await EvaluateSettleStallAsync().ConfigureAwait(false) is not { } next)
+            {
+                return;
+            }
+            if (Interlocked.Increment(ref _settleRechecks) > SettleMaxRechecks)
+            {
+                ServiceLog.Warn($"[resume] settle check stopped after {SettleMaxRechecks} looks with nothing to act on; the next daemon restart arms it again");
+                return;
+            }
+            ArmSettleCheck(next);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[resume] settle check failed: {ex.Message}");
+        }
+    });
+
+    /// <summary>
+    /// The settle deadline: one look at a daemon restarted with devices known. Returns when to look again, or null when the
+    /// stall was handled or no longer applies; the commit, a finished pass and the give-up all disarm it.
+    /// </summary>
+    internal async Task<TimeSpan?> EvaluateSettleStallAsync()
+    {
+        if (!IsActive || Volatile.Read(ref _expectedDevices) == 0)
+        {
+            return null;
+        }
+        if (!SettleStallDue(out _, out var sinceSpawn, out _))
+        {
+            return Volatile.Read(ref _expectedDevices) == 0 ? null : SettleRecheckDelay(sinceSpawn);
+        }
+        // A dropped session is the reconnect path; the connect arms the next look.
+        if (!_controller.IsConnected)
+        {
+            return WaitForConnect();
+        }
+        // A full fetch in flight must not be queued behind.
+        if (_refreshSemaphore.CurrentCount == 0)
+        {
+            return DetectionQuietWindow;
+        }
+        IReadOnlyList<int> addresses;
+        try
+        {
+            addresses = await _controller.GetControllerAddressesAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            RecordDaemonFailure("refresh", ex.Message);
+            return DetectionQuietWindow;
+        }
+        if (!_controller.IsConnected)
+        {
+            return WaitForConnect();
+        }
+        if (addresses.Count > 0)
+        {
+            // Devices are listed; the refresh that commits them disarms the check.
+            return null;
+        }
+        if (RecoverSettleStall())
+        {
+            return null;
+        }
+        return Volatile.Read(ref _expectedDevices) == 0 ? null : WatchdogFloor;
+    }
+
+    /// <summary>Records that a look found no session. A connect that landed meanwhile is looked at now instead of missed.</summary>
+    private TimeSpan? WaitForConnect()
+    {
+        Volatile.Write(ref _settleWaitsForConnect, 1);
+        return _controller.IsConnected && Interlocked.Exchange(ref _settleWaitsForConnect, 0) == 1 ? TimeSpan.Zero : null;
+    }
+
+    /// <summary>When the settle check can next be due: the spawn timeout, or the end of the detection quiet window.</summary>
+    private TimeSpan SettleRecheckDelay(TimeSpan sinceSpawn)
+    {
+        var slack = TimeSpan.FromMilliseconds(10);
+        if (sinceSpawn < SettleStallTimeout)
+        {
+            return SettleStallTimeout - sinceSpawn + slack;
+        }
+        var last = Interlocked.Read(ref _detectionActivityTicks);
+        if (Volatile.Read(ref _settleStallBounces) == 0 && last != 0)
+        {
+            var remaining = DetectionQuietWindow - TimeSpan.FromTicks(NowTicks() - last);
+            if (remaining > TimeSpan.Zero)
+            {
+                return remaining + slack;
+            }
+        }
+        return DetectionQuietWindow;
     }
 
     /// <summary>
@@ -1447,7 +1540,7 @@ public sealed class RgbBridge : IDisposable
         var attempt = Interlocked.Increment(ref _settleStallBounces);
         ServiceLog.Warn($"[resume] daemon never settled after restart (attempt {attempt}, gate={gate}, daemon up {sinceSpawn.TotalSeconds:F0}s, "
             + $"0 controllers listed, {expected} known before the restart, detection started seen={Volatile.Read(ref _detectionStartedSeen) != 0}, "
-            + $"smbus mutex={SmbusMutexProbe()}, {LhmWalkSummary()}); restarting it");
+            + $"smbus mutex={SmbusMutexProbe()}, {LhmWalkSummary(WalkWatch)}); restarting it");
         BounceSubprocess("settle-stall");
         return true;
     }
@@ -1483,41 +1576,7 @@ public sealed class RgbBridge : IDisposable
     }
 
     /// <summary>Who holds the SMBus mutex the daemon's DIMM detection waits on without a timeout: held (by another process or thread), free, or n/a.</summary>
-    internal static string ProbeSmbusMutex()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return "n/a";
-        }
-        try
-        {
-            if (!Mutex.TryOpenExisting(SmbusMutexName, out var mutex))
-            {
-                return "absent";
-            }
-            using (mutex)
-            {
-                try
-                {
-                    if (!mutex.WaitOne(0))
-                    {
-                        return "held";
-                    }
-                }
-                catch (AbandonedMutexException)
-                {
-                    mutex.ReleaseMutex();
-                    return "abandoned";
-                }
-                mutex.ReleaseMutex();
-                return "free";
-            }
-        }
-        catch (Exception ex)
-        {
-            return ex.GetType().Name;
-        }
-    }
+    internal static string ProbeSmbusMutex() => SmbusMutexReader.Wait(TimeSpan.Zero);
 
     /// <summary>True while the daemon is detecting. Exposed via /lighting/status for the rescan spinner.</summary>
     public bool IsRescanning => DetectionInProgress();
@@ -1629,6 +1688,11 @@ public sealed class RgbBridge : IDisposable
                 return;
             }
             _connectFailureLogged = false;
+            // A settle check that found no session waits for this event instead of polling for one.
+            if (Interlocked.Exchange(ref _settleWaitsForConnect, 0) == 1)
+            {
+                ArmSettleCheck(TimeSpan.Zero);
+            }
 
             // Subprocess restarted (crash recovery or explicit bounce): every
             // controller in the new OpenRGB instance is in its cold-start mode.
@@ -2754,6 +2818,9 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    /// <summary>Devices known before a restart that no completed or committed list has replaced yet.</summary>
+    internal int ExpectedDevices => Volatile.Read(ref _expectedDevices);
+
     /// <summary>
     /// Liveness and change check on the refresh cadence. The controller-count
     /// request takes no controller lock, so a controller stuck on a contended bus
@@ -2761,30 +2828,10 @@ public sealed class RgbBridge : IDisposable
     /// fetch every tick could. The full fetch runs when the id list moved;
     /// events (list updated, detection complete, a refused write) trigger it too.
     /// </summary>
-    internal Task PollOnceAsync() => PollAsync();
-
-    /// <summary>Devices known before a restart that no completed or committed list has replaced yet.</summary>
-    internal int ExpectedDevices => Volatile.Read(ref _expectedDevices);
-
     private async Task PollAsync()
     {
         if (DetectionInProgress())
         {
-            if (_refreshSemaphore.CurrentCount != 0 && SettleStallDue(out _, out _, out _))
-            {
-                try
-                {
-                    // A session that dropped mid-call reads as empty; that is the reconnect path, not a stall.
-                    if ((await _controller.GetControllerAddressesAsync().ConfigureAwait(false)).Count == 0 && _controller.IsConnected)
-                    {
-                        RecoverSettleStall();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    RecordDaemonFailure("refresh", ex.Message);
-                }
-            }
             return;
         }
         // A COMPLETE can be missed (session dropped mid-pass, or connected after it).
@@ -2819,10 +2866,6 @@ public sealed class RgbBridge : IDisposable
             return;
         }
         Interlocked.Exchange(ref _daemonFailures, 0);
-        if (addresses.Count == 0 && _controller.IsConnected && RecoverSettleStall())
-        {
-            return;
-        }
         bool changed;
         lock (_lock)
         {
@@ -3252,6 +3295,11 @@ public sealed class RgbBridge : IDisposable
         _controller.DetectionProgress -= OnDetectionProgress;
         _controller.WriteRejected -= OnWriteRejected;
         LhmWalkWatch.Shared.Stalled -= OnLhmWalkStalled;
+        lock (_settleTimerLock)
+        {
+            _settleTimer?.Dispose();
+            _settleTimer = null;
+        }
         lock (_lock)
         {
             if (_disposed)

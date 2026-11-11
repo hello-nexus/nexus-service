@@ -2,6 +2,7 @@ using Nexus.Service.Devices.Detection;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Rgb;
 using Nexus.Service.Sensors;
+using Nexus.Service.Tests.Common;
 
 namespace Nexus.Service.Tests.Lighting.Rgb;
 
@@ -116,6 +117,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     private readonly WedgeableController _controller = new();
     private readonly LightingEngine _engine = new();
     private readonly RgbBridge _bridge;
+    private readonly FakeOneShot.Factory _deadlines = new();
 
     public RgbBridgeWatchdogTests()
     {
@@ -130,6 +132,7 @@ public class RgbBridgeWatchdogTests : IDisposable
             new StubUsbEnumerator());
         // Past warm-up: failures count.
         _bridge.DaemonUptimeProbe = () => TimeSpan.FromMinutes(5);
+        _bridge.OneShotFactory = _deadlines.Create;
     }
 
     public void Dispose()
@@ -293,16 +296,27 @@ public class RgbBridgeWatchdogTests : IDisposable
             "the restart did not complete");
     }
 
+    // What the settle deadline does when it fires: one look, then the look a refused early restart asks for at once.
+    private async Task LookAtSettleAsync()
+    {
+        await _bridge.EvaluateSettleStallAsync();
+        Assert.True(await WaitUntilAsync(() => !_bridge.SelfRestartDeciding, TimeSpan.FromSeconds(5)));
+        if (_deadlines.Single is { Armed: true } armed && armed.Due == TimeSpan.Zero)
+        {
+            await _bridge.EvaluateSettleStallAsync();
+        }
+    }
+
     private async Task PollAndExpectBounceAsync(int disconnects)
     {
-        await _bridge.PollOnceAsync();
+        await LookAtSettleAsync();
         Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == disconnects && _controller.IsConnected, TimeSpan.FromSeconds(5)),
             "the stalled daemon was not restarted");
     }
 
     private async Task PollAndExpectNoBounceAsync(int disconnects)
     {
-        await _bridge.PollOnceAsync();
+        await LookAtSettleAsync();
         await Task.Delay(300);
         Assert.Equal(disconnects, _controller.Count("disconnect"));
     }
@@ -515,9 +529,9 @@ public class RgbBridgeWatchdogTests : IDisposable
     private void WireSelfRestart(string mutex = "held")
     {
         _bridge.SmbusMutexProbe = () => mutex;
+        _bridge.SmbusMutexWait = _ => mutex;
         _walkMs = 10_000;
-        _bridge.WalkWatch = new LhmWalkWatch(() => Volatile.Read(ref _walkMs));
-        _bridge.SelfRestartSampleSpacing = TimeSpan.Zero;
+        _bridge.WalkWatch = new LhmWalkWatch(() => Volatile.Read(ref _walkMs), _deadlines.Create);
         _bridge.SelfRestartQuiesceWait = TimeSpan.Zero;
         _bridge.SelfRestart = context =>
         {
@@ -582,6 +596,7 @@ public class RgbBridgeWatchdogTests : IDisposable
     [Theory]
     [InlineData("free")]
     [InlineData("absent")]
+    [InlineData("abandoned")]
     [InlineData("n/a")]
     public async Task Self_restart_is_refused_unless_the_smbus_mutex_is_held(string mutex)
     {
@@ -623,27 +638,34 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task A_hold_that_sampling_refuses_falls_back_to_the_daemon_restart()
+    public async Task A_hold_the_wait_finds_free_falls_back_to_the_daemon_restart_at_once()
     {
         UseFakeClock();
         await ActivateAndSettleAsync();
         _controller.Devices = Array.Empty<RgbDevice>();
         WireSelfRestart();
         await ResumeAndWaitForBounceAsync(1);
-        var calls = 0;
-        _bridge.SmbusMutexProbe = () => ++calls == 1 ? "held" : "free";
+        var waits = 0;
+        _bridge.SmbusMutexWait = _ =>
+        {
+            Interlocked.Increment(ref waits);
+            return "free";
+        };
 
         Advance(TimeSpan.FromSeconds(30));
-        await _bridge.PollOnceAsync();
-        Assert.True(await WaitUntilAsync(() => Volatile.Read(ref calls) >= 2 && !_bridge.SelfRestartSampling, TimeSpan.FromSeconds(5)));
-        Advance(TimeSpan.FromSeconds(1));
-        await PollAndExpectBounceAsync(2);
+        await _bridge.EvaluateSettleStallAsync();
+        Assert.True(await WaitUntilAsync(() => !_bridge.SelfRestartDeciding, TimeSpan.FromSeconds(5)));
 
+        // The refusal asks for the next look immediately instead of waiting for a poll.
+        Assert.Equal(1, Volatile.Read(ref waits));
+        Assert.True(_deadlines.Single!.Armed);
+        Assert.Equal(TimeSpan.Zero, _deadlines.Single!.Due);
+        await PollAndExpectBounceAsync(2);
         Assert.Empty(_selfRestarts);
     }
 
     [Fact]
-    public async Task A_self_restart_the_service_refuses_falls_back_to_the_daemon_restart()
+    public async Task A_self_restart_the_service_refuses_falls_back_to_the_daemon_restart_at_once()
     {
         UseFakeClock();
         await ActivateAndSettleAsync();
@@ -658,9 +680,10 @@ public class RgbBridgeWatchdogTests : IDisposable
         await ResumeAndWaitForBounceAsync(1);
 
         Advance(TimeSpan.FromSeconds(30));
-        await _bridge.PollOnceAsync();
-        Assert.True(await WaitUntilAsync(() => Volatile.Read(ref asked) == 1 && !_bridge.SelfRestartSampling, TimeSpan.FromSeconds(5)));
-        Advance(TimeSpan.FromSeconds(1));
+        await _bridge.EvaluateSettleStallAsync();
+        Assert.True(await WaitUntilAsync(() => Volatile.Read(ref asked) == 1 && !_bridge.SelfRestartDeciding, TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(TimeSpan.Zero, _deadlines.Single!.Due);
         await PollAndExpectBounceAsync(2);
     }
 
@@ -698,235 +721,124 @@ public class RgbBridgeWatchdogTests : IDisposable
         Assert.Empty(_selfRestarts);
     }
 
-    [Fact]
-    public async Task Self_restart_is_refused_when_the_mutex_is_held_only_briefly()
-    {
-        UseFakeClock();
-        await ActivateAndSettleAsync();
-        WireSelfRestart();
-        var samples = new Queue<string>(new[] { "held", "held", "free", "held" });
-        _bridge.SmbusMutexProbe = () => samples.Count > 0 ? samples.Dequeue() : "held";
-        await ResumeAndWaitForBounceAsync(1);
-        samples = new Queue<string>(new[] { "held", "held", "free", "held" });
+    private int _waitCalls;
+    private TimeSpan _lastWaitTimeout;
 
-        Assert.False(_bridge.MaybeSelfRestart("test"));
-        Assert.Empty(_selfRestarts);
-    }
-
-    [Fact]
-    public async Task A_refused_sample_run_does_not_spend_the_once_per_resume_claim()
-    {
-        UseFakeClock();
-        await ActivateAndSettleAsync();
-        WireSelfRestart();
-        await ResumeAndWaitForBounceAsync(1);
-        _bridge.SmbusMutexProbe = () => "free";
-        Assert.False(_bridge.MaybeSelfRestart("test"));
-
-        _bridge.SmbusMutexProbe = () => "held";
-
-        Assert.True(_bridge.MaybeSelfRestart("test"));
-    }
-
-    private async Task ResumedWithWatchAsync(Func<int, LhmWalkWatch, string> probe)
+    private async Task ResumedAsync(Func<TimeSpan, LhmWalkWatch, string> wait, Func<string>? probe = null)
     {
         UseFakeClock();
         await ActivateAndSettleAsync();
         WireSelfRestart();
         await ResumeAndWaitForBounceAsync(1);
         var watch = _bridge.WalkWatch;
-        var calls = 0;
-        _bridge.SmbusMutexProbe = () => probe(++calls, watch);
-        _probeCalls = () => Volatile.Read(ref calls);
+        _bridge.SmbusMutexWait = timeout =>
+        {
+            Interlocked.Increment(ref _waitCalls);
+            _lastWaitTimeout = timeout;
+            return wait(timeout, watch);
+        };
+        _bridge.SmbusMutexProbe = probe ?? (() => "held");
     }
 
-    private Func<int> _probeCalls = () => 0;
+    [Fact]
+    public async Task One_wait_for_the_whole_window_decides_and_a_timeout_means_held()
+    {
+        await ResumedAsync((_, _) => "held");
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+
+        Assert.Equal(1, _waitCalls);
+        Assert.Equal(_bridge.SelfRestartMutexWindow, _lastWaitTimeout);
+        Assert.Single(_selfRestarts);
+    }
 
     [Fact]
-    public async Task Samples_taken_between_items_of_our_own_walk_never_restart_the_service()
+    public async Task A_wait_that_acquires_the_mutex_means_it_was_not_held_throughout()
     {
-        await ResumedWithWatchAsync((n, watch) =>
-        {
-            watch.BeginWalk();
-            return "held";
-        });
+        await ResumedAsync((_, _) => "free");
 
         Assert.False(_bridge.MaybeSelfRestart("test"));
+
+        Assert.Equal(1, _waitCalls);
         Assert.Empty(_selfRestarts);
-        Assert.Equal(_bridge.SelfRestartMaxSamples, _probeCalls());
+        Assert.False(_bridge.WalkWatch.SpdQuiesced);
     }
 
     [Fact]
-    public async Task A_free_reading_taken_between_items_of_our_walk_is_ignored()
+    public async Task A_refused_wait_does_not_spend_the_once_per_resume_claim()
     {
-        await ResumedWithWatchAsync((n, watch) =>
+        var state = "free";
+        await ResumedAsync((_, _) => state);
+        Assert.False(_bridge.MaybeSelfRestart("test"));
+
+        state = "held";
+
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+    }
+
+    [Fact]
+    public async Task The_wait_summary_names_what_the_walk_was_doing_when_it_started_and_ended()
+    {
+        await ResumedAsync((_, watch) =>
         {
-            if (n == 1)
-            {
-                watch.BeginWalk();
-                return "free";
-            }
             watch.EndWalk();
             return "held";
         });
+        _bridge.WalkWatch.BeginWalk();
+        _bridge.WalkWatch.SetItem("/memory/dimm/3");
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
-    }
 
-    [Fact]
-    public async Task Sampling_extends_past_uncounted_samples_and_two_idle_held_samples_suffice()
-    {
-        await ResumedWithWatchAsync((n, watch) =>
-        {
-            if (n <= 4)
-            {
-                watch.BeginWalk();
-            }
-            else
-            {
-                watch.EndWalk();
-            }
-            return "held";
-        });
-
-        Assert.True(_bridge.MaybeSelfRestart("test"));
-        Assert.Equal(7 + 1, _probeCalls());
-    }
-
-    [Fact]
-    public async Task A_single_counted_held_sample_is_not_enough()
-    {
-        await ResumedWithWatchAsync((n, watch) =>
-        {
-            if (n < 6)
-            {
-                watch.BeginWalk();
-            }
-            else
-            {
-                watch.EndWalk();
-            }
-            return "held";
-        });
-
-        Assert.False(_bridge.MaybeSelfRestart("test"));
-        Assert.Empty(_selfRestarts);
-    }
-
-    [Fact]
-    public async Task A_free_idle_sample_among_held_ones_means_no_restart()
-    {
-        await ResumedWithWatchAsync((n, watch) => n == 3 ? "free" : "held");
-
-        Assert.False(_bridge.MaybeSelfRestart("test"));
-        Assert.Empty(_selfRestarts);
-    }
-
-    [Fact]
-    public async Task A_walk_inside_a_non_memory_item_does_not_count_as_overlap()
-    {
-        await ResumedWithWatchAsync((n, watch) =>
-        {
-            watch.BeginWalk();
-            watch.SetItem("/intelcpu/0");
-            return "held";
-        });
-
-        Assert.True(_bridge.MaybeSelfRestart("test"));
-        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
-    }
-
-    [Fact]
-    public async Task A_walk_wedged_in_one_memory_item_counts_as_held_and_triggers_the_early_restart()
-    {
-        await ResumedWithWatchAsync((n, watch) =>
-        {
-            if (n == 1)
-            {
-                watch.BeginWalk();
-                watch.SetItem("/memory/dimm/1");
-                Interlocked.Add(ref _walkMs, 11_000);
-            }
-            return "held";
-        });
-
-        Assert.True(_bridge.MaybeSelfRestart("test"));
-    }
-
-    [Fact]
-    public async Task A_walk_inside_a_memory_item_counts_as_held_without_waiting_for_the_wedge_limit()
-    {
-        await ResumedWithWatchAsync((n, watch) =>
-        {
-            if (n == 1)
-            {
-                watch.BeginWalk();
-                watch.SetItem("/memory/dimm/1");
-                Interlocked.Add(ref _walkMs, 3_000);
-            }
-            return "held";
-        });
-
-        Assert.True(_bridge.MaybeSelfRestart("test"));
-        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
+        Assert.Contains("held", _bridge.MutexWaitSummary);
+        Assert.Contains("walk at start: lhm walk running", _bridge.MutexWaitSummary);
+        Assert.Contains("inside /memory/dimm/3", _bridge.MutexWaitSummary);
+        Assert.Contains("at end: lhm last walk", _bridge.MutexWaitSummary);
     }
 
     [Fact]
     public async Task A_decided_restart_pauses_our_dimm_reads_and_samples_the_mutex_once_more()
     {
-        await ResumedWithWatchAsync((n, watch) => "held");
+        var probes = 0;
+        await ResumedAsync((_, _) => "held", () =>
+        {
+            Interlocked.Increment(ref probes);
+            return "held";
+        });
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
 
         Assert.True(_bridge.WalkWatch.SpdQuiesced);
-        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
+        Assert.Equal(1, probes);
+        Assert.Contains("not our DIMM reads", _bridge.HolderProbeResult);
     }
 
     [Fact]
-    public async Task A_refused_sample_run_does_not_pause_our_dimm_reads()
+    public async Task The_quiesce_probe_runs_once_per_resume()
     {
-        await ResumedWithWatchAsync((n, watch) => n == 2 ? "free" : "held");
-
-        Assert.False(_bridge.MaybeSelfRestart("test"));
-
-        Assert.False(_bridge.WalkWatch.SpdQuiesced);
-    }
-
-    [Fact]
-    public async Task The_fallback_triggers_restart_even_when_every_sample_overlaps_our_walk()
-    {
-        await ResumedWithWatchAsync((n, watch) =>
+        var probes = 0;
+        await ResumedAsync((_, _) => "held", () =>
         {
-            watch.BeginWalk();
-            watch.SetItem("/memory/dimm/1");
+            Interlocked.Increment(ref probes);
             return "held";
         });
 
-        Assert.True(_bridge.MaybeSelfRestart("budget exhausted", idleOnly: false));
-        Assert.Equal(_bridge.SelfRestartMutexSamples + 1, _probeCalls());
-    }
+        Assert.True(_bridge.MaybeSelfRestart("test"));
+        Assert.False(_bridge.MaybeSelfRestart("test"));
 
-    [Fact]
-    public async Task The_fallback_triggers_still_refuse_a_mutex_that_reads_free()
-    {
-        await ResumedWithWatchAsync((n, watch) => n == 2 ? "free" : "held");
-
-        Assert.False(_bridge.MaybeSelfRestart("budget exhausted", idleOnly: false));
+        Assert.Equal(1, probes);
+        Assert.Equal(2, _waitCalls);
     }
 
     [Fact]
     public async Task A_quiesce_wait_that_times_out_inside_a_memory_item_is_reported_inconclusive()
     {
-        await ResumedWithWatchAsync((n, watch) =>
+        await ResumedAsync((_, watch) =>
         {
-            if (n == 1)
-            {
-                watch.BeginWalk();
-                watch.SetItem("/memory/dimm/2");
-            }
+            watch.BeginWalk();
+            watch.SetItem("/memory/dimm/2");
             return "held";
         });
-        _bridge.SelfRestartQuiesceWait = TimeSpan.FromMilliseconds(300);
+        _bridge.SelfRestartQuiesceWait = TimeSpan.FromMilliseconds(200);
 
         Assert.True(_bridge.MaybeSelfRestart("test"));
 
@@ -936,39 +848,206 @@ public class RgbBridgeWatchdogTests : IDisposable
     }
 
     [Fact]
-    public async Task A_held_mutex_after_the_walk_left_its_memory_item_is_reported_as_not_our_dimm_reads()
+    public async Task The_quiesce_wait_ends_the_moment_the_walk_leaves_its_memory_item()
     {
-        await ResumedWithWatchAsync((n, watch) =>
+        await ResumedAsync((_, watch) =>
         {
-            if (n == 1)
-            {
-                watch.BeginWalk();
-                watch.SetItem("/memory/dimm/2");
-            }
+            watch.BeginWalk();
+            watch.SetItem("/memory/dimm/2");
             return "held";
         });
-        _bridge.SelfRestartQuiesceWait = TimeSpan.FromSeconds(5);
-        var watch = _bridge.WalkWatch;
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(150);
-            watch.EndWalk();
-        });
+        _bridge.SelfRestartQuiesceWait = TimeSpan.FromSeconds(30);
+        var decided = Task.Run(() => _bridge.MaybeSelfRestart("test"));
+        Assert.True(await WaitUntilAsync(() => _bridge.WalkWatch.SpdQuiesced, TimeSpan.FromSeconds(5)));
 
-        Assert.True(_bridge.MaybeSelfRestart("test"));
+        _bridge.WalkWatch.SetItem("/intelcpu/0");
 
+        Assert.True(await decided);
         Assert.Contains("not our DIMM reads", _bridge.HolderProbeResult);
     }
 
+    // ── Settle deadline ──
+
     [Fact]
-    public async Task The_quiesce_probe_runs_once_per_resume()
+    public async Task A_restart_that_must_bring_devices_back_arms_one_settle_deadline_at_the_timeout()
     {
-        await ResumedWithWatchAsync((n, watch) => "held");
+        UseFakeClock();
+        await ActivateAndSettleAsync();
 
-        Assert.True(_bridge.MaybeSelfRestart("test"));
-        var probesAfterFirst = _probeCalls();
-        Assert.False(_bridge.MaybeSelfRestart("test"));
+        await ResumeAndWaitForBounceAsync(1);
 
-        Assert.Equal(probesAfterFirst + _bridge.SelfRestartMutexSamples, _probeCalls());
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { Armed: true }, TimeSpan.FromSeconds(5)));
+        Assert.Equal(TimeSpan.FromSeconds(30), _deadlines.Single!.Due);
+    }
+
+    [Fact]
+    public async Task A_restart_with_no_devices_known_arms_no_deadline()
+    {
+        UseFakeClock();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _bridge.Activate();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("getDevices") >= 1, TimeSpan.FromSeconds(10)));
+
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.Empty(_deadlines.Created);
+    }
+
+    [Fact]
+    public async Task A_manual_device_restart_arms_no_deadline()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+
+        _bridge.BounceForManualDevices();
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+
+        Assert.Empty(_deadlines.Created);
+    }
+
+    [Fact]
+    public async Task A_deadline_that_fires_before_the_timeout_asks_for_the_remainder()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _uptime = TimeSpan.Zero;
+        await ResumeAndWaitForBounceAsync(1);
+        _uptime = TimeSpan.FromSeconds(12);
+
+        var next = await _bridge.EvaluateSettleStallAsync();
+
+        Assert.Equal(TimeSpan.FromSeconds(18) + TimeSpan.FromMilliseconds(10), next);
+        Assert.Equal(1, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task A_deadline_inside_the_detection_quiet_window_asks_for_the_rest_of_it()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+        _controller.StartDetection();
+        Advance(TimeSpan.FromSeconds(3));
+
+        var next = await _bridge.EvaluateSettleStallAsync();
+
+        Assert.NotNull(next);
+        Assert.InRange(next!.Value, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(6));
+        Assert.Equal(1, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task Firing_the_settle_deadline_restarts_a_stalled_daemon_and_arms_the_next_one()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+
+        _deadlines.Single!.Fire();
+
+        Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 2 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single!.Armed, TimeSpan.FromSeconds(5)));
+        Assert.Equal(TimeSpan.FromSeconds(30), _deadlines.Single!.Due);
+    }
+
+    [Fact]
+    public async Task A_finished_detection_pass_disarms_the_settle_deadline()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { Armed: true }, TimeSpan.FromSeconds(5)));
+
+        _controller.CompleteDetection();
+
+        Assert.False(_deadlines.Single!.Armed);
+    }
+
+    [Fact]
+    public async Task Deactivating_disarms_the_settle_deadline()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { Armed: true }, TimeSpan.FromSeconds(5)));
+
+        _bridge.Deactivate();
+
+        Assert.False(_deadlines.Single!.Armed);
+    }
+
+    [Fact]
+    public async Task Disposing_the_bridge_disposes_the_settle_deadline()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is not null, TimeSpan.FromSeconds(5)));
+
+        _bridge.Dispose();
+
+        Assert.True(_deadlines.Single!.Disposed);
+    }
+
+    [Fact]
+    public async Task A_settle_look_that_finds_no_session_waits_for_the_connect_instead_of_re_arming()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { ArmCount: 1 }, TimeSpan.FromSeconds(5)));
+        Advance(TimeSpan.FromSeconds(30));
+        await _controller.DisconnectAsync();
+
+        var next = await _bridge.EvaluateSettleStallAsync();
+
+        Assert.Null(next);
+        // The refresh loop reconnects, and that connect is the event that arms the next look.
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { ArmCount: >= 2, Due: var due } && due == TimeSpan.Zero, TimeSpan.FromSeconds(20)));
+    }
+
+    [Fact]
+    public async Task A_settle_look_that_finds_listed_devices_leaves_the_commit_to_disarm_it()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        await ResumeAndWaitForBounceAsync(1);
+        Advance(TimeSpan.FromSeconds(30));
+
+        var next = await _bridge.EvaluateSettleStallAsync();
+
+        Assert.Null(next);
+        Assert.Equal(1, _controller.Count("disconnect"));
+    }
+
+    [Fact]
+    public async Task The_settle_deadline_stops_re_arming_after_a_bounded_number_of_empty_looks()
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _controller.Devices = Array.Empty<RgbDevice>();
+        _uptime = TimeSpan.Zero;
+        await ResumeAndWaitForBounceAsync(1);
+        Assert.True(await WaitUntilAsync(() => _deadlines.Single is { ArmCount: 1 }, TimeSpan.FromSeconds(5)));
+
+        // The daemon never reaches the settle timeout, so every look asks for the remainder.
+        for (var look = 1; look <= 12; look++)
+        {
+            _deadlines.Single!.Fire();
+            await _bridge.LastSettleDeadlineCheck!;
+            Assert.Equal(1 + look, _deadlines.Single!.ArmCount);
+        }
+        _deadlines.Single!.Fire();
+        await _bridge.LastSettleDeadlineCheck!;
+
+        Assert.Equal(13, _deadlines.Single!.ArmCount);
+        Assert.False(_deadlines.Single!.Armed);
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Threading;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Sensors;
 
@@ -21,12 +22,18 @@ internal sealed class LhmWalkWatch
     private int _stale;
     private readonly object _transition = new();
 
-    internal LhmWalkWatch(Func<long>? nowMs = null)
+    private readonly Func<Action, IOneShot> _oneShotFactory;
+    private IOneShot? _stallTimer;
+    // Set while no memory item or SPD gate rebuild is running; waiters block on it instead of polling the item.
+    private readonly ManualResetEventSlim _outsideSmbus = new(true);
+
+    internal LhmWalkWatch(Func<long>? nowMs = null, Func<Action, IOneShot>? oneShotFactory = null)
     {
         _nowMs = nowMs ?? (() => Environment.TickCount64);
+        _oneShotFactory = oneShotFactory ?? (fire => new TimerOneShot(fire));
     }
 
-    /// <summary>Raised once per stall, on the watchdog timer thread.</summary>
+    /// <summary>Raised once per stall, from the stall deadline's timer thread.</summary>
     internal event Action<TimeSpan>? Stalled;
 
     internal void RaiseStalled(TimeSpan age) => Stalled?.Invoke(age);
@@ -93,7 +100,23 @@ internal sealed class LhmWalkWatch
     private ItemAt? _item;
 
     /// <summary>Names the hardware item the walk is inside; says which of our threads is in SMBus or driver code.</summary>
-    internal void SetItem(string? item) => Volatile.Write(ref _item, item is null ? null : new ItemAt(item, Math.Max(1, _nowMs())));
+    internal void SetItem(string? item)
+    {
+        Volatile.Write(ref _item, item is null ? null : new ItemAt(item, Math.Max(1, _nowMs())));
+        if (IsSmbusItem(item))
+        {
+            _outsideSmbus.Reset();
+        }
+        else
+        {
+            _outsideSmbus.Set();
+        }
+    }
+
+    private static bool IsSmbusItem(string? item) => item is not null && (item.StartsWith("/memory", StringComparison.Ordinal) || item == "spd-gate");
+
+    /// <summary>Blocks until the walk is outside every memory item and the SPD gate rebuild, or <paramref name="timeout"/> passes. True means outside.</summary>
+    internal bool WaitUntilOutsideSmbusItem(TimeSpan timeout) => _outsideSmbus.Wait(timeout);
 
     /// <summary>The item the running walk is inside and how long it has been there, or null.</summary>
     internal (string Item, TimeSpan Age)? CurrentItem => Volatile.Read(ref _item) is { } at ? (at.Item, TimeSpan.FromMilliseconds(_nowMs() - at.StartMs)) : null;
@@ -106,41 +129,15 @@ internal sealed class LhmWalkWatch
     internal bool SpdQuiesced => _nowMs() < Interlocked.Read(ref _spdQuiescedUntilMs);
 
     /// <summary>True while the running walk is inside a memory item or the SPD gate rebuild: the only places our own code takes the SMBus mutex.</summary>
-    internal bool InSmbusItem() => CurrentWalkAge is not null && Volatile.Read(ref _item) is { } at
-        && (at.Item.StartsWith("/memory", StringComparison.Ordinal) || at.Item == "spd-gate");
-
-    /// <summary>True when the walk is stale, or has sat in one memory item or the SPD gate rebuild for <paramref name="limit"/>: a wedge, not a normal read.</summary>
-    internal bool WedgedInSmbusItem(TimeSpan limit)
-    {
-        if (CurrentWalkAge is null)
-        {
-            return false;
-        }
-        if (IsStale)
-        {
-            return true;
-        }
-        var at = Volatile.Read(ref _item);
-        return at is not null && (at.Item.StartsWith("/memory", StringComparison.Ordinal) || at.Item == "spd-gate")
-            && TimeSpan.FromMilliseconds(_nowMs() - at.StartMs) >= limit;
-    }
-
-    /// <summary>True while our own walk could be holding the SMBus mutex: a walk is running and it is in a memory item, the SPD gate rebuild, or between items.</summary>
-    internal bool MaySelfHoldSmbus()
-    {
-        if (CurrentWalkAge is null)
-        {
-            return false;
-        }
-        var at = Volatile.Read(ref _item);
-        return at is null || at.Item.StartsWith("/memory", StringComparison.Ordinal) || at.Item == "spd-gate";
-    }
+    internal bool InSmbusItem() => CurrentWalkAge is not null && Volatile.Read(ref _item) is { } at && IsSmbusItem(at.Item);
 
     internal void BeginWalk()
     {
         lock (_transition)
         {
             Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
+            // One deadline per walk, created on the first walk; a walk that ends in time disarms it, so nothing wakes while readings are healthy.
+            (_stallTimer ??= _oneShotFactory(OnStallDeadline)).Arm(StallLimit + TimeSpan.FromMilliseconds(1));
         }
     }
 
@@ -150,10 +147,40 @@ internal sealed class LhmWalkWatch
         lock (_transition)
         {
             Volatile.Write(ref _item, null);
+            _outsideSmbus.Set();
+            _stallTimer?.Disarm();
             Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
             Interlocked.Exchange(ref _walkStartMs, 0);
             return Interlocked.Exchange(ref _stale, 0) != 0;
         }
+    }
+
+    /// <summary>The walk's stall deadline: flags the stall once, or re-arms for the remainder when it fired before the limit.</summary>
+    internal void OnStallDeadline()
+    {
+        TimeSpan age;
+        lock (_transition)
+        {
+            if (Interlocked.Read(ref _walkStartMs) == 0)
+            {
+                return;
+            }
+            if (!CheckStalledLocked(out age))
+            {
+                if (!IsStale)
+                {
+                    _stallTimer?.Arm(StallLimit - age + TimeSpan.FromMilliseconds(1));
+                }
+                return;
+            }
+        }
+        RaiseStalled(age);
+    }
+
+    private bool CheckStalledLocked(out TimeSpan age)
+    {
+        age = CurrentWalkAge ?? TimeSpan.Zero;
+        return age > StallLimit && Interlocked.Exchange(ref _stale, 1) == 0;
     }
 
     /// <summary>Returns true exactly once per stall: the first check that finds the walk past the limit.</summary>
@@ -161,8 +188,7 @@ internal sealed class LhmWalkWatch
     {
         lock (_transition)
         {
-            age = CurrentWalkAge ?? TimeSpan.Zero;
-            return age > StallLimit && Interlocked.Exchange(ref _stale, 1) == 0;
+            return CheckStalledLocked(out age);
         }
     }
 

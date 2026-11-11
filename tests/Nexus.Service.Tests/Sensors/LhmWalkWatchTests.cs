@@ -1,4 +1,5 @@
 using Nexus.Service.Sensors;
+using Nexus.Service.Tests.Common;
 
 namespace Nexus.Service.Tests.Sensors;
 
@@ -6,7 +7,9 @@ public class LhmWalkWatchTests
 {
     private long _nowMs = 10_000;
 
-    private LhmWalkWatch NewWatch() => new(() => Volatile.Read(ref _nowMs));
+    private readonly FakeOneShot.Factory _deadlines = new();
+
+    private LhmWalkWatch NewWatch() => new(() => Volatile.Read(ref _nowMs), _deadlines.Create);
 
     private void Advance(TimeSpan by) => Interlocked.Add(ref _nowMs, (long)by.TotalMilliseconds);
 
@@ -223,35 +226,6 @@ public class LhmWalkWatchTests
     }
 
     [Fact]
-    public void A_walk_stuck_in_one_memory_item_is_a_wedge_only_after_the_limit()
-    {
-        var watch = NewWatch();
-        watch.BeginWalk();
-        watch.SetItem("/memory/dimm/2");
-        Advance(TimeSpan.FromSeconds(9));
-        Assert.False(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
-        Assert.True(watch.MaySelfHoldSmbus());
-
-        Advance(TimeSpan.FromSeconds(1));
-        Assert.True(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
-
-        watch.SetItem("/intelcpu/0");
-        Advance(TimeSpan.FromSeconds(30));
-        Assert.False(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
-    }
-
-    [Fact]
-    public void A_stale_walk_is_always_a_wedge()
-    {
-        var watch = NewWatch();
-        watch.BeginWalk();
-        Advance(LhmWalkWatch.StallLimit + TimeSpan.FromSeconds(1));
-        Assert.True(watch.CheckStalled(out _));
-
-        Assert.True(watch.WedgedInSmbusItem(TimeSpan.FromSeconds(10)));
-    }
-
-    [Fact]
     public void Our_dimm_reads_are_paused_for_the_requested_duration_only()
     {
         var watch = NewWatch();
@@ -280,5 +254,122 @@ public class LhmWalkWatchTests
         Assert.True(watch.InSmbusItem());
         watch.EndWalk();
         Assert.False(watch.InSmbusItem());
+    }
+
+    [Fact]
+    public void A_walk_arms_one_deadline_at_the_stall_limit_and_ending_it_disarms()
+    {
+        var watch = NewWatch();
+        Assert.Empty(_deadlines.Created);
+
+        watch.BeginWalk();
+        var deadline = _deadlines.Single!;
+        Assert.True(deadline.Armed);
+        Assert.Equal(LhmWalkWatch.StallLimit + TimeSpan.FromMilliseconds(1), deadline.Due);
+
+        watch.EndWalk();
+        Assert.False(deadline.Armed);
+
+        watch.BeginWalk();
+        Assert.Same(deadline, _deadlines.Single);
+        Assert.True(deadline.Armed);
+    }
+
+    [Fact]
+    public void The_deadline_firing_on_a_wedged_walk_flags_the_stall_once()
+    {
+        var watch = NewWatch();
+        var raised = new List<TimeSpan>();
+        watch.Stalled += raised.Add;
+        watch.BeginWalk();
+        Advance(LhmWalkWatch.StallLimit + TimeSpan.FromSeconds(1));
+
+        _deadlines.Single!.Fire();
+        _deadlines.Single!.Fire();
+
+        Assert.Single(raised);
+        Assert.True(watch.IsStale);
+        Assert.False(_deadlines.Single!.Armed);
+    }
+
+    [Fact]
+    public void A_deadline_that_fires_before_the_limit_re_arms_for_the_remainder()
+    {
+        var watch = NewWatch();
+        var raised = 0;
+        watch.Stalled += _ => raised++;
+        watch.BeginWalk();
+        Advance(TimeSpan.FromSeconds(40));
+
+        _deadlines.Single!.Fire();
+
+        Assert.Equal(0, raised);
+        Assert.False(watch.IsStale);
+        Assert.True(_deadlines.Single!.Armed);
+        Assert.Equal(LhmWalkWatch.StallLimit - TimeSpan.FromSeconds(40) + TimeSpan.FromMilliseconds(1), _deadlines.Single!.Due);
+    }
+
+    [Fact]
+    public void A_deadline_that_fires_after_the_walk_ended_does_nothing()
+    {
+        var watch = NewWatch();
+        var raised = 0;
+        watch.Stalled += _ => raised++;
+        watch.BeginWalk();
+        Advance(LhmWalkWatch.StallLimit + TimeSpan.FromSeconds(5));
+        watch.EndWalk();
+
+        _deadlines.Single!.Fire();
+
+        Assert.Equal(0, raised);
+        Assert.False(watch.IsStale);
+    }
+
+    [Fact]
+    public void Waiting_outside_the_smbus_items_returns_at_once_when_no_memory_item_runs()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.SetItem("/intelcpu/0");
+
+        Assert.True(watch.WaitUntilOutsideSmbusItem(TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void Waiting_outside_the_smbus_items_times_out_while_a_memory_item_runs()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.SetItem("/memory/dimm/1");
+
+        Assert.False(watch.WaitUntilOutsideSmbusItem(TimeSpan.FromMilliseconds(50)));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("/intelcpu/0")]
+    public async Task Leaving_the_memory_item_releases_a_waiter(string? next)
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.SetItem("/memory/dimm/1");
+        var waiter = Task.Run(() => watch.WaitUntilOutsideSmbusItem(TimeSpan.FromSeconds(30)));
+
+        watch.SetItem(next);
+
+        Assert.True(await waiter);
+    }
+
+    [Fact]
+    public async Task Ending_the_walk_releases_a_waiter()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.SetItem("spd-gate");
+        var waiter = Task.Run(() => watch.WaitUntilOutsideSmbusItem(TimeSpan.FromSeconds(30)));
+
+        watch.EndWalk();
+
+        Assert.True(await waiter);
     }
 }
