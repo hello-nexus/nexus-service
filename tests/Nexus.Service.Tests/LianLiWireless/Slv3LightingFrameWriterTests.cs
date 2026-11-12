@@ -747,7 +747,7 @@ public class Slv3LightingFrameWriterTests
         var reduced = Slv3LightingFrameWriter.ReduceWindow(full, 1, First, 3);
 
         Assert.Equal(10 * 3, reduced.Length);
-        // First group 334 covers frames 1002..1004 (midpoint 1003); the last group 343 covers 1029..1031 and clamps to 1029.
+        // The first group samples its midpoint frame; the last group runs past the window and clamps to its final frame.
         Assert.Equal(3, reduced[(int)(334 % 10) * 3]);
         Assert.Equal(29, reduced[(int)(343 % 10) * 3]);
     }
@@ -799,5 +799,42 @@ public class Slv3LightingFrameWriterTests
 
         writer.ResetWindowDivisor(mac, st);
         Assert.Equal(1, writer.StartDivisor(mac, st, probeAt + 2));
+    }
+
+    [Theory]
+    [InlineData(1000)]
+    [InlineData(1001)]
+    [InlineData(1002)]
+    [InlineData(1003)]
+    [InlineData(1004)]
+    [InlineData(1005)]
+    public void The_safety_margin_start_covers_every_divisor_an_upload_may_land_on(long first)
+    {
+        var latest = Slv3LightingFrameWriter.LatestLoopStart(first);
+        for (var d = 1; d <= Slv3LightingFrameWriter.MaxWindowDivisor; d++)
+        {
+            Assert.True(latest >= (first + d - 1) / d * d);
+        }
+    }
+
+    [Fact]
+    public async Task A_refused_probe_steps_back_up_to_the_remembered_divisor_within_the_same_call()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var mac = Convert.ToHexString(FanMac);
+        var full = NoisyGradientWindow(174);
+        var st = new Slv3LightingFrameWriter.ChainRolling();
+        st.Upload = writer.UploadWindowAsync(mac, st, full, 174, 1001, 1, 53);
+        await st.Upload;
+        st.UploadStretch = 1;
+        writer.CollectUpload(mac, st);
+
+        var probeStart = writer.StartDivisor(mac, st, st.ProbeAtMs);
+        Assert.Equal(1, probeStart);
+        st.Upload = writer.UploadWindowAsync(mac, st, full, 174, 1001, probeStart, 53);
+        Assert.True(await st.Upload);
+        Assert.Equal(2, st.UploadDivisor);
+        writer.CollectUpload(mac, st);
+        Assert.Equal(2, writer.StartDivisor(mac, st, 0));
     }
 }

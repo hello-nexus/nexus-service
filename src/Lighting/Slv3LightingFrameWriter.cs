@@ -437,6 +437,20 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         return reduced;
     }
 
+    /// <summary>
+    /// The latest frame any divisor an upload may step to starts its loop on, so the safety margin
+    /// holds whichever divisor the upload settles on.
+    /// </summary>
+    internal static long LatestLoopStart(long firstFrame)
+    {
+        var latest = firstFrame;
+        for (var d = 2; d <= MaxWindowDivisor; d++)
+        {
+            latest = Math.Max(latest, (firstFrame + d - 1) / d * d);
+        }
+        return latest;
+    }
+
     /// <summary>Forgets what a chain learned about its window size, so new content is tried at full length.</summary>
     internal void ResetWindowDivisor(string macHex, ChainRolling st)
     {
@@ -817,9 +831,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         // One chain per render, longest-waiting first, spreads a round's uploads
         // over the air. A chain joining late skips a window that is mostly played already.
-        var knownDivisor = _windowDivisors.GetValueOrDefault(macHex, 1);
-        // The reduced loop starts on a frame group boundary, so the safety margin counts from there.
-        var loopStart = (_windowFirstFrame + knownDivisor - 1) / knownDivisor * knownDivisor;
+        var loopStart = LatestLoopStart(_windowFirstFrame);
         if (st.Joinable && st.UploadedWindowId != _windowId && _windowStartedId != _windowId
             && TryCurrentFrame(nowMs, out var joinFrame)
             && joinFrame >= loopStart + WindowStartSafetyFrames
