@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -88,14 +89,16 @@ internal static class LinuxKWinPanelPlacement
 
     private const int MaxReportLength = 200;
 
-    /// <summary>A script report made safe for the log: control characters dropped, length capped.</summary>
+    /// <summary>A script report made safe for the log: control and format characters dropped, length capped without splitting a surrogate pair.</summary>
     internal static string SanitizeReport(string text)
     {
-        var clean = new string(text.Where(c => !char.IsControl(c)).ToArray());
-        return clean.Length > MaxReportLength ? clean[..MaxReportLength] : clean;
+        var clean = new string(text.Where(c => !char.IsControl(c) && char.GetUnicodeCategory(c) != UnicodeCategory.Format).ToArray());
+        if (clean.Length <= MaxReportLength) return clean;
+        var end = char.IsHighSurrogate(clean[MaxReportLength - 1]) ? MaxReportLength - 1 : MaxReportLength;
+        return clean[..end];
     }
 
-    /// <summary>KWin answers loadScript with -1 when the plugin name is still loaded; that is no script to run.</summary>
+    /// <summary>KWin answers loadScript with -1 when the plugin name is still loaded or the script file is missing or unreadable; that is no script to run.</summary>
     internal static bool IsLoadedScriptId(int id) => id >= 0;
 
     private static async Task ClaimReportNameAsync(DBusConnection dbus)

@@ -386,6 +386,10 @@ public class LinuxPanelKioskHostTests
     {
         Assert.Equal("class=x from=A", LinuxKWinPanelPlacement.SanitizeReport("class=x\r\n from=A\u001b"));
         Assert.Equal(200, LinuxKWinPanelPlacement.SanitizeReport(new string('a', 5000)).Length);
+        Assert.Equal("ab", LinuxKWinPanelPlacement.SanitizeReport("a\u202Eb\u200B"));
+        var split = LinuxKWinPanelPlacement.SanitizeReport(new string('a', 199) + "\U0001F600");
+        Assert.Equal(199, split.Length);
+        Assert.False(char.IsHighSurrogate(split[^1]));
     }
 
     [Theory]
@@ -401,7 +405,8 @@ public class LinuxPanelKioskHostTests
     public void Script_ReportsNoWindowTitleAndDedupesPerWindow()
     {
         var script = LinuxKWinPanelPlacement.Script("DP-1");
-        Assert.DoesNotContain("\"caption=", script);
+        Assert.DoesNotContain("caption=", script);
+        Assert.DoesNotContain("w.caption +", script);
         Assert.Contains("text !== last", script);
         Assert.Contains("\"unmatched \" + describe(w)", script);
     }
