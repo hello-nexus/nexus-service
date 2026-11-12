@@ -344,7 +344,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     {
         var client = Client();
 
-        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{GpuRule}", BuiltInBody(high: 88, low: 20));
+        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{GpuRule}", BuiltInBody(high: 88, low: 10));
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var rule = await res.Content.ReadFromJsonAsync<JsonElement>();
@@ -354,7 +354,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         Assert.Equal("gpu-temp:gpu-rtx", rule.GetProperty("sensor").GetProperty("id").GetString());
         Assert.Equal("RTX 5080", rule.GetProperty("sensor").GetProperty("name").GetString());
         Assert.Equal("Temperature", rule.GetProperty("sensor").GetProperty("type").GetString());
-        Assert.Equal(60, rule.GetProperty("low").GetDouble());
+        Assert.Equal(20, rule.GetProperty("low").GetDouble());
         Assert.Equal(88, rule.GetProperty("high").GetDouble());
         Assert.Equal(30, rule.GetProperty("raiseAfterSeconds").GetInt32());
         Assert.Equal("act", rule.GetProperty("severity").GetString());
@@ -368,7 +368,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
 
         var clamped = await (await client.PutAsJsonAsync($"/diagnostics/alerts/{CpuRule}", BuiltInBody(high: 300))).Content.ReadFromJsonAsync<JsonElement>();
 
-        Assert.Equal(105, clamped.GetProperty("high").GetDouble());
+        Assert.Equal(100, clamped.GetProperty("high").GetDouble());
         var none = await client.PutAsJsonAsync($"/diagnostics/alerts/{CpuRule}", BuiltInBody(high: null));
         Assert.Equal(HttpStatusCode.OK, none.StatusCode);
         Assert.Equal(JsonValueKind.Null, (await none.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("high").ValueKind);

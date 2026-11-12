@@ -165,8 +165,8 @@ public sealed class BuiltInSensorRulesTests : IDisposable
 
     [Theory]
     [InlineData(double.NaN, 100)]
-    [InlineData(500, 105)]
-    [InlineData(-4, 60)]
+    [InlineData(500, 100)]
+    [InlineData(-4, 20)]
     public void A_bad_legacy_limit_falls_back_or_clamps_to_the_old_slider_range(double legacy, double expected)
     {
         var d = new DiagnosticsSettings();
@@ -229,15 +229,15 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         var cpu = BuiltInSensorRules.Defaults(Device("cpuTemp", "cpu-temp", "CPU"));
         d.SensorAlerts.Add(cpu);
         cpu.Sensor = new SensorRef { Category = "gpu", Id = "cpu-temp", Name = "x", Type = "Fan" };
-        cpu.Low = 20;
+        cpu.Low = 10;
         cpu.High = 300;
 
         Assert.True(BuiltInSensorRules.Ensure(d, newInstall: true));
 
         Assert.Equal("builtin", cpu.Sensor.Category);
         Assert.Equal("Temperature", cpu.Sensor.Type);
-        Assert.Equal(60, cpu.Low);
-        Assert.Equal(105, cpu.High);
+        Assert.Equal(20, cpu.Low);
+        Assert.Equal(100, cpu.High);
     }
 
     [Fact]

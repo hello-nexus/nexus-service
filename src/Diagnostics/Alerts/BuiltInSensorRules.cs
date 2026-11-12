@@ -47,10 +47,10 @@ public static class BuiltInSensorRules
     // New-install limits sit in each component's throttle region (Intel runs the package near its limit under load by design), so only a real thermal event alerts.
     private static readonly Spec[] Specs =
     {
-        new(CpuTemp, "builtin-cpu", 60, 105, 100),
-        new(GpuTemp, "builtin-gpu", 60, 105, 90),
-        new(StorageTemp, "builtin-storage", 40, 90, 75),
-        new(RamTemp, "builtin-ram", 40, 90, 75),
+        new(CpuTemp, "builtin-cpu", 20, 100, 100),
+        new(GpuTemp, "builtin-gpu", 20, 100, 90),
+        new(StorageTemp, "builtin-storage", 20, 100, 75),
+        new(RamTemp, "builtin-ram", 20, 100, 75),
     };
 
     public static bool IsKind(string? kind) => Specs.Any(s => s.Kind == kind);
