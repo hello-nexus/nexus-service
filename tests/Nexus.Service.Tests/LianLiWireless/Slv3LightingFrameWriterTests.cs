@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Peripherals.LianLiWireless;
@@ -646,5 +647,90 @@ public class Slv3LightingFrameWriterTests
 
         writer.Tick();
         Assert.True(tx.SentFrames.Count > countAfterFirst);
+    }
+
+    // Smooth gradients with noise: the shape of a plasma window, which barely compresses.
+    private static byte[] NoisyGradientWindow(int leds)
+    {
+        var rng = new Random(11);
+        var data = new byte[Slv3LightingFrameWriter.WindowFrames * leds * 3];
+        for (var i = 0; i < data.Length; i++)
+        {
+            data[i] = (byte)(((i / 3) * 5 + i / (leds * 3) * 17 + rng.Next(0, 160)) & 0xFF);
+        }
+        return data;
+    }
+
+    [Fact]
+    public void ReduceWindow_keeps_the_loop_span_and_places_each_group_in_its_slot()
+    {
+        const int Leds = 2;
+        const long First = 1001;
+        var full = new byte[Slv3LightingFrameWriter.WindowFrames * Leds * 3];
+        for (var j = 0; j < Slv3LightingFrameWriter.WindowFrames; j++)
+        {
+            Array.Fill(full, (byte)j, Slv3LightingFrameWriter.WindowSlot(First + j) * Leds * 3, Leds * 3);
+        }
+
+        var reduced = Slv3LightingFrameWriter.ReduceWindow(full, Leds, First, 2);
+
+        Assert.Equal(15 * Leds * 3, reduced.Length);
+        for (var group = 501L; group < 501 + 15; group++)
+        {
+            var sourceFrame = group * 2;
+            var expected = (byte)(sourceFrame - First);
+            Assert.Equal(expected, reduced[(int)(group % 15) * Leds * 3]);
+        }
+    }
+
+    [Fact]
+    public async Task A_plasma_like_174_led_window_steps_down_uploads_and_is_remembered()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var mac = Convert.ToHexString(FanMac);
+        var full = NoisyGradientWindow(174);
+        Assert.Throws<InvalidOperationException>(() => TinyUz.Compress(full));
+
+        var st = new Slv3LightingFrameWriter.ChainRolling();
+        st.Upload = writer.UploadWindowAsync(mac, st, full, 174, 1001, 1, 53);
+        Assert.True(await st.Upload);
+        Assert.Equal(Slv3Hub.WindowUploadResult.Sent, st.UploadResult);
+        Assert.Equal(2, st.UploadDivisor);
+
+        st.UploadStretch = 1;
+        st.UploadFirstFrame = 1001;
+        writer.CollectUpload(mac, st);
+        Assert.Equal(1002, st.WindowFirstFrame);
+        Assert.False(st.Failing);
+    }
+
+    [Fact]
+    public async Task A_small_chain_window_uploads_unchanged()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var st = new Slv3LightingFrameWriter.ChainRolling();
+        Assert.True(await writer.UploadWindowAsync(Convert.ToHexString(FanMac), st, new byte[30 * 40 * 3], 40, 1001, 1, 53));
+        Assert.Equal(1, st.UploadDivisor);
+    }
+
+    [Fact]
+    public async Task A_size_refusal_at_the_floor_is_not_a_write_failure()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var mac = Convert.ToHexString(FanMac);
+        var chainKey = Slv3LightingDeviceProvider.DeviceIdFor(mac);
+        LightingWriteHealth.Shared.Forget(chainKey);
+        var full = new byte[Slv3LightingFrameWriter.WindowFrames * 800 * 3];
+        new Random(3).NextBytes(full);
+
+        var st = new Slv3LightingFrameWriter.ChainRolling();
+        st.Upload = writer.UploadWindowAsync(mac, st, full, 800, 1001, 1, 53);
+        Assert.False(await st.Upload);
+        Assert.Equal(Slv3Hub.WindowUploadResult.TooLarge, st.UploadResult);
+        writer.CollectUpload(mac, st);
+
+        Assert.False(st.Failing);
+        Assert.Equal(long.MinValue, st.WindowFirstFrame);
+        Assert.False(LightingWriteHealth.Shared.IsFailing(chainKey));
     }
 }
