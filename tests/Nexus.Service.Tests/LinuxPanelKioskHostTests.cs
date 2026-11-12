@@ -354,4 +354,21 @@ public class LinuxPanelKioskHostTests
         gate.Signal(busChanged: true);
         Assert.NotEqual(generation, gate.Generation);
     }
+
+    [Fact]
+    public void ReadReport_ReturnsTheString_AndNullForAMalformedBody()
+    {
+        var w = new DBusWriter();
+        w.WriteString("class=nexus-panel-y70 from=HDMI-A-1 target=DP-1");
+        Assert.Equal("class=nexus-panel-y70 from=HDMI-A-1 target=DP-1", LinuxKWinPanelPlacement.ReadReport(w.ToArray()));
+        Assert.Null(LinuxKWinPanelPlacement.ReadReport(Array.Empty<byte>()));
+    }
+
+    [Fact]
+    public void Script_ReportsToTheServiceNameTheHostOwns()
+    {
+        var script = LinuxKWinPanelPlacement.Script("DP-1");
+        Assert.Contains("callDBus(\"org.nexus.PanelPlacement\", \"/PanelPlacement\", \"org.nexus.PanelPlacement\", \"Report\"", script);
+        Assert.Contains("const TARGET_OUTPUT = \"DP-1\";", script);
+    }
 }
