@@ -19,6 +19,8 @@ rm -f "$TARGET_HOME/.local/share/applications/nexus.desktop"
 # Written by the service, not this installer (the nexus:// scheme handler).
 rm -f "$TARGET_HOME/.local/share/applications/nexus-url-handler.desktop"
 rm -f "$TARGET_HOME/.local/share/icons/hicolor/512x512/apps/nexus.png"
+# Written by the service and enabled by default, so KWin would keep loading them at every login.
+rm -rf "$TARGET_HOME/.local/share/kwin/scripts/nexus-panel-y70" "$TARGET_HOME/.local/share/kwin/scripts/nexus-focus"
 
 echo "Nexus removed. Settings, profiles and media were left in /var/lib/nexus;"
 echo "delete it by hand to wipe them. The it87/sensors module config under"

@@ -373,8 +373,36 @@ public class LinuxPanelKioskHostTests
     }
 
     [Fact]
-    public void Metadata_IsEnabledByDefault_SoScriptingStartKeepsTheScriptLoaded()
+    public void Metadata_ParsesAndIsEnabledByDefault_SoScriptingStartKeepsTheScriptLoaded()
     {
-        Assert.Contains("\"EnabledByDefault\": true", LinuxKWinPanelPlacement.MetadataJson);
+        using var doc = System.Text.Json.JsonDocument.Parse(LinuxKWinPanelPlacement.MetadataJson);
+        var plugin = doc.RootElement.GetProperty("KPlugin");
+        Assert.True(plugin.GetProperty("EnabledByDefault").GetBoolean());
+        Assert.Equal("nexus-panel-y70", plugin.GetProperty("Id").GetString());
+    }
+
+    [Fact]
+    public void SanitizeReport_DropsControlCharactersAndCapsLength()
+    {
+        Assert.Equal("class=x from=A", LinuxKWinPanelPlacement.SanitizeReport("class=x\r\n from=A\u001b"));
+        Assert.Equal(200, LinuxKWinPanelPlacement.SanitizeReport(new string('a', 5000)).Length);
+    }
+
+    [Theory]
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(7, true)]
+    public void IsLoadedScriptId_RejectsKWinsFailureCode(int id, bool expected)
+    {
+        Assert.Equal(expected, LinuxKWinPanelPlacement.IsLoadedScriptId(id));
+    }
+
+    [Fact]
+    public void Script_ReportsNoWindowTitleAndDedupesPerWindow()
+    {
+        var script = LinuxKWinPanelPlacement.Script("DP-1");
+        Assert.DoesNotContain("\"caption=", script);
+        Assert.Contains("text !== last", script);
+        Assert.Contains("\"unmatched \" + describe(w)", script);
     }
 }

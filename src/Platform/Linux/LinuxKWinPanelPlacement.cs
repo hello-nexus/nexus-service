@@ -86,17 +86,35 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
+    private const int MaxReportLength = 200;
+
+    /// <summary>A script report made safe for the log: control characters dropped, length capped.</summary>
+    internal static string SanitizeReport(string text)
+    {
+        var clean = new string(text.Where(c => !char.IsControl(c)).ToArray());
+        return clean.Length > MaxReportLength ? clean[..MaxReportLength] : clean;
+    }
+
+    /// <summary>KWin answers loadScript with -1 when the plugin name is still loaded; that is no script to run.</summary>
+    internal static bool IsLoadedScriptId(int id) => id >= 0;
+
     private static async Task ClaimReportNameAsync(DBusConnection dbus)
     {
-        try { await dbus.RequestNameAsync(ReportName); }
+        try
+        {
+            // The first claim can come before anything has connected the bus.
+            await dbus.StartAsync();
+            var reply = await dbus.RequestNameAsync(ReportName);
+            Console.Error.WriteLine($"[panel-kiosk] RequestName {ReportName} -> {reply}");
+        }
         catch (Exception ex) { Console.Error.WriteLine($"[panel-kiosk] placement report name not owned: {ex.Message}"); }
     }
 
     private static DBusMessage? HandleReport(DBusConnection dbus, DBusMessage msg)
     {
-        if (msg.Member == "Report" && ReadReport(msg.Body) is { } text)
+        if (msg.Interface == ReportName && msg.Member == "Report" && ReadReport(msg.Body) is { } text)
         {
-            Console.Error.WriteLine($"[panel-kiosk] placement: {text}");
+            Console.Error.WriteLine($"[panel-kiosk] placement: {SanitizeReport(text)}");
             return dbus.MakeReply(msg, "", null);
         }
         return dbus.MakeErrorReply(msg, "org.freedesktop.DBus.Error.UnknownMethod", $"{msg.Interface}.{msg.Member}");
@@ -240,6 +258,11 @@ internal static class LinuxKWinPanelPlacement
                     w.WriteString(PluginName);
                 });
             var id = new DBusReader(reply.Body).ReadInt32();
+            if (!IsLoadedScriptId(id))
+            {
+                Console.Error.WriteLine($"[panel-kiosk] KWin placement script not loaded: loadScript returned {id}");
+                return false;
+            }
             try
             {
                 await dbus.CallAsync(KWinName, $"/Scripting/Script{id}", "org.kde.kwin.Script", "run", "", null);
@@ -389,11 +412,12 @@ function screenNames() {
   return names.join(",");
 }
 
+// Window titles are personal data, so a report names the class and outputs only.
 function describe(w) {
-  return "class=" + w.resourceClass + " caption=" + w.caption;
+  return "class=" + w.resourceClass;
 }
 
-// Returns what it did so track() can report each distinct outcome once.
+// Returns what it did so track() can report each distinct outcome once per window.
 function place(w) {
   if (!isPanel(w)) {
     return String(w.caption || "").indexOf("Nexus") === 0 ? "unmatched " + describe(w) : "";
