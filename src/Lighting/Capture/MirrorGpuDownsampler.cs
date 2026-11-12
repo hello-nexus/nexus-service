@@ -77,6 +77,7 @@ internal sealed class MirrorGpuDownsampler : IDisposable
             _context.UpdateSubresource(in _params, _cbuffer);
         }
 
+        // Not cached: a duplication surface must not be referenced past ReleaseFrame.
         ID3D11ShaderResourceView? direct = null;
         var srv = _copySrcView;
         try

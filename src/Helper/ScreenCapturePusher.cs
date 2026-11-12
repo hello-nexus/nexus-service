@@ -1,6 +1,5 @@
 #if WINDOWS
 using System;
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,7 +26,6 @@ public sealed class ScreenCapturePusher : IDisposable
 {
     private const int MinRetryMs = 250;
     private const int MaxRetryMs = 4000;
-    private const int DiagWindowSeconds = 60;
     private readonly HelperOutbound _outbound;
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
@@ -72,9 +70,6 @@ public sealed class ScreenCapturePusher : IDisposable
         var retryMs = MinRetryMs;
         var recovering = false;
         var initFailLogged = false;
-        var stats = new MirrorDiagWindow();
-        var windowStart = Stopwatch.GetTimestamp();
-        HelperLog.Write($"[mirror-diag] capture start output={outputIdx} canvas={width}x{height}");
         try
         {
             // ~30 fps push rate. The service's render loop runs at the engine
@@ -83,16 +78,9 @@ public sealed class ScreenCapturePusher : IDisposable
             var period = TimeSpan.FromMilliseconds(33);
             while (!ct.IsCancellationRequested)
             {
-                var nowTs = Stopwatch.GetTimestamp();
-                if (nowTs - windowStart >= DiagWindowSeconds * Stopwatch.Frequency)
-                {
-                    HelperLog.Write(stats.FormatAndReset((nowTs - windowStart) / (double)Stopwatch.Frequency));
-                    windowStart = nowTs;
-                }
                 var backoff = false;
                 if (dxgi is not null && dxgi.IsLost)
                 {
-                    stats.Lost++;
                     var wasRecovering = recovering;
                     var waited = false;
                     if (!wasRecovering) HelperLog.Warn("[screen-capture-pusher] duplication lost; re-creating");
@@ -108,7 +96,6 @@ public sealed class ScreenCapturePusher : IDisposable
                             waited = true;
                         }
                         recreated = dxgi.TryRecreateDuplication();
-                        if (recreated) stats.Recreated++;
                     }
                     recovering = true;
                     if (!recreated)
@@ -148,26 +135,8 @@ public sealed class ScreenCapturePusher : IDisposable
                 }
                 var deadline = DateTime.UtcNow + period;
                 var gotImage = dxgi.AcquireFrame(timeoutMs: 16);
-                switch (dxgi.LastOutcome)
-                {
-                    case AcquireOutcome.Timeout:
-                        stats.AcquireCalls++; stats.Timeouts++; stats.RecordAcquire(dxgi.LastAcquireMs);
-                        break;
-                    case AcquireOutcome.Lost:
-                        stats.AcquireCalls++; stats.RecordAcquire(dxgi.LastAcquireMs);
-                        break;
-                    case AcquireOutcome.Frame:
-                        stats.AcquireCalls++; stats.RecordAcquire(dxgi.LastAcquireMs);
-                        stats.Frames++; stats.AccumulatedSum += dxgi.LastAccumulatedFrames;
-                        break;
-                    case AcquireOutcome.PointerOnly:
-                        stats.AcquireCalls++; stats.RecordAcquire(dxgi.LastAcquireMs);
-                        stats.PointerOnly++;
-                        break;
-                }
                 if (gotImage)
                 {
-                    stats.Copies++;
                     if (recovering)
                     {
                         HelperLog.Write("[screen-capture-pusher] capture resumed");
@@ -176,10 +145,6 @@ public sealed class ScreenCapturePusher : IDisposable
                     }
                     if (dxgi.BlitToBuffer(buffer, width, height))
                     {
-                        stats.Path = dxgi.UsingGpu ? "gpu" : "cpu";
-                        stats.RecordReadback(dxgi.LastMapMs);
-                        stats.RecordCopyMap(dxgi.LastCopyMs + dxgi.LastMapMs);
-                        stats.RecordBlit(dxgi.LastSampleMs);
                         var copy = new byte[buffer.Length];
                         Buffer.BlockCopy(buffer, 0, copy, 0, buffer.Length);
                         try
@@ -189,7 +154,6 @@ public sealed class ScreenCapturePusher : IDisposable
                                 payload: new ScreenMirrorFramePayload { Width = width, Height = height, Bytes = copy },
                                 payloadType: AppJsonContext.Default.ScreenMirrorFramePayload,
                                 ct: ct).ConfigureAwait(false);
-                            stats.Pushed++;
                         }
                         catch (OperationCanceledException) { break; }
                         catch (Exception ex) { HelperLog.Write($"[mirror-diag] send failed {ex.GetType().Name}: {ex.Message}"); }
