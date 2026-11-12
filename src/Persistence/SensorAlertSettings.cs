@@ -46,6 +46,8 @@ public sealed class SensorAlertRule
     /// <summary>"watch" | "act".</summary>
     public string Severity { get; set; } = "watch";
     public bool NotifyDesktop { get; set; } = true;
+    /// <summary>Also push to paired phones on a raise; independent of NotifyDesktop.</summary>
+    public bool NotifyMobile { get; set; }
     /// <summary>Wire and downgrade compatibility only: always true, any input is ignored.</summary>
     public bool ShowInHealth { get => true; set { } }
     /// <summary>Wire and downgrade compatibility only: always 0, any input is ignored. An alert notifies once per episode.</summary>
@@ -78,6 +80,7 @@ public sealed class SensorAlertRule
         && RaiseAfterSeconds == other.RaiseAfterSeconds
         && Severity == other.Severity
         && NotifyDesktop == other.NotifyDesktop
+        && NotifyMobile == other.NotifyMobile
         && BuiltIn == other.BuiltIn
         && Sensor.Category == other.Sensor.Category
         && Sensor.Name == other.Sensor.Name

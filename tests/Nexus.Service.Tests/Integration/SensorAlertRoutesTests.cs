@@ -471,6 +471,38 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     }
 
     [Fact]
+    public async Task Notify_mobile_defaults_off_round_trips_on_user_and_built_in_rules_and_reset_clears_it()
+    {
+        var client = Client();
+        var plain = await (await client.PostAsJsonAsync("/diagnostics/alerts", Rule())).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(plain.GetProperty("notifyMobile").GetBoolean());
+
+        var user = await (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(sensorId: "cpu/other"))).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(user.GetProperty("notifyMobile").GetBoolean());
+        var userId = user.GetProperty("id").GetString()!;
+        var put = await client.PutAsJsonAsync($"/diagnostics/alerts/{userId}", new
+        {
+            enabled = true, sensor = new { category = "cpu", id = "cpu/other", name = "CPU Package cpu/other", type = "Temperature", parentName = "CPU" },
+            low = (double?)null, high = (double?)80, raiseAfterSeconds = 5, clearAfterSeconds = 5, severity = "watch", notifyDesktop = false, notifyMobile = true, showInHealth = true, repeatMinutes = 0,
+        });
+        Assert.True((await put.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("notifyMobile").GetBoolean());
+
+        var builtIn = await client.PutAsJsonAsync($"/diagnostics/alerts/{GpuRule}", new
+        {
+            enabled = true, sensor = new { category = "gpu", id = "x", name = "x", type = "Temperature", parentName = "" },
+            low = (double?)null, high = (double?)88, raiseAfterSeconds = 30, clearAfterSeconds = 5, severity = "act", notifyDesktop = true, notifyMobile = true, showInHealth = true, repeatMinutes = 0,
+            builtIn = "gpuTemp",
+        });
+        Assert.True((await builtIn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("notifyMobile").GetBoolean());
+        var stored = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Diagnostics.SensorAlerts;
+        Assert.True(stored.Single(r => r.Id == GpuRule).NotifyMobile);
+        Assert.True(stored.Single(r => r.Id == userId).NotifyMobile);
+
+        var reset = await (await client.PostAsync($"/diagnostics/alerts/builtins/reset?id={GpuRule}", null)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(reset.GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == GpuRule).GetProperty("notifyMobile").GetBoolean());
+    }
+
+    [Fact]
     public async Task A_put_or_reset_on_a_built_in_whose_device_is_not_detected_is_a_404()
     {
         var client = Client();

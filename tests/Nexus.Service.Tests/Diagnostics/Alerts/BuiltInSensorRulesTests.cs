@@ -72,6 +72,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         Assert.Null(rule.Low);
         Assert.True(rule.Enabled);
         Assert.True(rule.NotifyDesktop);
+        Assert.False(rule.NotifyMobile);
         Assert.True(rule.ShowInHealth);
         Assert.Equal(60, rule.RaiseAfterSeconds);
         Assert.Equal(5, rule.ClearAfterSeconds);
@@ -196,6 +197,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         BuiltInSensorRules.Ensure(d, newInstall: false);
         Rule(d, "builtin-gpu").High = 80;
         Rule(d, "builtin-gpu").NotifyDesktop = false;
+        Rule(d, "builtin-gpu").NotifyMobile = true;
         Rule(d, "builtin-ram").Enabled = false;
         d.SensorAlerts.Add(BuiltInSensorRules.Defaults(Device("cpuTemp", "cpu-temp", "CPU")));
         var before = Rules(d);

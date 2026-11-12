@@ -404,7 +404,11 @@ public sealed class SentryCoordinator : IHostedService, IDisposable
 
     internal static string Fill(string template, string pc, int maxLength)
     {
-        var text = template.Replace(PcPlaceholder, pc, StringComparison.Ordinal);
+        return Truncate(template.Replace(PcPlaceholder, pc, StringComparison.Ordinal), maxLength);
+    }
+
+    internal static string Truncate(string text, int maxLength)
+    {
         if (text.Length <= maxLength)
         {
             return text;

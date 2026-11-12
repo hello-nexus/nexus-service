@@ -315,6 +315,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Sentry.PanelPhonePushBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryPushRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Sentry.SentryPushResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Sentry.AlertPushRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelPhoneSessionNameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelHostNameBody))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelHostNameResponse))]

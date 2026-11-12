@@ -501,6 +501,8 @@ public static class NexusServiceCollectionExtensions
             // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
             engine.NoticeSink = (notice, key) =>
                 sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().RaiseCooled(key, notice);
+            engine.MobileSink = (notice, key) =>
+                _ = sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>().Raise(key, notice);
             return engine;
         });
         // The sampler records every enabled rule's reading as a tracked-sensor series.
@@ -508,6 +510,7 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>());
         services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
+        services.AddSingleton<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());
 
         services.AddSingleton<Nexus.Service.Routes.SteamGameLibraryCache>();
