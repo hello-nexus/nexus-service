@@ -371,4 +371,10 @@ public class LinuxPanelKioskHostTests
         Assert.Contains("callDBus(\"org.nexus.PanelPlacement\", \"/PanelPlacement\", \"org.nexus.PanelPlacement\", \"Report\"", script);
         Assert.Contains("const TARGET_OUTPUT = \"DP-1\";", script);
     }
+
+    [Fact]
+    public void Metadata_IsEnabledByDefault_SoScriptingStartKeepsTheScriptLoaded()
+    {
+        Assert.Contains("\"EnabledByDefault\": true", LinuxKWinPanelPlacement.MetadataJson);
+    }
 }
