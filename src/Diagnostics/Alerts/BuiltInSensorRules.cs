@@ -6,8 +6,8 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Diagnostics.Alerts;
 
-/// <summary>A detected device whose temperature the Cooling history plots. <see cref="SeriesId"/> is the monitoring history series id; <see cref="ComponentId"/> is the raw id the ignore list uses.</summary>
-public sealed record BuiltInDevice(string Kind, string SeriesId, string Name, bool Integrated, string ComponentId, BuiltInSource? Source = null);
+/// <summary>A detected device whose temperature the Cooling history plots. <see cref="SeriesId"/> is the monitoring history series id; <see cref="ComponentId"/> is the raw id the ignore list uses. <see cref="CpuMaxC"/> is the CPU's own maximum temperature, set on the CPU and any integrated GPU so their default limit follows it.</summary>
+public sealed record BuiltInDevice(string Kind, string SeriesId, string Name, bool Integrated, string ComponentId, BuiltInSource? Source = null, double? CpuMaxC = null);
 
 /// <summary>
 /// One temperature rule per detected CPU, GPU, drive and (when the machine reports one) memory, id <c>builtin:&lt;history series id&gt;</c>.
@@ -99,9 +99,13 @@ public static class BuiltInSensorRules
         return (spec.LimitMin, spec.LimitMax);
     }
 
-    /// <summary>The high limit a newly seen device starts with. An integrated GPU shares the CPU die, so it follows the CPU default and never alerts before the CPU entry.</summary>
-    public static double DefaultHigh(string kind, bool integrated) =>
-        Specs.First(s => s.Kind == (integrated && kind == GpuTemp ? CpuTemp : kind)).NewInstallHigh;
+    /// <summary>The high limit a newly seen device starts with. An integrated GPU shares the CPU die, so it follows the CPU default and never alerts before the CPU entry. The CPU default is the CPU's own maximum when known (<paramref name="cpuMaxC"/>), else the kind's flat default.</summary>
+    public static double DefaultHigh(string kind, bool integrated, double? cpuMaxC = null)
+    {
+        var followsCpu = kind == CpuTemp || (integrated && kind == GpuTemp);
+        var spec = Specs.First(s => s.Kind == (followsCpu ? CpuTemp : kind));
+        return followsCpu && cpuMaxC is { } max && double.IsFinite(max) ? Math.Clamp(max, spec.LimitMin, spec.LimitMax) : spec.NewInstallHigh;
+    }
 
     /// <summary>Makes a client-sent built-in safe to store: keeps the stored identity and sensor, and clamps each limit that is set; either may be null.</summary>
     public static void Pin(SensorAlertRule rule, SensorAlertRule current)
@@ -198,7 +202,7 @@ public static class BuiltInSensorRules
         Id = RuleId(device.SeriesId),
         Enabled = true,
         Sensor = FixedSensor(device),
-        High = device.Kind == FanSpeed ? null : DefaultHigh(device.Kind, device.Integrated),
+        High = device.Kind == FanSpeed ? null : DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC),
         RaiseAfterSeconds = RaiseAfterSeconds,
         ClearAfterSeconds = ClearAfterSeconds,
         Severity = SensorAlertRules.Act,
@@ -225,8 +229,9 @@ public static class BuiltInSensorRules
         if (template is not null)
         {
             rule.Enabled = template.Enabled;
-            // A limit still at the kind default was never chosen, so an integrated GPU keeps its own default.
-            if (template.High is { } th && !(device.Integrated && th == spec.NewInstallHigh))
+            // A limit still at the kind default was never chosen, so the CPU and an integrated GPU take their own (per-CPU) default.
+            var followsCpu = device.Kind == CpuTemp || (device.Integrated && device.Kind == GpuTemp);
+            if (template.High is { } th && !(followsCpu && th == spec.NewInstallHigh))
             {
                 rule.High = ClampLimit(th, spec);
             }

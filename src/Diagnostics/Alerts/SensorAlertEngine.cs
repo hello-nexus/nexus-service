@@ -842,8 +842,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return;
         }
         var name = Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveCpuTempName(_sensors.GetCpuModel());
-        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name)), temp.Value, temp.Stale);
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name), CpuMax()), temp.Value, temp.Stale);
     }
+
+    /// <summary>The CPU's own maximum temperature: the live reading when the platform exposes one, else the published table.</summary>
+    private double CpuMax() => CpuTemperatureDefault.Resolve(_sensors.GetCpuModel(), _sensors.GetCpuTjMaxC());
 
     private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
     {
@@ -855,7 +858,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 continue;
             }
             var seriesId = BuiltInSensorRules.GpuSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(gpu.Id);
-            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name)), temp.Value, temp.Stale);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name), gpu.Integrated ? CpuMax() : null), temp.Value, temp.Stale);
         }
     }
 
