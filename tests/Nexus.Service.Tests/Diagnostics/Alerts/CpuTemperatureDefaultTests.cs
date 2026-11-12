@@ -19,6 +19,8 @@ public sealed class CpuTemperatureDefaultTests
     [InlineData("AMD Ryzen AI 9 HX 370 w/ Radeon 890M", 100)]
     [InlineData("AMD Ryzen 7 260 w/ Radeon 780M Graphics", 100)]
     [InlineData("AMD Ryzen 5 PRO 230 w/ Radeon 760M Graphics", 100)]
+    [InlineData("AMD Ryzen 5 7520C with Radeon Graphics", 100)]
+    [InlineData("AMD Ryzen 3 5125C with Radeon Graphics", 100)]
     [InlineData("AMD Ryzen Z1 Extreme", 100)]
     [InlineData("AMD Ryzen Z2 Extreme", 100)]
     [InlineData("AMD Ryzen Z2 Go", 100)]
@@ -118,10 +120,41 @@ public sealed class CpuTemperatureDefaultTests
     {
         var current = BuiltInSensorRules.Defaults(Cpu(89));
         var sent = current.Clone();
-        sent.SeededHigh = null;
-        sent.High = 80;
+        sent.SeededHigh = 12;
         BuiltInSensorRules.Pin(sent, current);
         Assert.Equal(89, sent.SeededHigh);
+    }
+
+    [Fact]
+    public void A_client_edit_of_the_limit_records_a_user_choice_even_at_a_default()
+    {
+        var seeded = BuiltInSensorRules.Defaults(Cpu(89));
+        var sent = seeded.Clone();
+        sent.High = 92;
+        BuiltInSensorRules.Pin(sent, seeded);
+        Assert.Equal(0, sent.SeededHigh);
+        Assert.False(BuiltInSensorRules.CpuDefaultStale(sent, Cpu(95)));
+
+        var legacy = BuiltInSensorRules.Defaults(Cpu(null));
+        legacy.SeededHigh = null;
+        legacy.High = 95;
+        var dragged = legacy.Clone();
+        dragged.High = 100;
+        BuiltInSensorRules.Pin(dragged, legacy);
+        Assert.Equal(0, dragged.SeededHigh);
+        Assert.False(BuiltInSensorRules.CpuDefaultStale(dragged, Cpu(89)));
+    }
+
+    [Fact]
+    public void A_client_save_that_leaves_the_limit_alone_keeps_a_missing_seed()
+    {
+        var legacy = BuiltInSensorRules.Defaults(Cpu(null));
+        legacy.SeededHigh = null;
+        var sent = legacy.Clone();
+        sent.Enabled = false;
+        BuiltInSensorRules.Pin(sent, legacy);
+        Assert.Null(sent.SeededHigh);
+        Assert.True(BuiltInSensorRules.CpuDefaultStale(sent, Cpu(89)));
     }
 
     [Fact]

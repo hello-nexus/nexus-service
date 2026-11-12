@@ -143,7 +143,6 @@ public static class BuiltInSensorRules
     {
         rule.Id = current.Id;
         rule.BuiltIn = current.BuiltIn;
-        rule.SeededHigh = current.SeededHigh;
         rule.Sensor = new SensorRef
         {
             Category = current.Sensor.Category,
@@ -155,6 +154,8 @@ public static class BuiltInSensorRules
         var spec = SpecOf(rule.BuiltIn)!;
         rule.Low = ClampLimit(rule.Low, spec);
         rule.High = ClampLimit(rule.High, spec);
+        // A limit the client changed is the user's choice, however close it lands to a default; an unchanged one keeps the stored seed.
+        rule.SeededHigh = rule.High != current.High ? UserChosenSeed : current.SeededHigh;
     }
 
     /// <summary>A set limit is pulled into the kind's range; a non-finite one counts as unset.</summary>

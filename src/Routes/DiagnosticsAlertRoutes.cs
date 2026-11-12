@@ -41,6 +41,7 @@ public static class DiagnosticsAlertRoutes
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
             body.Source = null;
+            body.SeededHigh = null;
             body.Id = Guid.NewGuid().ToString("N");
             // Read outside the store lock: it can walk hardware.
             var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
@@ -96,6 +97,10 @@ public static class DiagnosticsAlertRoutes
             else if (body.BuiltIn is not null)
             {
                 return Results.BadRequest(ApiResponse.Fail("Built-in sensors cannot be created."));
+            }
+            else
+            {
+                body.SeededHigh = null;
             }
             SensorAlertRules.Normalize(body);
             if (SensorAlertRules.Validate(body) is { } error)

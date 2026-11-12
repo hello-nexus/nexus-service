@@ -138,6 +138,31 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     }
 
     [Fact]
+    public async Task A_user_rule_never_stores_a_client_sent_seed()
+    {
+        var client = Client();
+        var body = new
+        {
+            enabled = true,
+            sensor = new { category = "cpu", id = "cpu/seeded", name = "CPU Package", type = "Temperature", parentName = "CPU" },
+            high = 80,
+            raiseAfterSeconds = 5,
+            severity = "watch",
+            notifyDesktop = true,
+            seededHigh = 80,
+        };
+
+        var created = await client.PostAsJsonAsync("/diagnostics/alerts", body);
+        var createdBody = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var id = createdBody.GetProperty("id").GetString()!;
+        var updated = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", body);
+        var updatedBody = await updated.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.False(createdBody.TryGetProperty("seededHigh", out _));
+        Assert.False(updatedBody.TryGetProperty("seededHigh", out _));
+    }
+
+    [Fact]
     public async Task A_rule_without_bounds_is_a_valid_tracked_sensor()
     {
         var client = Client();

@@ -49,7 +49,7 @@ public static class CpuTemperatureDefault
         return new CpuMax(IsMobile(cpuModel) ? FallbackC : limit.LimitC, false);
     }
 
-    // Mobile Ryzen model tokens end in H, HS, HX, HX3D or U ("7840HS", "7945HX3D", "5800H", "7735U"); the Ryzen AI line, the suffixless
+    // Mobile Ryzen model tokens end in H, HS, HX, HX3D, U or C for Chromebook parts ("7840HS", "7945HX3D", "5800H", "7735U", "7520C"); the Ryzen AI line, the suffixless
     // three-digit 200 series ("260") and the Z1 / Z2 handheld parts are mobile too. Desktop model numbers have four digits.
     // Whole-token tests only, so a desktop "7950X3D" never matches.
     private static bool IsMobile(string? cpuModel)
@@ -84,6 +84,7 @@ public static class CpuTemperatureDefault
             || suffix.Equals("HS", StringComparison.OrdinalIgnoreCase)
             || suffix.Equals("HX", StringComparison.OrdinalIgnoreCase)
             || suffix.Equals("HX3D", StringComparison.OrdinalIgnoreCase)
-            || suffix.Equals("U", StringComparison.OrdinalIgnoreCase);
+            || suffix.Equals("U", StringComparison.OrdinalIgnoreCase)
+            || suffix.Equals("C", StringComparison.OrdinalIgnoreCase);
     }
 }
