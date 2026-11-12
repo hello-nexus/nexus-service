@@ -496,7 +496,8 @@ public static class NexusServiceCollectionExtensions
             var engine = new Nexus.Service.Diagnostics.Alerts.SensorAlertEngine(
                 sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
-                sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.ISmartHealthSource>());
+                sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.ISmartHealthSource>(),
+                sp.GetService<Nexus.Service.Cooling.IFanControlProvider>());
             // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
             engine.NoticeSink = (notice, key) =>
                 sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().RaiseCooled(key, notice);

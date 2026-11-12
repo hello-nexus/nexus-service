@@ -55,7 +55,8 @@ public static class DiagnosticsAlertRoutes
                 {
                     return;
                 }
-                if (s.Diagnostics.SensorAlerts.Count(r => r.BuiltIn is null) >= SensorAlertRules.MaxRules)
+                // The cap counts every listed entry: the user's rules plus the built-ins detected now.
+                if (s.Diagnostics.SensorAlerts.Count(r => r.BuiltIn is null) + builtIns.Count >= SensorAlertRules.MaxRules)
                 {
                     full = true;
                     return;
@@ -68,7 +69,7 @@ public static class DiagnosticsAlertRoutes
             }
             if (full)
             {
-                return Results.Conflict(ApiResponse.Fail($"At most {SensorAlertRules.MaxRules} rules are allowed."));
+                return Results.Conflict(ApiResponse.Fail($"At most {SensorAlertRules.MaxRules} Watchlist entries are allowed."));
             }
             engine.Reconcile();
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
@@ -126,6 +127,10 @@ public static class DiagnosticsAlertRoutes
                 }
                 list[index] = body.Clone();
                 found = true;
+                if (body.BuiltIn == BuiltInSensorRules.FanSpeed && engine.BuiltInDevices().FirstOrDefault(d => BuiltInSensorRules.RuleId(d.SeriesId) == id) is { } fan)
+                {
+                    BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, body.Enabled);
+                }
             });
             if (tracker is not null)
             {
@@ -178,6 +183,10 @@ public static class DiagnosticsAlertRoutes
                     if (index >= 0)
                     {
                         list[index] = BuiltInSensorRules.Defaults(device);
+                        if (device.Kind == BuiltInSensorRules.FanSpeed)
+                        {
+                            BuiltInSensorRules.SetFanEnabled(s.Diagnostics, device, true);
+                        }
                     }
                 }
             });

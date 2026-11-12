@@ -83,6 +83,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
     private readonly Nexus.Service.Diagnostics.Storage.ISmartHealthSource? _drives;
+    private readonly Nexus.Service.Cooling.IFanControlProvider? _fans;
     private readonly TimeProvider _time;
     private readonly long _stamp0;
     private readonly DateTimeOffset _wall0;
@@ -182,18 +183,20 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>Raised after a transition or a rule change, never for a plain value update.</summary>
     public event Action? Changed;
 
-    public SensorAlertEngine(IConfigStore store, ISensorProvider sensors, Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null)
-        : this(store, sensors, TimeProvider.System, null, drives)
+    public SensorAlertEngine(IConfigStore store, ISensorProvider sensors, Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null, Nexus.Service.Cooling.IFanControlProvider? fans = null)
+        : this(store, sensors, TimeProvider.System, null, drives, fans)
     {
     }
 
     internal SensorAlertEngine(
         IConfigStore store, ISensorProvider sensors, TimeProvider time, TimeSpan? startupHold = null,
-        Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null)
+        Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
         _store = store;
         _sensors = sensors;
         _drives = drives;
+        _fans = fans;
         _time = time;
         _stamp0 = time.GetTimestamp();
         _wall0 = time.GetUtcNow();
@@ -445,6 +448,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var fahrenheit = false;
         _store.Read(s =>
         {
+            var ignored = s.Diagnostics.IgnoredComponents;
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
@@ -458,6 +462,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         var copy = rule.Clone();
                         copy.Sensor.Name = device.Name;
                         copy.Source = device.Source;
+                        // A fan's on/off is the Cooling page's stall-monitoring toggle, so the ignore list decides, not the stored flag.
+                        if (device.Kind == BuiltInSensorRules.FanSpeed)
+                        {
+                            copy.Enabled = ignored?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+                        }
                         builtInRules.Add(copy);
                     }
                 }
@@ -652,9 +661,61 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         TryDiscover(devices, sensors, "gpu", now, DiscoverGpus);
         TryDiscover(devices, sensors, "memory", now, DiscoverMemory);
         TryDiscover(devices, sensors, "storage", now, DiscoverDrives);
+        TryDiscover(devices, sensors, "fans", now, DiscoverFans);
+        ApplyPendingIgnores(devices);
         var snapshot = new BuiltInSnapshot(devices, sensors);
         Volatile.Write(ref _builtIns, snapshot);
         return snapshot;
+    }
+
+    /// <summary>Applies the retired cooling and storage health toggles per fan and per drive, once the devices are known.</summary>
+    private void ApplyPendingIgnores(IReadOnlyList<BuiltInDevice> devices)
+    {
+        var fans = false;
+        var drives = false;
+        _store.Read(s => (fans, drives) = (s.Diagnostics.PendingFansOff, s.Diagnostics.PendingDrivesOff));
+        if (!fans && !drives)
+        {
+            return;
+        }
+        var fanIds = devices.Where(d => d.Kind == BuiltInSensorRules.FanSpeed).Select(d => d.ComponentId).ToList();
+        var driveIds = new List<string>();
+        if (drives && _drives?.Snapshot() is { Supported: true } smart)
+        {
+            driveIds = smart.Drives.Select(d => d.Id).ToList();
+        }
+        var applyFans = fans && fanIds.Count > 0;
+        var applyDrives = drives && driveIds.Count > 0;
+        if (!applyFans && !applyDrives)
+        {
+            return;
+        }
+        try
+        {
+            _store.Update(s =>
+            {
+                var ignored = s.Diagnostics.IgnoredComponents ??= new List<string>();
+                foreach (var id in (applyFans ? fanIds : new List<string>()).Concat(applyDrives ? driveIds : new List<string>()))
+                {
+                    if (!ignored.Contains(id, StringComparer.Ordinal))
+                    {
+                        ignored.Add(id);
+                    }
+                }
+                if (applyFans)
+                {
+                    s.Diagnostics.PendingFansOff = false;
+                }
+                if (applyDrives)
+                {
+                    s.Diagnostics.PendingDrivesOff = false;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Warn("health-migration", $"[sensor-alerts] applying the retired health toggles failed: {ex.Message}", Mono());
+        }
     }
 
     private void SeedBuiltIns(IReadOnlyList<BuiltInDevice> devices)
@@ -758,6 +819,43 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
+    /// <summary>One entry per fan or pump channel, keyed like the monitoring history's fan RPM series ("fan:" plus the sanitized channel id).</summary>
+    private void DiscoverFans(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    {
+        if (_fans is null)
+        {
+            return;
+        }
+        // Read once per refresh, and only when a channel has a tach sensor to look up.
+        IReadOnlyList<HardwareSensor>? gpuTachs = null;
+        IReadOnlyList<HardwareSensor>? boardTachs = null;
+        foreach (var ch in _fans.GetFanChannels())
+        {
+            var seriesId = BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id);
+            if (devices.Any(d => d.SeriesId == seriesId))
+            {
+                continue;
+            }
+            BuiltInSource source;
+            var hardware = ch.DeviceName ?? ch.Name;
+            // The tach sensor behind a motherboard or graphics card channel when the picker lists it; a hub channel has none.
+            HardwareSensor? tach = null;
+            if (!string.IsNullOrEmpty(ch.RpmSensorId))
+            {
+                var list = ch.IsGpu
+                    ? gpuTachs ??= _sensors.GetGpus().SelectMany(g => g.Sensors).ToList()
+                    : boardTachs ??= _sensors.GetMotherboardSensorsCached();
+                tach = list.FirstOrDefault(x => x.Id == ch.RpmSensorId);
+            }
+            source = tach is null
+                ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware }
+                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
+            var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, ch.Name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
+            // A channel with no readable tach has no value, as in the history.
+            Add(devices, sensors, device, ch.RpmUnavailable ? float.NaN : ch.Rpm, ch.RpmUnavailable);
+        }
+    }
+
     private static SensorRef Ref(string category, HardwareSensor s) => new()
     {
         Category = category,
@@ -781,9 +879,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             Id = device.SeriesId,
             Name = device.Name,
-            Type = "Temperature",
+            Type = BuiltInSensorRules.SensorType(device.Kind),
             Value = value,
-            Units = "°C",
+            Units = BuiltInSensorRules.Units(device.Kind),
             Stale = stale,
             Parent = new SensorParent { Id = device.SeriesId, Name = device.Name },
         });

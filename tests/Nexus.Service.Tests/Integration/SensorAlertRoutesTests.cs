@@ -12,9 +12,27 @@ using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Tests.Integration;
 
-/// <summary>A host whose machine has a CPU, an integrated GPU and a discrete GPU, each with a temperature, and no drive or memory temperature.</summary>
+/// <summary>A host whose machine has a CPU, an integrated GPU and a discrete GPU, each with a temperature, two fan channels, and no drive or memory temperature.</summary>
 public sealed class SensorAlertFactory : NexusAppFactory
 {
+    private sealed class TwoFans : Nexus.Service.Cooling.IFanControlProvider
+    {
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => new[]
+        {
+            new Nexus.Service.Models.Cooling.FanChannel { Id = "/lpc/ctl/1", Name = "CPU Fan", Rpm = 1100 },
+            new Nexus.Service.Models.Cooling.FanChannel { Id = "/lpc/ctl/2", Name = "Pump", Rpm = 2400, Kind = "pump" },
+        };
+        public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public Task<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<Nexus.Service.Models.Cooling.FanCalibrationProgress> progress, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>>(Array.Empty<Nexus.Service.Models.Cooling.FanCalibration>());
+    }
+
     private static HardwareSensor Temp(string id, string name, float value) => new()
     {
         Id = id,
@@ -38,6 +56,8 @@ public sealed class SensorAlertFactory : NexusAppFactory
         base.ConfigureWebHost(builder);
         builder.ConfigureTestServices(services =>
         {
+            services.RemoveAll<Nexus.Service.Cooling.IFanControlProvider>();
+            services.AddSingleton<Nexus.Service.Cooling.IFanControlProvider>(new TwoFans());
             services.RemoveAll<ISensorProvider>();
             services.AddSingleton<ISensorProvider>(new StubSensorProvider
             {
@@ -53,6 +73,8 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     private const string CpuRule = "builtin:cpu-temp";
     private const string IgpuRule = "builtin:gpu-temp:gpu-igpu";
     private const string GpuRule = "builtin:gpu-temp:gpu-rtx";
+    private const string FanRule = "builtin:fan:lpc-ctl-1";
+    private const string PumpRule = "builtin:fan:lpc-ctl-2";
 
     private readonly NexusAppFactory _factory;
 
@@ -129,15 +151,52 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     }
 
     [Fact]
-    public async Task The_cap_counts_only_user_rules()
+    public async Task The_cap_is_fifty_entries_counting_the_detected_built_ins()
     {
         var client = Client();
-        for (var i = 0; i < 20; i++)
+        // Five built-ins (cpu, two gpus, two fans) leave room for 45 user rules.
+        for (var i = 0; i < 45; i++)
         {
             Assert.Equal(HttpStatusCode.Created, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(sensorId: $"cpu/t{i}"))).StatusCode);
         }
 
-        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/diagnostics/alerts", Rule(sensorId: "cpu/t20"))).StatusCode);
+        var refused = await client.PostAsJsonAsync("/diagnostics/alerts", Rule(sensorId: "cpu/t45"));
+
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Contains("50", (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("msg").GetString());
+        // Built-ins are never refused: the list still carries all five.
+        var list = await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts");
+        Assert.Equal(5, list.GetProperty("rules").EnumerateArray().Count(r => r.GetProperty("builtIn").ValueKind != JsonValueKind.Null));
+    }
+
+    [Fact]
+    public async Task A_fan_entry_switch_is_the_stall_monitoring_toggle_and_reset_turns_it_back_on()
+    {
+        var client = Client();
+        var rules = (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().ToList();
+        var fan = rules.Single(r => r.GetProperty("id").GetString() == FanRule);
+        Assert.True(fan.GetProperty("enabled").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, fan.GetProperty("high").ValueKind);
+        Assert.Equal("Fan", fan.GetProperty("sensor").GetProperty("type").GetString());
+
+        var body = JsonSerializer.Deserialize<JsonElement>(fan.GetRawText());
+        var off = await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", new
+        {
+            enabled = false, sensor = new { category = "builtin", id = "x", name = "x", type = "Fan", parentName = "" },
+            low = (double?)null, high = (double?)null, raiseAfterSeconds = 60, clearAfterSeconds = 5, severity = "watch", notifyDesktop = true, showInHealth = true, repeatMinutes = 0,
+            builtIn = "fanSpeed",
+        });
+
+        Assert.Equal(HttpStatusCode.OK, off.StatusCode);
+        var settings = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load();
+        Assert.Contains("cooling:/lpc/ctl/1", settings.Diagnostics.IgnoredComponents);
+        var listed = (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == FanRule);
+        Assert.False(listed.GetProperty("enabled").GetBoolean());
+        Assert.Equal("fanSpeed", body.GetProperty("builtIn").GetString());
+
+        await client.PostAsync($"/diagnostics/alerts/builtins/reset?id={FanRule}", null);
+
+        Assert.DoesNotContain("cooling:/lpc/ctl/1", _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load().Diagnostics.IgnoredComponents);
     }
 
     [Theory]
@@ -197,8 +256,9 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         Assert.Equal(new[] { "cpu-temp", "gpu-temp:gpu-igpu", "gpu-temp:gpu-rtx" }, rules.Take(3).Select(r => r.GetProperty("sensor").GetProperty("id").GetString()).ToArray());
         Assert.All(rules.Take(3), r => Assert.Equal("builtin", r.GetProperty("sensor").GetProperty("category").GetString()));
         Assert.Equal(new double[] { 100, 100, 90 }, rules.Take(3).Select(r => r.GetProperty("high").GetDouble()).ToArray());
-        Assert.Equal(JsonValueKind.Null, rules[3].GetProperty("builtIn").ValueKind);
-        Assert.Equal(4, rules.Count);
+        Assert.Equal(new[] { FanRule, PumpRule }, rules.Skip(3).Take(2).Select(r => r.GetProperty("id").GetString()).ToArray());
+        Assert.Equal(JsonValueKind.Null, rules[5].GetProperty("builtIn").ValueKind);
+        Assert.Equal(6, rules.Count);
     }
 
     private static object OnSensor(string category, string id, string name, string parent = "p") => new
@@ -406,7 +466,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         var all = await (await client.PostAsync("/diagnostics/alerts/builtins/reset", null)).Content.ReadFromJsonAsync<JsonElement>();
         var rules = all.GetProperty("rules").EnumerateArray().ToList();
         Assert.Equal(100, rules.Single(r => r.GetProperty("id").GetString() == CpuRule).GetProperty("high").GetDouble());
-        Assert.Equal(4, rules.Count);
+        Assert.Equal(6, rules.Count);
         Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/diagnostics/alerts/builtins/reset?id=nope", null)).StatusCode);
     }
 
@@ -448,5 +508,28 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         var gpu = series.Single(x => x.GetProperty("id").GetString() == GpuRule);
         Assert.Equal("RTX 5080", gpu.GetProperty("name").GetString());
         Assert.DoesNotContain(series, x => x.GetProperty("id").GetString() == IgpuRule);
+    }
+
+    [Fact]
+    public async Task A_fan_entry_plots_the_per_channel_rpm_series_the_sampler_records()
+    {
+        var client = Client();
+        await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts");
+        var buffer = _factory.Services.GetRequiredService<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
+        var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30;
+        for (var i = 0; i < 5; i++)
+        {
+            buffer.Append(new Nexus.Service.Monitoring.History.MetricSample(
+                t0 + i, 10, 20, 0, 0, 61,
+                Array.Empty<Nexus.Service.Monitoring.History.GpuReading>(),
+                new[] { new Nexus.Service.Monitoring.History.FanReading("lpc-ctl-1", "CPU Fan", 1000 + i, 40) }, "test-cpu"));
+        }
+
+        var res = await client.GetFromJsonAsync<JsonElement>($"/diagnostics/alerts/history-series?from={(t0 - 5) * 1000}&to={(t0 + 20) * 1000}&ruleId={FanRule}");
+
+        var fan = Assert.Single(res.GetProperty("series").EnumerateArray());
+        Assert.Equal(FanRule, fan.GetProperty("id").GetString());
+        Assert.Equal("CPU Fan", fan.GetProperty("name").GetString());
+        Assert.Contains(fan.GetProperty("points").EnumerateArray(), p => p.GetProperty("avg").ValueKind == JsonValueKind.Number && p.GetProperty("avg").GetDouble() >= 1000);
     }
 }

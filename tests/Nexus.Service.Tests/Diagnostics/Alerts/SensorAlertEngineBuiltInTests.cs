@@ -732,4 +732,103 @@ public partial class SensorAlertEngineTests
 
         Assert.Contains("100 °C", text);
     }
+
+    // ---- fan entries ----
+
+    private static Nexus.Service.Models.Cooling.FanChannel Fan(string id, string name, int rpm = 900, string? rpmSensorId = null, bool unavailable = false) =>
+        new() { Id = id, Name = name, Rpm = rpm, RpmSensorId = rpmSensorId, RpmUnavailable = unavailable };
+
+    private static string FanRule(string channelId) => BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(channelId));
+
+    [Fact]
+    public void Each_channel_is_one_fan_entry_keyed_like_the_history_series_with_no_limits()
+    {
+        var rig = BuiltInRig(r =>
+        {
+            r.Fans.Channels.Add(Fan("/lpc/nct/control/1", "CPU Fan", 1200));
+            r.Fans.Channels.Add(Fan("np50:1/port1", "Port 1", 700));
+        });
+
+        var fans = rig.Engine.Rules().Where(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).ToList();
+
+        Assert.Equal(new[] { "builtin:fan:lpc-nct-control-1", "builtin:fan:np50:1-port1" }, fans.Select(x => x.Id).OrderBy(x => x, StringComparer.Ordinal));
+        var cpu = fans.Single(x => x.Id == FanRule("/lpc/nct/control/1"));
+        Assert.Equal("CPU Fan", cpu.Sensor.Name);
+        Assert.Equal("Fan", cpu.Sensor.Type);
+        Assert.Null(cpu.High);
+        Assert.Null(cpu.Low);
+        Assert.True(cpu.Enabled);
+        Assert.Equal("channel", cpu.Source!.Kind);
+    }
+
+    [Fact]
+    public void A_fan_entry_follows_the_stall_toggle_in_the_ignore_list_and_a_pre_ignored_fan_starts_off()
+    {
+        var rig = BuiltInRig(
+            r => r.Fans.Channels.Add(Fan("fan1", "Rear")),
+            tweak: s => s.Diagnostics.IgnoredComponents.Add("cooling:fan1"));
+        // Seeded before the ignore entry existed in the rig order, so force a fresh seed.
+        Assert.False(rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).Enabled);
+
+        rig.Store.Update(s => s.Diagnostics.IgnoredComponents.Clear());
+
+        Assert.True(rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).Enabled);
+    }
+
+    [Fact]
+    public void A_fan_that_disappears_drops_out_and_returns_with_its_settings()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(Fan("fan1", "Rear")));
+        EditStored(rig, FanRule("fan1"), x => x.High = 2000);
+
+        rig.Fans.Channels.Clear();
+        rig.Engine.Tick();
+        Assert.DoesNotContain(rig.Engine.Rules(), x => x.BuiltIn == BuiltInSensorRules.FanSpeed);
+
+        rig.Fans.Channels.Add(Fan("fan1", "Rear"));
+        rig.Engine.Tick();
+        Assert.Equal(2000, rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).High);
+    }
+
+    [Fact]
+    public void A_fan_entry_with_a_limit_raises_in_rpm_and_one_without_never_does()
+    {
+        var rig = BuiltInRig(r =>
+        {
+            r.Fans.Channels.Add(Fan("fan1", "Rear", 500));
+            r.Fans.Channels.Add(Fan("fan2", "Front", 500));
+        });
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+        rig.Seconds(10);
+
+        Assert.Equal("active", StateOf(rig, FanRule("fan1")).State);
+        Assert.Equal("ok", StateOf(rig, FanRule("fan2")).State);
+    }
+
+    [Fact]
+    public void A_fan_entry_with_a_tach_sensor_reports_it_as_its_source_and_blocks_a_duplicate_custom_rule()
+    {
+        var rig = BuiltInRig(r =>
+        {
+            r.Fans.Channels.Add(Fan("pwm1", "Chassis", 800, rpmSensorId: "tach1"));
+            r.Sensors.Mobo = new[] { new HardwareSensor { Id = "tach1", Name = "Fan #1", Type = "Fan", Value = 800, Units = "RPM", Parent = new SensorParent { Id = "m", Name = "Board" } } };
+        });
+
+        var rule = rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed);
+
+        Assert.Equal("sensor", rule.Source!.Kind);
+        Assert.Equal("tach1", rule.Source.Sensor!.Id);
+        var tracker = SensorAlertRules.FindTracker(new SensorRef { Category = "motherboard", Id = "tach1", Type = "Fan" }, true, rig.Engine.Rules(), null);
+        Assert.Equal(rule.Id, tracker?.Id);
+    }
+
+    [Fact]
+    public void An_unreadable_tach_channel_is_listed_with_no_value()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(Fan("hub1", "Hub", 0, unavailable: true)));
+
+        Assert.Single(rig.Engine.Rules(), x => x.BuiltIn == BuiltInSensorRules.FanSpeed);
+        rig.Seconds(3);
+        Assert.Equal("ok", StateOf(rig, FanRule("hub1")).State);
+    }
 }

@@ -27,11 +27,16 @@ public static class BuiltInSensorRules
     public const string GpuTemp = "gpuTemp";
     public const string StorageTemp = "storageTemp";
     public const string RamTemp = "ramTemp";
+    public const string FanSpeed = "fanSpeed";
 
     public const string CpuSeriesId = "cpu-temp";
     public const string GpuSeriesPrefix = "gpu-temp:";
     public const string MemorySeriesId = "mem-temp";
     public const string DriveSeriesPrefix = "drive-temp:";
+    public const string FanSeriesPrefix = "fan:";
+
+    /// <summary>Health component id prefix of a fan stall; the ignore list holds the same id, so it is the one on/off switch of a fan entry.</summary>
+    public const string FanComponentPrefix = "cooling:";
 
     /// <summary>Hold before a built-in raises. The temperatures swing second to second under load, so this is longer than a user rule's.</summary>
     public const int RaiseAfterSeconds = 60;
@@ -41,6 +46,9 @@ public static class BuiltInSensorRules
 
     /// <summary>Stored settings generation: 2 means per-device built-ins, so the legacy per-kind seeding has run.</summary>
     public const int PerDeviceVersion = 2;
+
+    /// <summary>Health-check switches generation: 1 means the GPU, storage and cooling toggles are retired (always on).</summary>
+    public const int HealthChecksVersion = 1;
 
     private sealed record Spec(string Kind, string TemplateId, double LimitMin, double LimitMax, double NewInstallHigh);
 
@@ -53,7 +61,18 @@ public static class BuiltInSensorRules
         new(RamTemp, "builtin-ram", 20, 100, 75),
     };
 
-    public static bool IsKind(string? kind) => Specs.Any(s => s.Kind == kind);
+    // Fans are tracked for their speed history; a limit is optional and none is set by default.
+    private static readonly Spec FanSpec = new(FanSpeed, "", 0, 100_000, 0);
+
+    private static Spec? SpecOf(string? kind) => kind == FanSpeed ? FanSpec : Specs.FirstOrDefault(s => s.Kind == kind);
+
+    public static bool IsKind(string? kind) => SpecOf(kind) is not null;
+
+    /// <summary>The sensor type a kind's synthetic sensor carries.</summary>
+    public static string SensorType(string? kind) => kind == FanSpeed ? "Fan" : "Temperature";
+
+    /// <summary>The unit of a kind's reading.</summary>
+    public static string Units(string? kind) => kind == FanSpeed ? "RPM" : "°C";
 
     /// <summary>Reserved ids: the per-device <c>builtin:</c> rules and the hidden <c>builtin-</c> templates. A user rule id is a GUID.</summary>
     public static bool IsBuiltInId(string id) => id.StartsWith("builtin", StringComparison.Ordinal);
@@ -70,12 +89,13 @@ public static class BuiltInSensorRules
         seriesId == CpuSeriesId ? 0
         : seriesId.StartsWith(GpuSeriesPrefix, StringComparison.Ordinal) ? 1
         : seriesId == MemorySeriesId ? 2
+        : seriesId.StartsWith(FanSeriesPrefix, StringComparison.Ordinal) ? 4
         : 3;
 
     /// <summary>The stored limit range of a kind, so a hand-edited or stale value is pulled back to something the UI can show.</summary>
     public static (double Min, double Max) LimitRange(string kind)
     {
-        var spec = Specs.First(s => s.Kind == kind);
+        var spec = SpecOf(kind)!;
         return (spec.LimitMin, spec.LimitMax);
     }
 
@@ -96,7 +116,7 @@ public static class BuiltInSensorRules
             Type = current.Sensor.Type,
             ParentName = current.Sensor.ParentName,
         };
-        var spec = Specs.First(s => s.Kind == rule.BuiltIn);
+        var spec = SpecOf(rule.BuiltIn)!;
         rule.Low = ClampLimit(rule.Low, spec);
         rule.High = ClampLimit(rule.High, spec);
     }
@@ -145,6 +165,20 @@ public static class BuiltInSensorRules
             diagnostics.BuiltInSensorsVersion = PerDeviceVersion;
             changed = true;
         }
+        if (diagnostics.HealthChecksVersion < HealthChecksVersion)
+        {
+            // A user who had one off keeps that intent per drive and per fan; the devices are not known at load, so the engine applies it on first sight.
+            if (!newInstall)
+            {
+                diagnostics.PendingFansOff = !diagnostics.Components.Cooling;
+                diagnostics.PendingDrivesOff = !diagnostics.Components.Storage;
+            }
+            diagnostics.Components.Gpu = true;
+            diagnostics.Components.Storage = true;
+            diagnostics.Components.Cooling = true;
+            diagnostics.HealthChecksVersion = HealthChecksVersion;
+            changed = true;
+        }
         foreach (var rule in list.Where(r => r.BuiltIn is not null))
         {
             changed |= Repin(rule);
@@ -158,7 +192,7 @@ public static class BuiltInSensorRules
         Id = RuleId(device.SeriesId),
         Enabled = true,
         Sensor = FixedSensor(device),
-        High = DefaultHigh(device.Kind, device.Integrated),
+        High = device.Kind == FanSpeed ? null : DefaultHigh(device.Kind, device.Integrated),
         RaiseAfterSeconds = RaiseAfterSeconds,
         ClearAfterSeconds = ClearAfterSeconds,
         Severity = SensorAlertRules.Watch,
@@ -175,6 +209,11 @@ public static class BuiltInSensorRules
     public static SensorAlertRule Seed(BuiltInDevice device, DiagnosticsSettings diagnostics)
     {
         var rule = Defaults(device);
+        if (device.Kind == FanSpeed)
+        {
+            rule.Enabled = diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+            return rule;
+        }
         var spec = Specs.First(s => s.Kind == device.Kind);
         var template = diagnostics.SensorAlerts?.FirstOrDefault(r => r.Id == spec.TemplateId);
         if (template is not null)
@@ -201,18 +240,33 @@ public static class BuiltInSensorRules
         return rule;
     }
 
+    /// <summary>Writes a fan entry's on/off into the ignore list the Cooling page's stall toggle uses, so the two never disagree.</summary>
+    public static void SetFanEnabled(DiagnosticsSettings diagnostics, BuiltInDevice device, bool enabled)
+    {
+        var ignored = diagnostics.IgnoredComponents ??= new List<string>();
+        if (enabled)
+        {
+            ignored.RemoveAll(x => x == device.ComponentId);
+        }
+        else if (!ignored.Contains(device.ComponentId, StringComparer.Ordinal))
+        {
+            ignored.Add(device.ComponentId);
+        }
+    }
+
     private static bool Repin(SensorAlertRule rule)
     {
-        var spec = Specs.FirstOrDefault(s => s.Kind == rule.BuiltIn);
+        var spec = SpecOf(rule.BuiltIn);
         if (spec is null)
         {
             return false;
         }
         var changed = false;
-        if (rule.Sensor.Category != Category || rule.Sensor.Type != "Temperature" || rule.Sensor.ParentName != "")
+        var type = SensorType(rule.BuiltIn);
+        if (rule.Sensor.Category != Category || rule.Sensor.Type != type || rule.Sensor.ParentName != "")
         {
             rule.Sensor.Category = Category;
-            rule.Sensor.Type = "Temperature";
+            rule.Sensor.Type = type;
             rule.Sensor.ParentName = "";
             changed = true;
         }
@@ -273,7 +327,7 @@ public static class BuiltInSensorRules
         Category = Category,
         Id = device.SeriesId,
         Name = device.Name,
-        Type = "Temperature",
+        Type = SensorType(device.Kind),
         ParentName = "",
     };
 }

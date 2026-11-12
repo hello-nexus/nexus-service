@@ -84,7 +84,8 @@ public sealed class SensorAlertsFrame
 /// <summary>Rule limits, validation and the per-type clear hysteresis.</summary>
 public static class SensorAlertRules
 {
-    public const int MaxRules = 20;
+    /// <summary>Watchlist entries in all, built-ins (temperatures and fans) included. Only adding a user rule is refused at the cap; built-ins are never refused.</summary>
+    public const int MaxRules = 50;
     public const int MaxSeconds = 600;
     /// <summary>How long a finished alert stays on the Summary banner and in health until the user dismisses it.</summary>
     public static readonly TimeSpan EndedLinger = TimeSpan.FromHours(24);

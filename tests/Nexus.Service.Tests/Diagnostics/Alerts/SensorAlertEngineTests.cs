@@ -37,6 +37,7 @@ public partial class SensorAlertEngineTests
         public int CpuReads { get; private set; }
         public int ExtrasReads { get; private set; }
         public int SmartReads { get; private set; }
+        public IReadOnlyList<HardwareSensor> Mobo { get; set; } = Array.Empty<HardwareSensor>();
         public int MoboFullReads { get; private set; }
         public int MoboCachedReads { get; private set; }
         public Action? OnCpuRead { get; set; }
@@ -45,7 +46,7 @@ public partial class SensorAlertEngineTests
         public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached()
         {
             MoboCachedReads++;
-            return Array.Empty<HardwareSensor>();
+            return Mobo;
         }
 
         public string GetCpuModel() => "TestCPU";
@@ -93,6 +94,21 @@ public partial class SensorAlertEngineTests
         public void ForceRefresh() { }
     }
 
+    private sealed class StubFans : Nexus.Service.Cooling.IFanControlProvider
+    {
+        public List<Nexus.Service.Models.Cooling.FanChannel> Channels { get; } = new();
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => Channels.ToList();
+        public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public System.Threading.Tasks.Task<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<Nexus.Service.Models.Cooling.FanCalibrationProgress> progress, System.Threading.CancellationToken ct)
+            => System.Threading.Tasks.Task.FromResult<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>>(Array.Empty<Nexus.Service.Models.Cooling.FanCalibration>());
+    }
+
     private sealed class Rig
     {
         public FakeTime Time { get; } = new();
@@ -103,10 +119,11 @@ public partial class SensorAlertEngineTests
         public int ChangedCount { get; private set; }
 
         public StubSmart Smart { get; } = new();
+        public StubFans Fans { get; } = new();
 
         public Rig(TimeSpan? startupHold = null)
         {
-            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold, Smart);
+            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold, Smart, Fans);
             Engine.NoticeSink = (n, key) => Notices.Add((n, key));
             Engine.Changed += () => ChangedCount++;
         }

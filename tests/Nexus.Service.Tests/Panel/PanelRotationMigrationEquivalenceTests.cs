@@ -415,6 +415,7 @@ public class PanelRotationMigrationEquivalenceTests : IDisposable
         copy.PanelDevices.Clear();
         copy.Diagnostics.SensorAlerts.Clear();
         copy.Diagnostics.BuiltInSensorsVersion = 0;
+        copy.Diagnostics.HealthChecksVersion = 0;
         copy.SchemaVersion = 0;
         return JsonSerializer.Serialize(copy, PersistenceJsonContext.Default.NexusSettings);
     }
