@@ -1049,6 +1049,29 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
+    public void A_tracked_memory_load_sensor_is_recorded_like_any_other()
+    {
+        var rig = new Rig();
+        rig.Sensors.Memory = new[]
+        {
+            new HardwareSensor { Id = "/ram/load/0", Name = "Memory", Type = "Load", Value = 33.3f, Units = "%", Parent = new SensorParent { Id = "ram", Name = "Total Memory" } },
+        };
+        rig.AddRule(new SensorAlertRule
+        {
+            Id = "mem",
+            Enabled = true,
+            Sensor = new SensorRef { Category = "memory", Id = "/ram/load/0", Name = "Memory", Type = "Load", ParentName = "Total Memory" },
+            RaiseAfterSeconds = 5,
+            Severity = SensorAlertRules.Watch,
+        });
+        rig.Seconds(1);
+
+        var reading = Assert.Single(rig.Engine.CurrentReadings(0));
+        Assert.Equal("mem", reading.Id);
+        Assert.Equal(33.3f, (float)reading.Value);
+    }
+
+    [Fact]
     public void Every_enabled_rule_contributes_its_reading_with_or_without_bounds()
     {
         var rig = new Rig();
