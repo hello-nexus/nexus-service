@@ -114,7 +114,9 @@ the compositor's, and Nexus renders to whatever geometry it gives the kiosk:
 - Wayland gives clients no way to pick an output, and KWin puts a new
   fullscreen window on the primary screen. On KDE the service loads a small
   KWin script (`nexus-panel-y70`, alongside the `nexus-focus` one) that moves
-  the kiosk onto the Y70's output and keeps it fullscreen. Other Wayland
+  the kiosk onto the Y70's output and keeps it fullscreen. The scripts are
+  enabled by default, so KWin loads them at login; `uninstall.sh` removes them
+  from `~/.local/share/kwin/scripts`. Other Wayland
   compositors expose no equivalent, so there the kiosk opens on whichever
   screen the compositor picks.
 
