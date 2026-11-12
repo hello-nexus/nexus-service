@@ -24,6 +24,8 @@ internal static class LinuxKWinPanelPlacement
     /// <summary>X11 WM_CLASS and Wayland app_id the Firefox Y70 kiosk is launched with.</summary>
     internal const string FirefoxClass = "nexus-panel-y70";
 
+    private const string ReportName = "org.nexus.PanelPlacement";
+    private const string ReportPath = "/PanelPlacement";
     private const string KWinName = "org.kde.KWin";
     private const string BusName = "org.freedesktop.DBus";
     private const string BusPath = "/org/freedesktop/DBus";
@@ -71,6 +73,35 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
+    /// <summary>The text a script report carries, or null for a body that is not a single string.</summary>
+    internal static string? ReadReport(byte[] body)
+    {
+        try
+        {
+            return new DBusReader(body).ReadString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task ClaimReportNameAsync(DBusConnection dbus)
+    {
+        try { await dbus.RequestNameAsync(ReportName); }
+        catch (Exception ex) { Console.Error.WriteLine($"[panel-kiosk] placement report name not owned: {ex.Message}"); }
+    }
+
+    private static DBusMessage? HandleReport(DBusConnection dbus, DBusMessage msg)
+    {
+        if (msg.Member == "Report" && ReadReport(msg.Body) is { } text)
+        {
+            Console.Error.WriteLine($"[panel-kiosk] placement: {text}");
+            return dbus.MakeReply(msg, "", null);
+        }
+        return dbus.MakeErrorReply(msg, "org.freedesktop.DBus.Error.UnknownMethod", $"{msg.Interface}.{msg.Member}");
+    }
+
     private static void Start(DBusConnection dbus)
     {
         lock (SetupGate)
@@ -78,6 +109,8 @@ internal static class LinuxKWinPanelPlacement
             if (_started) return;
             _started = true;
         }
+        dbus.RegisterHandler(ReportPath, msg => HandleReport(dbus, msg));
+        _ = ClaimReportNameAsync(dbus);
         dbus.Reconnected += () => OnBusChanged(dbus);
         LinuxSession.SessionAdopted += () => OnBusChanged(dbus);
         _ = Task.Run(() => WatchAsync(dbus));
@@ -86,6 +119,7 @@ internal static class LinuxKWinPanelPlacement
     // A new connection or session means a new KWin that has none of our scripts.
     private static void OnBusChanged(DBusConnection dbus)
     {
+        _ = ClaimReportNameAsync(dbus);
         BusChanges.Signal(busChanged: true);
         _ = Task.Run(async () =>
         {
@@ -206,7 +240,11 @@ internal static class LinuxKWinPanelPlacement
                     w.WriteString(PluginName);
                 });
             var id = new DBusReader(reply.Body).ReadInt32();
-            await dbus.CallAsync(KWinName, $"/Scripting/Script{id}", "org.kde.kwin.Script", "run", "", null);
+            // KWin numbers a new script by the count of loaded ones, so after any unload that is not the
+            // newest script the id equals a live script's and Script{id}.run hits that one, leaving this
+            // script loaded but never running. Scripting.start runs every loaded script that is not
+            // running yet and skips the rest.
+            await dbus.CallAsync(KWinName, "/Scripting", "org.kde.kwin.Scripting", "start", "", null);
             Console.Error.WriteLine($"[panel-kiosk] KWin placement script loaded (id {id})");
             return true;
         }
@@ -331,12 +369,31 @@ function targetOutput() {
   return null;
 }
 
+function report(text) {
+  callDBus("org.nexus.PanelPlacement", "/PanelPlacement", "org.nexus.PanelPlacement", "Report", text);
+}
+
+function screenNames() {
+  const names = [];
+  for (let i = 0; i < workspace.screens.length; i++) names.push(workspace.screens[i].name);
+  return names.join(",");
+}
+
+function describe(w) {
+  return "class=" + w.resourceClass + " caption=" + w.caption;
+}
+
+// Returns what it did so track() can report each distinct outcome once.
 function place(w) {
-  if (!w || !isPanel(w)) return;
+  if (!isPanel(w)) {
+    return String(w.caption || "").indexOf("Nexus") === 0 ? "unmatched " + describe(w) : "";
+  }
   const target = targetOutput();
-  if (!target) return;
-  if (!w.output || w.output.name !== target.name) workspace.sendClientToScreen(w, target);
+  if (!target) return "no target output, screens=" + screenNames() + " " + describe(w);
+  const from = w.output ? w.output.name : "none";
+  if (from !== target.name) workspace.sendClientToScreen(w, target);
   w.fullScreen = true;
+  return describe(w) + " from=" + from + " target=" + target.name;
 }
 
 // Chromium maps the surface first and sets the app_id afterwards, so the
@@ -345,8 +402,15 @@ function place(w) {
 // and geometry (the first configure after map).
 function track(w) {
   if (!w) return;
-  place(w);
-  const again = function () { place(w); };
+  let last = "";
+  const again = function () {
+    const text = place(w);
+    if (text && text !== last) {
+      last = text;
+      report(text);
+    }
+  };
+  again();
   for (const name of ["windowClassChanged", "captionChanged", "frameGeometryChanged"]) {
     const sig = w[name];
     if (sig && typeof sig.connect === "function") sig.connect(again);
