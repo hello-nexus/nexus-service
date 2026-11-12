@@ -27,7 +27,7 @@ public sealed class ScreenCapturePusher : IDisposable
 {
     private const int MinRetryMs = 250;
     private const int MaxRetryMs = 4000;
-    private const int DiagWindowSeconds = 10;
+    private const int DiagWindowSeconds = 60;
     private readonly HelperOutbound _outbound;
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
@@ -44,10 +44,12 @@ public sealed class ScreenCapturePusher : IDisposable
     {
         if (_disposed) return;
         if (width <= 0 || height <= 0) return;
+        HelperLog.Write($"[mirror-diag] Start monitor={monitorId} canvas={width}x{height}");
         Stop();
         var cts = new CancellationTokenSource();
         lock (_lock) { _cts = cts; }
-        _worker = Task.Run(() => RunLoop(monitorId, width, height, cts.Token));
+        _worker = Task.Run(() => RunLoop(monitorId, width, height, cts.Token))
+            .ContinueWith(t => HelperLog.Write($"[mirror-diag] worker faulted {t.Exception?.GetBaseException().GetType().Name}: {t.Exception?.GetBaseException().Message}"), TaskContinuationOptions.OnlyOnFaulted);
     }
 
     public void Stop()
@@ -56,9 +58,9 @@ public sealed class ScreenCapturePusher : IDisposable
         Task? worker;
         lock (_lock) { cts = _cts; worker = _worker; _cts = null; _worker = null; }
         if (cts is null) return;
-        try { cts.Cancel(); } catch { }
-        try { worker?.Wait(TimeSpan.FromSeconds(1)); } catch { }
-        try { cts.Dispose(); } catch { }
+        try { cts.Cancel(); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] Stop cancel failed {ex.GetType().Name}: {ex.Message}"); }
+        try { worker?.Wait(TimeSpan.FromSeconds(1)); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] Stop wait failed {ex.GetType().Name}: {ex.Message}"); }
+        try { cts.Dispose(); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] Stop dispose failed {ex.GetType().Name}: {ex.Message}"); }
         // _dxgi is owned by the worker; disposal happens at the end of RunLoop.
     }
 
@@ -69,6 +71,7 @@ public sealed class ScreenCapturePusher : IDisposable
         DxgiScreenCapture? dxgi = null;
         var retryMs = MinRetryMs;
         var recovering = false;
+        var initFailLogged = false;
         var stats = new MirrorDiagWindow();
         var windowStart = Stopwatch.GetTimestamp();
         HelperLog.Write($"[mirror-diag] capture start output={outputIdx} canvas={width}x{height}");
@@ -118,15 +121,18 @@ public sealed class ScreenCapturePusher : IDisposable
                 }
                 if (dxgi is null && !backoff)
                 {
-                    var next = new DxgiScreenCapture { Diag = HelperLog.Write, SkipPointerOnlyFrames = true, LogInitFailure = retryMs == MinRetryMs };
+                    var next = new DxgiScreenCapture { Diag = HelperLog.Write, SkipPointerOnlyFrames = true, LogInitFailure = !initFailLogged };
                     if (next.Initialize(outputIdx))
                     {
+                        initFailLogged = false;
+                        next.ConfigureDownsample(width, height);
                         dxgi = next;
                         lock (_lock) { _dxgi = dxgi; }
                     }
                     else
                     {
                         next.Dispose();
+                        initFailLogged = true;
                         if (retryMs == MinRetryMs) HelperLog.Warn("[screen-capture-pusher] DXGI init failed; retrying");
                         recovering = true;
                         backoff = true;
@@ -170,6 +176,8 @@ public sealed class ScreenCapturePusher : IDisposable
                     }
                     if (dxgi.BlitToBuffer(buffer, width, height))
                     {
+                        stats.Path = dxgi.UsingGpu ? "gpu" : "cpu";
+                        stats.RecordReadback(dxgi.LastMapMs);
                         stats.RecordCopyMap(dxgi.LastCopyMs + dxgi.LastMapMs);
                         stats.RecordBlit(dxgi.LastSampleMs);
                         var copy = new byte[buffer.Length];
@@ -184,7 +192,7 @@ public sealed class ScreenCapturePusher : IDisposable
                             stats.Pushed++;
                         }
                         catch (OperationCanceledException) { break; }
-                        catch (Exception ex) { Console.Error.WriteLine($"[screen-capture-pusher] send failed: {ex.Message}"); }
+                        catch (Exception ex) { HelperLog.Write($"[mirror-diag] send failed {ex.GetType().Name}: {ex.Message}"); }
                     }
                     dxgi.ReleaseFrame();
                 }
@@ -196,11 +204,11 @@ public sealed class ScreenCapturePusher : IDisposable
                 }
             }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[screen-capture-pusher] loop crashed: {ex.Message}"); }
+        catch (Exception ex) { HelperLog.Write($"[mirror-diag] loop crashed {ex.GetType().Name}: {ex.Message}"); }
         finally
         {
             lock (_lock) { _dxgi = null; }
-            try { dxgi?.Dispose(); } catch { }
+            try { dxgi?.Dispose(); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] dispose failed {ex.GetType().Name}: {ex.Message}"); }
         }
     }
 

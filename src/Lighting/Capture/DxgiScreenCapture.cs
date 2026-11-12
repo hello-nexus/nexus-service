@@ -31,7 +31,12 @@ public sealed class DxgiScreenCapture : IDisposable
     private int _screenW, _screenH;
     private int _surfW, _surfH, _rotation = DesktopRotation.Identity;
     private bool _frameAcquired, _disposed, _hasImage;
+    private MirrorGpuDownsampler? _gpu;
+    private int _downW, _downH;
+    private bool _gpuFailed, _frameOnGpu;
+    private byte[]? _gpuRgb;
 
+    public bool UsingGpu => _frameOnGpu;
     public bool IsInitialized => _duplication is not null;
     /// <summary>A non-timeout AcquireNextFrame failure (ACCESS_LOST and friends); recover with <see cref="TryRecreateDuplication"/> or a new instance.</summary>
     public bool IsLost { get; private set; }
@@ -68,23 +73,28 @@ public sealed class DxgiScreenCapture : IDisposable
             step = "EnumAdapters1";
             var r = factory.EnumAdapters1(0u, out var adapter);
             if (r.Failure) return InitFail(step, r.Code, null);
-            step = "D3D11CreateDevice";
-            // null feature-levels = let D3D pick its default set; the binding's param isn't nullable-annotated.
-            r = D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport, null!, out _device, out _, out _context);
-            if (r.Failure || _device is null || _context is null) { adapter.Dispose(); return InitFail(step, r.Failure ? r.Code : DxgiErrorClassifier.Fail, null); }
-            var adapterName = adapter.Description1.Description;
-            step = "EnumOutputs";
-            r = adapter.EnumOutputs(outputIndex, out var output);
-            if (r.Failure) { adapter.Dispose(); return InitFail(step, r.Code, null); }
+            IDXGIOutput? output = null;
+            string adapterName;
             var outputCount = 1;
-            while (adapter.EnumOutputs((uint)outputCount, out var extra).Success) { extra.Dispose(); outputCount++; }
-            adapter.Dispose();
-            var desc = output.Description;
+            try
+            {
+                step = "D3D11CreateDevice";
+                // null feature-levels = let D3D pick its default set; the binding's param isn't nullable-annotated.
+                r = D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport, null!, out _device, out _, out _context);
+                if (r.Failure || _device is null || _context is null) return InitFail(step, r.Failure ? r.Code : DxgiErrorClassifier.Fail, null);
+                adapterName = adapter.Description1.Description;
+                step = "EnumOutputs";
+                r = adapter.EnumOutputs(outputIndex, out output);
+                if (r.Failure) return InitFail(step, r.Code, null);
+                while (adapter.EnumOutputs((uint)outputCount, out var extra).Success) { extra.Dispose(); outputCount++; }
+            }
+            finally { adapter.Dispose(); }
+            var desc = output!.Description;
             _screenW = desc.DesktopCoordinates.Right - desc.DesktopCoordinates.Left;
             _screenH = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
             step = "QueryInterface IDXGIOutput1";
-            _output1 = output.QueryInterface<IDXGIOutput1>();
-            output.Dispose();
+            try { _output1 = output.QueryInterface<IDXGIOutput1>(); }
+            finally { output.Dispose(); }
             step = "DuplicateOutput";
             _duplication = _output1.DuplicateOutput(_device);
             ApplyDuplicationGeometry();
@@ -96,6 +106,13 @@ public sealed class DxgiScreenCapture : IDisposable
             return true;
         }
         catch (Exception ex) { return InitFail(step, HrOf(ex), ex); }
+    }
+
+    /// <summary>Sets the grid the consumer reads; each frame is then shrunk on the GPU so only that many pixels are mapped.</summary>
+    public void ConfigureDownsample(int width, int height)
+    {
+        _downW = width;
+        _downH = height;
     }
 
     private bool InitFail(string step, int hr, Exception? ex)
@@ -220,16 +237,37 @@ public sealed class DxgiScreenCapture : IDisposable
             }
             step = "QueryInterface ID3D11Texture2D";
             using var tex = resource!.QueryInterface<ID3D11Texture2D>();
-            // CopyResource silently does nothing on a size mismatch, which leaves the staging texture black.
             var td = tex.Description;
             if ((int)td.Width != _surfW || (int)td.Height != _surfH)
             {
                 _surfW = (int)td.Width; _surfH = (int)td.Height;
+                step = "CreateTexture2D staging";
                 EnsureStaging();
             }
-            step = "CopyResource";
+            _frameOnGpu = false;
             var t1 = Stopwatch.GetTimestamp();
-            _context.CopyResource(_stagingTexture!, tex);
+            if (_downW > 0 && _downH > 0 && !_gpuFailed)
+            {
+                step = "GpuDownsample";
+                try
+                {
+                    _gpu ??= new MirrorGpuDownsampler(_device!, _context);
+                    _gpu.Downsample(tex, _downW, _downH, _surfW, _surfH, _rotation);
+                    _frameOnGpu = true;
+                }
+                catch (Exception ex)
+                {
+                    _gpuFailed = true;
+                    Diag?.Invoke($"{Tag} gpu downsample unavailable, using cpu path {ex.GetType().Name}: {ex.Message}");
+                    _gpu?.Dispose();
+                    _gpu = null;
+                }
+            }
+            if (!_frameOnGpu)
+            {
+                step = "CopyResource";
+                _context.CopyResource(_stagingTexture!, tex);
+            }
             _context.Flush();
             LastCopyMs = ElapsedMs(t1);
             step = "ReleaseFrame";
@@ -251,7 +289,7 @@ public sealed class DxgiScreenCapture : IDisposable
 
     public byte[]? ReadRegion(int x, int y, int w, int h)
     {
-        if (!_frameAcquired || _context is null || _stagingTexture is null) return null;
+        if (!_frameAcquired || _frameOnGpu || _context is null || _stagingTexture is null) return null;
         x = Math.Clamp(x, 0, _screenW - 1); y = Math.Clamp(y, 0, _screenH - 1);
         w = Math.Clamp(w, 1, _screenW - x); h = Math.Clamp(h, 1, _screenH - y);
         try
@@ -288,8 +326,10 @@ public sealed class DxgiScreenCapture : IDisposable
     /// </summary>
     public unsafe bool BlitToBuffer(byte[] dst, int dstW, int dstH)
     {
-        if (!_frameAcquired || _context is null || _stagingTexture is null) return false;
+        if (!_frameAcquired || _context is null) return false;
         if (dst.Length < dstW * dstH * 3) return false;
+        if (_frameOnGpu) return TryReadGpu(dst, dstW, dstH);
+        if (_stagingTexture is null) return false;
         try
         {
             var tMap = Stopwatch.GetTimestamp();
@@ -324,9 +364,32 @@ public sealed class DxgiScreenCapture : IDisposable
         catch { return false; }
     }
 
+    private bool TryReadGpu(byte[] dst, int w, int h)
+    {
+        try
+        {
+            var t = Stopwatch.GetTimestamp();
+            var ok = _gpu is not null && _gpu.ReadRgb(dst, w, h);
+            LastMapMs = ElapsedMs(t);
+            return ok;
+        }
+        catch { return false; }
+    }
+
     public unsafe bool BlitToCanvas(Engine.CanvasBuffer canvas)
     {
-        if (!_frameAcquired || _context is null || _stagingTexture is null) return false;
+        if (!_frameAcquired || _context is null) return false;
+        if (_frameOnGpu)
+        {
+            var rgb = _gpuRgb is { } r && r.Length == canvas.Width * canvas.Height * 3 ? r : (_gpuRgb = new byte[canvas.Width * canvas.Height * 3]);
+            if (!TryReadGpu(rgb, canvas.Width, canvas.Height)) return false;
+            for (int y = 0, i = 0; y < canvas.Height; y++)
+            {
+                for (int x = 0; x < canvas.Width; x++, i += 3) canvas.SetPixel(x, y, rgb[i], rgb[i + 1], rgb[i + 2]);
+            }
+            return true;
+        }
+        if (_stagingTexture is null) return false;
         try
         {
             var mapped = _context.Map(_stagingTexture, 0, MapMode.Read);
@@ -360,7 +423,7 @@ public sealed class DxgiScreenCapture : IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
-        ReleaseFrame(); _duplication?.Dispose(); _output1?.Dispose(); _stagingTexture?.Dispose(); _context?.Dispose(); _device?.Dispose();
+        ReleaseFrame(); _duplication?.Dispose(); _output1?.Dispose(); _gpu?.Dispose(); _stagingTexture?.Dispose(); _context?.Dispose(); _device?.Dispose();
     }
 }
 #endif

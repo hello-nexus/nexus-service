@@ -14,7 +14,11 @@ internal sealed class MirrorDiagWindow
     private readonly double[] _acquire = new double[Capacity];
     private readonly double[] _copyMap = new double[Capacity];
     private readonly double[] _blit = new double[Capacity];
-    private int _acquireN, _copyMapN, _blitN;
+    private readonly double[] _readback = new double[Capacity];
+    private int _acquireN, _copyMapN, _blitN, _readbackN;
+
+    /// <summary>Readback path of the last copied frame: gpu or cpu.</summary>
+    public string Path = "none";
 
     public int AcquireCalls, Timeouts, Frames, PointerOnly, Copies, Pushed, Lost, Recreated;
     public long AccumulatedSum;
@@ -22,6 +26,7 @@ internal sealed class MirrorDiagWindow
     public void RecordAcquire(double ms) { if (_acquireN < Capacity) _acquire[_acquireN++] = ms; }
     public void RecordCopyMap(double ms) { if (_copyMapN < Capacity) _copyMap[_copyMapN++] = ms; }
     public void RecordBlit(double ms) { if (_blitN < Capacity) _blit[_blitN++] = ms; }
+    public void RecordReadback(double ms) { if (_readbackN < Capacity) _readback[_readbackN++] = ms; }
 
     /// <summary>Nearest-rank percentile of an unsorted span; sorts it in place.</summary>
     public static double Percentile(Span<double> samples, double p)
@@ -45,10 +50,10 @@ internal sealed class MirrorDiagWindow
     {
         var fps = seconds > 0 ? Pushed / seconds : 0;
         var line = string.Create(CultureInfo.InvariantCulture,
-            $"[mirror-diag] {seconds:F1}s acquire={AcquireCalls} timeouts={Timeouts} frames={Frames} pointerOnly={PointerOnly} accumulated={AccumulatedSum} copies={Copies} pushed={Pushed} fps={fps:F1} lost={Lost} recreated={Recreated} acquireMs={Triple(_acquire, _acquireN)} copyMapMs={Triple(_copyMap, _copyMapN)} blitMs={Triple(_blit, _blitN)} (p50/p95/max)");
+            $"[mirror-diag] {seconds:F1}s acquire={AcquireCalls} timeouts={Timeouts} frames={Frames} pointerOnly={PointerOnly} accumulated={AccumulatedSum} copies={Copies} pushed={Pushed} fps={fps:F1} lost={Lost} recreated={Recreated} path={Path} acquireMs={Triple(_acquire, _acquireN)} copyMapMs={Triple(_copyMap, _copyMapN)} blitMs={Triple(_blit, _blitN)} readbackMs={Triple(_readback, _readbackN)} (p50/p95/max)");
         AcquireCalls = Timeouts = Frames = PointerOnly = Copies = Pushed = Lost = Recreated = 0;
         AccumulatedSum = 0;
-        _acquireN = _copyMapN = _blitN = 0;
+        _acquireN = _copyMapN = _blitN = _readbackN = 0;
         return line;
     }
 }
