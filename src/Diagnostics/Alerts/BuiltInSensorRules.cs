@@ -195,7 +195,7 @@ public static class BuiltInSensorRules
         High = device.Kind == FanSpeed ? null : DefaultHigh(device.Kind, device.Integrated),
         RaiseAfterSeconds = RaiseAfterSeconds,
         ClearAfterSeconds = ClearAfterSeconds,
-        Severity = SensorAlertRules.Watch,
+        Severity = SensorAlertRules.Act,
         NotifyDesktop = true,
         ShowInHealth = true,
         RepeatMinutes = 0,
@@ -295,7 +295,7 @@ public static class BuiltInSensorRules
             Sensor = new SensorRef { Category = Category, Id = spec.TemplateId, Type = "Temperature", ParentName = "" },
             High = spec.NewInstallHigh,
             RaiseAfterSeconds = RaiseAfterSeconds,
-            Severity = SensorAlertRules.Watch,
+            Severity = SensorAlertRules.Act,
             BuiltIn = spec.Kind,
         };
         var (legacyEnabled, legacyLimit, defaultLimit) = spec.Kind switch

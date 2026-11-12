@@ -231,7 +231,7 @@ public partial class SensorAlertEngineTests
         Assert.All(byKind.Values, x =>
         {
             Assert.Equal(60, x.RaiseAfterSeconds);
-            Assert.Equal("watch", x.Severity);
+            Assert.Equal("act", x.Severity);
             Assert.True(x.NotifyDesktop);
             Assert.True(x.Enabled);
         });

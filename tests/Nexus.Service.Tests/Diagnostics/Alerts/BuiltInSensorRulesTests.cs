@@ -75,7 +75,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         Assert.True(rule.ShowInHealth);
         Assert.Equal(60, rule.RaiseAfterSeconds);
         Assert.Equal(5, rule.ClearAfterSeconds);
-        Assert.Equal("watch", rule.Severity);
+        Assert.Equal("act", rule.Severity);
         Assert.Equal(new SensorRef { Category = "builtin", Id = seriesId, Name = "Name", Type = "Temperature", ParentName = "" }.Id, rule.Sensor.Id);
         Assert.Equal("builtin", rule.Sensor.Category);
     }
