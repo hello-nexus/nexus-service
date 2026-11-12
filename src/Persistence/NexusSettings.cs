@@ -1632,6 +1632,8 @@ public sealed class DevicesSettings
     public bool KrakenLcdSleepWhenLocked { get; set; } = true;
     /// <summary>Service-internal: the Kraken backlight to return to after a lock darkened it. Set while dark, cleared once restored; never the user's brightness.</summary>
     public int? KrakenLcdLockRestore { get; set; }
+    /// <summary>The NZXT Kraken LCD orientation in degrees. The cooler keeps only quarter turns, so this remembers the extra 45 step of a round panel; absent on settings written before 45 degree steps, where the cooler's own value stands.</summary>
+    public int? KrakenLcdOrientationDegrees { get; set; }
     /// <summary>
     /// User-defined zone partition per partitionable device, keyed by device id
     /// (keeb hub id, OpenRGB stable id). Absent key = the provider's default

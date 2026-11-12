@@ -842,6 +842,9 @@ public static class NexusServiceCollectionExtensions
                 () => store.Load().Devices.KrakenLcdLockRestore,
                 level => store.Update(st => st.Devices.KrakenLcdLockRestore = level));
         }
+        hub.BindOrientation(
+            () => store.Load().Devices.KrakenLcdOrientationDegrees,
+            degrees => store.Update(st => st.Devices.KrakenLcdOrientationDegrees = degrees));
         return hub;
     }
 

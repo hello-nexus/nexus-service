@@ -60,6 +60,14 @@ public sealed record KrakenModel(
 {
     public bool HasLcd => LcdFormat != KrakenLcdFormat.None;
 
+    /// <summary>
+    /// Every Kraken panel in the table sits behind a circular window; the panel service files
+    /// them all under the round surface (<c>PanelSurfaces.LegacyKraken</c> reads as
+    /// <c>LcdRound</c>). A square-windowed model added later returns false here and keeps whole
+    /// quarter turns.
+    /// </summary>
+    public bool LcdRound => HasLcd;
+
     /// <summary>Bytes in one uncompressed RGBA frame at this model's panel size.</summary>
     public int LcdFrameBytes => LcdWidth * LcdHeight * 4;
 

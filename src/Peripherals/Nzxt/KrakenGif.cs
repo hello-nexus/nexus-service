@@ -23,6 +23,7 @@ public static class KrakenGif
     // A longer clip or a faster rate only grows the file the pump has to hold.
     private const string MaxSeconds = "20";
     private const string MaxFps = "25";
+    internal const string Rotate45Filter = "rotate=PI/4:ow=iw:oh=ih:c=black";
     private const int TimeoutSeconds = 60;
 
     /// <summary>Fits <paramref name="sourcePath"/> to the panel, unrotated.</summary>
@@ -37,8 +38,12 @@ public static class KrakenGif
         return await RunAsync(sourcePath, graph, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Rotates a fitted GIF clockwise by <paramref name="quarterTurns"/>; 0 returns it as is.</summary>
-    public static async Task<byte[]> RotateAsync(byte[] gif, int quarterTurns, CancellationToken ct)
+    /// <summary>
+    /// Rotates a fitted GIF clockwise by <paramref name="quarterTurns"/> plus, with
+    /// <paramref name="extra45"/>, a further 45 degrees (round panels; the clipped corners go black).
+    /// No rotation returns it as is.
+    /// </summary>
+    public static async Task<byte[]> RotateAsync(byte[] gif, int quarterTurns, CancellationToken ct, bool extra45 = false)
     {
         var transpose = (quarterTurns & 0x03) switch
         {
@@ -47,7 +52,8 @@ public static class KrakenGif
             3 => "transpose=cclock",
             _ => null,
         };
-        if (transpose == null)
+        var chain = extra45 ? (transpose == null ? Rotate45Filter : Rotate45Filter + "," + transpose) : transpose;
+        if (chain == null)
         {
             return gif;
         }
@@ -55,7 +61,7 @@ public static class KrakenGif
         try
         {
             await File.WriteAllBytesAsync(input, gif, ct).ConfigureAwait(false);
-            return await RunAsync(input, $"[0:v]{transpose}", ct).ConfigureAwait(false);
+            return await RunAsync(input, $"[0:v]{chain}", ct).ConfigureAwait(false);
         }
         finally
         {

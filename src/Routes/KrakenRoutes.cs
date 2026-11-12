@@ -49,7 +49,8 @@ public static partial class DevicesRoutes
                     LcdGif = hub.HasLcd && hub.Model.FirmwareGif,
                     LcdBrightness = snap.LcdBrightness,
                     LcdSleepWhenLocked = store.Load().Devices.KrakenLcdSleepWhenLocked,
-                    LcdOrientation = snap.LcdOrientationQuarterTurns * 90,
+                    LcdOrientation = snap.LcdOrientationDegrees,
+                    LcdRound = hub.LcdRound,
                     LcdMode = snap.DisplayMode switch
                     {
                         KrakenDisplayMode.Blank => "off",
@@ -86,27 +87,31 @@ public static partial class DevicesRoutes
                     return Results.BadRequest(ApiResponse.Fail("brightness must be 0-100"));
                 }
                 int quarterTurns = snap.LcdOrientationQuarterTurns;
+                bool extra45 = snap.LcdExtra45;
                 if (body.Orientation is { } deg)
                 {
-                    if (deg != 0 && deg != 90 && deg != 180 && deg != 270)
+                    // Round panels also take the 45 degree steps; any other shape stays on whole quarter turns.
+                    if (!KrakenOrientation.IsAllowed(deg, hub.LcdRound))
                     {
-                        return Results.BadRequest(ApiResponse.Fail("orientation must be 0, 90, 180 or 270"));
+                        return Results.BadRequest(ApiResponse.Fail(hub.LcdRound
+                            ? "orientation must be a multiple of 45 from 0 to 315"
+                            : "orientation must be 0, 90, 180 or 270"));
                     }
-                    quarterTurns = deg / 90;
+                    (quarterTurns, extra45) = KrakenOrientation.Split(deg);
                 }
                 // Backlight and rotation share one command, so both always go together.
                 var shownGif = hub.ShownLcdGif;
-                if (!hub.SetLcdBacklight(body.Brightness ?? snap.LcdBrightness, quarterTurns))
+                if (!hub.SetLcdBacklight(body.Brightness ?? snap.LcdBrightness, quarterTurns, extra45))
                 {
                     return Results.BadRequest(ApiResponse.Fail("failed to set lcd backlight"));
                 }
                 // The hub re-renders a still on rotation itself; a GIF needs ffmpeg, so it is redone here.
-                if (shownGif != null && quarterTurns != snap.LcdOrientationQuarterTurns)
+                if (shownGif != null && (quarterTurns != snap.LcdOrientationQuarterTurns || extra45 != snap.LcdExtra45))
                 {
                     byte[] rotated;
                     try
                     {
-                        rotated = await KrakenGif.RotateAsync(shownGif, quarterTurns, ctx.RequestAborted).ConfigureAwait(false);
+                        rotated = await KrakenGif.RotateAsync(shownGif, quarterTurns, ctx.RequestAborted, extra45).ConfigureAwait(false);
                     }
                     catch (InvalidOperationException ex)
                     {
@@ -114,7 +119,7 @@ public static partial class DevicesRoutes
                         return Results.BadRequest(ApiResponse.Fail("failed to rotate the gif"));
                     }
                     // Stale: a newer upload or rotation took the panel over and owns its orientation.
-                    if (hub.UploadLcdGif(rotated, shownGif, quarterTurns, onlyIfShown: true) == KrakenGifUpload.Failed)
+                    if (hub.UploadLcdGif(rotated, shownGif, quarterTurns, onlyIfShown: true, extra45: extra45) == KrakenGifUpload.Failed)
                     {
                         return Results.BadRequest(ApiResponse.Fail("lcd upload rejected by device"));
                     }
@@ -422,13 +427,14 @@ public static partial class DevicesRoutes
             // A rotation that lands during the conversion makes the upload Stale; redo it.
             for (int attempt = 0; attempt < 3; attempt++)
             {
-                int turns = hub.Snapshot.LcdOrientationQuarterTurns;
-                var wire = await KrakenGif.RotateAsync(fitted, turns, ct).ConfigureAwait(false);
+                var orientation = hub.Snapshot;
+                int turns = orientation.LcdOrientationQuarterTurns;
+                var wire = await KrakenGif.RotateAsync(fitted, turns, ct, orientation.LcdExtra45).ConfigureAwait(false);
                 if (wire.Length == 0 || wire.Length > KrakenGif.MaxWireBytes)
                 {
                     return Results.BadRequest(ApiResponse.Fail($"converted gif is {wire.Length} bytes; the pump takes up to {KrakenGif.MaxWireBytes}"));
                 }
-                switch (hub.UploadLcdGif(wire, fitted, turns))
+                switch (hub.UploadLcdGif(wire, fitted, turns, extra45: orientation.LcdExtra45))
                 {
                     case KrakenGifUpload.Shown:
                         return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
@@ -469,7 +475,10 @@ public sealed class KrakenStateResponse
     public bool LcdGif { get; set; }
     public int LcdBrightness { get; set; }
     public bool LcdSleepWhenLocked { get; set; }
+    /// <summary>Degrees clockwise: whole quarter turns, plus 45 steps on a round panel.</summary>
     public int LcdOrientation { get; set; }
+    /// <summary>True when the panel takes 45 degree steps.</summary>
+    public bool LcdRound { get; set; }
     public string LcdMode { get; set; } = "";
     public KrakenChannelDto[] Channels { get; set; } = Array.Empty<KrakenChannelDto>();
 }

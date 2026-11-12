@@ -42,8 +42,10 @@ public sealed class KrakenSnapshot
         int lcdBrightness,
         int lcdOrientationQuarterTurns,
         KrakenDisplayMode displayMode,
-        IReadOnlyList<KrakenLightingChannel> channels)
+        IReadOnlyList<KrakenLightingChannel> channels,
+        bool lcdExtra45 = false)
     {
+        LcdExtra45 = lcdExtra45;
         LiquidTempC = liquidTempC;
         PumpRpm = pumpRpm;
         PumpDuty = pumpDuty;
@@ -64,18 +66,21 @@ public sealed class KrakenSnapshot
     public string FirmwareVersion { get; }
     public int LcdBrightness { get; }
     public int LcdOrientationQuarterTurns { get; }
+    /// <summary>A further 45 degrees applied host-side on top of the quarter turns; round panels only.</summary>
+    public bool LcdExtra45 { get; }
+    public int LcdOrientationDegrees => KrakenOrientation.ToDegrees(LcdOrientationQuarterTurns, LcdExtra45);
     public KrakenDisplayMode DisplayMode { get; }
     public IReadOnlyList<KrakenLightingChannel> Channels { get; }
 
     public KrakenSnapshot WithReading(KrakenReading reading) => new(
         reading.LiquidTempC, reading.PumpRpm, reading.PumpDuty, reading.FanRpm, reading.FanDuty,
-        FirmwareVersion, LcdBrightness, LcdOrientationQuarterTurns, DisplayMode, Channels);
+        FirmwareVersion, LcdBrightness, LcdOrientationQuarterTurns, DisplayMode, Channels, LcdExtra45);
 
-    public KrakenSnapshot WithLcd(int brightness, int orientationQuarterTurns) => new(
+    public KrakenSnapshot WithLcd(int brightness, int orientationQuarterTurns, bool extra45 = false) => new(
         LiquidTempC, PumpRpm, PumpDuty, FanRpm, FanDuty,
-        FirmwareVersion, brightness, orientationQuarterTurns, DisplayMode, Channels);
+        FirmwareVersion, brightness, orientationQuarterTurns, DisplayMode, Channels, extra45);
 
     public KrakenSnapshot WithDisplayMode(KrakenDisplayMode mode) => new(
         LiquidTempC, PumpRpm, PumpDuty, FanRpm, FanDuty,
-        FirmwareVersion, LcdBrightness, LcdOrientationQuarterTurns, mode, Channels);
+        FirmwareVersion, LcdBrightness, LcdOrientationQuarterTurns, mode, Channels, LcdExtra45);
 }

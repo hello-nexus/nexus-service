@@ -252,6 +252,41 @@ public sealed class KrakenHub : IDisposable
         _follows = follows;
     }
 
+    // The user's orientation in degrees. The cooler stores only quarter turns, so the extra 45 degrees
+    // of a round panel is remembered here and trusted only while its quarter turns still match the
+    // cooler's (a rotation made elsewhere wins).
+    private Func<int?>? _loadOrientation;
+    private Action<int>? _saveOrientation;
+    private byte[]? _extraTurnScratch;
+    private byte[]? _camExtraTurnScratch;
+
+    /// <summary>Wires where the orientation in degrees is remembered.</summary>
+    public void BindOrientation(Func<int?> load, Action<int> save)
+    {
+        _loadOrientation = load;
+        _saveOrientation = save;
+    }
+
+    /// <summary>Whether this panel takes 45 degree steps: a round window on a square frame.</summary>
+    public bool LcdRound => _model.LcdRound && _lcdWidth == _lcdHeight && _lcdWidth > 0;
+
+    // Applies the host-side extra 45 degrees before the quarter-turn encoders. Returns the frame itself
+    // when there is none. The scratch is one buffer per call site family, reused across frames.
+    private ReadOnlySpan<byte> WithExtraTurn(ReadOnlySpan<byte> frame, bool extra, ref byte[]? scratch)
+    {
+        int size = _lcdWidth;
+        if (!extra || size <= 0 || size != _lcdHeight || frame.Length < size * size * 4)
+        {
+            return frame;
+        }
+        if (scratch == null || scratch.Length != size * size * 4)
+        {
+            scratch = new byte[size * size * 4];
+        }
+        KrakenOrientation.Rotate45(frame, size, scratch);
+        return scratch;
+    }
+
     /// <summary>The user's slider as remembered by the schedule binding, or null.</summary>
     public int? RememberedSlider => _loadSlider?.Invoke();
 
@@ -274,7 +309,7 @@ public sealed class KrakenHub : IDisposable
             // adopted a capped reading at connect.
             if (_follows?.Invoke() == true && _loadSlider?.Invoke() is { } slider && slider != _snapshot.LcdBrightness)
             {
-                _snapshot = _snapshot.WithLcd(Math.Clamp(slider, 0, 100), _snapshot.LcdOrientationQuarterTurns);
+                _snapshot = _snapshot.WithLcd(Math.Clamp(slider, 0, 100), _snapshot.LcdOrientationQuarterTurns, _snapshot.LcdExtra45);
             }
             return WriteLocked(BacklightReport(Scaled(_snapshot.LcdBrightness), _snapshot.LcdOrientationQuarterTurns));
         }
@@ -722,6 +757,7 @@ public sealed class KrakenHub : IDisposable
             int brightness = 0;
             int? resyncLevel = null;
             int orientation = 0;
+            bool extra45 = false;
             var mode = KrakenDisplayMode.Liquid;
             if (_model.HasLcd)
             {
@@ -738,6 +774,8 @@ public sealed class KrakenHub : IDisposable
                         brightness = remembered;
                     }
                     orientation = lcdInfo.Value.OrientationQuarterTurns;
+                    extra45 = _model.LcdRound && _loadOrientation?.Invoke() is { } savedDegrees
+                        && KrakenOrientation.Split(savedDegrees) is (var savedTurns, true) && savedTurns == (orientation & 0x03);
                     // The panel reports its own size; the model table is only the seed, so a
                     // variant we have not measured still gets driven at its real resolution.
                     if (lcdInfo.Value.Width > 0 && lcdInfo.Value.Height > 0)
@@ -783,7 +821,7 @@ public sealed class KrakenHub : IDisposable
             _snapshot = new KrakenSnapshot(
                 0, 0, 0, 0, 0,
                 fw?.ToString() ?? "",
-                brightness, orientation, mode, channels);
+                brightness, orientation, mode, channels, extra45);
             if (_model.HasLcd)
             {
                 _lcd = _lcdFactory?.Open(_device.Serial);
@@ -1039,8 +1077,9 @@ public sealed class KrakenHub : IDisposable
     /// Backlight and rotation share one command, so both are always sent together using
     /// the snapshot for whichever value the caller is not changing.
     /// </summary>
-    public bool SetLcdBacklight(int brightnessPercent, int orientationQuarterTurns)
+    public bool SetLcdBacklight(int brightnessPercent, int orientationQuarterTurns, bool extra45 = false)
     {
+        extra45 &= LcdRound;
         // Taken before the transfer lock; the flag only flips under both, so a stale read at
         // worst sends one command that the lock path then corrects.
         var report = BacklightReport(Scaled(brightnessPercent), orientationQuarterTurns);
@@ -1075,9 +1114,10 @@ public sealed class KrakenHub : IDisposable
                 return false;
             }
             int turns = orientationQuarterTurns & 0x03;
-            bool rotated = turns != _snapshot.LcdOrientationQuarterTurns;
-            _snapshot = _snapshot.WithLcd(Math.Clamp(brightnessPercent, 0, 100), turns);
+            bool rotated = turns != _snapshot.LcdOrientationQuarterTurns || extra45 != _snapshot.LcdExtra45;
+            _snapshot = _snapshot.WithLcd(Math.Clamp(brightnessPercent, 0, 100), turns, extra45);
             _saveSlider?.Invoke(_snapshot.LcdBrightness);
+            _saveOrientation?.Invoke(_snapshot.LcdOrientationDegrees);
             // The panel will not re-orient a stored image on its own.
             if (rotated && _lastLcdFrame != null && _snapshot.DisplayMode == KrakenDisplayMode.Bucket)
             {
@@ -1294,6 +1334,7 @@ public sealed class KrakenHub : IDisposable
     private int EncodeLcdPayloadLocked(ReadOnlySpan<byte> frame, int quarterTurns, bool sourceIsBgra, out byte format)
     {
         int w = _lcdWidth, h = _lcdHeight;
+        frame = WithExtraTurn(frame, _snapshot.LcdExtra45, ref _extraTurnScratch);
         switch (_model.LcdFormat)
         {
             case KrakenLcdFormat.Q565:
@@ -1347,7 +1388,7 @@ public sealed class KrakenHub : IDisposable
     /// does, with <paramref name="onlyIfShown"/>, any upload that replaced <paramref name="unrotated"/>.
     /// The bulk transfer holds the HID lock; the cooler runs its own curves meanwhile.
     /// </summary>
-    public KrakenGifUpload UploadLcdGif(byte[] gif, byte[] unrotated, int quarterTurns, bool onlyIfShown = false)
+    public KrakenGifUpload UploadLcdGif(byte[] gif, byte[] unrotated, int quarterTurns, bool onlyIfShown = false, bool extra45 = false)
     {
         lock (_lcdTransferLock)
         lock (_lock)
@@ -1356,7 +1397,7 @@ public sealed class KrakenHub : IDisposable
             {
                 return KrakenGifUpload.Failed;
             }
-            if (_snapshot.LcdOrientationQuarterTurns != (quarterTurns & 0x03)
+            if (_snapshot.LcdOrientationQuarterTurns != (quarterTurns & 0x03) || _snapshot.LcdExtra45 != extra45
                 || (onlyIfShown && (!ReferenceEquals(_lastLcdGif, unrotated) || _snapshot.DisplayMode != KrakenDisplayMode.Bucket)))
             {
                 return KrakenGifUpload.Stale;
@@ -1647,9 +1688,11 @@ public sealed class KrakenHub : IDisposable
             }
             int w = _lcdWidth, h = _lcdHeight;
             int turns = _snapshot.LcdOrientationQuarterTurns;
+            bool extra = _snapshot.LcdExtra45;
+            int key = KrakenOrientation.ToDegrees(turns, extra);
             var now = Clock();
             bool changed = _plusSource == null || _plusSource.Length != bgra.Length
-                || _plusWire == null || turns != _plusTurns || _plusHoldIsStill
+                || _plusWire == null || key != _plusTurns || _plusHoldIsStill
                 || !bgra.SequenceEqual(_plusSource);
             if (!changed && _plusActive && now - Volatile.Read(ref _plusSentAtMs) < PlusIdleResendMs)
             {
@@ -1663,9 +1706,9 @@ public sealed class KrakenHub : IDisposable
                 {
                     _plusSource = new byte[bgra.Length];
                 }
-                Rgb565Encoder.Encode(bgra, w, h, turns, _plusWire!, sourceIsBgra: true, highByteFirst: true);
+                Rgb565Encoder.Encode(WithExtraTurn(bgra, extra, ref _extraTurnScratch), w, h, turns, _plusWire!, sourceIsBgra: true, highByteFirst: true);
                 bgra.CopyTo(_plusSource);
-                _plusTurns = turns;
+                _plusTurns = key;
             }
             return SendPlusWireLocked(now, still: false);
         }
@@ -2007,7 +2050,8 @@ public sealed class KrakenHub : IDisposable
         }
         BeforeCamOffer?.Invoke();
         int w = _lcdWidth, h = _lcdHeight;
-        int turns = _snapshot.LcdOrientationQuarterTurns;
+        var camSnap = _snapshot;
+        int turns = camSnap.LcdOrientationQuarterTurns;
         var len = Rgb565Encoder.EncodedLength(w, h);
         lock (_camLock)
         {
@@ -2015,7 +2059,7 @@ public sealed class KrakenHub : IDisposable
             {
                 _camPending = new byte[len];
             }
-            Rgb565Encoder.Encode(bgra, w, h, turns, _camPending, sourceIsBgra: true, highByteFirst: true);
+            Rgb565Encoder.Encode(WithExtraTurn(bgra, camSnap.LcdExtra45, ref _camExtraTurnScratch), w, h, turns, _camPending, sourceIsBgra: true, highByteFirst: true);
             _camFresh = true;
             Volatile.Write(ref _camOfferedAtMs, Clock());
             if (_camRun == null && CamSenderThread && !_camClosed && !_disposed)
@@ -2190,6 +2234,7 @@ public sealed class KrakenHub : IDisposable
     {
         byte[]? source;
         int turns;
+        bool extra;
         lock (_lock)
         {
             if (_lockDimmed)
@@ -2204,6 +2249,7 @@ public sealed class KrakenHub : IDisposable
             }
             source = _lastLcdFrame;
             turns = _snapshot.LcdOrientationQuarterTurns;
+            extra = _snapshot.LcdExtra45;
         }
         lock (_plusHoldLock)
         {
@@ -2218,9 +2264,9 @@ public sealed class KrakenHub : IDisposable
             return false;
         }
         EnsurePlusWire(Rgb565Encoder.EncodedLength(_lcdWidth, _lcdHeight));
-        Rgb565Encoder.Encode(source, _lcdWidth, _lcdHeight, turns, _plusWire!, sourceIsBgra: false, highByteFirst: true);
+        Rgb565Encoder.Encode(WithExtraTurn(source, extra, ref _extraTurnScratch), _lcdWidth, _lcdHeight, turns, _plusWire!, sourceIsBgra: false, highByteFirst: true);
         _plusSource = null;
-        _plusTurns = turns;
+        _plusTurns = KrakenOrientation.ToDegrees(turns, extra);
         return SendPlusWireLocked(now, still: true);
     }
 
@@ -2256,7 +2302,7 @@ public sealed class KrakenHub : IDisposable
                 lcd = _lcd;
                 EnsureLcdScratch(_lcdWidth * _lcdHeight * 3);
                 encoded = KrakenProtocol.ToWireBgr(
-                    bgra, _lcdWidth, _lcdHeight, _snapshot.LcdOrientationQuarterTurns, sourceIsBgra: true, _lcdScratch);
+                    WithExtraTurn(bgra, _snapshot.LcdExtra45, ref _extraTurnScratch), _lcdWidth, _lcdHeight, _snapshot.LcdOrientationQuarterTurns, sourceIsBgra: true, _lcdScratch);
                 // The capture shows one report read after start and end, not which,
                 // so neither reply is required; re-entry is left to the calls that invalidate it.
                 ExchangeLocked(KrakenProtocol.EncodeStartDirectTransfer(), 0x37, 0x01, DirectReplyTimeoutMs);
