@@ -1,43 +1,78 @@
 using System;
+using System.Linq;
 using Nexus.Service.Cooling;
 
 namespace Nexus.Service.Diagnostics.Alerts;
 
+/// <summary>The CPU's own maximum temperature and whether it came from a hardware reading (which is final) or the model table (which a later reading may replace).</summary>
+public readonly record struct CpuMax(double MaxC, bool FromHardware);
+
 /// <summary>
 /// The default upper limit of the built-in CPU temperature entry: the CPU's own maximum operating temperature, so the
-/// alert fires at the part's throttle point and not at a flat number that is too high for some chips (the X3D parts
-/// throttle well below 100).
+/// alert fires at the part's throttle point and not at a flat number that is too high for some chips.
 /// </summary>
 public static class CpuTemperatureDefault
 {
-    /// <summary>Used when the CPU is unknown, an Intel part (their package limit is 100 on desktop) or Apple Silicon.</summary>
+    /// <summary>Used for an unknown CPU, an Intel part, Apple Silicon and AMD mobile parts the table does not list.</summary>
     public const double FallbackC = 100;
 
-    // Ryzen 5 7600X3D is not in the cooling table; AMD publishes 89 for it, the same as the other 7000 X3D parts.
-    private const string Ryzen7600X3D = "7600X3D";
-    private const double Ryzen7600X3DC = 89;
+    /// <summary>Degrees below the CPU maximum at which the default limit sits. The single place a safety margin is set.</summary>
+    public const double MarginC = 0;
+
+    /// <summary>The default limit for a CPU maximum: the margin applied, then pulled into the entry's limit range (an Intel laptop part above the range is capped).</summary>
+    public static double LimitFromMax(double maxC)
+    {
+        var (min, max) = BuiltInSensorRules.LimitRange(BuiltInSensorRules.CpuTemp);
+        return Math.Clamp(maxC - MarginC, min, max);
+    }
 
     /// <summary>
-    /// A real reading from the hardware (Intel Tjmax from the per-core distance sensors, hwmon on Linux) wins. Otherwise the
-    /// AMD per-model published value from <see cref="ThermalLimits"/>, then 95 for a Ryzen not listed there. Everything else is
-    /// <see cref="FallbackC"/>. The result is always inside the entry's limit range, so an Intel laptop part reporting 105 gives 100.
+    /// A real hardware reading wins. Otherwise a non-AMD part gets <see cref="FallbackC"/>; an AMD part gets the published per-model
+    /// value from <see cref="ThermalLimits"/>, else <see cref="FallbackC"/> for a mobile part (their limit is higher than desktop)
+    /// and the AMD desktop default for any other Ryzen the table does not list.
     /// </summary>
-    public static double Resolve(string? cpuModel, double? liveTjMaxC)
+    public static CpuMax Resolve(string? cpuModel, double? liveTjMaxC)
     {
         var limit = ThermalLimits.ResolveCpu(cpuModel, liveTjMaxC);
-        var value = limit.LimitC;
-        if (limit.Source == ThermalLimitSources.Default && value == ThermalLimits.GenericDefaultC)
+        if (limit.Source == ThermalLimitSources.Hardware)
         {
-            // The cooling resolver's generic default is its own conservative guard value, not a spec; non-AMD parts keep the alert default.
-            value = FallbackC;
+            return new CpuMax(limit.LimitC, true);
         }
-        else if (limit.Source != ThermalLimitSources.Hardware
-            && cpuModel is not null
-            && cpuModel.Contains(Ryzen7600X3D, StringComparison.OrdinalIgnoreCase))
+        if (!ThermalLimits.IsAmd(cpuModel))
         {
-            value = Ryzen7600X3DC;
+            return new CpuMax(FallbackC, false);
         }
-        var (min, max) = BuiltInSensorRules.LimitRange(BuiltInSensorRules.CpuTemp);
-        return Math.Clamp(value, min, max);
+        if (limit.Source == ThermalLimitSources.Spec)
+        {
+            return new CpuMax(limit.LimitC, false);
+        }
+        return new CpuMax(IsMobile(cpuModel) ? FallbackC : limit.LimitC, false);
+    }
+
+    // Mobile Ryzen model tokens end in H, HS, HX, HX3D or U ("7840HS", "7945HX3D", "5800H", "7735U"); the Ryzen AI line is mobile too.
+    // Whole-token tests only, so a desktop "7950X3D" never matches.
+    private static bool IsMobile(string? cpuModel)
+    {
+        var tokens = (cpuModel ?? "").Split(new[] { ' ', '-', '(', ')', ',', '/' }, StringSplitOptions.RemoveEmptyEntries);
+        return tokens.Any(t => t.Equals("AI", StringComparison.OrdinalIgnoreCase) || IsMobileModelToken(t));
+    }
+
+    private static bool IsMobileModelToken(string token)
+    {
+        var digits = 0;
+        while (digits < token.Length && char.IsAsciiDigit(token[digits]))
+        {
+            digits++;
+        }
+        if (digits < 4 || digits == token.Length)
+        {
+            return false;
+        }
+        var suffix = token[digits..];
+        return suffix.Equals("H", StringComparison.OrdinalIgnoreCase)
+            || suffix.Equals("HS", StringComparison.OrdinalIgnoreCase)
+            || suffix.Equals("HX", StringComparison.OrdinalIgnoreCase)
+            || suffix.Equals("HX3D", StringComparison.OrdinalIgnoreCase)
+            || suffix.Equals("U", StringComparison.OrdinalIgnoreCase);
     }
 }

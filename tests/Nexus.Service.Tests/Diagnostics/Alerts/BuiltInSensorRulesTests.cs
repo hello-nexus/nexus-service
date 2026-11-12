@@ -94,6 +94,7 @@ public sealed class BuiltInSensorRulesTests : IDisposable
         Assert.Equal(82, BuiltInSensorRules.Seed(Device("gpuTemp", "gpu-temp:g1", "iGPU", integrated: true), d).High);
 
         Rule(d, "builtin-gpu").High = 90;
+        Rule(d, "builtin-gpu").SeededHigh = 90;
         Assert.Equal(100, BuiltInSensorRules.Seed(Device("gpuTemp", "gpu-temp:g1", "iGPU", integrated: true), d).High);
     }
 

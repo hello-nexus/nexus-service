@@ -102,9 +102,30 @@ public static class BuiltInSensorRules
     /// <summary>The high limit a newly seen device starts with. An integrated GPU shares the CPU die, so it follows the CPU default and never alerts before the CPU entry. The CPU default is the CPU's own maximum when known (<paramref name="cpuMaxC"/>), else the kind's flat default.</summary>
     public static double DefaultHigh(string kind, bool integrated, double? cpuMaxC = null)
     {
-        var followsCpu = kind == CpuTemp || (integrated && kind == GpuTemp);
+        var followsCpu = FollowsCpu(kind, integrated);
         var spec = Specs.First(s => s.Kind == (followsCpu ? CpuTemp : kind));
-        return followsCpu && cpuMaxC is { } max && double.IsFinite(max) ? Math.Clamp(max, spec.LimitMin, spec.LimitMax) : spec.NewInstallHigh;
+        return followsCpu && cpuMaxC is { } max && double.IsFinite(max) ? CpuTemperatureDefault.LimitFromMax(max) : spec.NewInstallHigh;
+    }
+
+    /// <summary>The CPU entry and an integrated GPU (it shares the CPU die) default to the CPU's own maximum.</summary>
+    private static bool FollowsCpu(string kind, bool integrated) => kind == CpuTemp || (integrated && kind == GpuTemp);
+
+    /// <summary>
+    /// True when this stored built-in still holds the default it was seeded with (never edited) and the device's default now differs:
+    /// a live reading arrived after the table value was used, or the CPU changed.
+    /// </summary>
+    public static bool CpuDefaultStale(SensorAlertRule rule, BuiltInDevice device) =>
+        FollowsCpu(device.Kind, device.Integrated)
+        && rule.SeededHigh is { } seeded
+        && rule.High == seeded
+        && DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC) != seeded;
+
+    /// <summary>Moves an untouched CPU-following limit to the device's current default (see <see cref="CpuDefaultStale"/>).</summary>
+    public static void RefreshCpuDefault(SensorAlertRule rule, BuiltInDevice device)
+    {
+        var high = DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC);
+        rule.High = high;
+        rule.SeededHigh = high;
     }
 
     /// <summary>Makes a client-sent built-in safe to store: keeps the stored identity and sensor, and clamps each limit that is set; either may be null.</summary>
@@ -112,6 +133,7 @@ public static class BuiltInSensorRules
     {
         rule.Id = current.Id;
         rule.BuiltIn = current.BuiltIn;
+        rule.SeededHigh = current.SeededHigh;
         rule.Sensor = new SensorRef
         {
             Category = current.Sensor.Category,
@@ -203,6 +225,7 @@ public static class BuiltInSensorRules
         Enabled = true,
         Sensor = FixedSensor(device),
         High = device.Kind == FanSpeed ? null : DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC),
+        SeededHigh = device.Kind == FanSpeed ? null : DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC),
         RaiseAfterSeconds = RaiseAfterSeconds,
         ClearAfterSeconds = ClearAfterSeconds,
         Severity = SensorAlertRules.Act,
@@ -229,15 +252,17 @@ public static class BuiltInSensorRules
         if (template is not null)
         {
             rule.Enabled = template.Enabled;
-            // A limit still at the kind default was never chosen, so the CPU and an integrated GPU take their own (per-CPU) default.
-            var followsCpu = device.Kind == CpuTemp || (device.Integrated && device.Kind == GpuTemp);
-            if (template.High is { } th && !(followsCpu && th == spec.NewInstallHigh))
+            // A template limit still equal to its recorded seed was never chosen, so the CPU and an integrated GPU take their own default (rule.High and SeededHigh already hold it).
+            var untouched = FollowsCpu(device.Kind, device.Integrated) && template.SeededHigh is { } ts && template.High == ts;
+            if (template.High is { } th && !untouched)
             {
                 rule.High = ClampLimit(th, spec);
+                rule.SeededHigh = null;
             }
             else if (template.High is null)
             {
                 rule.High = null;
+                rule.SeededHigh = null;
             }
             rule.Low = ClampLimit(template.Low, spec);
             rule.RaiseAfterSeconds = template.RaiseAfterSeconds;
@@ -305,6 +330,7 @@ public static class BuiltInSensorRules
             Enabled = true,
             Sensor = new SensorRef { Category = Category, Id = spec.TemplateId, Type = "Temperature", ParentName = "" },
             High = spec.NewInstallHigh,
+            SeededHigh = spec.NewInstallHigh,
             RaiseAfterSeconds = RaiseAfterSeconds,
             Severity = SensorAlertRules.Act,
             BuiltIn = spec.Kind,
@@ -321,6 +347,8 @@ public static class BuiltInSensorRules
         if (double.IsFinite(legacyLimit) && legacyLimit != defaultLimit)
         {
             rule.High = Math.Clamp(legacyLimit, spec.LimitMin, spec.LimitMax);
+            // The user chose this limit, even when it equals a new default.
+            rule.SeededHigh = null;
         }
         // What the user effectively had: the old high-temperature toast needed both the master and its own category.
         rule.NotifyDesktop = d.Notifications.Enabled && d.Notifications.HighTemp;

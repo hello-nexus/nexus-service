@@ -55,6 +55,9 @@ public sealed class SensorAlertRule
     /// <summary>Built-in only, wire only: the exact reading behind it right now. Null for a user rule and in storage.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public BuiltInSource? Source { get; set; }
+    /// <summary>Built-in only: the default limit this rule (or hidden template) was last seeded with. While <see cref="High"/> still equals it the user never chose a limit, so a better default may replace it. Null when the limit was user chosen or predates this field.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SeededHigh { get; set; }
 
     public SensorAlertRule Clone()
     {
