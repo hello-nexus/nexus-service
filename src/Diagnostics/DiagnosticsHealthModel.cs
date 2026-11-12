@@ -140,7 +140,7 @@ public sealed class DiagnosticsHealthModel
         {
             "storage" => domains.Storage,
             "gpu" => domains.Gpu,
-            "memory" => domains.Ram,
+            "memory" => true,
             "system" => domains.System,
             "cooling" => domains.Cooling,
             _ => true,
@@ -303,10 +303,7 @@ public sealed class DiagnosticsHealthModel
         // Add* helpers do not self-guard, so keep them Windows-only.
         if (windowsSupported)
         {
-            if (diag.Components.Ram)
-            {
-                AddMemoryComponent(components, lastMemoryTest);
-            }
+            AddMemoryComponent(components, lastMemoryTest);
             if (diag.Components.System)
             {
                 AddSystemComponent(components, pnp);

@@ -109,6 +109,18 @@ public sealed class BuiltInSensorRulesTests : IDisposable
     }
 
     [Fact]
+    public void An_upgrade_with_the_legacy_ram_toggle_off_disables_the_ram_temp_rule()
+    {
+        var d = new DiagnosticsSettings();
+        d.Components.Ram = false;
+
+        BuiltInSensorRules.Ensure(d, newInstall: false);
+
+        Assert.False(Rule(d, "builtin-ram").Enabled);
+        Assert.True(Rule(d, "builtin-cpu").Enabled);
+    }
+
+    [Fact]
     public void An_upgrade_seeds_each_built_in_from_the_legacy_fields()
     {
         var d = new DiagnosticsSettings();

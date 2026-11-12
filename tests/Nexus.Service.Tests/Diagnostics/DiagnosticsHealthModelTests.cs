@@ -429,10 +429,10 @@ public class DiagnosticsHealthModelTests
     [Fact]
     public void OverallUnknown_OnlyWhenNoComponentProducedARealSignal()
     {
-        // Storage unsupported, memory/system gated off: the placeholder is the
+        // Storage unsupported, memory ignored and system gated off: the placeholder is the
         // only component, so there is nothing to be healthy about.
         var diagnostics = new DiagnosticsSettings();
-        diagnostics.Components.Ram = false;
+        diagnostics.IgnoredComponents.Add("memory");
         diagnostics.Components.System = false;
 
         var result = Compute(
@@ -473,6 +473,31 @@ public class DiagnosticsHealthModelTests
         var memory = Assert.Single(result.Components, c => c.Kind == "memory");
         Assert.Equal(HealthStatuses.Act, memory.Status);
     }
+
+    [Fact]
+    public void Memory_IsPresentOnWindows_EvenWhenTheLegacyRamToggleIsOff()
+    {
+        var diagnostics = new DiagnosticsSettings();
+        diagnostics.Components.Ram = false;
+
+        var result = Compute(diagnostics: diagnostics);
+
+        Assert.Single(result.Components, c => c.Kind == "memory");
+    }
+
+#if DEV_TOOLS
+    [Fact]
+    public void FilterSimulated_KeepsMemory_WhenTheLegacyRamToggleIsOff()
+    {
+        var diagnostics = new DiagnosticsSettings();
+        diagnostics.Components.Ram = false;
+        var memory = new HealthComponent { Id = "memory", Kind = "memory" };
+
+        var kept = DiagnosticsHealthModel.FilterSimulated(new[] { memory }, diagnostics);
+
+        Assert.Single(kept);
+    }
+#endif
 
     private static SmartSnapshot SmartSnapshotUnsupported() => new() { Supported = false, Drives = Array.Empty<SmartDriveInfo>() };
 
