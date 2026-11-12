@@ -299,7 +299,12 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     // Free space is a volume query that wakes a sleeping drive. With live drive activity off the first
     // read is kept, so a dashboard open on the page does not repeat it every second.
-    private Dictionary<string, StorageComponent>? _volumeCache;
+    // Keyed by the logical drive letters (GetLogicalDrives is a bitmask read, no drive I/O), so plugging
+    // or removing a volume refreshes it. Free space of a volume that stays mounted is frozen until
+    // live activity is turned back on or the service restarts. Consumers only read the cached objects.
+    private volatile VolumeSnapshot? _volumeCache;
+
+    private sealed record VolumeSnapshot(string Letters, Dictionary<string, StorageComponent> Components);
 
     private Dictionary<string, StorageComponent> ReadVolumeComponents()
     {
@@ -308,13 +313,14 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             _volumeCache = null;
             return ReadVolumesNow();
         }
+        var letters = string.Join('|', Environment.GetLogicalDrives());
         var cached = _volumeCache;
-        if (cached is null)
+        if (cached is null || cached.Letters != letters)
         {
-            cached = ReadVolumesNow();
+            cached = new VolumeSnapshot(letters, ReadVolumesNow());
             _volumeCache = cached;
         }
-        return new Dictionary<string, StorageComponent>(cached);
+        return new Dictionary<string, StorageComponent>(cached.Components);
     }
 
     private static Dictionary<string, StorageComponent> ReadVolumesNow()
@@ -357,9 +363,10 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         // logical-volume subset (LhmComponentIdentifiers.IsSmartStorageComponent).
         if (includeSmart)
         {
+            var hideLive = !_lhm.LiveDriveActivity;
             foreach (var hw in FindHardware(HardwareType.Storage))
             {
-                var component = BuildComponent(hw);
+                var component = BuildComponent(hw, hideLiveStorage: hideLive);
                 var id = LhmComponentIdentifiers.BuildSmartStorageId(hw.Identifier.ToString());
                 result[id] = new StorageComponent
                 {
@@ -506,7 +513,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.Psus.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Storage:
-                    extras.NvmeStorage.Add(BuildComponent(hw));
+                    extras.NvmeStorage.Add(BuildComponent(hw, hideLiveStorage: !_lhm.LiveDriveActivity));
                     break;
                 case HardwareType.EmbeddedController:
                     extras.EmbeddedControllers.Add(BuildComponent(hw));
@@ -521,11 +528,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         return extras;
     }
 
-    private static HardwareComponent BuildComponent(IHardware hw)
+    private static HardwareComponent BuildComponent(IHardware hw, bool hideLiveStorage = false)
     {
         // Sub-hardware (e.g. SuperIO chips on motherboards) carries the actual
         // sensors for some HardwareTypes; walk one level so we surface them all.
-        var sensors = MapSensors(hw);
+        var sensors = MapSensors(hw, hideLiveStorage);
         foreach (var sub in hw.SubHardware)
         {
             sub.Update();
@@ -554,11 +561,14 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), s.Value, Environment.TickCount64, out _);
 
-    private static List<HardwareSensor> MapSensors(IHardware hw)
+    private static List<HardwareSensor> MapSensors(IHardware hw, bool hideLiveStorage = false)
     {
+        var isStorage = hw.HardwareType == HardwareType.Storage;
         var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
         var isPowerMonitor = hw.HardwareType == HardwareType.PowerMonitor;
         return hw.Sensors
+            .Where(s => !(hideLiveStorage && isStorage && LhmComponentIdentifiers.IsLiveStorageActivity(
+                s.SensorType == SensorType.Throughput, s.SensorType == SensorType.Load, s.Name)))
             .Where(s => !isPowerMonitor || !LhmComponentIdentifiers.HidePowerMonitorSensor(
                 s.SensorType == SensorType.Control, s.SensorType == SensorType.Temperature, s.Value))
             .Select(s =>

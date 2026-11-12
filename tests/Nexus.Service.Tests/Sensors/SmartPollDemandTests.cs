@@ -227,4 +227,44 @@ public class SmartPollDemandTests
         var cycles = SmartPollDemand.Cycles(true, new HashSet<string>(), "/nvme/0", () => SmartPollPolicy.NeverSeconds, force: true);
         Assert.False(SmartPollDemand.StorageUpdateDue(cycles, null, 0, force: true));
     }
+
+    [Theory]
+    [InlineData(true, true, false, true)]
+    [InlineData(true, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(false, true, true, true)]
+    [InlineData(false, false, true, false)]
+    public void StorageForce_PeriodicForcedWalkDoesNotReachDrivesWhileLiveActivityIsOff(bool live, bool forcedWalk, bool explicitRefresh, bool expected) =>
+        Assert.Equal(expected, SmartPollDemand.StorageForce(live, forcedWalk, explicitRefresh));
+
+    [Fact]
+    public void ShouldUpdateStorage_LiveOn_AlwaysUpdates() =>
+        Assert.True(SmartPollDemand.ShouldUpdateStorage(true, uint.MaxValue, 0, 1, false));
+
+    [Fact]
+    public void ShouldUpdateStorage_LiveOff_PeriodicForcedWalkRespectsInterval()
+    {
+        var seeded = new HashSet<string> { "/hdd/0" };
+        var cycles = SmartPollDemand.Cycles(true, seeded, "/hdd/0", () => 300, force: false);
+        var force = SmartPollDemand.StorageForce(false, true, false);
+        Assert.False(SmartPollDemand.ShouldUpdateStorage(false, cycles, 0, 60_000, force));
+        Assert.True(SmartPollDemand.ShouldUpdateStorage(false, cycles, 0, 300_000, force));
+    }
+
+    [Fact]
+    public void ShouldUpdateStorage_LiveOff_ExplicitRefreshReadsDueOrNot()
+    {
+        var seeded = new HashSet<string> { "/hdd/0" };
+        var force = SmartPollDemand.StorageForce(false, true, true);
+        var cycles = SmartPollDemand.Cycles(true, seeded, "/hdd/0", () => 300, force);
+        Assert.True(SmartPollDemand.ShouldUpdateStorage(false, cycles, 0, 1_000, force));
+    }
+
+    [Theory]
+    [InlineData(true, false, "Read Rate", true)]
+    [InlineData(false, true, "Total Activity", true)]
+    [InlineData(false, true, "Used Space", false)]
+    [InlineData(false, false, "Temperature", false)]
+    public void IsLiveStorageActivity_HidesThroughputAndActivityKeepsUsedSpace(bool throughput, bool load, string name, bool expected) =>
+        Assert.Equal(expected, LhmComponentIdentifiers.IsLiveStorageActivity(throughput, load, name));
 }

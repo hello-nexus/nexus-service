@@ -57,6 +57,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly SmartActiveFlip _smartActive;
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
     // Guarded by _updateLock. Last walk tick each drive was updated, used only while live drive activity is off.
+    // Set only around a user-initiated health refresh, so a live-activity-off walk reads every drive then.
+    private volatile bool _explicitStorageRefresh;
     private readonly Dictionary<string, long> _storageUpdatedAt = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
@@ -415,7 +417,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     // and free space are on separate paths and still refresh every walk.
                     if (hw.HardwareType == HardwareType.Storage)
                     {
-                        var cycles = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
+                        var forceStorage = SmartPollDemand.StorageForce(
+                            monitoring.LiveDriveActivity, refresh == SensorRefresh.Force, _explicitStorageRefresh);
+                        var cycles = SmartCyclesFor(hw, monitoring, smartDemand, forceStorage);
                         StorageDevice.SmartUpdateCycleCount = cycles;
                         if (!monitoring.LiveDriveActivity)
                         {
@@ -423,7 +427,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                             // unless SMART is due; the update that runs then reads SMART too.
                             var id = hw.Identifier.ToString();
                             long? last = _storageUpdatedAt.TryGetValue(id, out var t) ? t : null;
-                            if (!SmartPollDemand.StorageUpdateDue(cycles, last, now, refresh == SensorRefresh.Force))
+                            if (!SmartPollDemand.ShouldUpdateStorage(false, cycles, last, now, forceStorage))
                             {
                                 if (cycles == uint.MaxValue) _storageUpdatedAt.Remove(id);
                                 continue;
@@ -467,10 +471,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
-    /// <summary>Called by a SMART reader before it reads drive values; walks first when drive reads had stopped.</summary>
     /// <summary>False when the user turned off live drive activity: drive reads then happen only for SMART and explicit requests.</summary>
     public bool LiveDriveActivity => _config.Load().Monitoring.LiveDriveActivity;
 
+    /// <summary>Called by a SMART reader before it reads drive values; walks first when drive reads had stopped.</summary>
     public void BeforeSmartRead()
     {
         // Serialized so a second reader waits for the first reader's walk; never taken while holding _updateLock.
@@ -492,7 +496,15 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         lock (_readerLock)
         {
             SmartLiveConsumers.NoteRead();
-            Update(SensorRefresh.Force);
+            _explicitStorageRefresh = true;
+            try
+            {
+                Update(SensorRefresh.Force);
+            }
+            finally
+            {
+                _explicitStorageRefresh = false;
+            }
         }
     }
 
@@ -507,7 +519,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         return ids;
     }
 
-    private uint SmartCyclesFor(IHardware hw, MonitoringSettings monitoring, SmartPollDemand demand, SensorRefresh refresh)
+    private uint SmartCyclesFor(IHardware hw, MonitoringSettings monitoring, SmartPollDemand demand, bool force)
     {
         var identifier = hw.Identifier.ToString();
         return SmartPollDemand.Cycles(
@@ -519,7 +531,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     ? configured
                     : SmartPollPolicy.DefaultSecondsFor(IsRotational(hw))
                 : monitoring.SmartPollDefaultSeconds,
-            refresh == SensorRefresh.Force);
+            force);
     }
 
     /// <summary>Cached: the seek-penalty query opens the physical drive, so it runs once per drive.</summary>
