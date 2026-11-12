@@ -151,6 +151,34 @@ public class DiagnosticsAlertServiceTests
         Assert.Equal(2, notices.Count);
     }
 
+    [Fact]
+    public void RaiseCooled_UrgentNoticeIsNotHeldForTheFullCooldown()
+    {
+        var (service, notices, time, _) = SensorAlertService(master: true, cooldownMinutes: 60);
+        var urgent = SensorNotice() with { Urgent = true };
+
+        service.RaiseCooled("alert:r1", urgent);
+        time.Now = time.Now.AddMinutes(2);
+        service.RaiseCooled("alert:r1", urgent);
+        Assert.Single(notices);
+
+        time.Now = time.Now.AddMinutes(4);
+        service.RaiseCooled("alert:r1", urgent);
+        Assert.Equal(2, notices.Count);
+    }
+
+    [Fact]
+    public void RaiseCooled_NonUrgentNoticeKeepsTheFullCooldown()
+    {
+        var (service, notices, time, _) = SensorAlertService(master: true, cooldownMinutes: 60);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+        time.Now = time.Now.AddMinutes(10);
+        service.RaiseCooled("alert:r1", SensorNotice());
+
+        Assert.Single(notices);
+    }
+
     private static HealthComponent Component(string id, string kind, string status, string reasonSeverity, string code = "x.reason") =>
         new()
         {

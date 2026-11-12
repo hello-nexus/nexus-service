@@ -14,8 +14,8 @@ namespace Nexus.Service.Diagnostics;
 /// needs attention. Consumed the same way as
 /// <see cref="Nexus.Service.Transfer.TransferAttentionNotice"/>: platform
 /// bootstraps subscribe and surface a tray balloon / native banner.</summary>
-/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to. Urgent notices pass a focus-mode hold in <see cref="Nexus.Service.Notifications.NotificationGate"/> and wait only for onboarding.</summary>
-public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null, bool Urgent = false);
+/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to. Urgent notices pass a focus-mode hold in <see cref="Nexus.Service.Notifications.NotificationGate"/> and wait only for onboarding. Severity ("watch" or "act") picks the toast icon, null keeps the plain info icon.</summary>
+public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null, bool Urgent = false, string? Severity = null);
 
 /// <summary>
 /// Polls <see cref="DiagnosticsHealthModel"/> every 5 minutes (first check 2
@@ -42,6 +42,9 @@ public sealed class DiagnosticsAlertService : BackgroundService
     private readonly Dictionary<string, DateTime> _lastNotifiedUtc = new(StringComparer.Ordinal);
     private readonly FeatureGates _gates;
     private readonly TimeProvider _time;
+
+    // An urgent notice must not sit out the full user cooldown after one earlier toast: a limit that keeps being crossed would otherwise stay silent for the whole window.
+    private static readonly TimeSpan UrgentCooldown = TimeSpan.FromMinutes(5);
 
     /// <summary>Raised when a component needs attention and the user's
     /// notification settings allow it. Platform bootstraps subscribe to
@@ -83,10 +86,16 @@ public sealed class DiagnosticsAlertService : BackgroundService
             return;
         }
         var now = _time.GetUtcNow().UtcDateTime;
+        var cooldown = TimeSpan.FromMinutes(notifications.CooldownMinutes);
+        if (notice.Urgent && cooldown > UrgentCooldown)
+        {
+            cooldown = UrgentCooldown;
+        }
         lock (_lastNotifiedUtc)
         {
-            if (_lastNotifiedUtc.TryGetValue(key, out var last) && now - last < TimeSpan.FromMinutes(notifications.CooldownMinutes))
+            if (_lastNotifiedUtc.TryGetValue(key, out var last) && now - last < cooldown)
             {
+                ServiceLog.Info($"[diagnostics-alert] {key} notice held back by cooldown");
                 return;
             }
             _lastNotifiedUtc[key] = now;

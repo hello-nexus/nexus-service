@@ -333,6 +333,7 @@ public partial class SensorAlertEngineTests
         Assert.Equal("sensorAlert", notice.Kind);
         Assert.Equal("CPU Package Temperature above 80 °C for 3 s (now 90 °C)", notice.Text);
         Assert.False(notice.Urgent);
+        Assert.Equal("watch", notice.Severity);
     }
 
     [Fact]
@@ -365,6 +366,7 @@ public partial class SensorAlertEngineTests
 
         var (notice, _) = Assert.Single(rig.Notices);
         Assert.True(notice.Urgent);
+        Assert.Equal("act", notice.Severity);
         Assert.Equal(SensorAlertStates.Active, rig.State("r2"));
     }
 
