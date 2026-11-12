@@ -41,14 +41,14 @@ public sealed class SensorAlertRule
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public double? High { get; set; }
     public int RaiseAfterSeconds { get; set; } = 5;
-    /// <summary>Wire and downgrade compatibility only: always 5, any input is ignored. The engine clears after a fixed delay.</summary>
+    /// <summary>Wire and downgrade compatibility only: a constant, any input is ignored. The engine clears after a fixed delay.</summary>
     public int ClearAfterSeconds { get => 5; set { } }
     /// <summary>"watch" | "act".</summary>
     public string Severity { get; set; } = "watch";
     public bool NotifyDesktop { get; set; } = true;
-    /// <summary>Wire and downgrade compatibility only: always true, any input is ignored.</summary>
+    /// <summary>Wire and downgrade compatibility only: a constant, any input is ignored.</summary>
     public bool ShowInHealth { get => true; set { } }
-    /// <summary>Wire and downgrade compatibility only: always 0, any input is ignored. An alert notifies once per episode.</summary>
+    /// <summary>Wire and downgrade compatibility only: a constant, any input is ignored. An alert notifies once per episode.</summary>
     public int RepeatMinutes { get => 0; set { } }
     /// <summary>Null for a user rule; else the component this built-in rule watches: "cpuTemp" | "gpuTemp" | "storageTemp" | "ramTemp". A built-in keeps a fixed id and sensor, can be turned off but not deleted.</summary>
     public string? BuiltIn { get; set; }

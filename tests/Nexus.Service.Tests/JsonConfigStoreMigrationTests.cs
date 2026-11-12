@@ -26,6 +26,74 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_DropsPerGpuIgnoreEntriesFromAFileAtTheFirstHealthChecksGeneration()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "diagnostics": {
+            "notifications": { "enabled": true },
+            "ignoredComponents": [ "gpu:0", "storage:Z52AFCNF", "gpu:1", "cooling:pump-1" ],
+            "builtInSensorsVersion": 2,
+            "healthChecksVersion": 1
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var diagnostics = store.Load().Diagnostics;
+            Assert.Equal(new[] { "storage:Z52AFCNF", "cooling:pump-1" }, diagnostics.IgnoredComponents);
+            Assert.Equal(Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.HealthChecksVersion, diagnostics.HealthChecksVersion);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+
+        var reopened = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.Equal(new[] { "storage:Z52AFCNF", "cooling:pump-1" }, reopened.Load().Diagnostics.IgnoredComponents);
+        }
+        finally
+        {
+            reopened.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_KeepsPerGpuIgnoreEntriesOnlyUntilTheMigrationRuns_AndPendingChoicesSurviveFromGenerationZero()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "diagnostics": {
+            "notifications": { "enabled": true },
+            "components": { "cpu": true, "gpu": false, "storage": true, "ram": true, "cooling": false, "system": true },
+            "ignoredComponents": [ "gpu:0" ]
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var diagnostics = store.Load().Diagnostics;
+            Assert.Empty(diagnostics.IgnoredComponents);
+            Assert.True(diagnostics.Components.Gpu);
+            Assert.True(diagnostics.PendingFansOff);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_NoOpOnAlreadyV5()
     {
         var v5Json = """

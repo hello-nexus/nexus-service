@@ -138,11 +138,8 @@ public sealed class DiagnosticsHealthModel
         var domains = diagnostics.Components;
         return components.Where(c => !ignored.Contains(c.Id) && c.Kind switch
         {
-            "storage" => domains.Storage,
-            "gpu" => domains.Gpu,
             "memory" => true,
             "system" => domains.System,
-            "cooling" => domains.Cooling,
             _ => true,
         }).ToList();
     }
@@ -285,17 +282,14 @@ public sealed class DiagnosticsHealthModel
         // Storage surfaces off Windows too: AddStorageComponents returns early
         // on !smart.Supported, so it contributes only where a real source
         // produced data (LHM on Windows, smartctl on Linux).
-        if (diag.Components.Storage)
-        {
-            AddStorageComponents(components, smart);
-        }
+        AddStorageComponents(components, smart);
         // GPU off Windows only when a live health source (NVML) reported.
         // AddGpuComponents' known-models fallback adds an Unknown placeholder
         // tile whenever a model name exists (system_profiler on every Mac,
         // lspci on any Linux with a display adapter) - a meaningless tile off
         // Windows, so require gpu.Supported there and keep the Windows path
         // (placeholder included) unchanged.
-        if (diag.Components.Gpu && (windowsSupported || gpu.Supported))
+        if (windowsSupported || gpu.Supported)
         {
             AddGpuComponents(components, gpu, knownGpuModels);
         }
@@ -309,11 +303,8 @@ public sealed class DiagnosticsHealthModel
                 AddSystemComponent(components, pnp);
             }
         }
-        AddCoolingComponents(components, cooling, diag);
-        if (diag.Components.Cooling)
-        {
-            AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
-        }
+        AddCoolingComponents(components, cooling);
+        AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
 
         // Windows always reports the grid (its per-domain scanners exist even
         // when a domain is empty). Elsewhere the grid is meaningful only when
@@ -383,49 +374,45 @@ public sealed class DiagnosticsHealthModel
         severity == ReasonSeverity.Act ? HealthStatuses.Act : HealthStatuses.Watch;
 
     /// <summary>Per-device fan and pump stalls, plus the aggregate "cooling" component. Heat is reported by the built-in sensor alerts, so the aggregate carries no reasons.</summary>
-    private static void AddCoolingComponents(List<HealthComponent> components, CoolingStallSnapshot cooling, DiagnosticsSettings diagnostics)
+    private static void AddCoolingComponents(List<HealthComponent> components, CoolingStallSnapshot cooling)
     {
-        var stallEligible = diagnostics.Components.Cooling && cooling.Devices.Count > 0;
-        if (!stallEligible)
+        if (cooling.Devices.Count == 0)
         {
             return;
         }
 
-        if (diagnostics.Components.Cooling)
+        foreach (var device in cooling.Devices)
         {
-            foreach (var device in cooling.Devices)
+            if (device.Status != CoolingStallStatuses.Stalled && device.Status != CoolingStallStatuses.Suspect)
             {
-                if (device.Status != CoolingStallStatuses.Stalled && device.Status != CoolingStallStatuses.Suspect)
-                {
-                    continue;
-                }
-
-                var isPump = string.Equals(device.Type, "pump", StringComparison.OrdinalIgnoreCase);
-                var code = isPump ? "cooling.pumpStall" : "cooling.fanStall";
-                var severity = device.Status == CoolingStallStatuses.Stalled ? HealthStatuses.Act : HealthStatuses.Watch;
-                var summary = device.Status == CoolingStallStatuses.Stalled
-                    ? $"{device.Name} reports 0 RPM while driven"
-                    : $"{device.Name} reports 0 RPM at low duty";
-                var detail = $"rpm={Fmt(device.Rpm)} targetDuty={Fmt(device.TargetDutyPercent)}% since={device.SinceUtc:O}";
-                var stallParams = new Dictionary<string, string>
-                {
-                    ["rpm"] = Fmt(device.Rpm),
-                    ["targetDuty"] = Fmt(device.TargetDutyPercent),
-                };
-                if (device.SinceUtc is { } since)
-                {
-                    stallParams["since"] = ReasonParams.Ms(since).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                }
-
-                components.Add(new HealthComponent
-                {
-                    Id = $"cooling:{device.Id}",
-                    Kind = "cooling",
-                    Name = device.Name,
-                    Status = severity,
-                    Reasons = new List<HealthComponentReason> { new(code, severity, summary, detail, stallParams) },
-                });
+                continue;
             }
+
+            var isPump = string.Equals(device.Type, "pump", StringComparison.OrdinalIgnoreCase);
+            var code = isPump ? "cooling.pumpStall" : "cooling.fanStall";
+            var severity = device.Status == CoolingStallStatuses.Stalled ? HealthStatuses.Act : HealthStatuses.Watch;
+            var summary = device.Status == CoolingStallStatuses.Stalled
+                ? $"{device.Name} reports 0 RPM while driven"
+                : $"{device.Name} reports 0 RPM at low duty";
+            var detail = $"rpm={Fmt(device.Rpm)} targetDuty={Fmt(device.TargetDutyPercent)}% since={device.SinceUtc:O}";
+            var stallParams = new Dictionary<string, string>
+            {
+                ["rpm"] = Fmt(device.Rpm),
+                ["targetDuty"] = Fmt(device.TargetDutyPercent),
+            };
+            if (device.SinceUtc is { } since)
+            {
+                stallParams["since"] = ReasonParams.Ms(since).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            components.Add(new HealthComponent
+            {
+                Id = $"cooling:{device.Id}",
+                Kind = "cooling",
+                Name = device.Name,
+                Status = severity,
+                Reasons = new List<HealthComponentReason> { new(code, severity, summary, detail, stallParams) },
+            });
         }
 
         components.Add(new HealthComponent

@@ -55,7 +55,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     return;
                 }
-                // The cap counts every listed entry: the user's rules plus the built-ins detected now.
+                // The cap counts every listed entry: the user's rules plus the built-ins listed.
                 if (s.Diagnostics.SensorAlerts.Count(r => r.BuiltIn is null) + builtIns.Count >= SensorAlertRules.MaxRules)
                 {
                     full = true;
@@ -69,11 +69,12 @@ public static class DiagnosticsAlertRoutes
             }
             if (full)
             {
+                // The 409 body is SensorAlreadyTrackedResponse's declared one; the cap case is its Error and Msg subset, with no Code.
                 return Results.Conflict(ApiResponse.Fail($"At most {SensorAlertRules.MaxRules} Watchlist entries are allowed."));
             }
             engine.Reconcile();
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
-        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status409Conflict).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
+        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
         app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {

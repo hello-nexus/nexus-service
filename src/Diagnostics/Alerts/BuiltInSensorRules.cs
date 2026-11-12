@@ -12,8 +12,8 @@ public sealed record BuiltInDevice(string Kind, string SeriesId, string Name, bo
 /// <summary>
 /// One temperature rule per detected CPU, GPU, drive and (when the machine reports one) memory, id <c>builtin:&lt;history series id&gt;</c>.
 /// They are ordinary <see cref="SensorAlertRule"/>s with a synthetic sensor the engine resolves itself; the user can turn one
-/// off or move its limit but never delete or re-point it. A rule is listed only while its device is detected; its stored
-/// settings stay, so a device that returns keeps them. The legacy per-kind rows (<c>builtin-cpu</c> and so on) are hidden templates
+/// off or move its limit but never delete or re-point it. A rule is listed for every device seen since the service started, so a
+/// device that drops out of one pass keeps its entry (reading unavailable) and its state; its stored settings stay either way. The legacy per-kind rows (<c>builtin-cpu</c> and so on) are hidden templates
 /// that give a device first seen after an upgrade the limits the user had.
 /// </summary>
 public static class BuiltInSensorRules
@@ -44,11 +44,11 @@ public static class BuiltInSensorRules
     /// <summary>Same clear delay as any new sensor rule.</summary>
     public const int ClearAfterSeconds = 5;
 
-    /// <summary>Stored settings generation: 2 means per-device built-ins, so the legacy per-kind seeding has run.</summary>
+    /// <summary>Stored settings generation: at this value the built-ins are per device, so the legacy per-kind seeding has run.</summary>
     public const int PerDeviceVersion = 2;
 
-    /// <summary>Health-check switches generation: 1 means the GPU, storage and cooling toggles are retired (always on).</summary>
-    public const int HealthChecksVersion = 1;
+    /// <summary>Health-check switches generation: the first step retired the GPU, storage and cooling toggles; the second dropped the per-GPU ignore entries, since GPU throttle and TDR are always checked.</summary>
+    public const int HealthChecksVersion = 2;
 
     private sealed record Spec(string Kind, string TemplateId, double LimitMin, double LimitMax, double NewInstallHigh);
 
@@ -176,6 +176,12 @@ public static class BuiltInSensorRules
             diagnostics.Components.Gpu = true;
             diagnostics.Components.Storage = true;
             diagnostics.Components.Cooling = true;
+            diagnostics.HealthChecksVersion = 1;
+            changed = true;
+        }
+        if (diagnostics.HealthChecksVersion < 2)
+        {
+            diagnostics.IgnoredComponents?.RemoveAll(id => id is not null && id.StartsWith("gpu:", StringComparison.Ordinal));
             diagnostics.HealthChecksVersion = HealthChecksVersion;
             changed = true;
         }

@@ -238,7 +238,7 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void A_device_that_disappears_leaves_the_list_and_returns_with_its_settings()
+    public void A_device_missing_from_a_pass_keeps_its_entry_and_returns_with_its_settings()
     {
         var rig = BuiltInRig(r =>
         {
@@ -248,19 +248,158 @@ public partial class SensorAlertEngineTests
         var id = DriveId("storage:a");
         EditStored(rig, id, x => x.High = 66);
         rig.Seconds(1);
-        Assert.Contains(rig.Engine.Rules(), x => x.Id == id);
 
         rig.Smart.Drives.Clear();
         rig.Seconds(1);
 
-        Assert.DoesNotContain(rig.Engine.Rules(), x => x.Id == id);
-        Assert.DoesNotContain(rig.Engine.States(), x => x.RuleId == id);
+        Assert.Contains(rig.Engine.Rules(), x => x.Id == id);
+        Assert.Contains(rig.Engine.BuiltInDevices(), d => BuiltInSensorRules.RuleId(d.SeriesId) == id);
         Assert.Contains(rig.Store.Load().Diagnostics.SensorAlerts, x => x.Id == id);
 
         rig.Smart.Drives.Add(Drive("storage:a", "Drive", 36));
         rig.Seconds(1);
 
         Assert.Equal(66, rig.Engine.Rules().Single(x => x.Id == id).High);
+    }
+
+    [Fact]
+    public void A_device_that_stays_missing_reads_unavailable_with_no_value()
+    {
+        var rig = BuiltInRig(r => r.Smart.Drives.Add(Drive("storage:a", "Drive", 35)));
+        var id = DriveId("storage:a");
+        rig.Seconds(2);
+        Assert.Equal(35, StateOf(rig, id).Value);
+
+        rig.Smart.Drives.Clear();
+        rig.Seconds(12);
+
+        var state = StateOf(rig, id);
+        Assert.Equal(SensorAlertStates.Unavailable, state.State);
+        Assert.Null(state.Value);
+    }
+
+    /// <summary>Raises a drive alert, acknowledges it, then runs <paramref name="drop"/> for a few ticks and <paramref name="restore"/>; the episode must be the same one throughout.</summary>
+    private static void AssertNoFlapReopen(Rig rig, string id, Action drop, Action restore)
+    {
+        rig.Seconds(6);
+        Assert.Equal(SensorAlertStates.Active, rig.State(id));
+        Assert.True(rig.Engine.Acknowledge(id));
+        var notices = rig.Notices.Count;
+        var history = rig.Engine.History().Count;
+
+        drop();
+        rig.Seconds(3);
+
+        Assert.Contains(rig.Engine.Rules(), x => x.Id == id);
+        var held = StateOf(rig, id);
+        Assert.Equal(SensorAlertStates.Active, held.State);
+        Assert.True(held.Acknowledged);
+
+        restore();
+        rig.Seconds(8);
+
+        Assert.True(StateOf(rig, id).Acknowledged);
+        Assert.Equal(notices, rig.Notices.Count);
+        Assert.Equal(history, rig.Engine.History().Count);
+        Assert.All(rig.Engine.History(), h => Assert.Null(h.EndedUtc));
+    }
+
+    [Fact]
+    public void A_drive_temperature_dropping_out_for_a_pass_does_not_close_or_reopen_its_episode()
+    {
+        var rig = BuiltInRig(r => r.Smart.Drives.Add(Drive("storage:a", "Drive", 80)));
+        var id = DriveId("storage:a");
+
+        AssertNoFlapReopen(rig, id, () => rig.Smart.Drives[0] = new SmartDriveInfo { Id = "storage:a", Name = "Drive" }, () => rig.Smart.Drives[0] = Drive("storage:a", "Drive", 80));
+    }
+
+    [Fact]
+    public void A_gpu_losing_its_core_sensor_does_not_close_or_reopen_its_episode()
+    {
+        var rig = BuiltInRig(r => r.Sensors.Gpus.Add(Gpu("RTX", false, 95)));
+        var id = GpuId("RTX");
+        var sensors = rig.Sensors.Gpus[0].Sensors;
+
+        AssertNoFlapReopen(rig, id, () => rig.Sensors.Gpus[0].Sensors = new List<HardwareSensor>(), () => rig.Sensors.Gpus[0].Sensors = sensors);
+    }
+
+    [Fact]
+    public void A_failing_source_does_not_close_or_reopen_its_episode()
+    {
+        var rig = BuiltInRig(r => CpuHot(r, 104));
+
+        AssertNoFlapReopen(rig, CpuId, () => rig.Sensors.OnCpuRead = () => throw new InvalidOperationException("cpu source down"), () => rig.Sensors.OnCpuRead = null);
+    }
+
+    [Fact]
+    public void A_failing_discovery_keeps_every_entry_of_that_kind()
+    {
+        var rig = BuiltInRig(r =>
+        {
+            r.Sensors.Gpus.Add(Gpu("A", false, 50));
+            r.Sensors.Gpus.Add(Gpu("B", false, 50));
+        });
+        rig.Seconds(1);
+        var before = rig.Engine.Rules().Where(x => x.BuiltIn == BuiltInSensorRules.GpuTemp).Select(x => x.Id).OrderBy(x => x).ToList();
+        Assert.Equal(2, before.Count);
+
+        rig.Sensors.Gpus.Clear();
+        rig.Seconds(2);
+
+        Assert.Equal(before, rig.Engine.Rules().Where(x => x.BuiltIn == BuiltInSensorRules.GpuTemp).Select(x => x.Id).OrderBy(x => x).ToList());
+    }
+
+    // ---- retired health toggles applied to late devices ----
+
+    [Fact]
+    public void A_fan_enumerated_after_the_first_pass_still_gets_the_old_off_choice()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(Fan("early", "Early")));
+        rig.Store.Update(s => s.Diagnostics.PendingFansOff = true);
+        rig.Seconds(1);
+        Assert.Contains("cooling:early", rig.Store.Load().Diagnostics.IgnoredComponents);
+        Assert.True(rig.Store.Load().Diagnostics.PendingFansOff);
+
+        rig.Seconds(30);
+        rig.Fans.Channels.Add(Fan("late", "Late Hub"));
+        rig.Seconds(1);
+
+        var diagnostics = rig.Store.Load().Diagnostics;
+        Assert.Contains("cooling:late", diagnostics.IgnoredComponents);
+        Assert.True(diagnostics.PendingFansOff);
+
+        rig.Time.Advance(TimeSpan.FromMinutes(10));
+        rig.Engine.Tick();
+
+        Assert.False(rig.Store.Load().Diagnostics.PendingFansOff);
+    }
+
+    [Fact]
+    public void A_fan_the_user_turned_back_on_within_the_window_is_not_ignored_again()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(Fan("early", "Early")));
+        rig.Store.Update(s => s.Diagnostics.PendingFansOff = true);
+        rig.Seconds(1);
+        rig.Store.Update(s => s.Diagnostics.IgnoredComponents.Remove("cooling:early"));
+
+        rig.Seconds(5);
+
+        Assert.DoesNotContain("cooling:early", rig.Store.Load().Diagnostics.IgnoredComponents);
+    }
+
+    [Fact]
+    public void A_drive_that_only_reports_later_still_gets_the_old_off_choice()
+    {
+        var rig = BuiltInRig(r => r.Smart.Drives.Add(Drive("storage:a", "A", 40)));
+        rig.Store.Update(s => s.Diagnostics.PendingDrivesOff = true);
+        rig.Seconds(1);
+
+        rig.Smart.Drives.Add(Drive("storage:slow", "Slow", 40));
+        rig.Seconds(2);
+
+        var ignored = rig.Store.Load().Diagnostics.IgnoredComponents;
+        Assert.Contains("storage:a", ignored);
+        Assert.Contains("storage:slow", ignored);
     }
 
     [Fact]
@@ -815,14 +954,14 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void A_fan_that_disappears_drops_out_and_returns_with_its_settings()
+    public void A_fan_that_disappears_keeps_its_entry_and_settings()
     {
         var rig = BuiltInRig(r => r.Fans.Channels.Add(Fan("fan1", "Rear")));
         EditStored(rig, FanRule("fan1"), x => x.High = 2000);
 
         rig.Fans.Channels.Clear();
         rig.Engine.Tick();
-        Assert.DoesNotContain(rig.Engine.Rules(), x => x.BuiltIn == BuiltInSensorRules.FanSpeed);
+        Assert.Equal(2000, rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).High);
 
         rig.Fans.Channels.Add(Fan("fan1", "Rear"));
         rig.Engine.Tick();
@@ -859,6 +998,33 @@ public partial class SensorAlertEngineTests
         Assert.Equal("tach1", rule.Source.Sensor!.Id);
         var tracker = SensorAlertRules.FindTracker(new SensorRef { Category = "motherboard", Id = "tach1", Type = "Fan" }, true, rig.Engine.Rules(), null);
         Assert.Equal(rule.Id, tracker?.Id);
+    }
+
+    private static SensorAlertRule UserRule(string id, string sensorId, string name, string parent) => new()
+    {
+        Id = id,
+        Sensor = new SensorRef { Category = "motherboard", Id = sensorId, Name = name, Type = "Fan", ParentName = parent },
+    };
+
+    [Fact]
+    public void A_stale_id_matches_a_tracker_by_name_only_when_exactly_one_rule_has_that_name()
+    {
+        var candidate = new SensorRef { Category = "motherboard", Id = "old", Name = "Fan #1", Type = "Fan", ParentName = "Board" };
+        var one = new[] { UserRule("a", "new", "Fan #1", "Board") };
+        var twins = new[] { UserRule("a", "new1", "Fan #1", "Board"), UserRule("b", "new2", "Fan #1", "Board") };
+
+        Assert.Equal("a", SensorAlertRules.FindTracker(candidate, false, one, null)?.Id);
+        Assert.Null(SensorAlertRules.FindTracker(candidate, false, twins, null));
+        Assert.Null(SensorAlertRules.FindTracker(candidate, true, one, null));
+    }
+
+    [Fact]
+    public void An_id_match_wins_over_twin_names()
+    {
+        var candidate = new SensorRef { Category = "motherboard", Id = "new2", Name = "Fan #1", Type = "Fan", ParentName = "Board" };
+        var twins = new[] { UserRule("a", "new1", "Fan #1", "Board"), UserRule("b", "new2", "Fan #1", "Board") };
+
+        Assert.Equal("b", SensorAlertRules.FindTracker(candidate, true, twins, null)?.Id);
     }
 
     [Fact]
