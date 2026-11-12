@@ -97,6 +97,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private int _version;
     private bool _disposed;
     private string? _openFailedPath;
+    private readonly HashSet<string> _openWriteDone = new();
 
     private readonly bool _matchOnLinux;
 
@@ -111,6 +112,8 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     public GalleonSdAttached? Attached => Volatile.Read(ref _snapshot);
 
     public bool IsConnected => Attached is not null;
+
+    internal int StatusLinesLogged => _slot?.StatusLogs ?? 0;
 
     public int Version => Volatile.Read(ref _version);
 
@@ -173,7 +176,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             Interlocked.Increment(ref _version);
             ServiceLog.Info($"[galleon-sd] connected serial={serial} path={chosen.Path} usage={chosen.UsagePage:X4}/{chosen.Usage:X2} rpt={chosen.InputReportByteLength}/{chosen.OutputReportByteLength}/{chosen.FeatureReportByteLength} layoutConfirmed={GalleonSdProtocol.ReportLayoutConfirmed(chosen.OutputReportByteLength)}");
             ProbeIdentityLocked(slot);
-            EnterHardwareLocked(slot);
+            if (_openWriteDone.Add(slot.Info.DeviceId)) EnterHardwareLocked(slot);
         }
         return true;
     }
@@ -371,6 +374,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         var stopReply = Exchange(slot, GalleonSdProtocol.StopTransaction(slot.Handle), "stop tx", replyMs, log, check: true);
         LogStatusLocked(slot, startReply, firstAck, stopReply);
         sent = true;
+        slot.ModeTouched = true;
         return true;
     }
 
@@ -388,10 +392,11 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     // One line per session and whenever the start/block/stop status triple changes; "--" is no parsed reply, "n/a" is not sent.
     private void LogStatusLocked(Slot slot, GalleonReply start, GalleonReply? block, GalleonReply? stop)
     {
+        if (slot.StatusLogs >= MaxStatusLogs) return;
         var sig = $"start={Status(start)} block={(block is null ? "n/a" : Status(block.Value))} stop={(stop is null ? "n/a" : Status(stop.Value))}";
         if (sig == slot.LastStatusSig) return;
         slot.LastStatusSig = sig;
-        if (slot.StatusLogs++ >= MaxStatusLogs) return;
+        slot.StatusLogs++;
         ServiceLog.Info($"[galleon-sd] hardware-mode direct status {sig} handle={slot.Handle}");
     }
 
@@ -400,7 +405,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private void NegotiationFailedLocked(Slot slot, long now, GalleonReply last)
     {
         slot.NegotiationFailures++;
-        // Past the handback threshold the wait doubles per further rejection, so a Web Hub that keeps every handle busy costs one mode round trip per minute at most, not one per backoff.
+        // Past the handback threshold the wait doubles per further rejection, so a Web Hub that keeps every handle busy costs one start round per minute at most, not one per backoff.
         var doublings = Math.Clamp(slot.NegotiationFailures - HandbackAfterFailures + 1, 0, MaxBackoffDoublings);
         var backoffMs = Math.Min(MaxRejectBackoffMs, RejectBackoffMs * (1 << doublings));
         slot.NextNegotiateStamp = now + (long)(backoffMs * Stopwatch.Frequency / 1000);

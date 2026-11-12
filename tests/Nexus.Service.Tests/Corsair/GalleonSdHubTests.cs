@@ -487,4 +487,97 @@ public class GalleonSdHubTests
         Assert.False(hub.WriteFrame(Frame));
         Assert.Empty(hid.Device.Writes);
     }
+
+    private static int HardwareWrites(ScriptedDevice d) => Commands(d, GalleonSdProtocol.CmdSet).Count(w => w[6] == GalleonSdProtocol.ModeHardware);
+
+    [Fact]
+    public void Stream_release_stream_release_writes_hardware_mode_each_time()
+    {
+        _clock = 16_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Frame);
+        hub.ReleaseToHardware();
+        var afterFirst = HardwareWrites(hid.Device);
+
+        hub.ReleaseToHardware();
+        Assert.Equal(afterFirst, HardwareWrites(hid.Device));
+
+        _clock += 3 * System.Diagnostics.Stopwatch.Frequency;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(1, 2, 3), GalleonSdProtocol.LedCount).ToArray());
+        hub.ReleaseToHardware();
+        Assert.Equal(afterFirst + 1, HardwareWrites(hid.Device));
+
+        _clock += 3 * System.Diagnostics.Stopwatch.Frequency;
+        hub.WriteFrame(Enumerable.Repeat(new RgbColor(4, 5, 6), GalleonSdProtocol.LedCount).ToArray());
+        hub.Reconcile(false);
+        Assert.Equal(afterFirst + 2, HardwareWrites(hid.Device));
+    }
+
+    [Fact]
+    public void Open_time_hardware_write_happens_once_per_device_not_on_every_reopen()
+    {
+        _clock = 17_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        Assert.Equal(1, HardwareWrites(hid.Device));
+        hid.Device.FailWrites = true;
+        for (var i = 0; i < 5; i++)
+        {
+            _clock += System.Diagnostics.Stopwatch.Frequency;
+            hub.WriteFrame(Frame);
+        }
+        Assert.Null(hub.Attached);
+        hid.Device.FailWrites = false;
+
+        Assert.True(hub.Reconcile(true));
+        hub.Reconcile(false);
+
+        Assert.Equal(1, HardwareWrites(hid.Device));
+    }
+
+    [Fact]
+    public void Status_line_is_logged_once_for_an_unchanged_status()
+    {
+        _clock = 18_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.OnWrite = wire => new byte[128].Select((_, i) => i == 3 ? wire[3] : (byte)0).ToArray();
+
+        for (var i = 0; i < 6; i++)
+        {
+            _clock += System.Diagnostics.Stopwatch.Frequency;
+            hub.WriteFrame(Enumerable.Repeat(new RgbColor((byte)(i + 1), 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        }
+
+        Assert.Equal(1, hub.StatusLinesLogged);
+    }
+
+    [Fact]
+    public void Status_lines_stop_at_the_cap_when_the_status_keeps_changing()
+    {
+        _clock = 19_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        byte status = 0;
+        hid.Device.OnWrite = wire =>
+        {
+            var reply = new byte[128];
+            reply[3] = wire[3];
+            if (wire[3] == GalleonSdProtocol.CmdBlockFirst) reply[4] = ++status;
+            return reply;
+        };
+
+        for (var i = 0; i < 40; i++)
+        {
+            _clock += System.Diagnostics.Stopwatch.Frequency;
+            hub.WriteFrame(Enumerable.Repeat(new RgbColor((byte)(i + 1), 0, 0), GalleonSdProtocol.LedCount).ToArray());
+        }
+
+        Assert.Equal(20, hub.StatusLinesLogged);
+    }
 }
