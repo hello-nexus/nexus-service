@@ -240,11 +240,20 @@ internal static class LinuxKWinPanelPlacement
                     w.WriteString(PluginName);
                 });
             var id = new DBusReader(reply.Body).ReadInt32();
-            // KWin numbers a new script by the count of loaded ones, so after any unload that is not the
-            // newest script the id equals a live script's and Script{id}.run hits that one, leaving this
-            // script loaded but never running. Scripting.start runs every loaded script that is not
-            // running yet and skips the rest.
-            await dbus.CallAsync(KWinName, "/Scripting", "org.kde.kwin.Scripting", "start", "", null);
+            try
+            {
+                await dbus.CallAsync(KWinName, $"/Scripting/Script{id}", "org.kde.kwin.Script", "run", "", null);
+            }
+            catch { }
+            // KWin numbers a new script by the count of loaded ones, so after an unload that is not the
+            // newest script the id equals a live script's and Script{id}.run never reaches this one.
+            // Scripting.start runs every loaded script that is not running yet. It also unloads a
+            // script package that is not EnabledByDefault, which the metadata below guards against.
+            try
+            {
+                await dbus.CallAsync(KWinName, "/Scripting", "org.kde.kwin.Scripting", "start", "", null);
+            }
+            catch { }
             Console.Error.WriteLine($"[panel-kiosk] KWin placement script loaded (id {id})");
             return true;
         }
@@ -321,7 +330,7 @@ internal static class LinuxKWinPanelPlacement
         }
     }
 
-    private const string MetadataJson = """
+    internal const string MetadataJson = """
 {
   "KPackageStructure": "KWin/Script",
   "KPlugin": {
@@ -329,6 +338,7 @@ internal static class LinuxKWinPanelPlacement
     "Name": "Nexus panel on the Y70",
     "Description": "Pins the Nexus panel kiosk window to the Y70 and keeps it fullscreen.",
     "Version": "1.0",
+    "EnabledByDefault": true,
     "Authors": [{ "Name": "Nexus" }]
   },
   "X-Plasma-API": "javascript",
