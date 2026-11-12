@@ -44,6 +44,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
     private readonly IScreenTimeProvider _screenTime;
     private readonly IConfigStore _config;
     private readonly IMetricsSampleSink? _sink;
+    private readonly ISensorSeriesSource? _sensorSeries;
 
     private readonly CancellationTokenSource _stopCts = new();
     private Thread? _thread;
@@ -66,7 +67,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
         IMetricsHistoryStore store,
         IAppUsageSource appSource, AppSampleBuffer appBuffer, IAppUsageHistoryStore appStore,
         IFpsProvider fps, IScreenTimeProvider screenTime, IConfigStore config,
-        FeatureGates? gates = null, IMetricsSampleSink? sink = null)
+        FeatureGates? gates = null, IMetricsSampleSink? sink = null, ISensorSeriesSource? sensorSeries = null)
     {
         _sensors = sensors;
         _source = source;
@@ -80,6 +81,7 @@ public sealed class MetricsSampler : IHostedService, IDisposable
         _config = config;
         _gates = gates ?? FeatureGates.AllEnabled;
         _sink = sink;
+        _sensorSeries = sensorSeries;
     }
 
     // Test seam: set at the top of Run() from inside the dedicated thread, so
@@ -238,6 +240,21 @@ public sealed class MetricsSampler : IHostedService, IDisposable
             var fps = (int)Math.Round(Math.Max(0, currentFps));
             if (fps >= 1)
                 sample = sample with { Fps = fps };
+        }
+        if (_sensorSeries is not null)
+        {
+            try
+            {
+                var readings = _sensorSeries.CurrentReadings(tsSec);
+                if (readings.Count > 0)
+                {
+                    sample = sample with { SensorReadings = readings };
+                }
+            }
+            catch (Exception ex)
+            {
+                MaybeWarn(ex);
+            }
         }
         _buffer.Append(sample);
         try

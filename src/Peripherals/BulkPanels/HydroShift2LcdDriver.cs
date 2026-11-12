@@ -36,7 +36,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     public string HandlerId => Id;
     public string Name => !_identified ? "Lian Li HydroShift II" : _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
-    public int VendorId => 0x1CBE;
+    public int VendorId => HydroShift2Protocol.VendorId;
     public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare, HydroShift2Protocol.ProductIdCircle };
     public string Surface => _round ? Models.Panel.PanelSurfaces.LcdRound : Models.Panel.PanelSurfaces.LcdSquare;
 

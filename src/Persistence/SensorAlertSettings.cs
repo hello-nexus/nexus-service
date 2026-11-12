@@ -1,0 +1,66 @@
+using System.Text.Json.Serialization;
+
+namespace Nexus.Service.Persistence;
+
+/// <summary>Which sensor a rule watches. Id is tried first; Name, Type and ParentName let the engine find the sensor again when its id changed (hardware swap, driver update).</summary>
+public sealed class SensorRef
+{
+    /// <summary>Resolver category: cpu, gpu, memory, motherboard, storage, psu, cooler, ...</summary>
+    public string Category { get; set; } = "";
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>Sensor type name, e.g. "Temperature", "Current".</summary>
+    public string Type { get; set; } = "";
+    public string ParentName { get; set; } = "";
+}
+
+/// <summary>One user threshold rule. Low and High are in the sensor's native unit (temperature is always Celsius); a null bound is not checked, and a rule with neither bound only tracks the sensor's history.</summary>
+public sealed class SensorAlertRule
+{
+    public string Id { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public SensorRef Sensor { get; set; } = new();
+    // Never omitted on the wire: the contract says null, not absent.
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public double? Low { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public double? High { get; set; }
+    public int RaiseAfterSeconds { get; set; } = 5;
+    public int ClearAfterSeconds { get; set; } = 5;
+    /// <summary>"watch" | "act".</summary>
+    public string Severity { get; set; } = "watch";
+    public bool NotifyDesktop { get; set; } = true;
+    public bool ShowInHealth { get; set; } = true;
+    /// <summary>0 = notify once per episode; otherwise re-notify every N minutes while active.</summary>
+    public int RepeatMinutes { get; set; }
+
+    public SensorAlertRule Clone()
+    {
+        var copy = (SensorAlertRule)MemberwiseClone();
+        copy.Sensor = new SensorRef
+        {
+            Category = Sensor.Category,
+            Id = Sensor.Id,
+            Name = Sensor.Name,
+            Type = Sensor.Type,
+            ParentName = Sensor.ParentName,
+        };
+        return copy;
+    }
+
+    /// <summary>True when nothing that shapes evaluation differs. The sensor id is ignored: the engine rewrites it when it self-heals, and that must not reset a running episode.</summary>
+    public bool SameConfig(SensorAlertRule other) =>
+        Enabled == other.Enabled
+        && Low == other.Low
+        && High == other.High
+        && RaiseAfterSeconds == other.RaiseAfterSeconds
+        && ClearAfterSeconds == other.ClearAfterSeconds
+        && Severity == other.Severity
+        && NotifyDesktop == other.NotifyDesktop
+        && ShowInHealth == other.ShowInHealth
+        && RepeatMinutes == other.RepeatMinutes
+        && Sensor.Category == other.Sensor.Category
+        && Sensor.Name == other.Sensor.Name
+        && Sensor.Type == other.Sensor.Type
+        && Sensor.ParentName == other.Sensor.ParentName;
+}

@@ -58,6 +58,8 @@ public static class DiagnosticsHealthRoutes
 
     public static void MapDiagnosticsHealthEndpoints(this WebApplication app)
     {
+        app.MapDiagnosticsAlertEndpoints();
+
         app.MapGet("/diagnostics/health", (string? refresh, DiagnosticsHealthModel model, FeatureGates gates) =>
             gates.Diagnostics
                 ? model.BuildHealth(IsRefresh(refresh))
@@ -197,6 +199,7 @@ public static class DiagnosticsHealthRoutes
             {
                 ServiceLog.Warn($"[support-bundle] fan channels unavailable: {ex.Message}");
             }
+            var pcSetup = TryLoadPcSetup(() => sp.GetService<Nexus.Service.Lighting.Scene.LightingSceneStore>()?.Setup.Load());
             var zipBytes = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
             {
                 LogsDirectory = ServiceLog.LogsDirectory,
@@ -234,6 +237,7 @@ public static class DiagnosticsHealthRoutes
                 Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
                 UsbTopology = UsbTopology.Collect((vid, pid) => SupportBundleExtras.IsKnownUsbId(handlers, vid, pid)),
+                PcSetup = pcSetup,
                 UserNames = identity.UserNames,
                 AccountNames = identity.AccountNames,
                 OtherHostNames = identity.HostNames,
@@ -336,6 +340,20 @@ public static class DiagnosticsHealthRoutes
     // Shared window resolution for the temperatures + app-usage endpoints so
     // both sit on the same [from, to] range and tier width, keeping the app
     // bands aligned to the temperature buckets.
+    /// <summary>The saved PC setup for the support bundle; a failing or missing store just leaves pc-setup.json out.</summary>
+    internal static Nexus.Service.Models.Lighting.PcSetupResponse? TryLoadPcSetup(Func<Nexus.Service.Lighting.Scene.PcSetupFile?> load)
+    {
+        try
+        {
+            return load() is { } file ? new Nexus.Service.Models.Lighting.PcSetupResponse { Rev = file.Rev, Setup = file.Setup } : null;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[support-bundle] pc setup unavailable: {ex.Message}");
+            return null;
+        }
+    }
+
     private static bool TryResolveTemperatureWindow(
         int? hours, string? date,
         out long fromUtcMs, out long toUtcMs, out int tierWidthMinutes, out string? error)

@@ -23,6 +23,7 @@ public class SensorSnapshotResolverTests
         public List<HardwareComponent> MemoryModules { get; init; } = new();
         public List<HardwareComponent> Batteries { get; init; } = new();
         public List<HardwareComponent> Coolers { get; init; } = new();
+        public List<HardwareComponent> FanSensors { get; init; } = new();
         public List<HardwareComponent> Psus { get; init; } = new();
         public List<HardwareComponent> EmbeddedControllers { get; init; } = new();
         public int ExtrasCalls { get; private set; }
@@ -58,6 +59,7 @@ public class SensorSnapshotResolverTests
                 MemoryModules = MemoryModules,
                 Batteries = Batteries,
                 Coolers = Coolers,
+                FanSensors = FanSensors,
                 Psus = Psus,
                 EmbeddedControllers = EmbeddedControllers,
             };
@@ -462,6 +464,25 @@ public class SensorSnapshotResolverTests
     }
 
     [Fact]
+    public void ResolveOrDefault_psu_default_skips_power_monitor_sensors()
+    {
+        var wire = Component("/gpu-powermonitor/COM3", MakeSensor("/gpu-powermonitor/COM3/power/6", "Power", 120f));
+        var real = Component("/psu/0", MakeSensor("/psu/0/power/0", "Power", 310f));
+
+        var both = new StubSensors { Psus = { wire, real } };
+        Assert.Equal(310f, SensorSnapshotResolver.ResolveOrDefault(both, "psu", "")!.Value);
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(both, "psu", "stale"));
+
+        var onlyWire = new StubSensors { Psus = { wire } };
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", ""));
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", "stale"));
+        Assert.Equal(120f, SensorSnapshotResolver.ResolveOrDefault(onlyWire, "psu", "/gpu-powermonitor/COM3/power/6")!.Value);
+
+        var wireNamed = new StubSensors { Psus = { Component("/gpu-powermonitor/COM3", MakeSensor("/gpu-powermonitor/COM3/power/6", "Total Power", "Power", 120f)) } };
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(wireNamed, "psu", "Total Power"));
+    }
+
+    [Fact]
     public void Resolve_finds_battery_cooler_psu_and_embedded_controller_sensors()
     {
         var sensors = new StubSensors
@@ -476,6 +497,44 @@ public class SensorSnapshotResolverTests
         Assert.Equal(2100f, SensorSnapshotResolver.Resolve(sensors, "cooler", "cool/pump")!.Value);
         Assert.Equal(310f, SensorSnapshotResolver.Resolve(sensors, "psu", "psu/watts")!.Value);
         Assert.Equal(900f, SensorSnapshotResolver.Resolve(sensors, "embeddedController", "ec/fan")!.Value);
+    }
+
+    private static StubSensors QxFans() => new()
+    {
+        FanSensors = { Component("corsair", MakeSensor("corsair:ch1:temp", "QX fan (Port 1)", "Temperature", 21f), MakeSensor("corsair:ch3:temp", "QX fan (Port 3)", "Temperature", 24f)) },
+        Coolers = { Component("/cooler/0", MakeSensor("cool/pump", "Fan", 2100f)) },
+    };
+
+    [Theory]
+    [InlineData("corsair:ch3:temp")]
+    [InlineData("iCUE LINK QX RGB probe (Port 3)")]
+    public void A_fan_probe_saved_under_cooler_still_resolves_through_the_fan_sensors(string saved)
+    {
+        var sensors = QxFans();
+
+        Assert.Equal(24f, SensorSnapshotResolver.ResolveExact(sensors, "cooler", saved)!.Value);
+        Assert.Equal(24f, SensorSnapshotResolver.ResolveOrDefault(sensors, "cooler", saved)!.Value);
+    }
+
+    [Fact]
+    public void Resolve_reads_a_cooler_saved_fan_probe_id_through_the_fan_sensors()
+    {
+        Assert.Equal(24f, SensorSnapshotResolver.Resolve(QxFans(), "cooler", "corsair:ch3:temp")!.Value);
+    }
+
+    [Fact]
+    public void A_cooler_key_that_is_not_a_fan_probe_still_reads_the_cooler_list()
+    {
+        Assert.Equal(2100f, SensorSnapshotResolver.ResolveExact(QxFans(), "cooler", "cool/pump")!.Value);
+    }
+
+    [Theory]
+    [InlineData("cooler", "corsair:ch9:temp")]
+    [InlineData("fanSensors", "corsair:ch9:temp")]
+    public void A_saved_extras_sensor_that_is_gone_resolves_to_nothing_not_the_first_one(string category, string saved)
+    {
+        Assert.Null(SensorSnapshotResolver.ResolveOrDefault(QxFans(), category, saved));
+        Assert.Null(SensorSnapshotResolver.ResolveExact(QxFans(), category, saved));
     }
 
     [Fact]

@@ -35,9 +35,9 @@ namespace Nexus.Service.Routes;
 /// </summary>
 public static class MonitoringHistoryRoutes
 {
-    private const int MinMaxPoints = 1;
-    private const int MaxMaxPoints = 2000;
-    private const int DefaultMaxPoints = 600;
+    internal const int MinMaxPoints = 1;
+    internal const int MaxMaxPoints = 2000;
+    internal const int DefaultMaxPoints = 600;
 
     // Aligned with the minute-rollup rings' own eligibility
     // (BinaryMetricsHistoryStore.IsRollupEligible): below this,
@@ -1005,7 +1005,7 @@ public static class MonitoringHistoryRoutes
     // the buffered tail - at most the window's right edge or two, which is
     // inherently a live/partial reading either way rather than a fixed
     // historical average.
-    private static List<MetricPoint> MergeDecimatedSlots(
+    internal static List<MetricPoint> MergeDecimatedSlots(
         IEnumerable<(long Slot, double? Avg, double? Max)> dbSlots, IReadOnlyList<MetricPoint> tailPoints)
     {
         var map = new SortedDictionary<long, MetricPoint>();
@@ -1272,7 +1272,7 @@ public static class MonitoringHistoryRoutes
         return null;
     }
 
-    private static List<MetricPoint> ToWirePoints(IReadOnlyList<MetricPoint> points, bool wholeNumbers) =>
+    internal static List<MetricPoint> ToWirePoints(IReadOnlyList<MetricPoint> points, bool wholeNumbers) =>
         points.Select(p => p with
         {
             T = p.T * 1000,

@@ -1,0 +1,146 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Nexus.Service.Models.Displays;
+using Nexus.Service.Panel;
+using Nexus.Service.Panel.Streams;
+using Nexus.Service.Peripherals.Corsair.XeneonEdge;
+using Nexus.Service.Peripherals.Nzxt;
+using Nexus.Service.Persistence;
+using Nexus.Service.Platform.Displays;
+
+namespace Nexus.Service.Lighting.ScheduleFollow;
+
+/// <summary>External DDC monitors. Slow writes, spaced out, since some monitors are slow and wear their NVRAM.</summary>
+public sealed class DdcScheduleSurface : IScheduleSurface
+{
+    /// <summary>How often the monitor list is refreshed while following.</summary>
+    public const long ScanGapMs = 60_000;
+
+    private readonly DisplayBrightnessController _displays;
+    private readonly Func<long> _clock;
+    private readonly IConfigStore? _store;
+    private readonly PanelDeviceRegistry? _registry;
+    private readonly ScheduleFollowState? _state;
+    private long _lastScanMs = long.MinValue / 2;
+    private List<string> _present = new();
+
+    public DdcScheduleSurface(DisplayBrightnessController displays, Func<long>? clock = null, IConfigStore? store = null, PanelDeviceRegistry? registry = null, ScheduleFollowState? state = null)
+    {
+        _state = state;
+        _displays = displays;
+        _store = store;
+        _registry = registry;
+        _clock = clock ?? (() => Environment.TickCount64);
+    }
+
+    public long MinWriteGapMs => ScheduleFollowWorker.DdcMinWriteGapMs;
+
+    public IReadOnlyList<string> PresentKeys()
+    {
+        // Enumerating monitors is a DDC round trip each; skip it while no monitor is followed (the Xeneon has its own surface).
+        if (_store is not null
+            && !_store.Load().Devices.ScheduleFollowing.Concat(_state?.RestoreOnSight ?? Array.Empty<string>()).Any(k => ScheduleFollowKeys.IsDisplayId(k) && !IsXeneon(k)))
+        {
+            return _present;
+        }
+        var now = _clock();
+        if (now - _lastScanMs >= ScanGapMs)
+        {
+            _lastScanMs = now;
+            _present = _displays.ListDisplays().Displays
+                .Where(d => d.Capabilities.Brightness
+                    && d.BrightnessControl.Supported
+                    && d.BrightnessControl.ControlPath != DisplayBrightnessControlPaths.Y70
+                    && d.Id.Length > 0)
+                .Select(d => d.Id)
+                .ToList();
+        }
+        return _present;
+    }
+
+    private bool IsXeneon(string id) => _registry is not null && _registry.List().Any(r =>
+        string.Equals(r.DisplayId, id, StringComparison.Ordinal)
+        && string.Equals(r.Capabilities?.Family, KnownPanelDisplays.XeneonEdgeFamily, StringComparison.Ordinal));
+
+    public int? Slider(string key) => _displays.GetSlider(key);
+    public void RememberSlider(string key, int percent) => _displays.RememberSlider(key, percent);
+    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult(_displays.GetHardwareBrightness(key));
+
+    public async Task<bool> WriteAsync(string key, int level, CancellationToken ct) =>
+        (await _displays.ApplyLevelAsync(key, level, ct).ConfigureAwait(false)).Status == DisplayBrightnessWriteStatuses.Applied;
+}
+
+/// <summary>The Corsair Xeneon Edge, keyed by its display id. Scales the register the web's Brightness slider writes (not Backlight).</summary>
+public sealed class XeneonScheduleSurface : IScheduleSurface
+{
+    private readonly PanelDeviceRegistry _registry;
+    private readonly XeneonEdgeOrientationWorker _xeneon;
+    private readonly IConfigStore _store;
+
+    public XeneonScheduleSurface(PanelDeviceRegistry registry, XeneonEdgeOrientationWorker xeneon, IConfigStore store)
+    {
+        _registry = registry;
+        _xeneon = xeneon;
+        _store = store;
+    }
+
+    public long MinWriteGapMs => ScheduleFollowWorker.DdcMinWriteGapMs;
+
+    public IReadOnlyList<string> PresentKeys() => _registry.List()
+        .Where(r => string.Equals(r.Capabilities?.Family, KnownPanelDisplays.XeneonEdgeFamily, StringComparison.Ordinal) && !string.IsNullOrEmpty(r.DisplayId))
+        .Select(r => r.DisplayId!)
+        .ToList();
+
+    public int? Slider(string key) =>
+        _store.Load().Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null;
+
+    public void RememberSlider(string key, int percent) =>
+        _store.Update(s => s.Devices.DisplaySliderBrightness[key] = Math.Clamp(percent, 0, 100));
+
+    public async Task<int?> ReadHardwareAsync(string key, CancellationToken ct) =>
+        (await _xeneon.ReadSettingsAsync(ct).ConfigureAwait(false))?.Brightness;
+
+    public async Task<bool> WriteAsync(string key, int level, CancellationToken ct) =>
+        await _xeneon.SetControlAsync(XeneonEdgeControl.Brightness, level, ct).ConfigureAwait(false) is not null;
+}
+
+/// <summary>The Kraken LCD. The hub scales what it writes; the slider is recorded from its snapshot the first time the device is seen, before any cap.</summary>
+public sealed class KrakenScheduleSurface : IScheduleSurface
+{
+    private readonly KrakenHub _hub;
+
+    public KrakenScheduleSurface(KrakenHub hub) => _hub = hub;
+
+    public long MinWriteGapMs => 1000;
+
+    public IReadOnlyList<string> PresentKeys() =>
+        _hub.IsConnected && _hub.HasLcd ? new[] { ScheduleFollowKeys.KrakenLcd } : Array.Empty<string>();
+
+    public int? Slider(string key) => _hub.RememberedSlider;
+    public void RememberSlider(string key, int percent) => _hub.RememberSlider(percent);
+    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult<int?>(_hub.Snapshot.LcdBrightness);
+    public Task<bool> WriteAsync(string key, int level, CancellationToken ct) => Task.FromResult(_hub.ApplySchedule());
+}
+
+/// <summary>Streamed-panel LCDs, one key per panel device. The coordinator scales at the point the level reaches the transport.</summary>
+public sealed class PanelLcdScheduleSurface : IScheduleSurface
+{
+    private readonly StreamedPanelCoordinator _panels;
+
+    public PanelLcdScheduleSurface(StreamedPanelCoordinator panels) => _panels = panels;
+
+    public long MinWriteGapMs => 1000;
+
+    public IReadOnlyList<string> PresentKeys() =>
+        _panels.DimmablePanelIds().Select(id => ScheduleFollowKeys.PanelLcdPrefix + id).ToList();
+
+    private static string Id(string key) => key.Substring(ScheduleFollowKeys.PanelLcdPrefix.Length);
+
+    public int? Slider(string key) => _panels.Slider(Id(key));
+    public void RememberSlider(string key, int percent) => _panels.RememberSlider(Id(key), percent);
+    public Task<int?> ReadHardwareAsync(string key, CancellationToken ct) => Task.FromResult(_panels.HardwareLevel(Id(key)));
+    public Task<bool> WriteAsync(string key, int level, CancellationToken ct) => Task.FromResult(_panels.ApplyBrightness(Id(key)));
+}

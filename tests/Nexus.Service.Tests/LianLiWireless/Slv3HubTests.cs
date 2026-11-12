@@ -30,6 +30,29 @@ public partial class Slv3HubTests
         Assert.Equal(Slv3LinkStatus.Ok, hub.State.LinkStatus);
     }
 
+    [Fact]
+    public void A_bound_screen_without_a_saved_setting_is_scaled_from_the_default_brightness()
+    {
+        var calls = new List<(string Key, int Slider)>();
+        var hub = new Slv3Hub(new RoleDiscovery(), _ => new SilentTransport(Slv3DongleRole.Tx))
+        {
+            ScheduleScale = (key, slider) =>
+            {
+                calls.Add((key, slider));
+                return slider / 2;
+            },
+        };
+        var saved = new Dictionary<string, Slv3AioScreen> { ["AA"] = Slv3Protocol.AioScreenFrom(80, 0, "#FFFFFF", "#FFFFFF", "#FFFFFF", true, true, true, true, false) };
+
+        var scaled = hub.ScaleAios(new[] { "AA", "BB" }, saved);
+
+        Assert.Equal(new[] { "AA", "BB" }, calls.Select(c => c.Key));
+        Assert.Equal(Slv3AioScreen.Default.Brightness, calls[1].Slider);
+        Assert.Equal(40, scaled!["AA"]);
+        Assert.Equal(Slv3AioScreen.Default.Brightness / 2, scaled["BB"]);
+        Assert.DoesNotContain("CC", scaled.Keys);
+    }
+
     // The device page renders the disconnected reason from LinkStatus, so each
     // way a connect attempt can fail has to leave its own value behind.
     [Fact]
@@ -1280,6 +1303,23 @@ public partial class Slv3HubTests
 
         Assert.True(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(FanMac)).UsbConnected);
         Assert.False(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(other)).UsbConnected);
+    }
+
+    [Fact]
+    public void Unbound_hydroshift_is_marked_usb_present_only_while_the_usb_unit_is_unread()
+    {
+        var (hub, net, _, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = new byte[6], RxType = 0, DevType = 11, FanCount = 0 });
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("102030405060"), MasterMac = new byte[6], RxType = 0, DevType = 1, FanCount = 3 });
+        hub.UsbAioPresent = () => true;
+
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(FanMac)).UsbPresent);
+        Assert.False(hub.State.Fans.Single(f => f.Mac == "102030405060").UsbPresent);
+
+        hub.UsbAioMac = () => "102030405060";
+        Assert.True(hub.DriveTick());
+        Assert.False(hub.State.Fans.Single(f => f.Mac == Convert.ToHexString(FanMac)).UsbPresent);
     }
 
     [Fact]

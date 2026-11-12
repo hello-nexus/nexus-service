@@ -24,6 +24,9 @@ public sealed class SensorExtras
     /// <summary>Coolers / AIOs reported by LHM as separate hardware (pump RPM, liquid temp).</summary>
     public List<HardwareComponent> Coolers { get; set; } = new();
 
+    /// <summary>Temperature probes built into fans (iCUE LINK QX). Empty unless such a fan is connected.</summary>
+    public List<HardwareComponent> FanSensors { get; set; } = new();
+
     /// <summary>Power supply units with rail voltages, total wattage, efficiency.</summary>
     public List<HardwareComponent> Psus { get; set; } = new();
 

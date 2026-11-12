@@ -123,6 +123,14 @@ public sealed class SleepBlackoutCoordinator
     private volatile bool _lockHold;
 
     /// <summary>
+    /// True from the suspend blackout until the resume. Lock-screen input can
+    /// arrive in the seconds before the machine actually sleeps (the lock
+    /// screen is what the user last touched); releasing the hold then relights
+    /// SMBus devices that keep their last frame through sleep.
+    /// </summary>
+    private volatile bool _suspendHold;
+
+    /// <summary>
     /// Serializes clearing <see cref="_lockHold"/> against the idle window
     /// engaging a blackout on it. Without it the timer can pass its check and
     /// then darken a desktop the user has just unlocked - with the hold flag
@@ -225,6 +233,8 @@ public sealed class SleepBlackoutCoordinator
             lock (_lockHoldGate)
             {
                 _lockHold = false;
+                // A suspend with no resume (dark wake) must not leave later lock-screen input dead.
+                _suspendHold = false;
             }
             SetLockInputWatch(false);
             // The session is the user's again, so the idle window has nothing
@@ -260,21 +270,25 @@ public sealed class SleepBlackoutCoordinator
             // Only meaningful while the session is locked. An envelope arriving
             // after an unlock (in flight as the user signed in) must not park a
             // timer that would darken a desktop the user is sitting at.
-            if (!_lockHold)
+            // Under the gate so a suspend blackout cannot slip in between the check and the release.
+            lock (_lockHoldGate)
             {
-                return;
-            }
-            if (!_store.Load().Lighting.LockBlackout)
-            {
-                return;
-            }
+                if (!_lockHold || _suspendHold)
+                {
+                    return;
+                }
+                if (!_store.Load().Lighting.LockBlackout)
+                {
+                    return;
+                }
 
-            _lockWakeTimer.Change(_lockWakeTimeout, Timeout.InfiniteTimeSpan);
+                _lockWakeTimer.Change(_lockWakeTimeout, Timeout.InfiniteTimeSpan);
 
-            if (_engine.Blackout && !_engine.BlackoutReleasing)
-            {
-                _engine.BeginBlackoutRelease(UnlockFadeDuration);
-                ServiceLog.Info($"[lighting-lock] input at the lock screen - fading in over {(int)UnlockFadeDuration.TotalMilliseconds}ms");
+                if (_engine.Blackout && !_engine.BlackoutReleasing)
+                {
+                    _engine.BeginBlackoutRelease(UnlockFadeDuration);
+                    ServiceLog.Info($"[lighting-lock] input at the lock screen - fading in over {(int)UnlockFadeDuration.TotalMilliseconds}ms");
+                }
             }
         }
         catch (Exception ex)
@@ -363,6 +377,14 @@ public sealed class SleepBlackoutCoordinator
                 return;
             }
 
+            if (reason == "suspend")
+            {
+                lock (_lockHoldGate)
+                {
+                    _suspendHold = true;
+                }
+            }
+
             var deadline = DateTime.UtcNow + budget;
             // A hold already engaged (a second suspend notification, or a
             // shutdown that follows one) is dark or on its way there; re-running
@@ -424,6 +446,7 @@ public sealed class SleepBlackoutCoordinator
     {
         try
         {
+            _suspendHold = false;
             if (!_gates.Lighting)
             {
                 return;

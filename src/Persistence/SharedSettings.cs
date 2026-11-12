@@ -185,6 +185,7 @@ public sealed class Preferences
     public int StartupDelaySeconds { get; set; }
     public bool DisableGpuMonitoring { get; set; }
     public bool ReadRamTemperatures { get; set; } = true;
+    public bool PowerMonitorsEnabled { get; set; } = true;
     public bool AmdGpuLighting { get; set; }
     /// <summary>Read-only: true on Linux, where <see cref="AmdGpuLighting"/> has an effect. Ignored on write.</summary>
     public bool AmdGpuLightingApplicable { get; set; }
@@ -287,6 +288,8 @@ public sealed class DiagnosticsSettings
     /// /diagnostics/health, so it never colours the overall status, the panel
     /// widget or a notification; its own tab still lists the device.</summary>
     public List<string> IgnoredComponents { get; set; } = new();
+    /// <summary>User sensor threshold rules, machine-wide. Capped at <see cref="Nexus.Service.Diagnostics.Alerts.SensorAlertRules.MaxRules"/> by the routes.</summary>
+    public List<SensorAlertRule> SensorAlerts { get; set; } = new();
 }
 
 public sealed class DiagnosticsSettingsPatch
@@ -316,6 +319,7 @@ public sealed class PreferencesPatch
     public int? StartupDelaySeconds { get; set; }
     public bool? DisableGpuMonitoring { get; set; }
     public bool? ReadRamTemperatures { get; set; }
+    public bool? PowerMonitorsEnabled { get; set; }
     public bool? AmdGpuLighting { get; set; }
     public FeaturesSettingsPatch? Features { get; set; }
 }

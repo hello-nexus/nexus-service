@@ -312,7 +312,9 @@ public static class LightingDevicesCatalog
         // Tryx - PIDs from src/Peripherals/Tryx/Panorama. All are LCD-screen AIOs.
         Native("Tryx",    "Panorama",               "aio",      "0x391A", "0x1011", screen: true),
         Native("Tryx",    "Panorama SE",            "aio",      "0x391A", "0x1021", screen: true),
+        Native("Tryx",    "Panorama SE",            "aio",      "0x391A", "0x1061", screen: true),
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
+        Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x10A1", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
         // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
