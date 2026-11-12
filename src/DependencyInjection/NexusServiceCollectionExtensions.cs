@@ -530,7 +530,11 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusMonitoringHistory(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Monitoring.History.NetworkRateReader>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
+        services.AddSingleton(sp =>
+        {
+            var config = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            return new Nexus.Service.Monitoring.History.DiskRateReader(() => config.Load().Monitoring.LiveDriveActivity);
+        });
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>

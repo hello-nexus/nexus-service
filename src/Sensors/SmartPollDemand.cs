@@ -75,6 +75,19 @@ internal sealed class SmartPollDemand
         if (seeded.Add(identifier) || force) return 1;
         return SmartPollPolicy.ToCycleCount(seconds);
     }
+
+    /// <summary>
+    /// With live drive activity off, a drive is updated (and so touched) only when its SMART read is due.
+    /// <paramref name="cycles"/> is the value <see cref="Cycles"/> returned; never-read drives are never due.
+    /// <paramref name="lastUpdateMs"/> is null for a drive not updated since it last became needed.
+    /// </summary>
+    public static bool StorageUpdateDue(uint cycles, long? lastUpdateMs, long nowMs, bool force)
+    {
+        if (cycles == uint.MaxValue) return false;
+        if (force || lastUpdateMs is null) return true;
+        // The walk floor is just under a second, so a cycle is a hair under 1000 ms.
+        return nowMs - lastUpdateMs.Value >= (long)cycles * 1000 - 100;
+    }
 }
 
 /// <summary>Live-consumer signals for <see cref="SmartPollDemand"/>.</summary>

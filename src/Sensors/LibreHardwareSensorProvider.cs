@@ -292,6 +292,33 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     public IReadOnlyDictionary<string, StorageComponent> GetStorageComponents(bool includeSmart = true)
     {
         _lhm.Update();
+        var result = ReadVolumeComponents();
+        AddSmartStorageComponents(result, includeSmart);
+        return result;
+    }
+
+    // Free space is a volume query that wakes a sleeping drive. With live drive activity off the first
+    // read is kept, so a dashboard open on the page does not repeat it every second.
+    private Dictionary<string, StorageComponent>? _volumeCache;
+
+    private Dictionary<string, StorageComponent> ReadVolumeComponents()
+    {
+        if (_lhm.LiveDriveActivity)
+        {
+            _volumeCache = null;
+            return ReadVolumesNow();
+        }
+        var cached = _volumeCache;
+        if (cached is null)
+        {
+            cached = ReadVolumesNow();
+            _volumeCache = cached;
+        }
+        return new Dictionary<string, StorageComponent>(cached);
+    }
+
+    private static Dictionary<string, StorageComponent> ReadVolumesNow()
+    {
         var result = new Dictionary<string, StorageComponent>();
         foreach (var di in System.IO.DriveInfo.GetDrives())
         {
@@ -319,6 +346,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 },
             };
         }
+        return result;
+    }
+
+    private void AddSmartStorageComponents(Dictionary<string, StorageComponent> result, bool includeSmart)
+    {
         // LHM SMART per physical drive (composite/warning/critical temp, life,
         // activity, power-on hours, etc), additional to the DriveInfo rows above.
         // The "smart/" id keeps these out of consumers that only want the
@@ -337,7 +369,6 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 };
             }
         }
-        return result;
     }
 
     public IReadOnlyList<string> GetStoragePartitions()

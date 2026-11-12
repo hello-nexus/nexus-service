@@ -34,9 +34,21 @@ public sealed class DiskRateReader
     private long _lastBytesWritten;
 #endif
 
+    private readonly Func<bool> _liveActivity;
+
+    public DiskRateReader() : this(null) { }
+
+    /// <param name="liveActivity">Windows only: false stops every per-second open and IOCTL of the physical drives, which keeps them awake.</param>
+    public DiskRateReader(Func<bool>? liveActivity) => _liveActivity = liveActivity ?? (() => true);
+
     public DiskRate Read()
     {
 #if WINDOWS
+        if (!_liveActivity())
+        {
+            _lastTicks = -1;
+            return new DiskRate(null, null);
+        }
         var (bytesRead, bytesWritten) = ReadCumulativeCounters();
         var nowTicks = Environment.TickCount64;
         var rate = ComputeRate(_lastTicks, _lastBytesRead, _lastBytesWritten, nowTicks, bytesRead, bytesWritten);

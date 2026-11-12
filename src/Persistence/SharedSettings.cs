@@ -55,6 +55,8 @@ public sealed class MonitoringSettings
     public int SmartPollDefaultSeconds { get; set; } = MonitoringSettings.DefaultSmartPollSeconds;
     /// <summary>False: SmartPollDefaultSeconds governs every drive. True: each drive uses its own SmartPollSeconds entry, falling back to its media type's default.</summary>
     public bool SmartPollPerDrive { get; set; }
+    /// <summary>True (default): drive throughput and free space refresh every hardware walk, which touches every drive. False: drives are touched only when a SMART read is due per the SmartPoll settings, so an idle drive can sleep.</summary>
+    public bool LiveDriveActivity { get; set; } = true;
 
     public const int DefaultSmartPollSeconds = 30;
 }
@@ -376,6 +378,7 @@ public sealed class MonitoringSettingsPatch
     public Dictionary<string, int>? SmartPollSeconds { get; set; }
     public int? SmartPollDefaultSeconds { get; set; }
     public bool? SmartPollPerDrive { get; set; }
+    public bool? LiveDriveActivity { get; set; }
 }
 
 public sealed class UpdatePrefs

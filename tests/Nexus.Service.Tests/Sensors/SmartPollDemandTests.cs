@@ -196,4 +196,35 @@ public class SmartPollDemandTests
         DriveCurve(store, "/ata/0/temperature/0");
         Assert.False(SmartPollDemand.ReaderMustWalk(true, SmartPollDemand.Capture(gates, store.Load(), liveConsumers: false), drives));
     }
+
+    [Theory]
+    [InlineData(uint.MaxValue, null, 0L, false, false)]
+    [InlineData(uint.MaxValue, 0L, 600000L, true, false)]
+    [InlineData(30u, null, 5000L, false, true)]
+    [InlineData(30u, 1000L, 5000L, false, false)]
+    [InlineData(30u, 1000L, 31000L, false, true)]
+    [InlineData(30u, 1000L, 5000L, true, true)]
+    [InlineData(1u, 1000L, 1950L, false, true)]
+    public void StorageUpdateDue_TouchesADriveOnlyWhenSmartIsDue(uint cycles, long? last, long now, bool force, bool expected) =>
+        Assert.Equal(expected, SmartPollDemand.StorageUpdateDue(cycles, last, now, force));
+
+    [Fact]
+    public void LiveDriveActivity_DefaultsOn()
+    {
+        Assert.True(new MonitoringSettings().LiveDriveActivity);
+    }
+
+    [Fact]
+    public void Cycles_NotNeeded_NeverDue()
+    {
+        var cycles = SmartPollDemand.Cycles(false, new HashSet<string>(), "/nvme/0", () => 1, force: true);
+        Assert.False(SmartPollDemand.StorageUpdateDue(cycles, null, 0, force: true));
+    }
+
+    [Fact]
+    public void Cycles_UserNever_NeverDueEvenForced()
+    {
+        var cycles = SmartPollDemand.Cycles(true, new HashSet<string>(), "/nvme/0", () => SmartPollPolicy.NeverSeconds, force: true);
+        Assert.False(SmartPollDemand.StorageUpdateDue(cycles, null, 0, force: true));
+    }
 }

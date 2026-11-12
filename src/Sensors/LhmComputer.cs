@@ -56,6 +56,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Nexus.Service.Sockets.MultiplexHub? _hub;
     private readonly SmartActiveFlip _smartActive;
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
+    // Guarded by _updateLock. Last walk tick each drive was updated, used only while live drive activity is off.
+    private readonly Dictionary<string, long> _storageUpdatedAt = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
     private volatile bool _opened;
@@ -412,7 +414,24 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     // at the top of its own Update, so setting it here is per-drive. Throughput
                     // and free space are on separate paths and still refresh every walk.
                     if (hw.HardwareType == HardwareType.Storage)
-                        StorageDevice.SmartUpdateCycleCount = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
+                    {
+                        var cycles = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
+                        StorageDevice.SmartUpdateCycleCount = cycles;
+                        if (!monitoring.LiveDriveActivity)
+                        {
+                            // Any Update() reads throughput and free space from the drive, so skip it
+                            // unless SMART is due; the update that runs then reads SMART too.
+                            var id = hw.Identifier.ToString();
+                            long? last = _storageUpdatedAt.TryGetValue(id, out var t) ? t : null;
+                            if (!SmartPollDemand.StorageUpdateDue(cycles, last, now, refresh == SensorRefresh.Force))
+                            {
+                                if (cycles == uint.MaxValue) _storageUpdatedAt.Remove(id);
+                                continue;
+                            }
+                            _storageUpdatedAt[id] = now;
+                            StorageDevice.SmartUpdateCycleCount = 1;
+                        }
+                    }
 
                     TryUpdate(hw);
                     foreach (var sub in hw.SubHardware)
@@ -449,6 +468,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     }
 
     /// <summary>Called by a SMART reader before it reads drive values; walks first when drive reads had stopped.</summary>
+    /// <summary>False when the user turned off live drive activity: drive reads then happen only for SMART and explicit requests.</summary>
+    public bool LiveDriveActivity => _config.Load().Monitoring.LiveDriveActivity;
+
     public void BeforeSmartRead()
     {
         // Serialized so a second reader waits for the first reader's walk; never taken while holding _updateLock.
