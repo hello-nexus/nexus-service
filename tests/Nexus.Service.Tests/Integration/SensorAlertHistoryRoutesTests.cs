@@ -118,6 +118,21 @@ public sealed class SensorAlertHistoryRoutesTests : IClassFixture<SensorAlertHis
     }
 
     [Fact]
+    public async Task A_disabled_rule_still_returns_its_series()
+    {
+        var client = Client();
+        var id = await Create(client, Rule());
+        var t0 = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 600;
+        Store.Append(new[] { Sample(t0, (id, 50)) }, null);
+        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{id}", new { enabled = false, sensor = new { category = "cpu", id = "cpu/temp", name = "CPU Package", type = "Temperature", parentName = "CPU" }, high = (double?)80, raiseAfterSeconds = 5, clearAfterSeconds = 5, severity = "watch", notifyDesktop = true, showInHealth = true, repeatMinutes = 0 });
+        Assert.True(res.IsSuccessStatusCode);
+
+        var body = await client.GetFromJsonAsync<JsonElement>(Url(t0, t0 + 5));
+
+        Assert.Equal(id, Assert.Single(body.GetProperty("series").EnumerateArray()).GetProperty("id").GetString());
+    }
+
+    [Fact]
     public async Task Rule_id_filters_the_series()
     {
         var client = Client();

@@ -147,8 +147,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     /// <summary>
     /// Readings of the enabled rules from the latest tick, for the sample second <paramref name="tsSec"/>.
-    /// Empty once that tick is older than the max age, and for a rule that was deleted, disabled or
-    /// re-pointed since the tick.
+    /// Empty once that tick is older than the max age, and for a rule that was deleted or
+    /// re-pointed since the tick. A disabled rule still records: the switch only controls alerting.
     /// </summary>
     public IReadOnlyList<Nexus.Service.Monitoring.History.SensorSeriesReading> CurrentReadings(long tsSec)
     {
@@ -167,7 +167,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         IEnumerable<SensorAlertRule>? rules,
         List<Nexus.Service.Monitoring.History.SensorSeriesReading> into)
     {
-        var current = (rules ?? Enumerable.Empty<SensorAlertRule>()).Where(r => r.Enabled).ToDictionary(r => r.Id, StringComparer.Ordinal);
+        var current = (rules ?? Enumerable.Empty<SensorAlertRule>()).ToDictionary(r => r.Id, StringComparer.Ordinal);
         foreach (var e in entries)
         {
             if (current.TryGetValue(e.RuleId, out var rule) && SensorAlertRules.SameSensor(e.Sensor, rule.Sensor, bIdResolves: true))
@@ -323,6 +323,34 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         st.ClearSince = null;
         return SensorAlertEffect.None;
     }
+
+    /// <summary>Keeps the reading of a disabled rule current without any alert logic. Returns whether the reported state changed.</summary>
+    private static bool StepDisabled(SensorSample sample, DateTimeOffset now, DateTimeOffset wall, SensorAlertRuntime st)
+    {
+        if (sample.Valid)
+        {
+            st.InvalidSince = null;
+            st.InvalidSinceUtc = null;
+            st.Value = sample.Value;
+            st.Units = sample.Units;
+        }
+        else
+        {
+            st.InvalidSince ??= now;
+            st.InvalidSinceUtc ??= wall;
+            st.Value = null;
+        }
+        var reported = DisabledReported(st, now);
+        if (reported == st.Reported)
+        {
+            return false;
+        }
+        st.Reported = reported;
+        return true;
+    }
+
+    private static string DisabledReported(SensorAlertRuntime st, DateTimeOffset now) =>
+        st.InvalidSince is { } since && now - since >= UnavailableAfter ? SensorAlertStates.Unavailable : SensorAlertStates.Off;
 
     private static SensorAlertEffect Finish(SensorAlertRuntime st, DateTimeOffset now, SensorAlertEffect effect)
     {
@@ -498,7 +526,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var now = Mono();
         var changed = ReconcileCore(rules, now);
 
-        var enabled = rules.Where(r => r.Enabled).ToList();
+        var enabled = rules;
         var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify, string Key)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
         var readings = new List<SeriesEntry>(enabled.Count);
@@ -528,11 +556,17 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         // A healed id is the same sensor, so the entry carries it and compares equal to the rule once the heal lands.
                         readings.Add(new SeriesEntry(rule.Id, sample.Value, healed is null ? rule.Sensor : WithId(rule.Sensor, healed)));
                     }
-                    var effect = Step(rule, sample, now, st, wall);
                     if (sample.Valid)
                     {
                         st.Source = sample.Source;
                     }
+                    // The switch controls alerting only: a disabled rule is read and recorded but never stepped.
+                    if (!rule.Enabled)
+                    {
+                        changed |= StepDisabled(sample, now, wall, st);
+                        continue;
+                    }
+                    var effect = Step(rule, sample, now, st, wall);
                     changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, snap, notices);
                 }
             }
@@ -1086,14 +1120,14 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         Changed?.Invoke();
     }
 
-    /// <summary>States of the enabled rules; a disabled rule has nothing to report.</summary>
+    /// <summary>States of every rule. A disabled rule reports its reading with the off state, or unavailable with no value.</summary>
     public List<SensorAlertState> States()
     {
-        var enabled = Snapshot().Rules.Where(r => r.Enabled).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+        var enabledById = Snapshot().Rules.ToDictionary(r => r.Id, r => r.Enabled, StringComparer.Ordinal);
         var now = Mono();
         lock (_lock)
         {
-            return _states.Where(kv => enabled.Contains(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now)).ToList();
+            return _states.Where(kv => enabledById.ContainsKey(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now, enabledById[kv.Key])).ToList();
         }
     }
 
@@ -1115,9 +1149,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now)
+    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now, bool enabled)
     {
-        var reported = Reported(st, now);
+        var reported = enabled ? Reported(st, now) : DisabledReported(st, now);
         var since = reported switch
         {
             SensorAlertStates.Unavailable => st.InvalidSinceUtc,

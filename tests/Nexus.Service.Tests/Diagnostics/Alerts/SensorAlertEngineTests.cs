@@ -492,7 +492,7 @@ public partial class SensorAlertEngineTests
 
         rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
         rig.Seconds(1);
-        Assert.Empty(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Off, rig.State());
 
         rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = true);
         rig.Sensors.Cpu = Array.Empty<HardwareSensor>();
@@ -617,7 +617,7 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_without_enabled_rules_reads_no_sensors()
+    public void Engine_reads_sensors_for_a_disabled_rule_so_it_keeps_recording()
     {
         var rig = new Rig();
         var off = TempRule();
@@ -626,8 +626,7 @@ public partial class SensorAlertEngineTests
 
         rig.Seconds(3);
 
-        Assert.Equal(0, rig.Sensors.CpuReads);
-        Assert.Equal(0, rig.Sensors.ExtrasReads);
+        Assert.Equal(3, rig.Sensors.CpuReads);
     }
 
     [Fact]
@@ -864,21 +863,45 @@ public partial class SensorAlertEngineTests
         rig.Seconds(3);
 
         Assert.Empty(rig.Notices);
-        Assert.Empty(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Off, rig.State());
         Assert.Empty(rig.Engine.HealthComponents());
     }
 
     [Fact]
-    public void Engine_disabled_rules_have_no_state_or_health_component()
+    public void A_disabled_rule_reports_its_value_in_the_off_state_and_raises_nothing()
     {
         var rig = new Rig();
-        rig.AddRule(TempRule(raise: 0));
-        rig.SetTemp(90);
-        rig.Seconds(1);
+        var off = TempRule(raise: 0);
+        off.Enabled = false;
+        rig.AddRule(off);
+        rig.SetTemp(95);
 
-        rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
+        rig.Seconds(3);
 
-        Assert.Empty(rig.Engine.States());
+        var state = Assert.Single(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Off, state.State);
+        Assert.Equal(95, state.Value);
+        Assert.Null(state.Direction);
+        Assert.Empty(rig.Notices);
+        Assert.Empty(rig.Engine.HealthComponents());
+        Assert.Empty(rig.Engine.History());
+    }
+
+    [Fact]
+    public void A_disabled_rule_with_no_reading_is_unavailable_with_no_value_and_not_a_problem()
+    {
+        var rig = new Rig();
+        var off = TempRule(raise: 0);
+        off.Enabled = false;
+        rig.AddRule(off);
+        rig.Sensors.Cpu = Array.Empty<HardwareSensor>();
+
+        rig.Seconds(15);
+
+        var state = Assert.Single(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Unavailable, state.State);
+        Assert.Null(state.Value);
+        Assert.Empty(rig.Notices);
         Assert.Empty(rig.Engine.HealthComponents());
     }
 
@@ -1104,7 +1127,7 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void A_disabled_rule_is_not_recorded()
+    public void A_disabled_rule_is_still_recorded()
     {
         var rig = new Rig();
         var off = TempRule(low: null, high: null, id: "off");
@@ -1114,7 +1137,7 @@ public partial class SensorAlertEngineTests
         rig.SetTemp(50);
         rig.Seconds(1);
 
-        Assert.Equal(new[] { "on" }, rig.Engine.CurrentReadings(0).Select(r => r.Id).ToArray());
+        Assert.Equal(new[] { "off", "on" }, rig.Engine.CurrentReadings(0).Select(r => r.Id).OrderBy(i => i).ToArray());
     }
 
     [Fact]

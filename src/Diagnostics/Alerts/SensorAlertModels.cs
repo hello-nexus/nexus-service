@@ -12,6 +12,8 @@ public static class SensorAlertStates
     public const string Pending = "pending";
     public const string Active = "active";
     public const string Unavailable = "unavailable";
+    /// <summary>The rule's switch is off: its reading is still recorded and reported, nothing alerts.</summary>
+    public const string Off = "off";
 }
 
 /// <summary>Runtime state of one rule. Not persisted.</summary>

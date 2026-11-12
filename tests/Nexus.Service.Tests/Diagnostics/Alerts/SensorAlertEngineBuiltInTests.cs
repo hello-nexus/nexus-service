@@ -517,7 +517,9 @@ public partial class SensorAlertEngineTests
         Assert.Equal(SensorAlertStates.Active, rig.State(DriveId("storage:b")));
         Assert.Equal(80, StateOf(rig, DriveId("storage:b")).Value);
         Assert.Equal(SensorAlertStates.Ok, rig.State(DriveId("storage:a")));
-        Assert.DoesNotContain(rig.Engine.States(), x => x.RuleId == DriveId("storage:hot-ignored"));
+        var ignored = StateOf(rig, DriveId("storage:hot-ignored"));
+        Assert.Equal(SensorAlertStates.Off, ignored.State);
+        Assert.Equal(88, ignored.Value);
         Assert.StartsWith("Drive B above 75 °C", rig.Notices.Single().Notice.Text);
     }
 
@@ -773,6 +775,43 @@ public partial class SensorAlertEngineTests
         rig.Store.Update(s => s.Diagnostics.IgnoredComponents.Clear());
 
         Assert.True(rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).Enabled);
+    }
+
+    [Fact]
+    public void A_fan_entry_that_is_off_still_reports_its_rpm_and_raises_nothing()
+    {
+        var rig = BuiltInRig(
+            r => r.Fans.Channels.Add(Fan("fan1", "Rear", 100)),
+            tweak: s => s.Diagnostics.IgnoredComponents.Add("cooling:fan1"));
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+
+        rig.Seconds(10);
+
+        var state = StateOf(rig, FanRule("fan1"));
+        Assert.Equal(SensorAlertStates.Off, state.State);
+        Assert.Equal(100, state.Value);
+        Assert.Empty(rig.Notices);
+        Assert.DoesNotContain(rig.Engine.HealthComponents(), x => x.Id == "alert:" + FanRule("fan1"));
+    }
+
+    [Fact]
+    public void A_built_in_temperature_that_is_off_keeps_its_reading_and_is_never_a_problem()
+    {
+        var rig = BuiltInRig(r => CpuHot(r, 99));
+        EditStored(rig, CpuId, x =>
+        {
+            x.Enabled = false;
+            x.High = 80;
+            x.RaiseAfterSeconds = 0;
+        });
+
+        rig.Seconds(5);
+
+        var state = StateOf(rig, CpuId);
+        Assert.Equal(SensorAlertStates.Off, state.State);
+        Assert.Equal(99, state.Value);
+        Assert.Empty(rig.Notices);
+        Assert.Empty(rig.Engine.HealthComponents());
     }
 
     [Fact]
