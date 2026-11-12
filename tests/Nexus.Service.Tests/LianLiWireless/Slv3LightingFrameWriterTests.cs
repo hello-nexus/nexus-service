@@ -733,4 +733,71 @@ public class Slv3LightingFrameWriterTests
         Assert.Equal(long.MinValue, st.WindowFirstFrame);
         Assert.False(LightingWriteHealth.Shared.IsFailing(chainKey));
     }
+
+    [Fact]
+    public void ReduceWindow_by_three_samples_the_group_midpoint_and_clamps_at_the_window_ends()
+    {
+        const long First = 1000;
+        var full = new byte[Slv3LightingFrameWriter.WindowFrames * 3];
+        for (var j = 0; j < Slv3LightingFrameWriter.WindowFrames; j++)
+        {
+            Array.Fill(full, (byte)j, Slv3LightingFrameWriter.WindowSlot(First + j) * 3, 3);
+        }
+
+        var reduced = Slv3LightingFrameWriter.ReduceWindow(full, 1, First, 3);
+
+        Assert.Equal(10 * 3, reduced.Length);
+        // First group 334 covers frames 1002..1004 (midpoint 1003); the last group 343 covers 1029..1031 and clamps to 1029.
+        Assert.Equal(3, reduced[(int)(334 % 10) * 3]);
+        Assert.Equal(29, reduced[(int)(343 % 10) * 3]);
+    }
+
+    private static Slv3LightingFrameWriter.ChainRolling Joinable(double lastUploadMs, double retryAtMs = 0) =>
+        new() { Joinable = true, LastUploadStartMs = lastUploadMs, RetryAtMs = retryAtMs };
+
+    [Fact]
+    public void An_oversized_chain_waiting_out_its_retry_never_holds_the_upload_turn()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var oversized = Joinable(0, retryAtMs: 10_000);
+        var rolling = new[] { oversized, Joinable(100), Joinable(200), Joinable(300) };
+        for (var i = 0; i < rolling.Length; i++) writer._rolling["m" + i] = rolling[i];
+
+        // The three normal chains take the turn in order of waiting even though the oversized one waited longest.
+        Assert.True(writer.IsNextToUpload(rolling[1], 1000));
+        Assert.False(writer.IsNextToUpload(rolling[2], 1000));
+        rolling[1].LastUploadStartMs = 1000;
+        Assert.True(writer.IsNextToUpload(rolling[2], 1000));
+        rolling[2].LastUploadStartMs = 1100;
+        Assert.True(writer.IsNextToUpload(rolling[3], 1000));
+        rolling[3].LastUploadStartMs = 1200;
+        Assert.True(writer.IsNextToUpload(rolling[1], 1300));
+
+        // Once the retry time passes it competes again, as the longest waiting.
+        Assert.True(writer.IsNextToUpload(oversized, 20_000));
+        Assert.False(writer.IsNextToUpload(rolling[1], 20_000));
+    }
+
+    [Fact]
+    public async Task The_learned_divisor_resets_on_a_content_change_and_probes_one_step_lower_periodically()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var mac = Convert.ToHexString(FanMac);
+        var full = NoisyGradientWindow(174);
+        var st = new Slv3LightingFrameWriter.ChainRolling();
+        st.Upload = writer.UploadWindowAsync(mac, st, full, 174, 1001, 1, 53);
+        await st.Upload;
+        st.UploadStretch = 1;
+        writer.CollectUpload(mac, st);
+        Assert.Equal(2, writer.StartDivisor(mac, st, 0));
+
+        // Within the probe period the remembered divisor is used; once due, one step lower is tried once.
+        var probeAt = st.ProbeAtMs;
+        Assert.Equal(2, writer.StartDivisor(mac, st, probeAt - 1));
+        Assert.Equal(1, writer.StartDivisor(mac, st, probeAt));
+        Assert.Equal(2, writer.StartDivisor(mac, st, probeAt + 1));
+
+        writer.ResetWindowDivisor(mac, st);
+        Assert.Equal(1, writer.StartDivisor(mac, st, probeAt + 2));
+    }
 }

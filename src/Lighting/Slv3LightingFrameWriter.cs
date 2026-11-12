@@ -404,12 +404,16 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public Slv3Hub.WindowUploadResult UploadResult;
         public int UploadDivisor = 1;
         public double RetryAtMs;
+        public double ProbeAtMs;
+        public int WindowDivisor = 1;
     }
 
     // Frame-count divisors a chain may step down through when its window compresses past the firmware cap.
     internal const int MaxWindowDivisor = 3;
     // A chain that cannot fit even at the floor is not retried for this long.
     private const double OversizeRetryMs = 10000;
+    // A reduced chain tries one divisor lower this often, so it recovers when the content gets simpler.
+    private const double DivisorProbeMs = 60000;
     private readonly Dictionary<string, int> _windowDivisors = new();
     private readonly HashSet<string> _oversizeLogged = new();
 
@@ -433,6 +437,27 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         return reduced;
     }
 
+    /// <summary>Forgets what a chain learned about its window size, so new content is tried at full length.</summary>
+    internal void ResetWindowDivisor(string macHex, ChainRolling st)
+    {
+        _windowDivisors.Remove(macHex);
+        _oversizeLogged.Remove(macHex);
+        st.RetryAtMs = 0;
+        st.ProbeAtMs = 0;
+    }
+
+    /// <summary>The divisor an upload starts at: the remembered one, or one lower when the periodic probe is due.</summary>
+    internal int StartDivisor(string macHex, ChainRolling st, double nowMs)
+    {
+        var divisor = _windowDivisors.GetValueOrDefault(macHex, 1);
+        if (divisor > 1 && nowMs >= st.ProbeAtMs)
+        {
+            st.ProbeAtMs = nowMs + DivisorProbeMs;
+            return divisor - 1;
+        }
+        return divisor;
+    }
+
     // Starts at the chain's remembered divisor and steps down while the firmware cap refuses the payload.
     internal async Task<bool> UploadWindowAsync(string macHex, ChainRolling st, byte[] full, int ledCount, long firstFrame, int startDivisor, double interval)
     {
@@ -442,6 +467,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             used = d;
             var payload = d == 1 ? full : ReduceWindow(full, ledCount, firstFrame, d);
+            st.UploadPayload = payload;
             result = await _hub.SendRgbWindowResultAsync(macHex, payload, ledCount, WindowFrames / d, interval * d, PassThroughBrightnessPercent).ConfigureAwait(false);
             if (result != Slv3Hub.WindowUploadResult.TooLarge) break;
         }
@@ -479,7 +505,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private long _healthTickMaxMs;
     private readonly HashSet<string> _rollingIds = new();
 
-    private readonly Dictionary<string, ChainRolling> _rolling = new();
+    internal readonly Dictionary<string, ChainRolling> _rolling = new();
     private readonly List<(double Utc, double Rf)> _clock = new();
     private double _nextClockSampleMs;
     private int _clockOutliers;
@@ -709,7 +735,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (ok && st.UploadDivisor != _windowDivisors.GetValueOrDefault(macHex, 1))
         {
             _windowDivisors[macHex] = st.UploadDivisor;
-            ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window stepped down to {WindowFrames / st.UploadDivisor} frames to fit the firmware cap");
+            st.ProbeAtMs = UtcNowMs() + DivisorProbeMs;
+            if (st.UploadDivisor == 1) _windowDivisors.Remove(macHex);
+            ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window set to {WindowFrames / st.UploadDivisor} frames to fit the firmware cap");
         }
         if (ok)
         {
@@ -719,6 +747,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.WindowFirstFrame = st.UploadStretch == _windowStretch ? (st.UploadFirstFrame + d - 1) / d * d : long.MinValue;
             st.WindowPayload = st.UploadPayload;
             st.WindowLedCount = st.UploadLedCount;
+            st.WindowDivisor = d;
             // The chain now plays the window, so the next live frame must go out even if it matches the last one sent.
             _lastSent.Remove(macHex);
         }
@@ -774,6 +803,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (canAhead) NotePlanned(structure);
         if (nowMs < st.LiveUntilMs || !canAhead)
         {
+            // Any change to what the window shows (effect, pin, settings) passes through here, so size limits are relearned.
+            ResetWindowDivisor(macHex, st);
             st.WindowFirstFrame = long.MinValue;
             st.Joinable = false;
             return false;
@@ -786,19 +817,22 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         // One chain per render, longest-waiting first, spreads a round's uploads
         // over the air. A chain joining late skips a window that is mostly played already.
+        var knownDivisor = _windowDivisors.GetValueOrDefault(macHex, 1);
+        // The reduced loop starts on a frame group boundary, so the safety margin counts from there.
+        var loopStart = (_windowFirstFrame + knownDivisor - 1) / knownDivisor * knownDivisor;
         if (st.Joinable && st.UploadedWindowId != _windowId && _windowStartedId != _windowId
             && TryCurrentFrame(nowMs, out var joinFrame)
-            && joinFrame >= _windowFirstFrame + WindowStartSafetyFrames
+            && joinFrame >= loopStart + WindowStartSafetyFrames
             && joinFrame < _windowFirstFrame + WindowFrames / 2
             && nowMs >= st.RetryAtMs
-            && IsNextToUpload(st))
+            && IsNextToUpload(st, nowMs))
         {
             st.UploadedWindowId = _windowId;
             _windowStartedId = _windowId;
             st.LastUploadStartMs = nowMs;
             if (ComposeWindow(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, out var payload, out var ledCount))
             {
-                var divisor = _windowDivisors.GetValueOrDefault(macHex, 1);
+                var divisor = StartDivisor(macHex, st, nowMs);
                 var first = _windowFirstFrame;
                 st.UploadFirstFrame = first;
                 st.UploadPayload = payload;
@@ -816,11 +850,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
     }
 
-    private bool IsNextToUpload(ChainRolling chain)
+    internal bool IsNextToUpload(ChainRolling chain, double nowMs)
     {
         foreach (var other in _rolling.Values)
         {
-            if (other.Joinable && other.Upload is not { IsCompleted: false } && other.LastUploadStartMs < chain.LastUploadStartMs)
+            // A chain waiting out an oversize refusal cannot take the turn, so it must not hold it.
+            if (other.Joinable && nowMs >= other.RetryAtMs && other.Upload is not { IsCompleted: false } && other.LastUploadStartMs < chain.LastUploadStartMs)
             {
                 return false;
             }
@@ -857,7 +892,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             return;
         }
         var colors = new RgbColor[st.WindowLedCount];
-        var o = WindowSlot(current) * st.WindowLedCount * 3;
+        var d = st.WindowDivisor;
+        var o = (int)(current / d % (WindowFrames / d)) * st.WindowLedCount * 3;
         for (var i = 0; i < colors.Length; i++, o += 3)
         {
             colors[i] = new RgbColor(payload[o], payload[o + 1], payload[o + 2]);
