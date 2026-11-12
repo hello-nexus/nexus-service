@@ -26,7 +26,7 @@ public sealed class GalleonSdAttached
 
 /// <summary>
 /// Owns the Galleon 100 SD command interface and streams direct LED frames.
-/// Probe build: every OUT frame and IN reply of the connect sequence and the
+/// Probe build, hardware mode only (no software-mode write): every OUT frame and IN reply of the connect sequence and the
 /// first frames is logged, then one summary line per window. Only the direct
 /// lighting resource is ever opened; onboard layer and profile resources are
 /// never touched. Handle IO is serialised on <c>_io</c>.
@@ -49,7 +49,9 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         public byte[] LastPayload { get; }
         public bool HasLast { get; set; }
         public bool ModeTouched { get; set; }
-        public bool SoftwareMode { get; set; }
+        public GalleonReply LastStart { get; set; }
+        public string LastStatusSig { get; set; } = "";
+        public int StatusLogs { get; set; }
         public byte Handle { get; set; }
         public bool HandleSettled { get; set; }
         public int Failures { get; set; }
@@ -59,7 +61,6 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         public string LastReplyHex { get; set; } = "";
         public int FramesSent { get; set; }
         public long LastSentStamp { get; set; }
-        public long LastModeStamp { get; set; }
         public long WindowStartStamp { get; set; }
         public int WindowFrames { get; set; }
         public int WindowSkipped { get; set; }
@@ -77,7 +78,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private const int HandbackAfterFailures = 3;
     private const double MinFrameGapMs = 50;
     private const double KeepAliveMs = 10_000;
-    private const double ModeReassertMs = 30_000;
+    private const int MaxStatusLogs = 20;
     private const double StatsWindowSec = 30;
     private const int ProbeReplyMs = 100;
     private const int FrameReplyMs = 20;
@@ -172,6 +173,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             Interlocked.Increment(ref _version);
             ServiceLog.Info($"[galleon-sd] connected serial={serial} path={chosen.Path} usage={chosen.UsagePage:X4}/{chosen.Usage:X2} rpt={chosen.InputReportByteLength}/{chosen.OutputReportByteLength}/{chosen.FeatureReportByteLength} layoutConfirmed={GalleonSdProtocol.ReportLayoutConfirmed(chosen.OutputReportByteLength)}");
             ProbeIdentityLocked(slot);
+            EnterHardwareLocked(slot);
         }
         return true;
     }
@@ -203,16 +205,6 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             try
             {
                 var probe = slot.FramesSent < ProbeFrames;
-                if (!slot.SoftwareMode && now < slot.NextNegotiateStamp)
-                {
-                    slot.WindowSkipped++;
-                    return true;
-                }
-                if (!slot.SoftwareMode || StampsToMs(now - slot.LastModeStamp) >= ModeReassertMs)
-                {
-                    if (!EnterSoftwareLocked(slot)) return RecordFailureLocked(slot, "software-mode");
-                    slot.LastModeStamp = now;
-                }
                 if (!SendDirectLocked(slot, probe, now, out var sent)) return RecordFailureLocked(slot, "frame");
                 if (!sent)
                 {
@@ -274,7 +266,6 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     {
         if (!slot.ModeTouched) return;
         slot.ModeTouched = false;
-        slot.SoftwareMode = false;
         slot.HasLast = false;
         try
         {
@@ -304,14 +295,19 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
     }
 
-    private bool EnterSoftwareLocked(Slot slot)
+    // Direct frames stream in hardware mode; this returns a board left in software mode by Web Hub or an older build.
+    private void EnterHardwareLocked(Slot slot)
     {
-        var probe = !slot.SoftwareMode && slot.FramesSent < ProbeFrames;
         slot.ModeTouched = true;
-        var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "mode->software", ProbeReplyMs, log: probe, check: true);
-        if (!reply.IsOk && reply.Parsed) ServiceLog.Warn($"[galleon-sd] software-mode set answered status {reply.Status:X2}; continuing");
-        slot.SoftwareMode = true;
-        return true;
+        try
+        {
+            var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware (open)", ProbeReplyMs, log: true);
+            if (!reply.IsOk && slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode write at open not confirmed (parsed={reply.Parsed} status={reply.Status:X2})");
+        }
+        catch (Exception ex)
+        {
+            if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode write at open threw: {ex.GetType().Name}");
+        }
     }
 
     // sent=false with a true return means the start was rejected and nothing was written.
@@ -327,6 +323,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             if (!TryStart(slot, slot.Handle, "start tx", replyMs, log, out var start))
             {
                 slot.HandleSettled = false;
+                LogStatusLocked(slot, start, null, null);
                 NegotiationFailedLocked(slot, now, start);
                 return true;
             }
@@ -346,6 +343,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             }
             if (accepted is null)
             {
+                LogStatusLocked(slot, last, null, null);
                 NegotiationFailedLocked(slot, now, last);
                 return true;
             }
@@ -355,19 +353,23 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             ServiceLog.Info($"[galleon-sd] direct handle {slot.Handle} (start reply parsed={last.Parsed} status={last.Status:X2})");
         }
 
+        var startReply = slot.LastStart;
         var chunks = GalleonSdProtocol.BlockWrite(slot.Handle, slot.Payload);
+        GalleonReply firstAck = default;
         for (var i = 0; i < chunks.Count; i++)
         {
             if (i == 0)
             {
                 var ack = Exchange(slot, chunks[i], "block first", log ? ProbeReplyMs : Math.Min(replyMs, FirstPacketReplyMs), log, check: true);
+                firstAck = ack;
                 if (!ack.Parsed) PaceWait();
                 continue;
             }
             if (!SendWire(slot, chunks[i], $"block next {i}", log)) return false;
             PaceWait();
         }
-        Exchange(slot, GalleonSdProtocol.StopTransaction(slot.Handle), "stop tx", replyMs, log, check: true);
+        var stopReply = Exchange(slot, GalleonSdProtocol.StopTransaction(slot.Handle), "stop tx", replyMs, log, check: true);
+        LogStatusLocked(slot, startReply, firstAck, stopReply);
         sent = true;
         return true;
     }
@@ -378,9 +380,22 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         DrainInput(slot);
         var before = slot.RepliesEver;
         reply = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, GalleonSdProtocol.DirectResource), label, replyMs, log, check: true);
+        slot.LastStart = reply;
         var answered = slot.RepliesEver > before;
         return reply.IsOk || (!reply.Parsed && !answered);
     }
+
+    // One line per session and whenever the start/block/stop status triple changes; "--" is no parsed reply, "n/a" is not sent.
+    private void LogStatusLocked(Slot slot, GalleonReply start, GalleonReply? block, GalleonReply? stop)
+    {
+        var sig = $"start={Status(start)} block={(block is null ? "n/a" : Status(block.Value))} stop={(stop is null ? "n/a" : Status(stop.Value))}";
+        if (sig == slot.LastStatusSig) return;
+        slot.LastStatusSig = sig;
+        if (slot.StatusLogs++ >= MaxStatusLogs) return;
+        ServiceLog.Info($"[galleon-sd] hardware-mode direct status {sig} handle={slot.Handle}");
+    }
+
+    private static string Status(GalleonReply r) => r.Parsed ? r.Status.ToString("X2") : "--";
 
     private void NegotiationFailedLocked(Slot slot, long now, GalleonReply last)
     {

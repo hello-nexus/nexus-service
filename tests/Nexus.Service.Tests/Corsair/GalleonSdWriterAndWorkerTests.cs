@@ -99,12 +99,12 @@ public class GalleonSdWriterAndWorkerTests
 
         rig.Writer.Tick();
         Assert.Single(Commands(rig.Hid.Device, GalleonSdProtocol.CmdBlockFirst));
-        Assert.Contains(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet), w => w[6] == GalleonSdProtocol.ModeSoftware);
+        Assert.DoesNotContain(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet), w => w[6] == GalleonSdProtocol.ModeSoftware);
 
         rig.Engine.Stop();
         rig.Writer.Tick();
         rig.Writer.Tick();
-        Assert.Equal(1, Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet).Count(w => w[6] == GalleonSdProtocol.ModeHardware));
+        Assert.Equal(2, Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet).Count(w => w[6] == GalleonSdProtocol.ModeHardware));
         rig.Hub.Dispose();
     }
 
@@ -113,7 +113,7 @@ public class GalleonSdWriterAndWorkerTests
     {
         var rig = new KeyboardRig();
         rig.Writer.Tick();
-        Assert.Empty(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet));
+        Assert.DoesNotContain(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet), w => w[6] != GalleonSdProtocol.ModeHardware);
         Assert.Empty(Commands(rig.Hid.Device, GalleonSdProtocol.CmdBlockFirst));
         rig.Hub.Dispose();
     }
