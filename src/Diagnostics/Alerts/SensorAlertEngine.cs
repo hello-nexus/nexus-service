@@ -198,6 +198,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     {
         _store = store;
         _sensors = sensors;
+        _cpuMax = new CpuMaxCache(
+            () => _sensors.GetCpuModel(),
+            () => _sensors.GetCpuTjMaxC(),
+            ex => Warn("builtin-cpumax", $"[sensor-alerts] CPU maximum lookup failed: {ex.Message}", Mono()));
         _drives = drives;
         _fans = fans;
         _time = time;
@@ -474,6 +478,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         // Also here, not only on a tick: a settings reset removes the stored rules while the detected devices stay.
         SeedBuiltIns(builtIns);
         var devices = builtIns.ToDictionary(d => BuiltInSensorRules.RuleId(d.SeriesId), StringComparer.Ordinal);
+        foreach (var (id, detected) in devices)
+        {
+            _knownDevices[id] = detected;
+        }
         var rules = new List<SensorAlertRule>();
         var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
@@ -488,7 +496,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     {
                         rules.Add(rule.Clone());
                     }
-                    else if (devices.TryGetValue(rule.Id, out var device))
+                    // A device missing from one pass (a failed read, a dropped sensor) keeps its entry as last seen, so its state is not torn down.
+                    else if (devices.TryGetValue(rule.Id, out var device) || _knownDevices.TryGetValue(rule.Id, out device))
                     {
                         var copy = rule.Clone();
                         copy.Sensor.Name = device.Name;
@@ -514,13 +523,19 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return new Snap(builtInRules, fahrenheit);
     }
 
-    /// <summary>The configured rules, as copies: the built-ins of the devices detected now, then the user's.</summary>
+    /// <summary>The configured rules, as copies: the built-ins of every device seen since startup (one missing now reads unavailable), then the user's.</summary>
     public List<SensorAlertRule> Rules() => Snapshot().Rules;
 
-    /// <summary>The devices that have a built-in rule now.</summary>
-    public IReadOnlyList<BuiltInDevice> BuiltInDevices() => BuiltIns().Devices;
+    /// <summary>The devices that have a built-in entry: those detected now plus any seen since startup that this pass missed.</summary>
+    public IReadOnlyList<BuiltInDevice> BuiltInDevices()
+    {
+        var detected = BuiltIns().Devices;
+        var seen = detected.Select(d => BuiltInSensorRules.RuleId(d.SeriesId)).ToHashSet(StringComparer.Ordinal);
+        var absent = _knownDevices.Where(kv => !seen.Contains(kv.Key)).Select(kv => kv.Value).ToList();
+        return absent.Count == 0 ? detected : detected.Concat(absent).ToList();
+    }
 
-    /// <summary>Evaluates every enabled rule once. Does nothing, and reads no sensor, without one.</summary>
+    /// <summary>Refreshes the detected devices, then steps every rule once.</summary>
     public void Tick()
     {
         RefreshBuiltIns();
@@ -677,6 +692,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private BuiltInSnapshot? _builtIns;
 
+    // Every device detected since the process started, by rule id; values are replaced whole, never mutated.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, BuiltInDevice> _knownDevices = new(StringComparer.Ordinal);
+
     private BuiltInSnapshot BuiltIns() => Volatile.Read(ref _builtIns) ?? RefreshBuiltIns();
 
     /// <summary>
@@ -698,8 +716,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var devices = new List<BuiltInDevice>();
         var sensors = new List<HardwareSensor>();
         var now = Mono();
-        TryDiscover(devices, sensors, "cpu", now, DiscoverCpu);
-        TryDiscover(devices, sensors, "gpu", now, DiscoverGpus);
+        // One value per pass, shared by the CPU and an integrated GPU.
+        var cpuMax = _cpuMax.Get()?.MaxC;
+        TryDiscover(devices, sensors, "cpu", now, (d, s) => DiscoverCpu(d, s, cpuMax));
+        TryDiscover(devices, sensors, "gpu", now, (d, s) => DiscoverGpus(d, s, cpuMax));
         TryDiscover(devices, sensors, "memory", now, DiscoverMemory);
         TryDiscover(devices, sensors, "storage", now, DiscoverDrives);
         TryDiscover(devices, sensors, "fans", now, DiscoverFans);
@@ -709,7 +729,16 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return snapshot;
     }
 
-    /// <summary>Applies the retired cooling and storage health toggles per fan and per drive, once the devices are known.</summary>
+    /// <summary>The window after the startup hold in which late-enumerating hubs and slow drives still get the retired "off" choice.</summary>
+    private static readonly TimeSpan PendingSettle = TimeSpan.FromMinutes(5);
+
+    private readonly HashSet<string> _pendingApplied = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Applies the retired cooling and storage health toggles to each fan and drive the first time it appears. No hub or drive
+    /// source has a ready signal (the sensor provider's only covers its own walk), so the flags clear once a bounded window
+    /// after the startup hold has passed, not on the first enumeration.
+    /// </summary>
     private void ApplyPendingIgnores(IReadOnlyList<BuiltInDevice> devices)
     {
         var fans = false;
@@ -719,15 +748,32 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             return;
         }
-        var fanIds = devices.Where(d => d.Kind == BuiltInSensorRules.FanSpeed).Select(d => d.ComponentId).ToList();
-        var driveIds = new List<string>();
-        if (drives && _drives?.Snapshot() is { Supported: true } smart)
+        var settled = _time.GetElapsedTime(_stamp0) >= PendingSettle + (_startupHold ?? Nexus.Service.Lifecycle.StartupDelayGate.Configured);
+        var fresh = new List<string>();
+        lock (_pendingApplied)
         {
-            driveIds = smart.Drives.Select(d => d.Id).ToList();
+            if (fans)
+            {
+                foreach (var d in devices.Where(d => d.Kind == BuiltInSensorRules.FanSpeed))
+                {
+                    if (_pendingApplied.Add(d.ComponentId))
+                    {
+                        fresh.Add(d.ComponentId);
+                    }
+                }
+            }
+            if (drives && _drives?.Snapshot() is { Supported: true } smart)
+            {
+                foreach (var drive in smart.Drives)
+                {
+                    if (_pendingApplied.Add(drive.Id))
+                    {
+                        fresh.Add(drive.Id);
+                    }
+                }
+            }
         }
-        var applyFans = fans && fanIds.Count > 0;
-        var applyDrives = drives && driveIds.Count > 0;
-        if (!applyFans && !applyDrives)
+        if (fresh.Count == 0 && !settled)
         {
             return;
         }
@@ -736,25 +782,23 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             _store.Update(s =>
             {
                 var ignored = s.Diagnostics.IgnoredComponents ??= new List<string>();
-                foreach (var id in (applyFans ? fanIds : new List<string>()).Concat(applyDrives ? driveIds : new List<string>()))
+                foreach (var id in fresh.Where(id => !ignored.Contains(id, StringComparer.Ordinal)))
                 {
-                    if (!ignored.Contains(id, StringComparer.Ordinal))
-                    {
-                        ignored.Add(id);
-                    }
+                    ignored.Add(id);
                 }
-                if (applyFans)
+                if (settled)
                 {
                     s.Diagnostics.PendingFansOff = false;
-                }
-                if (applyDrives)
-                {
                     s.Diagnostics.PendingDrivesOff = false;
                 }
             });
         }
         catch (Exception ex)
         {
+            lock (_pendingApplied)
+            {
+                _pendingApplied.ExceptWith(fresh);
+            }
             Warn("health-migration", $"[sensor-alerts] applying the retired health toggles failed: {ex.Message}", Mono());
         }
     }
@@ -764,8 +808,12 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var missing = false;
         _store.Read(s =>
         {
-            var have = (s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>()).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
-            missing = devices.Any(d => !have.Contains(BuiltInSensorRules.RuleId(d.SeriesId)));
+            var have = new Dictionary<string, SensorAlertRule>(StringComparer.Ordinal);
+            foreach (var r in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
+            {
+                have.TryAdd(r.Id, r);
+            }
+            missing = devices.Any(d => !have.TryGetValue(BuiltInSensorRules.RuleId(d.SeriesId), out var r) || BuiltInSensorRules.CpuDefaultStale(r, d));
         });
         if (!missing)
         {
@@ -778,9 +826,14 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 var list = s.Diagnostics.SensorAlerts ??= new List<SensorAlertRule>();
                 foreach (var device in devices)
                 {
-                    if (!list.Any(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId)))
+                    var existing = list.FirstOrDefault(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId));
+                    if (existing is null)
                     {
                         list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics));
+                    }
+                    else if (BuiltInSensorRules.CpuDefaultStale(existing, device))
+                    {
+                        BuiltInSensorRules.RefreshCpuDefault(existing, device);
                     }
                 }
             });
@@ -803,7 +856,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private void DiscoverCpu(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    private void DiscoverCpu(List<BuiltInDevice> devices, List<HardwareSensor> sensors, double? cpuMaxC)
     {
         var temp = Nexus.Service.Monitoring.History.SystemMetricsSource.FindSensor(_sensors.GetCpuSensors(), "Temperature", "Package");
         if (temp is null)
@@ -811,10 +864,12 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return;
         }
         var name = Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveCpuTempName(_sensors.GetCpuModel());
-        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name)), temp.Value, temp.Stale);
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name), cpuMaxC), temp.Value, temp.Stale);
     }
 
-    private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    private readonly CpuMaxCache _cpuMax;
+
+    private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors, double? cpuMaxC)
     {
         foreach (var gpu in _sensors.GetGpus())
         {
@@ -824,7 +879,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 continue;
             }
             var seriesId = BuiltInSensorRules.GpuSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(gpu.Id);
-            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name)), temp.Value, temp.Stale);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name), gpu.Integrated ? cpuMaxC : null), temp.Value, temp.Stale);
         }
     }
 

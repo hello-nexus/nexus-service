@@ -288,7 +288,7 @@ public sealed class DiagnosticsSettings
     public DiagnosticsNotifications Notifications { get; set; } = new();
     public DiagnosticsComponents Components { get; set; } = new();
     /// <summary>Health component ids (the HealthComponent.Id values, e.g.
-    /// "storage:&lt;serial&gt;", "cooling:&lt;deviceId&gt;", "gpu:0") the user
+    /// "storage:&lt;serial&gt;", "cooling:&lt;deviceId&gt;") the user
     /// chose to ignore. An ignored component is dropped from GET
     /// /diagnostics/health, so it never colours the overall status, the panel
     /// widget or a notification; its own tab still lists the device.</summary>
@@ -297,7 +297,7 @@ public sealed class DiagnosticsSettings
     public List<SensorAlertRule> SensorAlerts { get; set; } = new();
     /// <summary>Generation of the built-in sensor rules; below the per-device generation, the legacy per-kind templates are still to be seeded from the old fields.</summary>
     public int BuiltInSensorsVersion { get; set; }
-    /// <summary>Generation of the health-check switches: 1 means the retired GPU, storage and cooling toggles were folded into the per-drive ignore list and the per-fan Watchlist entries.</summary>
+    /// <summary>Generation of the health-check switches; past the first step the retired GPU, storage and cooling toggles are folded into the per-drive ignore list and the per-fan Watchlist entries, and past the second the per-GPU ignore entries are gone.</summary>
     public int HealthChecksVersion { get; set; }
     /// <summary>Set by the migration when the cooling toggle was off: every fan channel known at first sight is added to the ignore list, then this clears.</summary>
     public bool PendingFansOff { get; set; }

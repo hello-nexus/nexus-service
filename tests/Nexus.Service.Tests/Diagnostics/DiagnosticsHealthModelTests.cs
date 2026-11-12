@@ -527,7 +527,7 @@ public class DiagnosticsHealthModelTests
     }
 
     [Fact]
-    public void DisabledStorageComponent_ExcludedFromStatusAndOverall()
+    public void RetiredStorageToggle_IsIgnoredAndTheDriveStillReports()
     {
         var smart = new SmartSnapshot
         {
@@ -551,12 +551,12 @@ public class DiagnosticsHealthModelTests
 
         var result = Compute(smart: smart, diagnostics: diagnostics);
 
-        Assert.DoesNotContain(result.Components, c => c.Kind == "storage");
-        Assert.Equal(HealthStatuses.Ok, result.Overall);
+        Assert.Contains(result.Components, c => c.Kind == "storage");
+        Assert.Equal(HealthStatuses.Act, result.Overall);
     }
 
     [Fact]
-    public void DisabledGpuComponent_ExcludesGpuThrottleComponent()
+    public void RetiredGpuToggle_IsIgnoredAndThrottleStillReports()
     {
         var gpu = new GpuHealthSnapshot(true, new List<GpuInfo>
         {
@@ -567,7 +567,6 @@ public class DiagnosticsHealthModelTests
 
         var result = Compute(gpu: gpu, diagnostics: diagnostics);
 
-        Assert.DoesNotContain(result.Components, c => c.Kind == "gpu");
-        Assert.Equal(HealthStatuses.Ok, result.Overall);
+        Assert.Contains(result.Components, c => c.Kind == "gpu");
     }
 }

@@ -288,7 +288,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         }
     }
 
-    /// <summary>True when the document is not an object, or its top level carries a schemaVersion property; a nested one does not count.</summary>
+    /// <summary>True when the document is not an object, or it stores diagnostics.notifications.enabled.</summary>
     private static bool HasStoredNotificationsEnabled(string json)
     {
         using var doc = JsonDocument.Parse(json);
@@ -315,6 +315,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         return false;
     }
 
+    /// <summary>True when the document is not an object, or its top level carries a schemaVersion property; a nested one does not count.</summary>
     private static bool HasTopLevelSchemaVersion(string json)
     {
         using var doc = JsonDocument.Parse(json);

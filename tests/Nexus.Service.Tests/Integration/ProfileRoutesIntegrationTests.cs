@@ -342,11 +342,12 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
         var body = await getRes.Content.ReadFromJsonAsync<JsonElement>();
         var diagnostics = body.GetProperty("diagnostics");
 
+        // The retired threshold sliders are accepted and dropped.
         var thresholds = diagnostics.GetProperty("thresholds");
-        Assert.Equal(80, thresholds.GetProperty("cpuC").GetDouble());
-        Assert.Equal(82, thresholds.GetProperty("gpuC").GetDouble());
-        Assert.Equal(65, thresholds.GetProperty("storageC").GetDouble());
-        Assert.Equal(55, thresholds.GetProperty("ramC").GetDouble());
+        Assert.NotEqual(80, thresholds.GetProperty("cpuC").GetDouble());
+        Assert.NotEqual(82, thresholds.GetProperty("gpuC").GetDouble());
+        Assert.NotEqual(65, thresholds.GetProperty("storageC").GetDouble());
+        Assert.NotEqual(55, thresholds.GetProperty("ramC").GetDouble());
 
         Assert.Equal(15, diagnostics.GetProperty("warningLingerMinutes").GetInt32());
 
@@ -362,10 +363,11 @@ public sealed class ProfileRoutesIntegrationTests : IDisposable
 
         var components = diagnostics.GetProperty("components");
         Assert.True(components.GetProperty("cpu").GetBoolean());
-        Assert.False(components.GetProperty("gpu").GetBoolean());
+        // The retired GPU, storage and cooling toggles stay on whatever a client sends.
+        Assert.True(components.GetProperty("gpu").GetBoolean());
         Assert.True(components.GetProperty("storage").GetBoolean());
         Assert.True(components.GetProperty("ram").GetBoolean());
-        Assert.False(components.GetProperty("cooling").GetBoolean());
+        Assert.True(components.GetProperty("cooling").GetBoolean());
         Assert.True(components.GetProperty("system").GetBoolean());
 
         var ignored = diagnostics.GetProperty("ignoredComponents").EnumerateArray().Select(e => e.GetString()).ToList();

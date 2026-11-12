@@ -42,10 +42,12 @@ public sealed class ScreenCapturePusher : IDisposable
     {
         if (_disposed) return;
         if (width <= 0 || height <= 0) return;
+        HelperLog.Write($"[mirror-diag] Start monitor={monitorId} canvas={width}x{height}");
         Stop();
         var cts = new CancellationTokenSource();
         lock (_lock) { _cts = cts; }
-        _worker = Task.Run(() => RunLoop(monitorId, width, height, cts.Token));
+        _worker = Task.Run(() => RunLoop(monitorId, width, height, cts.Token))
+            .ContinueWith(t => HelperLog.Write($"[mirror-diag] worker faulted {t.Exception?.GetBaseException().GetType().Name}: {t.Exception?.GetBaseException().Message}"), TaskContinuationOptions.OnlyOnFaulted);
     }
 
     public void Stop()
@@ -54,9 +56,9 @@ public sealed class ScreenCapturePusher : IDisposable
         Task? worker;
         lock (_lock) { cts = _cts; worker = _worker; _cts = null; _worker = null; }
         if (cts is null) return;
-        try { cts.Cancel(); } catch { }
-        try { worker?.Wait(TimeSpan.FromSeconds(1)); } catch { }
-        try { cts.Dispose(); } catch { }
+        try { cts.Cancel(); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] Stop cancel failed {ex.GetType().Name}: {ex.Message}"); }
+        try { worker?.Wait(TimeSpan.FromSeconds(1)); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] Stop wait failed {ex.GetType().Name}: {ex.Message}"); }
+        try { cts.Dispose(); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] Stop dispose failed {ex.GetType().Name}: {ex.Message}"); }
         // _dxgi is owned by the worker; disposal happens at the end of RunLoop.
     }
 
@@ -67,6 +69,7 @@ public sealed class ScreenCapturePusher : IDisposable
         DxgiScreenCapture? dxgi = null;
         var retryMs = MinRetryMs;
         var recovering = false;
+        var initFailLogged = false;
         try
         {
             // ~30 fps push rate. The service's render loop runs at the engine
@@ -78,25 +81,45 @@ public sealed class ScreenCapturePusher : IDisposable
                 var backoff = false;
                 if (dxgi is not null && dxgi.IsLost)
                 {
-                    lock (_lock) { _dxgi = null; }
-                    dxgi.Dispose();
-                    dxgi = null;
-                    if (!recovering) HelperLog.Warn("[screen-capture-pusher] duplication lost; re-creating");
-                    // Lost again before delivering a frame: back off instead of rebuilding every tick.
-                    backoff = recovering;
+                    var wasRecovering = recovering;
+                    var waited = false;
+                    if (!wasRecovering) HelperLog.Warn("[screen-capture-pusher] duplication lost; re-creating");
+                    var recreated = false;
+                    if (!dxgi.NeedsFullRebuild)
+                    {
+                        if (wasRecovering)
+                        {
+                            // Lost again before delivering a frame: back off instead of recreating every tick.
+                            try { await Task.Delay(retryMs, ct).ConfigureAwait(false); }
+                            catch (OperationCanceledException) { break; }
+                            retryMs = Math.Min(retryMs * 2, MaxRetryMs);
+                            waited = true;
+                        }
+                        recreated = dxgi.TryRecreateDuplication();
+                    }
                     recovering = true;
+                    if (!recreated)
+                    {
+                        lock (_lock) { _dxgi = null; }
+                        dxgi.Dispose();
+                        dxgi = null;
+                        backoff = wasRecovering && !waited;
+                    }
                 }
                 if (dxgi is null && !backoff)
                 {
-                    var next = new DxgiScreenCapture();
+                    var next = new DxgiScreenCapture { Diag = HelperLog.Write, SkipPointerOnlyFrames = true, LogInitFailure = !initFailLogged };
                     if (next.Initialize(outputIdx))
                     {
+                        initFailLogged = false;
+                        next.ConfigureDownsample(width, height);
                         dxgi = next;
                         lock (_lock) { _dxgi = dxgi; }
                     }
                     else
                     {
                         next.Dispose();
+                        initFailLogged = true;
                         if (retryMs == MinRetryMs) HelperLog.Warn("[screen-capture-pusher] DXGI init failed; retrying");
                         recovering = true;
                         backoff = true;
@@ -111,7 +134,8 @@ public sealed class ScreenCapturePusher : IDisposable
                     continue;
                 }
                 var deadline = DateTime.UtcNow + period;
-                if (dxgi.AcquireFrame(timeoutMs: 16))
+                var gotImage = dxgi.AcquireFrame(timeoutMs: 16);
+                if (gotImage)
                 {
                     if (recovering)
                     {
@@ -132,7 +156,7 @@ public sealed class ScreenCapturePusher : IDisposable
                                 ct: ct).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) { break; }
-                        catch (Exception ex) { Console.Error.WriteLine($"[screen-capture-pusher] send failed: {ex.Message}"); }
+                        catch (Exception ex) { HelperLog.Write($"[mirror-diag] send failed {ex.GetType().Name}: {ex.Message}"); }
                     }
                     dxgi.ReleaseFrame();
                 }
@@ -144,11 +168,11 @@ public sealed class ScreenCapturePusher : IDisposable
                 }
             }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[screen-capture-pusher] loop crashed: {ex.Message}"); }
+        catch (Exception ex) { HelperLog.Write($"[mirror-diag] loop crashed {ex.GetType().Name}: {ex.Message}"); }
         finally
         {
             lock (_lock) { _dxgi = null; }
-            try { dxgi?.Dispose(); } catch { }
+            try { dxgi?.Dispose(); } catch (Exception ex) { HelperLog.Write($"[mirror-diag] dispose failed {ex.GetType().Name}: {ex.Message}"); }
         }
     }
 

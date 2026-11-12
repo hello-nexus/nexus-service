@@ -41,22 +41,25 @@ public sealed class SensorAlertRule
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public double? High { get; set; }
     public int RaiseAfterSeconds { get; set; } = 5;
-    /// <summary>Wire and downgrade compatibility only: always 5, any input is ignored. The engine clears after a fixed delay.</summary>
+    /// <summary>Wire and downgrade compatibility only: a constant, any input is ignored. The engine clears after a fixed delay.</summary>
     public int ClearAfterSeconds { get => 5; set { } }
     /// <summary>"watch" | "act".</summary>
     public string Severity { get; set; } = "watch";
     public bool NotifyDesktop { get; set; } = true;
     /// <summary>Also push to paired phones on a raise; independent of NotifyDesktop.</summary>
     public bool NotifyMobile { get; set; }
-    /// <summary>Wire and downgrade compatibility only: always true, any input is ignored.</summary>
+    /// <summary>Wire and downgrade compatibility only: a constant, any input is ignored.</summary>
     public bool ShowInHealth { get => true; set { } }
-    /// <summary>Wire and downgrade compatibility only: always 0, any input is ignored. An alert notifies once per episode.</summary>
+    /// <summary>Wire and downgrade compatibility only: a constant, any input is ignored. An alert notifies once per episode.</summary>
     public int RepeatMinutes { get => 0; set { } }
     /// <summary>Null for a user rule; else the component this built-in rule watches: "cpuTemp" | "gpuTemp" | "storageTemp" | "ramTemp". A built-in keeps a fixed id and sensor, can be turned off but not deleted.</summary>
     public string? BuiltIn { get; set; }
     /// <summary>Built-in only, wire only: the exact reading behind it right now. Null for a user rule and in storage.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public BuiltInSource? Source { get; set; }
+    /// <summary>Built-in only: the default limit this rule (or hidden template) was last seeded with. While <see cref="High"/> still equals it the user never chose a limit, so a better default may replace it. Zero when the user chose the limit; null when the rule predates this field, which then counts as untouched while it holds the flat default earlier releases shipped.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SeededHigh { get; set; }
 
     public SensorAlertRule Clone()
     {

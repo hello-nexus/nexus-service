@@ -106,12 +106,15 @@ public static class SensorAlertRules
         && (a.Id == b.Id || (!bIdResolves && a.Name == b.Name && a.ParentName == b.ParentName));
 
     /// <summary>
-    /// The first rule other than <paramref name="excludeId"/> that already tracks <paramref name="candidate"/>: a user rule by its
+    /// The rule other than <paramref name="excludeId"/> that already tracks <paramref name="candidate"/>: a user rule by its
     /// stored sensor, a built-in by the sensor currently feeding it (<see cref="SensorAlertRule.Source"/>; a drive or a memory mean has none).
-    /// Ids decide; a name and parent match only when the candidate's id does not resolve, as in <see cref="SameSensor"/>.
+    /// An id match decides. Only when the candidate's id does not resolve (a stale id from a client) can a name and parent
+    /// match stand in, and only when it names exactly one rule: twin sensors share both, so more than one match is a guess and tracks nothing.
     /// </summary>
     public static SensorAlertRule? FindTracker(SensorRef candidate, bool candidateIdResolves, IEnumerable<SensorAlertRule> rules, string? excludeId)
     {
+        SensorAlertRule? byName = null;
+        var nameMatches = 0;
         foreach (var rule in rules)
         {
             if (rule.Id == excludeId)
@@ -123,14 +126,17 @@ public static class SensorAlertRules
             {
                 continue;
             }
-            var byId = !string.IsNullOrEmpty(candidate.Id) && other.Id == candidate.Id;
-            var byName = !candidateIdResolves && !string.IsNullOrEmpty(candidate.Name) && other.Name == candidate.Name && other.ParentName == candidate.ParentName;
-            if (byId || byName)
+            if (!string.IsNullOrEmpty(candidate.Id) && other.Id == candidate.Id)
             {
                 return rule;
             }
+            if (!candidateIdResolves && !string.IsNullOrEmpty(candidate.Name) && other.Name == candidate.Name && other.ParentName == candidate.ParentName)
+            {
+                byName = rule;
+                nameMatches++;
+            }
         }
-        return null;
+        return nameMatches == 1 ? byName : null;
     }
 
     public static SensorAlreadyTrackedResponse AlreadyTracked(SensorAlertRule existing) => new()
