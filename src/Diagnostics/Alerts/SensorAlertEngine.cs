@@ -195,6 +195,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     {
         _store = store;
         _sensors = sensors;
+        _cpuMax = new CpuMaxCache(
+            () => _sensors.GetCpuModel(),
+            () => _sensors.GetCpuTjMaxC(),
+            ex => Warn("builtin-cpumax", $"[sensor-alerts] CPU maximum lookup failed: {ex.Message}", Mono()));
         _drives = drives;
         _fans = fans;
         _time = time;
@@ -706,17 +710,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var sensors = new List<HardwareSensor>();
         var now = Mono();
         // One value per pass, shared by the CPU and an integrated GPU.
-        try
-        {
-            _passCpuMaxC = ResolveCpuMax().MaxC;
-        }
-        catch (Exception ex)
-        {
-            _passCpuMaxC = CpuTemperatureDefault.FallbackC;
-            Warn("builtin-cpumax", $"[sensor-alerts] CPU maximum lookup failed: {ex.Message}", now);
-        }
-        TryDiscover(devices, sensors, "cpu", now, DiscoverCpu);
-        TryDiscover(devices, sensors, "gpu", now, DiscoverGpus);
+        var cpuMax = _cpuMax.Get()?.MaxC;
+        TryDiscover(devices, sensors, "cpu", now, (d, s) => DiscoverCpu(d, s, cpuMax));
+        TryDiscover(devices, sensors, "gpu", now, (d, s) => DiscoverGpus(d, s, cpuMax));
         TryDiscover(devices, sensors, "memory", now, DiscoverMemory);
         TryDiscover(devices, sensors, "storage", now, DiscoverDrives);
         TryDiscover(devices, sensors, "fans", now, DiscoverFans);
@@ -805,10 +801,12 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var missing = false;
         _store.Read(s =>
         {
-            var have = (s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>()).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
-            missing = devices.Any(d => !have.Contains(BuiltInSensorRules.RuleId(d.SeriesId)))
-                || devices.Any(d => (s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>()).FirstOrDefault(r => r.Id == BuiltInSensorRules.RuleId(d.SeriesId)) is { } r
-                    && BuiltInSensorRules.CpuDefaultStale(r, d));
+            var have = new Dictionary<string, SensorAlertRule>(StringComparer.Ordinal);
+            foreach (var r in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
+            {
+                have.TryAdd(r.Id, r);
+            }
+            missing = devices.Any(d => !have.TryGetValue(BuiltInSensorRules.RuleId(d.SeriesId), out var r) || BuiltInSensorRules.CpuDefaultStale(r, d));
         });
         if (!missing)
         {
@@ -851,7 +849,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private void DiscoverCpu(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    private void DiscoverCpu(List<BuiltInDevice> devices, List<HardwareSensor> sensors, double? cpuMaxC)
     {
         var temp = Nexus.Service.Monitoring.History.SystemMetricsSource.FindSensor(_sensors.GetCpuSensors(), "Temperature", "Package");
         if (temp is null)
@@ -859,33 +857,12 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return;
         }
         var name = Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveCpuTempName(_sensors.GetCpuModel());
-        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name), _passCpuMaxC), temp.Value, temp.Stale);
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name), cpuMaxC), temp.Value, temp.Stale);
     }
 
-    private readonly object _cpuMaxLock = new();
-    private (string Model, CpuMax Max)? _cpuMaxCache;
-    private double _passCpuMaxC;
+    private readonly CpuMaxCache _cpuMax;
 
-    /// <summary>
-    /// The CPU's own maximum temperature. A hardware reading is final for the process (until the CPU model changes), so it cannot
-    /// jitter the default; a table value is re-resolved each pass so a reading that becomes readable later replaces it once.
-    /// </summary>
-    private CpuMax ResolveCpuMax()
-    {
-        var model = _sensors.GetCpuModel();
-        lock (_cpuMaxLock)
-        {
-            if (_cpuMaxCache is { } cached && cached.Model == model && cached.Max.FromHardware)
-            {
-                return cached.Max;
-            }
-            var max = CpuTemperatureDefault.Resolve(model, _sensors.GetCpuTjMaxC());
-            _cpuMaxCache = (model, max);
-            return max;
-        }
-    }
-
-    private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors, double? cpuMaxC)
     {
         foreach (var gpu in _sensors.GetGpus())
         {
@@ -895,7 +872,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 continue;
             }
             var seriesId = BuiltInSensorRules.GpuSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(gpu.Id);
-            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name), gpu.Integrated ? _passCpuMaxC : null), temp.Value, temp.Stale);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name), gpu.Integrated ? cpuMaxC : null), temp.Value, temp.Stale);
         }
     }
 

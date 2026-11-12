@@ -116,9 +116,19 @@ public static class BuiltInSensorRules
     /// </summary>
     public static bool CpuDefaultStale(SensorAlertRule rule, BuiltInDevice device) =>
         FollowsCpu(device.Kind, device.Integrated)
-        && rule.SeededHigh is { } seeded
-        && rule.High == seeded
-        && DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC) != seeded;
+        && device.CpuMaxC is not null
+        && IsUntouched(rule, Specs.First(s => s.Kind == CpuTemp).NewInstallHigh)
+        && DefaultHigh(device.Kind, device.Integrated, device.CpuMaxC) != rule.High;
+
+    /// <summary>Recorded in <see cref="SensorAlertRule.SeededHigh"/> for a limit the user chose: below every limit range, so it never equals a stored limit.</summary>
+    private const double UserChosenSeed = 0;
+
+    /// <summary>
+    /// True when the limit was never chosen: it equals the default it was seeded with or, for a rule written before the seed was recorded
+    /// (null), the flat default the earlier releases shipped for it.
+    /// </summary>
+    private static bool IsUntouched(SensorAlertRule rule, double previouslyShippedDefault) =>
+        rule.High is { } high && (rule.SeededHigh is { } seeded ? high == seeded : high == previouslyShippedDefault);
 
     /// <summary>Moves an untouched CPU-following limit to the device's current default (see <see cref="CpuDefaultStale"/>).</summary>
     public static void RefreshCpuDefault(SensorAlertRule rule, BuiltInDevice device)
@@ -252,17 +262,17 @@ public static class BuiltInSensorRules
         if (template is not null)
         {
             rule.Enabled = template.Enabled;
-            // A template limit still equal to its recorded seed was never chosen, so the CPU and an integrated GPU take their own default (rule.High and SeededHigh already hold it).
-            var untouched = FollowsCpu(device.Kind, device.Integrated) && template.SeededHigh is { } ts && template.High == ts;
+            // A template limit never chosen by the user means the CPU and an integrated GPU take their own default (rule.High and SeededHigh already hold it).
+            var untouched = FollowsCpu(device.Kind, device.Integrated) && IsUntouched(template, spec.NewInstallHigh);
             if (template.High is { } th && !untouched)
             {
                 rule.High = ClampLimit(th, spec);
-                rule.SeededHigh = null;
+                rule.SeededHigh = UserChosenSeed;
             }
             else if (template.High is null)
             {
                 rule.High = null;
-                rule.SeededHigh = null;
+                rule.SeededHigh = UserChosenSeed;
             }
             rule.Low = ClampLimit(template.Low, spec);
             rule.RaiseAfterSeconds = template.RaiseAfterSeconds;
@@ -347,8 +357,8 @@ public static class BuiltInSensorRules
         if (double.IsFinite(legacyLimit) && legacyLimit != defaultLimit)
         {
             rule.High = Math.Clamp(legacyLimit, spec.LimitMin, spec.LimitMax);
-            // The user chose this limit, even when it equals a new default.
-            rule.SeededHigh = null;
+            // The user chose this limit, even when it equals a default.
+            rule.SeededHigh = UserChosenSeed;
         }
         // What the user effectively had: the old high-temperature toast needed both the master and its own category.
         rule.NotifyDesktop = d.Notifications.Enabled && d.Notifications.HighTemp;

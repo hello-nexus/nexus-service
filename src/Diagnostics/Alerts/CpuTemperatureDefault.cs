@@ -49,13 +49,24 @@ public static class CpuTemperatureDefault
         return new CpuMax(IsMobile(cpuModel) ? FallbackC : limit.LimitC, false);
     }
 
-    // Mobile Ryzen model tokens end in H, HS, HX, HX3D or U ("7840HS", "7945HX3D", "5800H", "7735U"); the Ryzen AI line is mobile too.
+    // Mobile Ryzen model tokens end in H, HS, HX, HX3D or U ("7840HS", "7945HX3D", "5800H", "7735U"); the Ryzen AI line, the suffixless
+    // three-digit 200 series ("260") and the Z1 / Z2 handheld parts are mobile too. Desktop model numbers have four digits.
     // Whole-token tests only, so a desktop "7950X3D" never matches.
     private static bool IsMobile(string? cpuModel)
     {
         var tokens = (cpuModel ?? "").Split(new[] { ' ', '-', '(', ')', ',', '/' }, StringSplitOptions.RemoveEmptyEntries);
-        return tokens.Any(t => t.Equals("AI", StringComparison.OrdinalIgnoreCase) || IsMobileModelToken(t));
+        var ryzen = tokens.Any(t => t.Equals("Ryzen", StringComparison.OrdinalIgnoreCase));
+        return tokens.Any(t => t.Equals("AI", StringComparison.OrdinalIgnoreCase)
+            || IsMobileModelToken(t)
+            || (ryzen && t.Length == 3 && t.All(char.IsAsciiDigit))
+            || IsHandheldToken(t));
     }
+
+    private static bool IsHandheldToken(string token) =>
+        token.Length is >= 2 and <= 3
+        && (token[0] is 'Z' or 'z')
+        && (token[1] is '1' or '2')
+        && token.Skip(2).All(char.IsAsciiLetter);
 
     private static bool IsMobileModelToken(string token)
     {
