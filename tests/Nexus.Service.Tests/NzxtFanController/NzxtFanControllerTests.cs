@@ -7,6 +7,7 @@ using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.Nzxt;
+using Nexus.Service.Sockets;
 using Xunit;
 
 namespace Nexus.Service.Tests.NzxtFanController;
@@ -18,6 +19,10 @@ public class NzxtFanControllerTests
         public readonly List<byte[]> Writes = new();
         public readonly Queue<byte[]> Incoming = new();
         public bool Disposed;
+        public int EmptyReadsBefore;
+        public bool FailReads;
+        public int RespondAfterStartReports;
+        public Action? OnRead;
 
         public int VendorId => NzxtFanControllerProtocol.VendorId;
         public int ProductId => NzxtFanControllerProtocol.ProductIds[0];
@@ -39,8 +44,14 @@ public class NzxtFanControllerTests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
-            if (Incoming.Count == 0)
+            OnRead?.Invoke();
+            if (FailReads)
             {
+                return -1;
+            }
+            if (EmptyReadsBefore > 0 || Incoming.Count == 0 || Writes.Count(w => w[1] == 0x03) < RespondAfterStartReports)
+            {
+                EmptyReadsBefore = Math.Max(0, EmptyReadsBefore - 1);
                 System.Threading.Thread.Sleep(Math.Min(timeoutMs, 5));
                 return 0;
             }
@@ -84,6 +95,65 @@ public class NzxtFanControllerTests
         hub.Attach(hid);
         Assert.True(hub.Connect());
         return (hub, hid);
+    }
+
+    private static NzxtFanControllerHub CycleHub(Func<long> clock) => new() { StatusTimeoutMs = 20, Clock = clock };
+
+    private static void ConnectCycle(NzxtFanControllerHub hub)
+    {
+        var hid = new FakeHid();
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        hub.Attach(hid);
+        Assert.True(hub.Connect());
+    }
+
+    [Fact]
+    public void ConnectionCycles_FirstTwoLogThirdIsSkipped()
+    {
+        long now = 1000;
+        var hub = CycleHub(() => now);
+        var logged = new List<bool>();
+        for (int i = 0; i < 3; i++)
+        {
+            ConnectCycle(hub);
+            logged.Add(hub.LogConnectionCycle);
+            now += 1000;
+            hub.Detach();
+            Assert.Equal(hub.LogConnectionCycle, hub.LogDisconnect);
+        }
+
+        Assert.Equal(new[] { true, true, false }, logged);
+    }
+
+    [Fact]
+    public void StableConnection_LogsDisconnectAndRestartsCycleCounting()
+    {
+        long now = 1000;
+        var hub = CycleHub(() => now);
+        for (int i = 0; i < 4; i++)
+        {
+            ConnectCycle(hub);
+            now += 1000;
+            hub.Detach();
+        }
+        ConnectCycle(hub);
+        Assert.False(hub.LogConnectionCycle);
+
+        now += 600_000;
+        hub.Detach();
+        Assert.True(hub.LogDisconnect);
+
+        ConnectCycle(hub);
+        Assert.True(hub.LogConnectionCycle);
+    }
+
+    [Fact]
+    public void Detach_WithoutConnection_DoesNotLogDisconnect()
+    {
+        var hub = CycleHub(() => 1000);
+        hub.Detach();
+
+        Assert.False(hub.LogDisconnect);
     }
 
     [Fact]
@@ -167,15 +237,153 @@ public class NzxtFanControllerTests
         Assert.All(hid.Writes, w => Assert.Equal(0x60, w[0]));
     }
 
+    /// <summary>An enabled check that allows the given number of windows, then reports the gate off.</summary>
+    private static Func<bool> WindowBudget(int windows)
+    {
+        int calls = 0;
+        return () => ++calls <= windows;
+    }
+
     [Fact]
-    public void Connect_FailsWhenNoStatusReportArrives()
+    public void Connect_StopsWhenTheGateTurnsOffWithoutAStatusReport()
     {
         var hid = new FakeHid();
-        var hub = new NzxtFanControllerHub();
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(default, WindowBudget(2)));
+        Assert.False(hub.IsConnected);
+    }
+
+    private static byte[] Other(int id, int sub)
+    {
+        var report = new byte[NzxtFanControllerProtocol.ReportLength];
+        report[0] = (byte)id;
+        report[1] = (byte)sub;
+        return report;
+    }
+
+    [Fact]
+    public void Connect_FirstReportAfterSeveralWindowsConnectsOnTheSameHandleWithResends()
+    {
+        var hid = new FakeHid { RespondAfterStartReports = 4 };
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.True(hub.Connect());
+
+        Assert.True(hub.IsConnected);
+        Assert.False(hid.Disposed);
+        Assert.Equal(4, StartReportingWrites(hid));
+        Assert.Equal(4, hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x02));
+    }
+
+    [Fact]
+    public void Connect_ReadableButSilentDeviceKeepsWaitingUntilTheGateTurnsOff()
+    {
+        var hid = new FakeHid();
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(default, WindowBudget(25)));
+
+        Assert.Equal(25, StartReportingWrites(hid));
+        Assert.False(hub.LastReadFailed);
+        Assert.False(hid.Disposed);
+    }
+
+    [Fact]
+    public void Connect_ReturnsPromptlyWhenTheTokenIsCancelledMidWait()
+    {
+        using var cts = new System.Threading.CancellationTokenSource();
+        var hid = new FakeHid { OnRead = () => cts.Cancel() };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(cts.Token));
+
+        Assert.False(hub.IsConnected);
+        Assert.False(hid.Disposed);
+        Assert.Equal(1, StartReportingWrites(hid));
+    }
+
+    [Fact]
+    public void Connect_ReturnsWhenTheGateTurnsOffMidWait()
+    {
+        bool enabled = true;
+        var hid = new FakeHid { OnRead = () => enabled = false };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(default, () => enabled));
+
+        Assert.False(hub.IsConnected);
+        Assert.Equal(1, StartReportingWrites(hid));
+    }
+
+    [Fact]
+    public void Connect_EndsWhenTheUsbDeviceVanishesDuringASilentWait()
+    {
+        bool present = true;
+        bool absentReported = false;
+        var hid = new FakeHid { OnRead = () => present = false };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+        var guard = ConnectGuard.Create(() => true, () => present, () => absentReported = true);
+
+        Assert.False(hub.Connect(default, guard));
+
+        Assert.True(absentReported);
+        Assert.Equal(ConnectGuard.PresenceCheckEveryWindows - 1, StartReportingWrites(hid));
+    }
+
+    [Fact]
+    public void Connect_ReadErrorGivesUpWithoutWaitingOutTheBound()
+    {
+        var hid = new FakeHid { FailReads = true };
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
         hub.Attach(hid);
 
         Assert.False(hub.Connect());
-        Assert.False(hub.IsConnected);
+
+        Assert.Equal(1, StartReportingWrites(hid));
+        Assert.True(hub.LastReadFailed);
+    }
+
+    [Fact]
+    public void Poll_ReadErrorMarksTheDeviceLostAtOnce()
+    {
+        var (hub, hid) = Connected();
+        hid.FailReads = true;
+
+        Assert.False(hub.Poll());
+
+        Assert.True(hub.Lost);
+    }
+
+    [Fact]
+    public void DescribeSilence_CountsReportsByIdAndNeverThrowsOnOddInput()
+    {
+        var hid = new FakeHid();
+        for (int i = 0; i < 3; i++)
+        {
+            hid.Incoming.Enqueue(Other(0x21, 0x03));
+        }
+        hid.Incoming.Enqueue(new byte[] { 0x11 });
+        for (int i = 0; i < 20; i++)
+        {
+            hid.Incoming.Enqueue(Other(0x30 + i, 0x01));
+        }
+        var hub = new NzxtFanControllerHub { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(default, WindowBudget(1)));
+        var text = hub.DescribeSilence();
+
+        Assert.Contains("21 03 x3", text);
+        Assert.Contains("other x", text);
+        Assert.Contains("no 67 02 yet", text);
     }
 
     [Fact]
@@ -191,6 +399,77 @@ public class NzxtFanControllerTests
         Assert.True(hub.Poll());
 
         Assert.Equal(900, hub.Fans[0].Rpm);
+    }
+
+    private static int StartReportingWrites(FakeHid hid) =>
+        hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x03);
+
+    [Fact]
+    public void Poll_MissResendsStartReporting()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        int before = StartReportingWrites(hid);
+        int intervalBefore = hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x02);
+        hid.Writes.Clear();
+
+        Assert.False(hub.Poll());
+
+        Assert.Equal(2, hid.Writes.Count);
+        Assert.Equal(new byte[] { 0x60, 0x02 }, hid.Writes[0].Take(2).ToArray());
+        Assert.Equal(new byte[] { 0x60, 0x03 }, hid.Writes[1].Take(2).ToArray());
+        Assert.Equal(1, before);
+        Assert.Equal(1, intervalBefore);
+    }
+
+    [Fact]
+    public void Poll_ShortSilenceStaysConnectedAndLongSilenceIsLost()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+
+        for (int i = 0; i < NzxtFanControllerHub.MaxMissedPolls - 1; i++)
+        {
+            Assert.False(hub.Poll());
+        }
+        Assert.False(hub.Lost);
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        Assert.True(hub.Poll());
+        for (int i = 0; i < NzxtFanControllerHub.MaxMissedPolls - 1; i++)
+        {
+            Assert.False(hub.Poll());
+        }
+        Assert.False(hub.Lost);
+
+        Assert.False(hub.Poll());
+
+        Assert.True(hub.Lost);
+    }
+
+    [Fact]
+    public void ConnectAndDetachBroadcastCooling_FailedConnectDoesNot()
+    {
+        var ws = new MultiplexHub();
+        var topics = new List<string>();
+        ws.OnBroadcastForTest += (topic, _) => topics.Add(topic);
+        using var sub = ws.AddTestSubscription(PanelTopics.Cooling);
+        var hid = new FakeHid();
+        var hub = new NzxtFanControllerHub(ws) { StatusTimeoutMs = 20 };
+        hub.Attach(hid);
+
+        Assert.False(hub.Connect(default, WindowBudget(2)));
+        hub.Detach();
+        Assert.Empty(topics);
+
+        var hid2 = new FakeHid();
+        hid2.Incoming.Enqueue(Status(ThreeFans));
+        hub.Attach(hid2);
+        Assert.True(hub.Connect());
+        Assert.Single(topics);
+        hub.Detach();
+
+        Assert.Equal(2, topics.Count);
+        Assert.All(topics, t => Assert.Equal(PanelTopics.Cooling, t));
     }
 
     [Fact]
