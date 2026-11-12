@@ -383,7 +383,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const int ClockOutliersToReset = 3;
 
     // Per chain: what it plays and the upload in flight.
-    private sealed class ChainRolling
+    internal sealed class ChainRolling
     {
         public int StateSig;
         public double LiveUntilMs;
@@ -400,6 +400,54 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public double LastUploadStartMs;
         public bool Joinable;
         public int UploadStretch;
+        // Written by the upload task, read after it completes.
+        public Slv3Hub.WindowUploadResult UploadResult;
+        public int UploadDivisor = 1;
+        public double RetryAtMs;
+    }
+
+    // Frame-count divisors a chain may step down through when its window compresses past the firmware cap.
+    internal const int MaxWindowDivisor = 3;
+    // A chain that cannot fit even at the floor is not retried for this long.
+    private const double OversizeRetryMs = 10000;
+    private readonly Dictionary<string, int> _windowDivisors = new();
+    private readonly HashSet<string> _oversizeLogged = new();
+
+    /// <summary>
+    /// Resamples a full window (loop slot = absolute frame mod WindowFrames, first absolute frame
+    /// <paramref name="firstFrame"/>) to WindowFrames / divisor frames, each playing divisor times longer,
+    /// so the loop still spans the same wall-clock time. Loop slot = (frame / divisor) mod frame count.
+    /// </summary>
+    internal static byte[] ReduceWindow(byte[] full, int ledCount, long firstFrame, int divisor)
+    {
+        var count = WindowFrames / divisor;
+        var stride = ledCount * 3;
+        var reduced = new byte[count * stride];
+        var firstGroup = (firstFrame + divisor - 1) / divisor;
+        for (var i = 0; i < count; i++)
+        {
+            var group = firstGroup + i;
+            var j = (int)Math.Clamp(group * divisor + (divisor - 1) / 2 - firstFrame, 0, WindowFrames - 1);
+            Buffer.BlockCopy(full, WindowSlot(firstFrame + j) * stride, reduced, (int)(group % count) * stride, stride);
+        }
+        return reduced;
+    }
+
+    // Starts at the chain's remembered divisor and steps down while the firmware cap refuses the payload.
+    internal async Task<bool> UploadWindowAsync(string macHex, ChainRolling st, byte[] full, int ledCount, long firstFrame, int startDivisor, double interval)
+    {
+        var result = Slv3Hub.WindowUploadResult.TooLarge;
+        var used = startDivisor;
+        for (var d = startDivisor; d <= MaxWindowDivisor; d++)
+        {
+            used = d;
+            var payload = d == 1 ? full : ReduceWindow(full, ledCount, firstFrame, d);
+            result = await _hub.SendRgbWindowResultAsync(macHex, payload, ledCount, WindowFrames / d, interval * d, PassThroughBrightnessPercent).ConfigureAwait(false);
+            if (result != Slv3Hub.WindowUploadResult.TooLarge) break;
+        }
+        st.UploadResult = result;
+        st.UploadDivisor = used;
+        return result == Slv3Hub.WindowUploadResult.Sent;
     }
 
     // One look-ahead render per window serves every chain: all chains play on
@@ -641,15 +689,34 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _nextWindowRequestMs = 0;
     }
 
-    private void CollectUpload(string macHex, ChainRolling st)
+    internal void CollectUpload(string macHex, ChainRolling st)
     {
         if (st.Upload is not { IsCompleted: true } upload) return;
         st.Upload = null;
         var ok = upload.IsCompletedSuccessfully && upload.Result;
+        var result = !upload.IsCompletedSuccessfully ? Slv3Hub.WindowUploadResult.Failed : st.UploadResult;
+        if (result == Slv3Hub.WindowUploadResult.TooLarge)
+        {
+            // The firmware's size cap is a property of the content, not a link fault: live frames carry the chain.
+            st.RetryAtMs = UtcNowMs() + OversizeRetryMs;
+            st.Failing = false;
+            if (_oversizeLogged.Add(macHex))
+            {
+                ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window does not fit the firmware cap even at {WindowFrames / MaxWindowDivisor} frames, streaming live");
+            }
+            return;
+        }
+        if (ok && st.UploadDivisor != _windowDivisors.GetValueOrDefault(macHex, 1))
+        {
+            _windowDivisors[macHex] = st.UploadDivisor;
+            ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window stepped down to {WindowFrames / st.UploadDivisor} frames to fit the firmware cap");
+        }
         if (ok)
         {
             _healthUploadsOk++;
-            st.WindowFirstFrame = st.UploadStretch == _windowStretch ? st.UploadFirstFrame : long.MinValue;
+            // A reduced loop starts on a frame group boundary.
+            var d = st.UploadDivisor;
+            st.WindowFirstFrame = st.UploadStretch == _windowStretch ? (st.UploadFirstFrame + d - 1) / d * d : long.MinValue;
             st.WindowPayload = st.UploadPayload;
             st.WindowLedCount = st.UploadLedCount;
             // The chain now plays the window, so the next live frame must go out even if it matches the last one sent.
@@ -723,6 +790,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && TryCurrentFrame(nowMs, out var joinFrame)
             && joinFrame >= _windowFirstFrame + WindowStartSafetyFrames
             && joinFrame < _windowFirstFrame + WindowFrames / 2
+            && nowMs >= st.RetryAtMs
             && IsNextToUpload(st))
         {
             st.UploadedWindowId = _windowId;
@@ -730,13 +798,15 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.LastUploadStartMs = nowMs;
             if (ComposeWindow(macHex, structure, zones, disabled, uncontrolled, prefs, globalBrightness, nowTicks, out var payload, out var ledCount))
             {
-                st.UploadFirstFrame = _windowFirstFrame;
+                var divisor = _windowDivisors.GetValueOrDefault(macHex, 1);
+                var first = _windowFirstFrame;
+                st.UploadFirstFrame = first;
                 st.UploadPayload = payload;
                 st.UploadLedCount = ledCount;
                 st.UploadStretch = _windowStretch;
                 var interval = WindowInterval;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
-                st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent));
+                st.Upload = Task.Run(() => UploadWindowAsync(macHex, st, payload, ledCount, first, divisor, interval));
                 return true;
             }
         }

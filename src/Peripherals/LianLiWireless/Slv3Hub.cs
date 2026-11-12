@@ -3171,12 +3171,24 @@ public sealed partial class Slv3Hub : IDisposable
     /// the window profile and a chain-safe effect index.
     /// </summary>
     public async Task<bool> SendRgbWindowAsync(
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent) =>
+        await SendRgbWindowResultAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent).ConfigureAwait(false) == WindowUploadResult.Sent;
+
+    /// <summary>Why a window upload did or did not go out; <see cref="TooLarge"/> is refused before any radio traffic.</summary>
+    public enum WindowUploadResult
+    {
+        Sent,
+        Failed,
+        TooLarge,
+    }
+
+    public async Task<WindowUploadResult> SendRgbWindowResultAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _, out var tooLarge))
         {
-            return false;
+            return tooLarge ? WindowUploadResult.TooLarge : WindowUploadResult.Failed;
         }
         BeginUpload();
         try
@@ -3185,13 +3197,13 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 if (_tx is null)
                 {
-                    return false;
+                    return WindowUploadResult.Failed;
                 }
                 for (var i = 0; i < WindowHeaderRepeats; i++)
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[0]))
                     {
-                        return false;
+                        return WindowUploadResult.Failed;
                     }
                 }
                 for (var pass = 0; pass < WindowDataPasses; pass++)
@@ -3200,7 +3212,7 @@ public sealed partial class Slv3Hub : IDisposable
                     {
                         if (!SendRfPayloadLocked(channel, rxType, packets[p]))
                         {
-                            return false;
+                            return WindowUploadResult.Failed;
                         }
                     }
                 }
@@ -3232,12 +3244,12 @@ public sealed partial class Slv3Hub : IDisposable
                     {
                         if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
                         {
-                            return false;
+                            return WindowUploadResult.Failed;
                         }
                     }
                 }
             }
-            return true;
+            return WindowUploadResult.Sent;
         }
         finally
         {
@@ -3267,8 +3279,9 @@ public sealed partial class Slv3Hub : IDisposable
 
     private bool TryPrepareUpload(
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
-        out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
+        out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex, out bool tooLarge)
     {
+        tooLarge = false;
         if (IsWiredOnly(macHex))
         {
             channel = 0;
@@ -3299,6 +3312,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
             catch (InvalidOperationException)
             {
+                tooLarge = true;
                 return false;
             }
 
@@ -3319,7 +3333,7 @@ public sealed partial class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
     {
         effectIndexHex = "";
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex, out _))
         {
             return false;
         }
