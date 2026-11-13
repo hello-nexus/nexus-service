@@ -58,6 +58,15 @@ public class GalleonSdOnboardTests
         public Action? OnFirstWrite { get; set; }
         public HashSet<byte> BusyHandles { get; } = new();
         public bool GarbleCreateReply { get; set; }
+        public bool DropContinuation { get; set; }
+        /// <summary>Close of a handle that has a write pending answers an error status (the write still commits).</summary>
+        public bool FailWriteClose { get; set; }
+        /// <summary>A handle turns busy once the total number of opens passes the count.</summary>
+        public Dictionary<byte, int> BusyAfter { get; } = new();
+        public int TotalOpens { get; private set; }
+        public Action? OnAnyWrite { get; set; }
+        public const byte NotFound = 1;
+        public const byte Busy = 3;
         /// <summary>0B on an id that already exists; must never happen.</summary>
         public int CreatedExisting { get; private set; }
         /// <summary>0C on a resource some layer list still references; must never happen.</summary>
@@ -91,6 +100,7 @@ public class GalleonSdOnboardTests
         private readonly Dictionary<byte, int> _expect = new();
         private readonly Queue<byte[]> _replies = new();
         private bool _wrote;
+        private bool _closedWithWrite;
 
         public int VendorId => GalleonSdProtocol.VendorId;
         public int ProductId => GalleonSdProtocol.ProductId;
@@ -123,6 +133,7 @@ public class GalleonSdOnboardTests
         {
             var w = report[1..].ToArray();
             Writes.Add(w);
+            OnAnyWrite?.Invoke();
             var cmd = w[3];
             if (cmd == GalleonSdProtocol.CmdBlockFirst && !_wrote)
             {
@@ -143,11 +154,17 @@ public class GalleonSdOnboardTests
                 {
                     var res = (ushort)(w[5] | (w[6] << 8));
                     _opens[res] = _opens.GetValueOrDefault(res) + 1;
+                    TotalOpens++;
                     var n = _opens[res];
                     if (SilentOpen?.Invoke(res, n) == true) break;
-                    if (forced || BusyHandles.Contains(w[4]) || RefuseOpen?.Invoke(res, n) == true || !Store.ContainsKey(res) || _open.ContainsKey(w[4]))
+                    if (BusyHandles.Contains(w[4]) || _open.ContainsKey(w[4]) || (BusyAfter.TryGetValue(w[4], out var after) && TotalOpens > after))
                     {
-                        _replies.Enqueue(Reply(cmd, 1));
+                        _replies.Enqueue(Reply(cmd, Busy));
+                        break;
+                    }
+                    if (forced || RefuseOpen?.Invoke(res, n) == true || !Store.ContainsKey(res))
+                    {
+                        _replies.Enqueue(Reply(cmd, NotFound));
                         break;
                     }
                     _open[w[4]] = res;
@@ -186,6 +203,11 @@ public class GalleonSdOnboardTests
                 }
                 case GalleonSdProtocol.CmdBlockNext:
                 {
+                    if (DropContinuation)
+                    {
+                        _replies.Enqueue(Reply(cmd));
+                        break;
+                    }
                     var buf = _pending[w[4]];
                     var take = Math.Min(123, _expect[w[4]] - buf.Count);
                     buf.AddRange(w.AsSpan(5, take).ToArray());
@@ -208,9 +230,11 @@ public class GalleonSdOnboardTests
                         Store[res] = data;
                         Written.Add(res);
                         _pending.Remove(h);
+                        _closedWithWrite = true;
                     }
                     _open.Remove(h);
-                    _replies.Enqueue(Reply(cmd));
+                    _replies.Enqueue(Reply(cmd, (byte)(_closedWithWrite && FailWriteClose ? 1 : 0)));
+                    _closedWithWrite = false;
                     break;
                 }
                 case GalleonSdProtocol.CmdCreate:
@@ -291,6 +315,9 @@ public class GalleonSdOnboardTests
         public InMemoryConfigStore Store { get; } = new();
         public GalleonSdHub Hub { get; }
         public long Clock { get; set; } = 1_000_000_000;
+
+        /// <summary>Seconds the clock advances on every wire write, so the transaction budget is exercised.</summary>
+        public double StepPerWrite { set { Board.OnAnyWrite = () => Clock += (long)(value * Stopwatch.Frequency); } }
         private int _seconds = 1_900_000_000;
 
         public Rig(bool verify = false)
@@ -399,7 +426,7 @@ public class GalleonSdOnboardTests
         Read("0", "6D60");
         Read("0", "6D62");
         foreach (var l in UserLayers) Read("0", l.ToString("X4"));
-        expected.AddRange(new[] { "OPEN:h1:6D62", "CLOSE:h1", "OPEN:h1:6D68", "CREATE:6D68", "OPEN:h1:6D68", "WRITE:h1", "CONT", "CLOSE:h1" });
+        expected.AddRange(new[] { "OPEN:h1:6D62", "CLOSE:h1", "OPEN:h1:6D68", "OPEN:h1:6D62", "CLOSE:h1", "CREATE:6D68", "OPEN:h1:6D68", "WRITE:h1", "CONT", "CLOSE:h1" });
         expected.AddRange(new[] { "OPEN:h2:6D62", "WRITE:h2", "CLOSE:h2" });
         expected.Add("SET:02");
         Read("0", "6D60");
@@ -1001,6 +1028,165 @@ public class GalleonSdOnboardTests
 
         Assert.True(GalleonSdOnboardCodec.TryParseLayerList(rig.Board.Store[ListRes], out var list));
         Assert.Equal(new ushort[] { 0x6D68 }.Concat(dup), list);
+    }
+
+    // ---- second review ----
+
+    private static string[] TxTokens(Rig rig) => rig.Board.Tokens().SkipWhile(t => t != "SET:02").ToArray();
+
+    [Fact]
+    public void A_close_that_is_not_confirmed_aborts_the_transaction()
+    {
+        var rig = new Rig();
+        rig.Board.FailWriteClose = true;
+
+        rig.Settle(Solid(Red));
+
+        var tokens = rig.Board.Tokens();
+        Assert.Equal("SET:01", tokens[^1]);
+        Assert.DoesNotContain("WRITE:h2", tokens);
+        Assert.Equal(0, rig.Board.StrayCloses);
+        Assert.Single(tokens, t => t == "WRITE:h1");
+    }
+
+    [Fact]
+    public void Every_probe_open_is_preceded_by_a_handle_check_and_a_busy_handle_mid_transaction_is_not_free()
+    {
+        var rig = new Rig();
+        rig.Board.Store[0x6D68] = new byte[] { 1 };
+        rig.Settle(Solid(Red));
+
+        var tokens = TxTokens(rig);
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            if (tokens[i] is "OPEN:h1:6D68" or "OPEN:h1:6D69" && !tokens[i - 1].StartsWith("CREATE:", StringComparison.Ordinal)) Assert.Equal(new[] { "OPEN:h1:6D62", "CLOSE:h1" }, tokens.Skip(i - 2).Take(2));
+        }
+        Assert.Contains("CREATE:6D69", tokens);
+        Assert.Equal(0, rig.Board.CreatedExisting);
+
+        var busy = new Rig();
+        busy.Board.Store[0x6D68] = new byte[] { 1 };
+        busy.Board.BusyAfter[1] = 8;
+        busy.Settle(Solid(Red));
+
+        Assert.DoesNotContain(busy.Board.Tokens(), t => t.StartsWith("CREATE:", StringComparison.Ordinal));
+        Assert.Equal(0, busy.Board.CreatedExisting);
+        Assert.Equal("SET:01", busy.Board.Tokens()[^1]);
+    }
+
+    [Fact]
+    public void A_refused_owned_open_on_a_busy_handle_does_not_drop_the_id()
+    {
+        var rig = new Rig();
+        rig.Settle(Solid(Red));
+        var hub2 = new GalleonSdHub(new OneHid(rig.Board), () => rig.Clock, matchOnLinux: true, store: rig.Store) { PostTxProbe = false };
+        hub2.Reconcile(true);
+        rig.Board.BusyAfter[0] = rig.Board.TotalOpens + 7;
+        rig.Board.Writes.Clear();
+        rig.Board.Written.Clear();
+
+        hub2.SetSavedToDevice(true, Solid(Blue));
+        rig.Advance(5.1);
+        hub2.SetSavedToDevice(true, Solid(Blue));
+
+        Assert.Equal(0x6D68, Assert.Single(rig.Record!.Owned).Id);
+        Assert.Empty(rig.Board.Written);
+        Assert.DoesNotContain(rig.Board.Tokens(), t => t.StartsWith("WRITE:", StringComparison.Ordinal));
+        Assert.Equal("SET:01", rig.Board.Tokens()[^1]);
+        hub2.Dispose();
+    }
+
+    [Fact]
+    public void A_layer_another_profile_references_is_not_deleted_on_undo_and_stays_recorded()
+    {
+        var rig = new Rig();
+        rig.Settle(Solid(Red));
+        rig.Board.AddSecondProfile();
+        rig.Board.Store[0x6D82] = GalleonSdOnboardCodec.BuildLayerList(new ushort[] { 0x6D83, 0x6D68 });
+        var original = rig.Board.Store[ListRes].ToArray();
+
+        rig.Hub.SetSavedToDevice(false);
+
+        Assert.True(rig.Board.Store.ContainsKey(0x6D68));
+        Assert.Equal(0, rig.Board.DeletedWhileReferenced);
+        Assert.DoesNotContain(rig.Board.Tokens(), t => t.StartsWith("DELETE:", StringComparison.Ordinal));
+        Assert.Equal(0x6D68, Assert.Single(rig.Record!.Owned).Id);
+        Assert.True(GalleonSdOnboardCodec.TryParseLayerList(rig.Board.Store[ListRes], out var list));
+        Assert.DoesNotContain((ushort)0x6D68, list);
+        Assert.Equal(UserLayers, list);
+    }
+
+    [Fact]
+    public void A_layer_another_profile_references_is_not_rewritten_by_an_update()
+    {
+        var rig = new Rig();
+        rig.Settle(Solid(Red));
+        rig.Board.AddSecondProfile();
+        rig.Board.Store[0x6D82] = GalleonSdOnboardCodec.BuildLayerList(new ushort[] { 0x6D83, 0x6D68 });
+        var shared = rig.Board.Store[0x6D68].ToArray();
+        rig.Board.Written.Clear();
+
+        rig.Settle(Solid(Blue));
+
+        Assert.Equal(shared, rig.Board.Store[0x6D68]);
+        Assert.DoesNotContain(rig.Board.Written, w => w == 0x6D68);
+        Assert.Equal(0, rig.Board.CreatedExisting);
+        Assert.Equal(0, rig.Board.DeletedWhileReferenced);
+    }
+
+    [Fact]
+    public void The_budget_stops_a_slow_transaction_before_it_writes_but_never_cuts_the_tail()
+    {
+        var probe = new Rig();
+        probe.Settle(Solid(Red));
+        var t = TxTokens(probe);
+        var create = Array.FindIndex(t, x => x.StartsWith("CREATE:", StringComparison.Ordinal));
+        var list = Array.IndexOf(t, "OPEN:h2:6D62");
+
+        var early = new Rig();
+        early.StepPerWrite = 7.0 / create;
+        early.Settle(Solid(Red));
+        Assert.DoesNotContain(early.Board.Tokens(), x => x.StartsWith("CREATE:", StringComparison.Ordinal));
+        Assert.Equal("SET:01", early.Board.Tokens()[^1]);
+
+        var late = new Rig();
+        late.StepPerWrite = 6.0 / (list + 3);
+        late.Settle(Solid(Red));
+        Assert.Contains(0x6D68, late.Record!.Owned.Select(o => o.Id));
+        Assert.Contains(Registry, late.Board.Written);
+        Assert.Contains(ListRes, late.Board.Written);
+        Assert.Equal("SET:01", late.Board.Tokens()[^1]);
+        Assert.Equal(0, late.Board.StrayCloses);
+    }
+
+    [Fact]
+    public void A_deadline_that_expires_after_the_first_packet_still_sends_every_continuation()
+    {
+        var probe = new Rig();
+        probe.Settle(Solid(Red));
+        var t = TxTokens(probe);
+        var firstWrite = Array.IndexOf(t, "WRITE:h1");
+
+        var rig = new Rig();
+        rig.StepPerWrite = 6.0 / (firstWrite + 0.5);
+        rig.Settle(Solid(Red));
+
+        var tokens = rig.Board.Tokens();
+        var w = Array.IndexOf(tokens, "WRITE:h1");
+        Assert.Equal(new[] { "WRITE:h1", "CONT", "CLOSE:h1" }, tokens.Skip(w).Take(3));
+        Assert.Equal("SET:01", tokens[^1]);
+    }
+
+    [Fact]
+    public void A_dropped_continuation_packet_is_caught_by_the_read_back_diagnostic()
+    {
+        var rig = new Rig(verify: true);
+        rig.Board.DropContinuation = true;
+
+        rig.Settle(Solid(Red));
+
+        Assert.True(rig.Hub.VerifyMismatchCount > 0);
+        Assert.Contains("CONT", rig.Board.Tokens());
     }
 
     // ---- diagnostic read-back ----

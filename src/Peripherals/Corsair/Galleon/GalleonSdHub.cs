@@ -129,7 +129,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     /// <summary>Opens the unit when <paramref name="allowed"/> and closes it (board back in hardware mode) when not. True when the attached state changed.</summary>
     public bool Reconcile(bool allowed)
     {
-        if (!allowed) _stopRequested = true;
+        if (!allowed && Volatile.Read(ref _slot) is not null) _stopRequested = true;
         lock (_io)
         {
             if (_disposed) return false;
