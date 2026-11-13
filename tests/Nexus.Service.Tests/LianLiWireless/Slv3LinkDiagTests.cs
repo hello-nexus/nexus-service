@@ -12,6 +12,13 @@ public class Slv3LinkDiagTests
     private static readonly byte[] Record = new byte[Slv3Protocol.RecordLength];
     private static readonly byte[] Reply = new byte[64];
 
+    private static Slv3LinkDiag Up()
+    {
+        var d = new Slv3LinkDiag();
+        d.OnLinkUp();
+        return d;
+    }
+
     private static List<string> Drain(Slv3LinkDiag d)
     {
         var lines = new List<string>();
@@ -32,7 +39,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Steady_state_writes_only_one_summary_line_per_chain_per_interval()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         for (long t = 0; t <= 95_000; t += 300)
         {
             Poll(d, t, present: true);
@@ -46,7 +53,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Summary_counts_polls_longest_gap_and_gap_thresholds()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         Poll(d, 1_000, true);
         Poll(d, 2_000, false);
@@ -68,7 +75,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Open_gap_counts_toward_the_summary_maximum()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         for (long t = 1_000; t <= 30_000; t += 1_000)
         {
@@ -82,7 +89,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Dump_fires_after_five_seconds_unseen_and_is_rate_limited_per_chain()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         for (long t = 500; t <= 5_000; t += 500)
         {
@@ -102,7 +109,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Dump_fires_when_polls_return_no_list_at_all()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         for (long t = 500; t <= 6_000; t += 500)
         {
@@ -115,7 +122,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Chain_episode_dumps_once_however_long_it_lasts_then_writes_one_end_line()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         var lines = new List<string>();
         for (long t = 500; t <= 300_000; t += 500)
@@ -134,7 +141,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Whole_dongle_stall_is_one_dump_for_all_chains_and_one_end_line()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         const string other = "AABBCCDDEEFF";
         d.OnReply(0, Reply, 3, Slv3ReplyKind.Ok, 2);
         d.OnSeen(Key, 0, Record, 4, 8);
@@ -170,7 +177,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void A_second_stall_after_recovery_gets_its_own_dump()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         var dumps = 0;
         for (var round = 0; round < 2; round++)
@@ -192,7 +199,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Drop_inside_a_chain_episode_still_dumps_in_full()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         Poll(d, 6_000, false);
         Drain(d);
@@ -207,7 +214,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Drop_always_dumps_and_reappearance_dumps_once_with_uploads_and_raw_replies()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         Poll(d, 5_500, false); // early dump uses the limiter
         d.OnUpload(Key, 5_000, Slv3UploadKind.Window, false, 480, 17, Slv3UploadReason.TxTimeout);
@@ -227,7 +234,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Chain_ring_wraps_and_keeps_the_newest_entries()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         var total = Slv3LinkDiag.ChainRingSize * 2 + 5;
         for (var i = 0; i < total; i++)
         {
@@ -243,7 +250,7 @@ public class Slv3LinkDiagTests
     [Fact]
     public void Reply_ring_wraps_and_upload_ring_keeps_the_newest_entries()
     {
-        var d = new Slv3LinkDiag();
+        var d = Up();
         Poll(d, 0, true);
         var total = Slv3LinkDiag.UploadRingSize + 7;
         for (var i = 0; i < total; i++)
@@ -284,6 +291,9 @@ public class Slv3LinkDiagTests
         var rx = new Slv3PortInfo { PortName = "rx-path", Role = Slv3DongleRole.Rx };
         d.NoteUsb(tx, rx);
         d.NoteUsb(tx, rx);
+        Assert.Empty(Drain(d));
+        d.OnLinkUp();
+        d.NoteUsb(tx, rx);
 
         var lines = Drain(d);
         var usb = Assert.Single(lines, l => l.Contains(" EVT usb tx="));
@@ -320,5 +330,149 @@ public class Slv3LinkDiagTests
     public void Retained_history_stays_a_few_megabytes()
     {
         Assert.InRange(Slv3LinkDiag.MaxFileBytes * (Slv3LinkDiag.RotatedFiles + 1), 1, 6L * 1024 * 1024);
+    }
+
+    [Fact]
+    public void Nothing_is_logged_before_the_first_connect_and_lock_events_need_a_live_link()
+    {
+        var d = new Slv3LinkDiag();
+        d.Event("resume");
+        d.EventWhileLinked("lock");
+        d.OnReply(0, Reply, 3, Slv3ReplyKind.Ok, 0);
+        d.EndPoll(0, gotList: true);
+        Assert.Empty(Drain(d));
+
+        d.OnLinkUp();
+        d.EventWhileLinked("lock");
+        Assert.Single(Drain(d), l => l.EndsWith("EVT lock"));
+        d.OnLinkDown(1_000);
+        d.EventWhileLinked("unlock");
+        Assert.DoesNotContain(Drain(d), l => l.EndsWith("EVT unlock"));
+    }
+
+    [Fact]
+    public void Link_down_closes_the_stall_and_episodes_and_a_returning_chain_dumps_as_reappeared()
+    {
+        var d = Up();
+        Poll(d, 0, true);
+        for (long t = 1_000; t <= 20_000; t += 1_000)
+        {
+            d.OnReply(t, Reply, 2, Slv3ReplyKind.NoData, 0);
+            d.EndPoll(t, gotList: true);
+        }
+        Drain(d);
+
+        d.OnLinkDown(21_000);
+        var down = Drain(d);
+        var end = Assert.Single(down, l => l.Contains(" STALL "));
+        Assert.Contains("ended=disconnect", end);
+
+        // Nothing left to summarize or dump for the gone chain.
+        d.OnReply(80_000, Reply, 2, Slv3ReplyKind.NoData, 0);
+        d.EndPoll(80_000, gotList: true);
+        Assert.Empty(Drain(d));
+
+        Poll(d, 90_000, true);
+        Assert.Single(Drain(d), l => l.Contains(" DUMP ") && l.Contains("reason=reappeared"));
+    }
+
+    [Fact]
+    public void Link_down_ends_a_chain_episode_once()
+    {
+        var d = Up();
+        Poll(d, 0, true);
+        Poll(d, 6_000, false);
+        Drain(d);
+
+        d.OnLinkDown(10_000);
+        d.OnLinkDown(11_000);
+        var end = Assert.Single(Drain(d), l => l.Contains(" EPISODE "));
+        Assert.Contains("ended=disconnect", end);
+    }
+
+    [Fact]
+    public void A_stall_does_not_re_dump_or_silently_end_a_chain_that_already_has_its_own_episode()
+    {
+        var d = Up();
+        const string b = "AABBCCDDEEFF";
+        void Reply2(long t, Slv3ReplyKind kind, bool seeA, bool seeB)
+        {
+            d.OnReply(t, Reply, 2, kind, (seeA ? 1 : 0) + (seeB ? 1 : 0));
+            if (seeA)
+            {
+                d.OnSeen(Key, t, Record, 4, 8);
+            }
+            if (seeB)
+            {
+                d.OnSeen(b, t, Record, 5, 9);
+            }
+            d.EndPoll(t, gotList: true);
+        }
+
+        Reply2(0, Slv3ReplyKind.Ok, true, true);
+        var lines = new List<string>();
+        for (long t = 1_000; t <= 7_000; t += 1_000)
+        {
+            Reply2(t, Slv3ReplyKind.Ok, false, true); // A missing, B fine: A's own dump
+            lines.AddRange(Drain(d));
+        }
+        for (long t = 8_000; t <= 30_000; t += 1_000)
+        {
+            Reply2(t, Slv3ReplyKind.NoData, false, false); // dongle blind: B crosses the threshold, one stall dump
+            lines.AddRange(Drain(d));
+        }
+        Reply2(31_000, Slv3ReplyKind.Ok, false, true); // B returns: stall ends
+        lines.AddRange(Drain(d));
+        for (long t = 32_000; t <= 50_000; t += 1_000)
+        {
+            Reply2(t, Slv3ReplyKind.Ok, false, true);
+            lines.AddRange(Drain(d));
+        }
+        Reply2(51_000, Slv3ReplyKind.Ok, true, true); // A returns
+        lines.AddRange(Drain(d));
+
+        Assert.Equal(2, lines.Count(l => l.Contains(" DUMP ")));
+        Assert.Single(lines, l => l.Contains(" STALL "));
+        var ep = Assert.Single(lines, l => l.Contains(" EPISODE " + Key));
+        Assert.Contains("ended=recovered", ep);
+        Assert.DoesNotContain(lines, l => l.Contains(" EPISODE " + b));
+    }
+
+    [Fact]
+    public void A_listed_reply_missing_every_tracked_chain_is_one_stall_not_a_dump_per_chain()
+    {
+        var d = Up();
+        const string b = "AABBCCDDEEFF";
+        d.OnReply(0, Reply, 3, Slv3ReplyKind.Ok, 2);
+        d.OnSeen(Key, 0, Record, 4, 8);
+        d.OnSeen(b, 0, Record, 5, 9);
+        d.EndPoll(0, gotList: true);
+
+        var lines = new List<string>();
+        for (long t = 1_000; t <= 120_000; t += 1_000)
+        {
+            d.OnReply(t, Reply, 3, Slv3ReplyKind.Ok, 1); // only a master record is listed
+            d.EndPoll(t, gotList: true);
+            lines.AddRange(Drain(d));
+        }
+
+        var dump = Assert.Single(lines, l => l.Contains(" DUMP "));
+        Assert.Contains("reason=stall", dump);
+    }
+
+    [Fact]
+    public void A_failed_handle_recovery_records_a_nohandle_reply_kind()
+    {
+        var d = Up();
+        Poll(d, 0, true);
+        for (long t = 1_000; t <= 7_000; t += 1_000)
+        {
+            d.OnReply(t, default, 0, Slv3ReplyKind.NoHandle, 0);
+            d.EndPoll(t, gotList: false);
+        }
+
+        var lines = Drain(d);
+        Assert.Contains(lines, l => l.Contains(" DUMP ") && l.Contains("kind=nohandle"));
+        Assert.Contains(lines, l => l.Contains(" RX ") && l.Contains(" nohandle "));
     }
 }

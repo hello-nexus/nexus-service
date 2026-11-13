@@ -436,7 +436,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     private readonly Nexus.Service.Lighting.LcdLockState? _diagLockState;
 
-    private void OnLockDiag(bool locked) => Diag.Event(locked ? "lock" : "unlock");
+    private void OnLockDiag(bool locked) => Diag.EventWhileLinked(locked ? "lock" : "unlock");
 
     private static int ElapsedMs(long startTimestamp) => (int)Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
 
@@ -561,6 +561,7 @@ public sealed partial class Slv3Hub : IDisposable
 
             State.LinkStatus = Slv3LinkStatus.Ok;
             State.IsConnected = true;
+            Diag.OnLinkUp();
             Diag.Event("connected");
             ServiceLog.Info($"[lianli-wireless] connected (tx={txPort.PortName}, rx={rxPort.PortName}, master={State.MasterMac})");
             return true;
@@ -581,6 +582,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             Diag.Event("disconnected");
         }
+        Diag.OnLinkDown(_nowMs());
         try { _tx?.Dispose(); } catch { /* best effort */ }
         try { _rx?.Dispose(); } catch { /* best effort */ }
         _tx = null;
@@ -905,7 +907,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>The system resumed: no TX port cycle until it has had time to re-enumerate on its own.</summary>
     public void OnSystemResumed()
     {
-        Diag.Event("resume");
+        Diag.EventWhileLinked("resume");
         Volatile.Write(ref _powerQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
     }
 
@@ -1142,6 +1144,7 @@ public sealed partial class Slv3Hub : IDisposable
         var nowMs = _nowMs();
         if ((_tx is not { IsOpen: true } || _rx is not { IsOpen: true }) && !RecoverHandlesLocked(nowMs))
         {
+            Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
             Diag.EndPoll(nowMs, gotList: false);
             return false;
         }
@@ -2462,6 +2465,7 @@ public sealed partial class Slv3Hub : IDisposable
     {
         _blindSinceMs ??= nowMs;
         _pollRecords = new List<Slv3DeviceRecord>();
+        Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
         Diag.EndPoll(nowMs, gotList: false);
         ExpireChainsLocked(nowMs);
         PublishFansLocked(nowMs);
@@ -3654,7 +3658,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public Task OnSystemSuspending()
     {
-        Diag.Event("suspend");
+        Diag.EventWhileLinked("suspend");
         Volatile.Write(ref _powerQuietUntilMs, long.MaxValue);
         if (_disposed || !IsConnected)
         {

@@ -23,6 +23,8 @@ internal enum Slv3ReplyKind : byte
     /// <summary>Bytes arrived but too short or without the command echo.</summary>
     Invalid,
     SendFail,
+    /// <summary>No open port to poll, so no reply was attempted.</summary>
+    NoHandle,
 }
 
 /// <summary>Why an upload failed; NotPrepared covers an unknown or unbound chain and a compression refusal.</summary>
@@ -58,6 +60,9 @@ internal sealed class Slv3LinkDiag : IDisposable
     internal const int ReplyKeepBytes = 512;
     internal const long SummaryIntervalMs = 30_000;
     internal const long EarlyDumpGapMs = 5_000;
+    private const long Gap2Ms = 2_000;
+    private const long Gap5Ms = 5_000;
+    private const long Gap10Ms = 10_000;
     internal const long ReplyWindowMs = 60_000;
     private const int MaxQueuedLines = 4000;
     private const int RawDumpCount = 3;
@@ -73,7 +78,7 @@ internal sealed class Slv3LinkDiag : IDisposable
     private long _nextSummaryMs = -1;
     private int _dumpId;
 
-    private readonly ConcurrentQueue<string> _lines = new();
+    private readonly ConcurrentQueue<Item> _lines = new();
     private int _queued;
     private int _droppedLines;
     private readonly ConcurrentQueue<string> _parentRequests = new();
@@ -82,6 +87,10 @@ internal sealed class Slv3LinkDiag : IDisposable
     private string? _lastTxPath;
     private string? _lastRxPath;
     private bool _usbKnown;
+    private Slv3PortInfo? _lastTx;
+    private Slv3PortInfo? _lastRx;
+    private volatile bool _active;
+    private volatile bool _linked;
 
     private string? _dir;
     private Thread? _writer;
@@ -153,7 +162,7 @@ internal sealed class Slv3LinkDiag : IDisposable
 
     /// <summary>
     /// Ends a poll. With a device list, tracked chains absent from it are recorded as such;
-    /// either way the unseen-gap trigger and the 30 s summary are evaluated.
+    /// either way the unseen-gap trigger and the <see cref="SummaryIntervalMs"/> summary are evaluated.
     /// </summary>
     public void EndPoll(long nowMs, bool gotList)
     {
@@ -166,8 +175,8 @@ internal sealed class Slv3LinkDiag : IDisposable
             // A reply that is not a populated device list means the dongle itself is blind, so every chain looks unseen at once.
             var live = _chains.Values.Count(x => !x.Dropped);
             var blind = !gotList
-                || _lastKind is Slv3ReplyKind.NoData or Slv3ReplyKind.Timeout or Slv3ReplyKind.Invalid or Slv3ReplyKind.SendFail
-                || (_lastKind == Slv3ReplyKind.Empty && _seenInPoll == 0 && live >= 2);
+                || _lastKind is Slv3ReplyKind.NoData or Slv3ReplyKind.Timeout or Slv3ReplyKind.Invalid or Slv3ReplyKind.SendFail or Slv3ReplyKind.NoHandle
+                || (_seenInPoll == 0 && live >= 2);
             _blindRun = blind ? _blindRun + 1 : 0;
             var stallDue = false;
             foreach (var c in _chains.Values)
@@ -196,7 +205,13 @@ internal sealed class Slv3LinkDiag : IDisposable
                 }
                 else if (!seenNow && unseen > EarlyDumpGapMs)
                 {
-                    if (blind)
+                    if (blind && _stall is not null)
+                    {
+                        c.InEpisode = true;
+                        c.Covered = true;
+                        c.EpisodeStartMs = nowMs;
+                    }
+                    else if (blind)
                     {
                         stallDue = true;
                     }
@@ -218,7 +233,7 @@ internal sealed class Slv3LinkDiag : IDisposable
                 _nextSummaryMs = nowMs + SummaryIntervalMs;
                 foreach (var c in _chains.Values)
                 {
-                    if (!c.Dropped)
+                    if (!c.Dropped && !c.Covered)
                     {
                         SummaryLocked(c, nowMs);
                     }
@@ -249,6 +264,44 @@ internal sealed class Slv3LinkDiag : IDisposable
         }
     }
 
+    /// <summary>The link was torn down: open episodes end and every chain is treated as gone, so a returning chain dumps as reappeared.</summary>
+    public void OnLinkDown(long nowMs)
+    {
+        _linked = false;
+        lock (_gate)
+        {
+            if (_stall is not null)
+            {
+                EndStallLocked(nowMs, "disconnect");
+            }
+            foreach (var c in _chains.Values)
+            {
+                if (c.InEpisode)
+                {
+                    EndEpisodeLocked(c, nowMs, "disconnect");
+                }
+                c.Dropped = true;
+            }
+            _blindRun = 0;
+            _seenInPoll = 0;
+        }
+    }
+
+    /// <summary>The first successful connect switches the log on; a machine that never connects writes nothing.</summary>
+    public void OnLinkUp()
+    {
+        _linked = true;
+        if (_active)
+        {
+            return;
+        }
+        _active = true;
+        if (_usbKnown)
+        {
+            LogUsb(_lastTx, _lastRx, requestParent: _lastTxPath is not null);
+        }
+    }
+
     public void OnUpload(string key, long nowMs, Slv3UploadKind kind, bool ok, int latencyMs, long windowId, Slv3UploadReason reason)
     {
         lock (_gate)
@@ -273,19 +326,50 @@ internal sealed class Slv3LinkDiag : IDisposable
         _usbKnown = true;
         _lastTxPath = txPath;
         _lastRxPath = rxPath;
-        Event($"usb tx={Describe(tx)} rx={Describe(rx)}");
-        if (txChanged && txPath is not null)
+        _lastTx = tx;
+        _lastRx = rx;
+        if (_active)
         {
-            _parentRequests.Enqueue(txPath);
-            _wake?.Set();
+            LogUsb(tx, rx, requestParent: txChanged && txPath is not null);
         }
     }
 
-    // Poll-path dumps and summaries are picked up by the writer's 1 s cadence; only events wake it.
+    private void Wake()
+    {
+        try
+        {
+            _wake?.Set();
+        }
+        catch (ObjectDisposedException)
+        {
+            // events after Dispose are dropped
+        }
+    }
+
+    private void LogUsb(Slv3PortInfo? tx, Slv3PortInfo? rx, bool requestParent)
+    {
+        Event($"usb tx={Describe(tx)} rx={Describe(rx)}");
+        if (requestParent && tx?.PortName is { } path)
+        {
+            _parentRequests.Enqueue(path);
+            Wake();
+        }
+    }
+
+    // Poll-path dumps and summaries are picked up by the writer loop's wait timeout; only events wake it.
     public void Event(string text)
     {
         Emit("EVT " + text);
-        _wake?.Set();
+        Wake();
+    }
+
+    /// <summary>For events that only matter next to a live dongle, such as lock and power transitions.</summary>
+    public void EventWhileLinked(string text)
+    {
+        if (_linked)
+        {
+            Event(text);
+        }
     }
 
     private static string Describe(Slv3PortInfo? port) =>
@@ -322,18 +406,32 @@ internal sealed class Slv3LinkDiag : IDisposable
         var id = ++_dumpId;
         var live = _chains.Values.Where(x => !x.Dropped).ToList();
         _stall = new Stall(id, nowMs, _lastKind);
-        Emit(string.Create(CultureInfo.InvariantCulture, $"DUMP {id} chain=* reason=stall kind={KindName(_lastKind)} chains={live.Count}"));
+        var header = string.Create(CultureInfo.InvariantCulture, $"DUMP {id} chain=* reason=stall kind={KindName(_lastKind)} chains={live.Count}");
         var p = "D" + id.ToString(CultureInfo.InvariantCulture) + " ";
+        var chains = new List<(Chain Snap, string Head)>(live.Count);
         foreach (var c in live)
         {
-            c.InEpisode = true;
-            c.Covered = true;
-            c.EpisodeStartMs = nowMs;
-            Emit(string.Create(CultureInfo.InvariantCulture, $"{p}chain={c.Key} unseen={nowMs - c.LastSeenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, nowMs - c.LastSeenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}"));
-            WriteChainRingLocked(c, nowMs, p);
-            WriteUploadsLocked(c, nowMs, p);
+            // A chain already in its own episode keeps it, so its end line is written once and it never dumps again.
+            if (!c.InEpisode)
+            {
+                c.InEpisode = true;
+                c.Covered = true;
+                c.EpisodeStartMs = nowMs;
+            }
+            chains.Add((c.Clone(), string.Create(CultureInfo.InvariantCulture, $"{p}chain={c.Key} unseen={nowMs - c.LastSeenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, nowMs - c.LastSeenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}")));
         }
-        WriteReplyRingLocked(nowMs, p);
+        var replies = _replies.Clone();
+        Enqueue(emit =>
+        {
+            emit(header);
+            foreach (var (snap, head) in chains)
+            {
+                emit(head);
+                WriteChainRing(snap, nowMs, p, emit);
+                WriteUploads(snap, nowMs, p, emit);
+            }
+            WriteReplyRing(replies, nowMs, p, emit);
+        });
     }
 
     private void EndStallLocked(long nowMs, string how)
@@ -364,18 +462,24 @@ internal sealed class Slv3LinkDiag : IDisposable
             $"EPISODE {c.Key} ended={how} duration={nowMs - c.EpisodeStartMs}ms polls={c.EpisodePolls}"));
     }
 
+    // Rings are copied under the gate; the hex and text formatting runs later on the writer thread.
     private void DumpLocked(Chain c, long nowMs, string reason, long unseenMs)
     {
         var id = ++_dumpId;
         var p = "D" + id.ToString(CultureInfo.InvariantCulture) + " ";
-        var inv = CultureInfo.InvariantCulture;
-        Emit(string.Create(inv, $"DUMP {id} chain={c.Key} reason={reason} unseen={unseenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, unseenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}"));
-        WriteChainRingLocked(c, nowMs, p);
-        WriteReplyRingLocked(nowMs, p);
-        WriteUploadsLocked(c, nowMs, p);
+        var header = string.Create(CultureInfo.InvariantCulture, $"DUMP {id} chain={c.Key} reason={reason} unseen={unseenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, unseenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}");
+        var snap = c.Clone();
+        var replies = _replies.Clone();
+        Enqueue(emit =>
+        {
+            emit(header);
+            WriteChainRing(snap, nowMs, p, emit);
+            WriteReplyRing(replies, nowMs, p, emit);
+            WriteUploads(snap, nowMs, p, emit);
+        });
     }
 
-    private void WriteChainRingLocked(Chain c, long nowMs, string p)
+    private static void WriteChainRing(Chain c, long nowMs, string p, Action<string> emit)
     {
         var sb = new StringBuilder();
         var inv = CultureInfo.InvariantCulture;
@@ -397,7 +501,7 @@ internal sealed class Slv3LinkDiag : IDisposable
             {
                 sb.Append(" slot=").Append(c.Slot[a]).Append(" ch=").Append(c.Chan[a]);
             }
-            Emit(sb.ToString());
+            emit(sb.ToString());
             i = j;
         }
         var raws = 0;
@@ -409,18 +513,17 @@ internal sealed class Slv3LinkDiag : IDisposable
                 continue;
             }
             raws++;
-            Emit(p + "CHRAW t=" + (c.T[x] - nowMs).ToString(inv) + "ms "
+            emit(p + "CHRAW t=" + (c.T[x] - nowMs).ToString(inv) + "ms "
                 + Convert.ToHexString(c.Raw, x * Chain.RecordBytes, Chain.RecordBytes));
         }
 
     }
 
-    private void WriteReplyRingLocked(long nowMs, string p)
+    private static void WriteReplyRing(Reply r, long nowMs, string p, Action<string> emit)
     {
         var sb = new StringBuilder();
         var inv = CultureInfo.InvariantCulture;
         // Dongle reply ring, last ReplyWindowMs, grouped by (kind, records, length).
-        var r = _replies;
         var rn = r.Count;
         var first = 0;
         while (first < rn && nowMs - r.T[r.Index(first)] > ReplyWindowMs)
@@ -444,7 +547,7 @@ internal sealed class Slv3LinkDiag : IDisposable
             sb.Append(p).Append("RX t=").Append(r.T[a] - nowMs).Append("..").Append(r.T[lastR] - nowMs).Append("ms ")
               .Append(KindName(r.Kind[a])).Append(" x").Append(j - i).Append(" records=").Append(r.Records[a])
               .Append(" len=").Append(r.Len[a]).Append(" lat avg=").Append(latSum / (j - i)).Append(" max=").Append(latMax).Append("ms");
-            Emit(sb.ToString());
+            emit(sb.ToString());
             i = j;
         }
         var rawsR = 0;
@@ -457,21 +560,21 @@ internal sealed class Slv3LinkDiag : IDisposable
             }
             rawsR++;
             var kept = Math.Min(r.Len[x], ReplyKeepBytes);
-            Emit(p + "RXRAW t=" + (r.T[x] - nowMs).ToString(inv) + "ms len=" + r.Len[x].ToString(inv)
+            emit(p + "RXRAW t=" + (r.T[x] - nowMs).ToString(inv) + "ms len=" + r.Len[x].ToString(inv)
                 + (kept < r.Len[x] ? " cut=" + kept.ToString(inv) : "") + " "
                 + Convert.ToHexString(r.Raw, x * ReplyKeepBytes, kept));
         }
 
     }
 
-    private void WriteUploadsLocked(Chain c, long nowMs, string p)
+    private static void WriteUploads(Chain c, long nowMs, string p, Action<string> emit)
     {
         var inv = CultureInfo.InvariantCulture;
         // Upload ring, oldest first.
         for (var i = 0; i < c.UploadCount; i++)
         {
             var u = c.UploadIndex(i);
-            Emit(p + "UP t=" + (c.UT[u] - nowMs).ToString(inv) + "ms " + c.UKind[u].ToString().ToLowerInvariant()
+            emit(p + "UP t=" + (c.UT[u] - nowMs).ToString(inv) + "ms " + c.UKind[u].ToString().ToLowerInvariant()
                 + (c.UOk[u] ? " ok" : " FAIL reason=" + ReasonName(c.UReason[u])) + " lat=" + c.ULat[u].ToString(inv) + "ms"
                 + (c.UWindow[u] >= 0 ? " window=" + c.UWindow[u].ToString(inv) : ""));
         }
@@ -492,21 +595,34 @@ internal sealed class Slv3LinkDiag : IDisposable
         Slv3ReplyKind.NoData => "nodata",
         Slv3ReplyKind.Timeout => "timeout",
         Slv3ReplyKind.Invalid => "invalid",
+        Slv3ReplyKind.NoHandle => "nohandle",
         _ => "sendfail",
     };
 
     // ---- output ----
 
-    private void Emit(string body)
+    private readonly record struct Item(DateTime At, string? Body, Action<Action<string>>? Render);
+
+    private void Emit(string body) => Enqueue(body, null);
+
+    private void Enqueue(Action<Action<string>> render) => Enqueue(null, render);
+
+    private void Enqueue(string? body, Action<Action<string>>? render)
     {
+        if (!_active)
+        {
+            return;
+        }
         if (Interlocked.Increment(ref _queued) > MaxQueuedLines)
         {
             Interlocked.Decrement(ref _queued);
             Interlocked.Increment(ref _droppedLines);
             return;
         }
-        _lines.Enqueue(DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) + " " + body);
+        _lines.Enqueue(new Item(DateTime.UtcNow, body, render));
     }
+
+    private static string Stamp(DateTime at) => at.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 
     /// <summary>Resolves pending parent lookups, then hands every queued line to <paramref name="sink"/>. Returns the line count.</summary>
     internal int Drain(Action<string> sink)
@@ -533,16 +649,28 @@ internal sealed class Slv3LinkDiag : IDisposable
             }
         }
         var count = 0;
-        while (_lines.TryDequeue(out var line))
+        while (_lines.TryDequeue(out var item))
         {
             Interlocked.Decrement(ref _queued);
-            sink(line);
-            count++;
+            var stamp = Stamp(item.At);
+            if (item.Body is not null)
+            {
+                sink(stamp + " " + item.Body);
+                count++;
+            }
+            else
+            {
+                item.Render!(line =>
+                {
+                    sink(stamp + " " + line);
+                    count++;
+                });
+            }
         }
         var dropped = Interlocked.Exchange(ref _droppedLines, 0);
         if (dropped > 0)
         {
-            sink(DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) + " EVT dropped-lines " + dropped.ToString(CultureInfo.InvariantCulture));
+            sink(Stamp(DateTime.UtcNow) + " EVT dropped-lines " + dropped.ToString(CultureInfo.InvariantCulture));
             count++;
         }
         return count;
@@ -618,8 +746,9 @@ internal sealed class Slv3LinkDiag : IDisposable
     public void Dispose()
     {
         _stop = true;
-        _wake?.Set();
+        Wake();
         _writer?.Join(2000);
+        _wake?.Dispose();
     }
 
     // ---- ring storage ----
@@ -665,6 +794,27 @@ internal sealed class Slv3LinkDiag : IDisposable
         private int _uHead;
         public int UploadCount;
 
+        public Chain Clone()
+        {
+            var c = new Chain(Key) { LastSeenMs = LastSeenMs, LastSlot = LastSlot, LastChannel = LastChannel };
+            T.CopyTo(c.T, 0);
+            Present.CopyTo(c.Present, 0);
+            Slot.CopyTo(c.Slot, 0);
+            Chan.CopyTo(c.Chan, 0);
+            Raw.CopyTo(c.Raw, 0);
+            c._head = _head;
+            c.Count = Count;
+            UT.CopyTo(c.UT, 0);
+            UKind.CopyTo(c.UKind, 0);
+            UOk.CopyTo(c.UOk, 0);
+            ULat.CopyTo(c.ULat, 0);
+            UWindow.CopyTo(c.UWindow, 0);
+            UReason.CopyTo(c.UReason, 0);
+            c._uHead = _uHead;
+            c.UploadCount = UploadCount;
+            return c;
+        }
+
         public int Index(int i) => (_head - Count + i + ChainRingSize) % ChainRingSize;
         public int UploadIndex(int i) => (_uHead - UploadCount + i + UploadRingSize) % UploadRingSize;
 
@@ -707,9 +857,9 @@ internal sealed class Slv3LinkDiag : IDisposable
         public void CloseGap(long gapMs)
         {
             MaxGapMs = Math.Max(MaxGapMs, gapMs);
-            if (gapMs > 2_000) Gaps2++;
-            if (gapMs > 5_000) Gaps5++;
-            if (gapMs > 10_000) Gaps10++;
+            if (gapMs > Gap2Ms) Gaps2++;
+            if (gapMs > Gap5Ms) Gaps5++;
+            if (gapMs > Gap10Ms) Gaps10++;
         }
 
         public void ResetWindow()
@@ -747,6 +897,18 @@ internal sealed class Slv3LinkDiag : IDisposable
         public readonly byte[] Raw = new byte[ReplyRingSize * ReplyKeepBytes];
         private int _head;
         public int Count;
+
+        public Reply Clone()
+        {
+            var r = new Reply { _head = _head, Count = Count };
+            T.CopyTo(r.T, 0);
+            Kind.CopyTo(r.Kind, 0);
+            Lat.CopyTo(r.Lat, 0);
+            Records.CopyTo(r.Records, 0);
+            Len.CopyTo(r.Len, 0);
+            Raw.CopyTo(r.Raw, 0);
+            return r;
+        }
 
         public int Index(int i) => (_head - Count + i + ReplyRingSize) % ReplyRingSize;
 
