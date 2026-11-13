@@ -141,6 +141,7 @@ public class RgbBridgeWatchdogTests : IDisposable
         // Past warm-up: failures count.
         _bridge.DaemonUptimeProbe = () => TimeSpan.FromMinutes(5);
         _bridge.OneShotFactory = _deadlines.Create;
+        _bridge.SettleStallEnabled = true;
     }
 
     public void Dispose()
@@ -322,10 +323,12 @@ public class RgbBridgeWatchdogTests : IDisposable
             "the stalled daemon was not restarted");
     }
 
+    // Whether the look decided a daemon restart is known when it returns, so a refusal needs no waiting.
     private async Task PollAndExpectNoBounceAsync(int disconnects)
     {
+        var decided = _bridge.BounceCount;
         await LookAtSettleAsync();
-        await Task.Delay(300);
+        Assert.Equal(decided, _bridge.BounceCount);
         Assert.Equal(disconnects, _controller.Count("disconnect"));
     }
 
@@ -507,7 +510,7 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
 
-        await Task.Delay(300);
+        Assert.Equal(0, _bridge.BounceCount);
         Assert.Equal(0, _controller.Count("disconnect"));
     }
 
@@ -527,7 +530,7 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         Advance(TimeSpan.FromSeconds(100));
         _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
-        await Task.Delay(300);
+        Assert.Equal(3, _bridge.BounceCount);
         Assert.Equal(3, _controller.Count("disconnect"));
     }
 
@@ -1223,5 +1226,18 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         Assert.False(_deadlines.Single!.Armed);
         Assert.Equal(arms, _deadlines.Single!.ArmCount);
+    }
+
+    [Fact]
+    public async Task With_the_settle_stall_recovery_off_a_resume_restart_arms_nothing()
+    {
+        UseFakeClock();
+        _bridge.SettleStallEnabled = false;
+        await ActivateAndSettleAsync();
+
+        await ResumeAndWaitForBounceAsync(1);
+
+        Assert.Equal(0, _bridge.ExpectedDevices);
+        Assert.Empty(_deadlines.Created);
     }
 }

@@ -537,7 +537,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             var reading = LhmWalkWatch.Shared.Read(s.Value);
             var value = Hold.Resolve(key, reading, now, out var missed);
             var stale = !missed && (reading is not { } raw || !float.IsFinite(raw));
-            if (missed && isGpu)
+            if (missed && isGpu && !LhmWalkWatch.Shared.IsStale)
             {
                 var hwKey = hw.Identifier.ToString();
                 var count = Hold.NoteMiss(hwKey, now);

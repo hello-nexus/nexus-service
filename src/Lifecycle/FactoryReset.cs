@@ -237,6 +237,8 @@ internal static class FactoryReset
         // The parent frequently survives StopApplication (the NSApplication shell stays resident) and the
         // kill below handles it, so a long wait only stalls the relaunch.
         WaitForProcessExit(parentPid, TimeSpan.FromSeconds(5));
+#elif WINDOWS
+        EnsureParentGone(parentPid, ParentExitGrace, ParentExitAfterKill, OpenProcess, Console.Error.WriteLine);
 #else
         WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30));
 #endif
@@ -336,6 +338,108 @@ internal static class FactoryReset
         args.Length > 0 && args[0] == FinalizeFlag,
         args.Length > 1 && int.TryParse(args[1], out var p) ? p : 0,
         args.Length > 2 ? ReopenRoute.Validate(args[2]) : null);
+
+    /// <summary>A process the finalizer waits on, so the wait and the force-kill are testable.</summary>
+    internal interface IWaitableProcess : IDisposable
+    {
+        bool WaitForExit(TimeSpan timeout);
+
+        void Kill();
+    }
+
+    private sealed class RealProcess : IWaitableProcess
+    {
+        private readonly Process _process;
+
+        internal RealProcess(Process process) => _process = process;
+
+        public bool WaitForExit(TimeSpan timeout) => _process.WaitForExit((int)timeout.TotalMilliseconds);
+
+        public void Kill() => _process.Kill();
+
+        public void Dispose() => _process.Dispose();
+    }
+
+    internal static IWaitableProcess? OpenProcess(int pid)
+    {
+        try { return new RealProcess(Process.GetProcessById(pid)); }
+        catch (ArgumentException) { return null; }
+    }
+
+    /// <summary>Longest the finalizer waits for the stopping service to exit by itself before it force-kills it.</summary>
+    internal static readonly TimeSpan ParentExitGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long a force-killed parent gets to be reaped before the restart goes ahead anyway.</summary>
+    internal static readonly TimeSpan ParentExitAfterKill = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Waits for the old service process to exit and force-kills it if it will not, so a process stuck in a driver call
+    /// cannot keep the service down. Returns true when the process is gone. Every step is logged.
+    /// </summary>
+    internal static bool EnsureParentGone(int pid, TimeSpan grace, TimeSpan afterKill, Func<int, IWaitableProcess?> open, Action<string> log)
+    {
+        if (pid <= 0)
+        {
+            return true;
+        }
+        IWaitableProcess? process;
+        try { process = open(pid); }
+        catch (Exception ex)
+        {
+            log($"[factory-reset] could not open pid {pid}: {ex.Message}");
+            return false;
+        }
+        if (process is null)
+        {
+            log($"[factory-reset] pid {pid} already gone");
+            return true;
+        }
+        using (process)
+        {
+            try
+            {
+                if (process.WaitForExit(grace))
+                {
+                    log($"[factory-reset] pid {pid} exited");
+                    return true;
+                }
+                log($"[factory-reset] pid {pid} still running after {grace.TotalSeconds:F0}s; force-killing it");
+                process.Kill();
+                var reaped = process.WaitForExit(afterKill);
+                log(reaped ? $"[factory-reset] pid {pid} killed" : $"[factory-reset] pid {pid} survived the kill for {afterKill.TotalSeconds:F0}s; continuing");
+                return reaped;
+            }
+            catch (Exception ex)
+            {
+                log($"[factory-reset] wait or kill of pid {pid} failed: {ex.Message}");
+                return false;
+            }
+        }
+    }
+
+    /// <summary>Runs <paramref name="start"/> until it succeeds or the attempts run out; the early failures are SCM still leaving STOP_PENDING. Returns the attempt that succeeded, or 0.</summary>
+    internal static int StartWithRetries(Func<int> start, int attempts, Action pause, Action<string> log)
+    {
+        for (var i = 1; i <= attempts; i++)
+        {
+            var code = start();
+            if (code == 0)
+            {
+                log($"[factory-reset] sc start succeeded on attempt {i}");
+                return i;
+            }
+            if (i == 1 || i % 10 == 0)
+            {
+                log($"[factory-reset] sc start attempt {i} exited {code}; retrying");
+            }
+            pause();
+        }
+        log($"[factory-reset] sc start failed after {attempts} attempts");
+        return 0;
+    }
+
+    /// <summary>Attempts the Windows restart makes at half a second each, long enough to cover SCM finishing a slow stop.</summary>
+    internal const int StartAttempts = 60;
 
     internal static void WaitForProcessExit(int pid, TimeSpan timeout)
     {
@@ -454,16 +558,11 @@ internal static class FactoryReset
         // SCM owns the daemon. StopApplication left it STOPPED - a clean stop,
         // not a failure, so the sc.exe recovery policy didn't fire. Start it
         // again, retrying while SCM transitions out of STOP_PENDING.
-        for (var i = 0; i < 10; i++)
-        {
-            if (ShellExecutor.RunExit("sc.exe", ShellExecutor.DefaultTimeoutMs,
-                    "start", WindowsServiceInstaller.ServiceName) == 0)
-            {
-                return;
-            }
-            System.Threading.Thread.Sleep(500);
-        }
-        Console.Error.WriteLine("[factory-reset] sc start failed after retries");
+        StartWithRetries(
+            () => ShellExecutor.RunExit("sc.exe", ShellExecutor.DefaultTimeoutMs, "start", WindowsServiceInstaller.ServiceName),
+            StartAttempts,
+            () => System.Threading.Thread.Sleep(500),
+            Console.Error.WriteLine);
 #elif MACOS
         var uid = ShellExecutor.Run("/usr/bin/id", "-u").Trim();
         if (uid.Length > 0 && ShellExecutor.RunExit("/bin/launchctl", ShellExecutor.DefaultTimeoutMs,

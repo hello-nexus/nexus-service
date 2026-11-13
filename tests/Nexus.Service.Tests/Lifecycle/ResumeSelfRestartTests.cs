@@ -87,4 +87,111 @@ public class ResumeSelfRestartTests : IDisposable
         Assert.False(File.Exists(Stamp + ".started"));
         Assert.True(File.Exists(Stamp));
     }
+
+    [Fact]
+    public void A_stamp_dated_in_the_future_is_expired_and_does_not_block_a_restart()
+    {
+        Assert.True(Create().TryRestart("test"));
+        _now -= TimeSpan.FromHours(3);
+
+        Assert.True(Create().TryRestart("test"));
+
+        Assert.Equal(2, _restarts);
+    }
+
+    // ── The restart action ──
+
+    private sealed class Harness
+    {
+        internal bool Flashing;
+        internal int InstallGate;
+        internal bool BeginResult = true;
+        internal Exception? BeginThrows;
+        internal int Begins;
+        internal readonly TaskCompletionSource Stopped = new();
+
+        internal bool Run() => ResumeSelfRestart.Perform(
+            () => Flashing,
+            () => Interlocked.CompareExchange(ref InstallGate, 1, 0) == 0,
+            () => Interlocked.Exchange(ref InstallGate, 0),
+            () =>
+            {
+                Begins++;
+                if (BeginThrows is not null)
+                {
+                    throw BeginThrows;
+                }
+                return BeginResult;
+            },
+            () => Stopped.SetResult());
+    }
+
+    [Fact]
+    public async Task The_restart_action_claims_the_finalizer_stops_the_host_and_keeps_the_install_gate()
+    {
+        var h = new Harness();
+
+        Assert.True(h.Run());
+
+        await h.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, h.Begins);
+        Assert.Equal(1, h.InstallGate);
+    }
+
+    [Fact]
+    public void A_firmware_flash_refuses_the_restart_before_anything_is_claimed()
+    {
+        var h = new Harness { Flashing = true };
+
+        Assert.False(h.Run());
+
+        Assert.Equal(0, h.Begins);
+        Assert.Equal(0, h.InstallGate);
+        Assert.False(h.Stopped.Task.IsCompleted);
+    }
+
+    [Fact]
+    public void A_running_install_refuses_the_restart_and_is_left_alone()
+    {
+        var h = new Harness { InstallGate = 1 };
+
+        Assert.False(h.Run());
+
+        Assert.Equal(0, h.Begins);
+        Assert.Equal(1, h.InstallGate);
+        Assert.False(h.Stopped.Task.IsCompleted);
+    }
+
+    [Fact]
+    public void A_refused_finalizer_claim_gives_the_install_gate_back()
+    {
+        var h = new Harness { BeginResult = false };
+
+        Assert.False(h.Run());
+
+        Assert.Equal(1, h.Begins);
+        Assert.Equal(0, h.InstallGate);
+        Assert.False(h.Stopped.Task.IsCompleted);
+    }
+
+    [Fact]
+    public void A_finalizer_claim_that_throws_gives_the_install_gate_back_and_rethrows()
+    {
+        var h = new Harness { BeginThrows = new InvalidOperationException("spawn failed") };
+
+        Assert.Throws<InvalidOperationException>(() => h.Run());
+
+        Assert.Equal(0, h.InstallGate);
+    }
+
+    [Fact]
+    public async Task An_install_cannot_start_once_the_restart_holds_the_gate()
+    {
+        var h = new Harness();
+        Assert.True(h.Run());
+        await h.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The install's own claim is the same compare-and-swap on the same gate.
+        Assert.NotEqual(0, Interlocked.CompareExchange(ref h.InstallGate, 1, 0));
+    }
 }

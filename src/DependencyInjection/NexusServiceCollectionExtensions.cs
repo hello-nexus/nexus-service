@@ -808,15 +808,12 @@ public static class NexusServiceCollectionExtensions
                 var updates = sp.GetRequiredService<Nexus.Service.Update.UpdateService>();
                 return new Nexus.Service.Lifecycle.ResumeSelfRestart(
                     System.IO.Path.Combine(Nexus.Service.Persistence.JsonConfigStore.ResolveDataDirectory(), "resume-self-restart.stamp"),
-                    () =>
-                    {
-                        if (flasher.IsFlashing || updates.IsInstalling || !Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
-                        {
-                            return false;
-                        }
-                        _ = Task.Run(lifetime.StopApplication);
-                        return true;
-                    });
+                    () => Nexus.Service.Lifecycle.ResumeSelfRestart.Perform(
+                        () => flasher.IsFlashing,
+                        updates.TryHoldInstallGate,
+                        updates.ReleaseInstallGate,
+                        () => Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false),
+                        lifetime.StopApplication));
             });
             services.AddHostedService<Nexus.Service.Lighting.Rgb.PowerEventListener>();
         }

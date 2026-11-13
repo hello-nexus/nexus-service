@@ -1725,7 +1725,7 @@ public class ThermalGuardEngineTests
         e.Tick();
         guard.TickCompleted();
 
-        // Readers no longer block on a wedged walk, so the engine keeps ticking on cached values.
+        // The engine keeps ticking on cached values while the walk is overdue.
         fresh = false;
         for (var i = 0; i < 12; i++)
         {

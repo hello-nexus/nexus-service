@@ -203,7 +203,7 @@ public sealed class ThermalGuardController
     internal Func<long> MonotonicMs { get; set; } = AwakeMs;
 
     // Must stop while the machine sleeps, or a resume reads as a stall; TickCount64 does not on Windows.
-    private static long AwakeMs()
+    internal static long AwakeMs()
     {
 #if WINDOWS
         ThermalGuardNativeMethods.QueryUnbiasedInterruptTime(out var hundredNs);
@@ -263,7 +263,7 @@ public sealed class ThermalGuardController
 
     public void TickCompleted()
     {
-        // Not counted as a tick: the watchdog measures how long the temperatures have been unrefreshed, as it did when readers blocked on the walk.
+        // Not counted as a tick: the watchdog measures how long the temperatures have gone unrefreshed.
         if (!ReadingsFresh())
         {
             return;

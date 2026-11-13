@@ -239,21 +239,21 @@ public class LhmWalkWatchTests
         Assert.False(watch.SpdQuiesced);
     }
 
-    [Fact]
-    public void Only_memory_items_and_the_spd_gate_count_as_inside_an_smbus_item()
+    [Theory]
+    [InlineData("/memory/dimm/3", false)]
+    [InlineData("spd-gate", false)]
+    [InlineData("/intelcpu/0", true)]
+    public void Only_memory_items_and_the_spd_gate_count_as_inside_an_smbus_item(string item, bool outside)
     {
         var watch = NewWatch();
-        Assert.False(watch.InSmbusItem());
+        Assert.True(watch.WaitUntilOutsideSmbusItem(TimeSpan.Zero));
         watch.BeginWalk();
-        Assert.False(watch.InSmbusItem());
-        watch.SetItem("/intelcpu/0");
-        Assert.False(watch.InSmbusItem());
-        watch.SetItem("/memory/dimm/3");
-        Assert.True(watch.InSmbusItem());
-        watch.SetItem("spd-gate");
-        Assert.True(watch.InSmbusItem());
+        watch.SetItem(item);
+
+        Assert.Equal(outside, watch.WaitUntilOutsideSmbusItem(TimeSpan.Zero));
+
         watch.EndWalk();
-        Assert.False(watch.InSmbusItem());
+        Assert.True(watch.WaitUntilOutsideSmbusItem(TimeSpan.Zero));
     }
 
     [Fact]
