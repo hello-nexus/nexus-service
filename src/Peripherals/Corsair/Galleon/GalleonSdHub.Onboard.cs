@@ -20,7 +20,7 @@ public sealed partial class GalleonSdHub
 {
     private const double DebounceMs = 5000;
     private const double MinTxGapMs = 5000;
-    private const double TxBudgetMs = 12_000;
+    private const double TxBudgetMs = 6000;
     private const double AnimatedLogMs = 15_000;
     private const int MaxOnboardFailures = 5;
     private const int MaxLogLines = 700;
@@ -28,6 +28,12 @@ public sealed partial class GalleonSdHub
     private const int ReadChunkBytes = GalleonSdProtocol.WireLength - 5;
     private const int MaxReadChunks = 24;
     private const int MaxLayerReads = 16;
+    private const int MaxTxPerHour = 30;
+    private const int MaxTxPerDay = 200;
+    private const int ColorTolerance = 4;
+    // Resource ids seen on the board all sit in this window; allocation never starts from a value outside it.
+    private const int AllocMin = 0x6D00;
+    private const int AllocMax = 0x6EFF;
     private const int MaxAllocProbes = 24;
     private const byte ReadHandle = 0;
     private const byte LayerHandle = 1;
@@ -37,7 +43,10 @@ public sealed partial class GalleonSdHub
     private readonly GalleonOnboardStore _onboard;
 
     /// <summary>Diagnostic: after every onboard write, read the resource back and log whether it matches what was written. Costs one extra read per write.</summary>
-    public bool VerifyOnboardWrites { get; set; } = true;
+    public bool VerifyOnboardWrites { get; set; }
+
+    /// <summary>After each successful transaction, one read-only probe walk runs outside the write bracket and logs what the board now holds.</summary>
+    public bool PostTxProbe { get; set; } = true;
 
     /// <summary>Source of the profile timestamp; tests pin it.</summary>
     internal Func<DateTimeOffset> UtcNow { get; set; } = static () => DateTimeOffset.UtcNow;
@@ -58,7 +67,11 @@ public sealed partial class GalleonSdHub
         public long NextTxStamp;
         public int Failures;
         public bool GaveUp;
-        public byte[]? LastSig;
+        public List<GalleonQuantLayer>? LastLayers;
+        public List<long> TxStamps = new();
+        public bool CapLogged;
+        public bool ReRun;
+        public bool HandleChecked;
         public bool LayersLogged;
         public int LogBudget = MaxLogLines;
         public int OpenHandle = -1;
@@ -82,7 +95,10 @@ public sealed partial class GalleonSdHub
             NextTxStamp = 0;
             Failures = 0;
             GaveUp = false;
-            LastSig = null;
+            LastLayers = null;
+            TxStamps = new List<long>();
+            CapLogged = false;
+            ReRun = false;
             LayersLogged = false;
             LogBudget = MaxLogLines;
             UndoChecked = false;
@@ -104,7 +120,13 @@ public sealed partial class GalleonSdHub
     {
         public ushort[] RegistryRefs = Array.Empty<ushort>();
         public byte[] Registry = Array.Empty<byte>();
+        public ushort ActiveRes;
+        /// <summary>The profile being edited: the recorded one while Nexus layers are on it, else the active one.</summary>
         public ushort ProfileRes;
+        /// <summary>Nexus layers are recorded on a different profile than the active one.</summary>
+        public bool Mismatch;
+        /// <summary>The recorded profile is no longer in the registry.</summary>
+        public bool RecordedGone;
         public byte[] Profile = Array.Empty<byte>();
         public ushort[] ProfileSlots = Array.Empty<ushort>();
         public ushort ListRes;
@@ -150,21 +172,26 @@ public sealed partial class GalleonSdHub
         if (ob.DoneVersion == ob.FrameVersion || now < ob.NextTxStamp) return;
 
         var desired = GalleonSdOnboardCodec.Quantize(ob.LastFrame);
-        var bodies = desired.Select(GalleonSdOnboardCodec.BuildLayerBody).ToList();
-        var sig = Signature(bodies);
-        if (ob.LastSig is not null && sig.AsSpan().SequenceEqual(ob.LastSig))
+        if (ob.LastLayers is not null && SameLayers(desired, ob.LastLayers))
         {
             ob.DoneVersion = ob.FrameVersion;
             return;
         }
+        if (!CapAllows(ob, now)) return;
+        var bodies = desired.Select(GalleonSdOnboardCodec.BuildLayerBody).ToList();
 
+        ob.ReRun = false;
         var ok = RunOnboardTx(slot, "update", () => UpdateTxBody(slot, bodies));
         var after = _clock();
         if (ok)
         {
-            ob.DoneVersion = ob.FrameVersion;
+            // A profile switch undid the old layers first; the same frame is written again on the next pass.
+            if (!ob.ReRun)
+            {
+                ob.DoneVersion = ob.FrameVersion;
+                ob.LastLayers = desired;
+            }
             ob.Failures = 0;
-            ob.LastSig = sig;
             ob.NextTxStamp = after + (long)(MinTxGapMs * Stopwatch.Frequency / 1000);
             return;
         }
@@ -177,19 +204,42 @@ public sealed partial class GalleonSdHub
         }
     }
 
+    // Same keys per layer and every channel within a few steps: brightness drift does not commit a write.
+    private static bool SameLayers(List<GalleonQuantLayer> a, List<GalleonQuantLayer> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var l in a)
+        {
+            var m = b.FirstOrDefault(x => x.Keys.AsSpan().SequenceEqual(l.Keys));
+            if (m is null) return false;
+            if (Math.Abs(l.Color.R - m.Color.R) > ColorTolerance || Math.Abs(l.Color.G - m.Color.G) > ColorTolerance || Math.Abs(l.Color.B - m.Color.B) > ColorTolerance) return false;
+        }
+        return true;
+    }
+
+    // Long-window cap on transaction attempts; logs once per window it is hit.
+    private bool CapAllows(OnboardState ob, long now)
+    {
+        var day = (long)(24 * 3600.0 * Stopwatch.Frequency);
+        var hour = (long)(3600.0 * Stopwatch.Frequency);
+        ob.TxStamps.RemoveAll(t => now - t > day);
+        var inHour = ob.TxStamps.Count(t => now - t <= hour);
+        if (inHour >= MaxTxPerHour || ob.TxStamps.Count >= MaxTxPerDay)
+        {
+            if (!ob.CapLogged)
+            {
+                ob.CapLogged = true;
+                ServiceLog.Warn($"[galleon-sd-onboard] transaction cap reached (hour={inHour} day={ob.TxStamps.Count}); saved colors wait until the window frees");
+            }
+            return false;
+        }
+        ob.CapLogged = false;
+        ob.TxStamps.Add(now);
+        return true;
+    }
+
     private static double BackoffMs(int failures) =>
         Math.Max(MinTxGapMs, Math.Min(MaxRejectBackoffMs, RejectBackoffMs * (1 << Math.Min(failures, MaxBackoffDoublings))));
-
-    private static byte[] Signature(List<byte[]> bodies)
-    {
-        var sig = new List<byte>();
-        foreach (var b in bodies)
-        {
-            sig.Add((byte)b.Length);
-            sig.AddRange(b);
-        }
-        return sig.ToArray();
-    }
 
     // Turn-off: undo once per saved-off transition when Nexus layers are on record, retried with backoff, then streaming resumes regardless.
     private void UndoOnboardIfNeededLocked(Slot slot)
@@ -225,6 +275,7 @@ public sealed partial class GalleonSdHub
     {
         var ob = slot.Ob;
         ob.OpenHandle = -1;
+        ob.HandleChecked = false;
         ob.TxDeadline = _clock() + (long)(TxBudgetMs * Stopwatch.Frequency / 1000);
         ServiceLog.Info($"[galleon-sd-onboard] {kind} begin serial={slot.Info.Serial}");
         var ok = false;
@@ -250,6 +301,7 @@ public sealed partial class GalleonSdHub
             if (ioFailure) RecordFailureLocked(slot, "onboard-io");
         }
         ServiceLog.Info($"[galleon-sd-onboard] {kind} end ok={ok}");
+        if (ok && PostTxProbe && !_stopRequested) RunProbe(slot);
         return ok;
     }
 
@@ -289,13 +341,14 @@ public sealed partial class GalleonSdHub
 
     private void Step(Slot slot)
     {
+        if (_stopRequested) throw new TxAbort("shutting down");
         if (_clock() > slot.Ob.TxDeadline) throw new TxAbort("time budget exceeded");
     }
 
-    private GalleonReply TxEx(Slot slot, byte[] wire, string label)
+    private GalleonReply TxEx(Slot slot, byte[] wire, string label, bool force = false)
     {
         Step(slot);
-        return Exchange(slot, wire, $"onboard {label}", ProbeReplyMs, Lg(slot), check: true);
+        return Exchange(slot, wire, $"onboard {label}", ProbeReplyMs, Lg(slot) || force, check: true);
     }
 
     private static ReadOnlySpan<byte> Wire(Slot slot) => GalleonSdOnboardProbe.Strip(slot.ParsedReply.AsSpan(0, slot.ParsedReplyLength));
@@ -308,11 +361,11 @@ public sealed partial class GalleonSdHub
         if (reply.Parsed && reply.Status != 0) throw new TxAbort($"software mode refused (status {reply.Status:X2})");
     }
 
-    private OpenOutcome TxOpen(Slot slot, byte handle, ushort res, string tag)
+    private OpenOutcome TxOpen(Slot slot, byte handle, ushort res, string tag, bool force = false)
     {
         Step(slot);
         DrainInput(slot);
-        var reply = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, res), $"onboard {tag} open", ProbeReplyMs, Lg(slot), check: true);
+        var reply = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, res), $"onboard {tag} open", ProbeReplyMs, Lg(slot) || force, check: true);
         if (reply.IsOk)
         {
             slot.Ob.OpenHandle = handle;
@@ -351,7 +404,12 @@ public sealed partial class GalleonSdHub
             var w = Wire(slot);
             if (!sizeReply.IsOk || w.Length < 8) throw new TxAbort($"{tag} size unreadable");
             var size = (w[5] << 16) | (w[6] << 8) | w[7];
-            if (size <= 0 || size > MaxObjectBytes) throw new TxAbort($"{tag} size {size} out of range");
+            if (size < 0 || size > MaxObjectBytes) throw new TxAbort($"{tag} size {size} out of range");
+            if (size == 0)
+            {
+                TxClose(slot, ReadHandle, tag);
+                return Array.Empty<byte>();
+            }
             var data = new byte[size];
             var got = 0;
             for (var i = 0; i < MaxReadChunks && got < size; i++)
@@ -425,7 +483,10 @@ public sealed partial class GalleonSdHub
         }
     }
 
-    private BoardView ReadBoard(Slot slot)
+
+    // Reads registry, the profile to edit and its list. While Nexus layers are recorded on a profile, that profile is the
+    // one edited, even when another is active now; Mismatch tells the caller.
+    private BoardView ReadBoard(Slot slot, GalleonOnboardRecord? rec)
     {
         var view = new BoardView();
         var active = TxEx(slot, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "get 6E");
@@ -436,7 +497,20 @@ public sealed partial class GalleonSdHub
         view.Registry = TxRead(slot, GalleonSdOnboardProbe.RegistryResource, "registry")!;
         if (!GalleonSdOnboardCodec.TryParseRegistry(view.Registry, out view.RegistryRefs)) throw new TxAbort("registry layout not recognized");
         if (index >= view.RegistryRefs.Length || index >= GalleonSdOnboardProbe.MaxProfiles) throw new TxAbort($"active profile index {index} not in the registry");
-        view.ProfileRes = view.RegistryRefs[index];
+        view.ActiveRes = view.RegistryRefs[index];
+        view.ProfileRes = view.ActiveRes;
+        if (rec is { Owned.Count: > 0, ProfileRes: > 0 } && rec.ProfileRes != view.ActiveRes)
+        {
+            if (view.RegistryRefs.Take(GalleonSdOnboardProbe.MaxProfiles).Contains((ushort)rec.ProfileRes))
+            {
+                view.ProfileRes = (ushort)rec.ProfileRes;
+                view.Mismatch = true;
+            }
+            else
+            {
+                view.RecordedGone = true;
+            }
+        }
 
         view.Profile = TxRead(slot, view.ProfileRes, "profile")!;
         if (!GalleonSdOnboardCodec.TryParseProfile(view.Profile, out _, out view.ProfileSlots)) throw new TxAbort("profile layout not recognized");
@@ -445,7 +519,7 @@ public sealed partial class GalleonSdHub
 
         view.ListBytes = TxRead(slot, view.ListRes, "list")!;
         if (!GalleonSdOnboardCodec.TryParseLayerList(view.ListBytes, out view.ListRefs)) throw new TxAbort("layer list layout not recognized");
-        ServiceLog.Info($"[galleon-sd-onboard] board registry={FormatRefs(view.RegistryRefs)} active={index} profile={view.ProfileRes:X4} list={view.ListRes:X4} layers={FormatRefs(view.ListRefs)}");
+        ServiceLog.Info($"[galleon-sd-onboard] board registry={FormatRefs(view.RegistryRefs)} active={index} profile={view.ProfileRes:X4} list={view.ListRes:X4} layers={FormatRefs(view.ListRefs)} mismatch={view.Mismatch}");
         return view;
     }
 
@@ -457,15 +531,18 @@ public sealed partial class GalleonSdHub
         catch (FormatException) { return null; }
     }
 
-    // Persisted ids whose body on the board still equals what was last written. A refused open means the layer is gone; a different body means someone else edited it.
-    private List<(ushort Id, byte[] Body)> VerifyOwned(Slot slot, GalleonOnboardRecord rec, Dictionary<ushort, byte[]> present)
+    // Persisted ids sorted by what the board shows: ours (body equals the confirmed or the pending one, or the layer is empty because a
+    // create was never followed by its write), gone (open refused), or foreign (someone else changed it; left alone and left in the list).
+    private (List<(ushort Id, byte[] Body)> Verified, List<ushort> Gone) VerifyOwned(Slot slot, GalleonOnboardRecord rec, Dictionary<ushort, byte[]> present)
     {
         var verified = new List<(ushort Id, byte[] Body)>();
+        var gone = new List<ushort>();
         foreach (var o in rec.Owned)
         {
             if (o.Id is <= 0 or > ushort.MaxValue) continue;
             var id = (ushort)o.Id;
-            var expected = FromB64(o.BodyB64);
+            var confirmed = FromB64(o.BodyB64);
+            var pending = o.PendingB64.Length > 0 ? FromB64(o.PendingB64) : null;
             if (!present.TryGetValue(id, out var body))
             {
                 body = TxRead(slot, id, $"owned {id:X4}", optional: true);
@@ -474,16 +551,33 @@ public sealed partial class GalleonSdHub
             if (body is null)
             {
                 ServiceLog.Info($"[galleon-sd-onboard] owned layer {id:X4} no longer exists; forgotten");
+                gone.Add(id);
                 continue;
             }
-            if (expected is not null && body.AsSpan().SequenceEqual(expected))
+            var matches = body.Length == 0
+                || (confirmed is not null && body.AsSpan().SequenceEqual(confirmed))
+                || (pending is not null && body.AsSpan().SequenceEqual(pending));
+            if (matches)
             {
                 verified.Add((id, body));
                 continue;
             }
             ServiceLog.Warn($"[galleon-sd-onboard] layer {id:X4} no longer matches what Nexus wrote; treating it as foreign and leaving it alone");
         }
-        return verified;
+        return (verified, gone);
+    }
+
+    private void SetOwned(string serial, GalleonOnboardRecord rec, ushort id, string body, string pending, bool flush)
+    {
+        var entry = rec.Owned.FirstOrDefault(o => o.Id == id);
+        if (entry is null)
+        {
+            entry = new GalleonOwnedLayer { Id = id };
+            rec.Owned.Add(entry);
+        }
+        entry.BodyB64 = body;
+        entry.PendingB64 = pending;
+        _onboard.Save(serial, rec, flush);
     }
 
     private bool UpdateTxBody(Slot slot, List<byte[]> bodies)
@@ -491,34 +585,43 @@ public sealed partial class GalleonSdHub
         var ob = slot.Ob;
         var serial = slot.Info.Serial;
         EnterSoftware(slot);
-        var view = ReadBoard(slot);
         var rec = _onboard.Get(serial) ?? new GalleonOnboardRecord();
+        var view = ReadBoard(slot, rec);
+        if (view.Mismatch)
+        {
+            ServiceLog.Info($"[galleon-sd-onboard] Nexus layers are on profile {view.ProfileRes:X4} but {view.ActiveRes:X4} is active; undoing there first");
+            UndoOnView(slot, view, rec);
+            ob.ReRun = true;
+            return true;
+        }
+        if (view.RecordedGone)
+        {
+            ServiceLog.Warn("[galleon-sd-onboard] the recorded profile is no longer in the registry; forgetting its owned layers");
+            rec.Owned = new List<GalleonOwnedLayer>();
+        }
+        var persistedIds = rec.Owned.Where(o => o.Id is > 0 and <= ushort.MaxValue).Select(o => (ushort)o.Id).ToList();
 
         var present = new Dictionary<ushort, byte[]>();
         if (!ob.LayersLogged)
         {
-            foreach (var id in view.ListRefs.Take(MaxLayerReads))
-            {
-                var body = TxRead(slot, id, $"layer {id:X4}")!;
-                present[id] = body;
-            }
+            foreach (var id in view.ListRefs.Take(MaxLayerReads)) present[id] = TxRead(slot, id, $"layer {id:X4}")!;
             ob.LayersLogged = true;
         }
-        var owned = VerifyOwned(slot, rec, present);
+        var (owned, gone) = VerifyOwned(slot, rec, present);
 
-        // The backup is the board as found: kept while Nexus layers are on it, refreshed when none verified. It lands on disk before any write.
-        if (owned.Count == 0 || !rec.HasBackup)
+        // The backup is the board as found: kept while any Nexus layer is still verifiably on it, refreshed otherwise. It lands on disk before any write.
+        if (owned.Count == 0 || !rec.HasBackup())
         {
-            rec.ProfileRes = view.ProfileRes;
             rec.ProfileB64 = B64(view.Profile);
-            rec.ListRes = view.ListRes;
             rec.ListB64 = B64(view.ListBytes);
             rec.RegistryB64 = B64(view.Registry);
         }
+        rec.ProfileRes = view.ProfileRes;
+        rec.ListRes = view.ListRes;
         rec.Owned = owned.Select(o => new GalleonOwnedLayer { Id = o.Id, BodyB64 = B64(o.Body) }).ToList();
         _onboard.Save(serial, rec, flush: true);
 
-        // Stable assignment: a color keeps its layer; leftovers take free owned layers; extras are created or deleted.
+        // Stable assignment: a color keeps its layer; leftovers take free owned layers (empty ones included); extras are created or deleted.
         var assigned = new ushort?[bodies.Count];
         var pool = owned.ToList();
         for (var d = 0; d < bodies.Count; d++)
@@ -537,65 +640,65 @@ public sealed partial class GalleonSdHub
             pool.RemoveAt(0);
         }
         var toDelete = pool.Select(p => p.Id).ToList();
-
-        var reserved = new HashSet<ushort>(view.RegistryRefs);
-        foreach (var r in view.ProfileSlots) if (r != 0) reserved.Add(r);
-        foreach (var r in view.ListRefs) reserved.Add(r);
-        foreach (var o in _onboard.Get(serial)?.Owned ?? new List<GalleonOwnedLayer>()) if (o.Id is > 0 and <= ushort.MaxValue) reserved.Add((ushort)o.Id);
-
         var existing = owned.ToDictionary(o => o.Id, o => o.Body);
+
+        HashSet<ushort>? reserved = null;
         var wrote = false;
         for (var d = 0; d < bodies.Count; d++)
         {
             if (assigned[d] is { } id)
             {
                 if (existing[id].AsSpan().SequenceEqual(bodies[d])) continue;
+                SetOwned(serial, rec, id, B64(existing[id]), B64(bodies[d]), flush: true);
                 TxWrite(slot, LayerHandle, id, bodies[d], $"layer {id:X4}");
-                SetOwnedBody(serial, rec, id, bodies[d]);
+                SetOwned(serial, rec, id, B64(bodies[d]), "", flush: false);
                 wrote = true;
                 continue;
             }
-            var fresh = AllocateId(slot, reserved);
-            SetOwnedBody(serial, rec, fresh, bodies[d], flush: true);
-            var created = TxEx(slot, GalleonSdProtocol.CreateResource(fresh), $"create {fresh:X4}");
-            if (!created.IsOk) throw new TxAbort($"create {fresh:X4} not accepted (parsed={created.Parsed} status={created.Status:X2})");
+            if (reserved is null)
+            {
+                reserved = ReserveAcrossProfiles(slot, view);
+                foreach (var g in persistedIds.Concat(gone)) reserved.Add(g);
+                foreach (var o in owned) reserved.Add(o.Id);
+            }
+            var fresh = AllocateId(slot, reserved, view.ListRes);
+            SetOwned(serial, rec, fresh, "", B64(bodies[d]), flush: true);
+            var created = TxEx(slot, GalleonSdProtocol.CreateResource(fresh), $"create {fresh:X4}", force: true);
+            if (!created.IsOk) throw new TxAbort($"create {fresh:X4} not accepted (parsed={created.Parsed} status={created.Status:X2}); the layer stays recorded so undo can remove it");
             TxWrite(slot, LayerHandle, fresh, bodies[d], $"layer {fresh:X4}");
+            SetOwned(serial, rec, fresh, B64(bodies[d]), "", flush: false);
             assigned[d] = fresh;
             wrote = true;
         }
-        foreach (var id in toDelete)
-        {
-            DeleteOwned(slot, id);
-            rec.Owned.RemoveAll(o => o.Id == id);
-            _onboard.Save(serial, rec);
-            wrote = true;
-        }
 
-        var ours = new HashSet<ushort>(owned.Select(o => o.Id));
+        // Every id of ours, including ones that vanished, is removed from the list; foreign entries stay exactly as they were.
+        var ours = new HashSet<ushort>(owned.Select(o => o.Id).Concat(gone));
         var finalIds = assigned.Select(a => a!.Value).ToList();
-        var newList = finalIds.Concat(view.ListRefs.Where(r => !ours.Contains(r))).Distinct().ToList();
+        var newList = finalIds.Concat(view.ListRefs.Where(r => !ours.Contains(r))).ToList();
         if (newList.Count > GalleonSdOnboardCodec.MaxListLayers) throw new TxAbort("layer list would exceed the supported length");
         var listBytes = GalleonSdOnboardCodec.BuildLayerList(newList);
-        if (!wrote && listBytes.AsSpan().SequenceEqual(view.ListBytes))
+        if (!wrote && toDelete.Count == 0 && listBytes.AsSpan().SequenceEqual(view.ListBytes))
         {
             ServiceLog.Info("[galleon-sd-onboard] board already holds these layers; nothing to write");
             RestoreHardwareLocked(slot, "no-op");
-            return true;
         }
-
-        WriteTail(slot, view, listBytes);
-        rec = _onboard.Get(serial) ?? rec;
+        else
+        {
+            // The list stops referencing a layer before the layer is deleted.
+            WriteTail(slot, view, listBytes, () =>
+            {
+                foreach (var id in toDelete)
+                {
+                    DeleteOwned(slot, id);
+                    rec.Owned.RemoveAll(o => o.Id == id);
+                    _onboard.Save(serial, rec);
+                }
+            });
+        }
         rec.Owned = finalIds.Select((id, i) => new GalleonOwnedLayer { Id = id, BodyB64 = B64(bodies[i]) }).ToList();
         rec.WrittenListB64 = B64(listBytes);
         _onboard.Save(serial, rec, flush: true);
         return true;
-    }
-
-    private void SetOwnedBody(string serial, GalleonOnboardRecord rec, ushort id, byte[] body, bool flush = false)
-    {
-        rec.Owned.RemoveAll(o => o.Id == id);
-        rec.Owned.Add(new GalleonOwnedLayer { Id = id, BodyB64 = B64(body) });
-        _onboard.Save(serial, rec, flush);
     }
 
     private void DeleteOwned(Slot slot, ushort id)
@@ -604,31 +707,76 @@ public sealed partial class GalleonSdHub
         if (!reply.IsOk) throw new TxAbort($"delete {id:X4} not accepted (parsed={reply.Parsed} status={reply.Status:X2})");
     }
 
-    // A free id: not referenced anywhere and not answering an open. A refused or silent probe-open leaves nothing open, so nothing is closed.
-    private ushort AllocateId(Slot slot, HashSet<ushort> reserved)
+    // Every id the board references anywhere: the registry, every profile's slots, every profile's list. Over-reserving is harmless.
+    private HashSet<ushort> ReserveAcrossProfiles(Slot slot, BoardView view)
     {
-        var start = reserved.Count == 0 ? 1 : reserved.Max() + 1;
+        var reserved = new HashSet<ushort>(view.RegistryRefs);
+        for (var i = 0; i < Math.Min(view.RegistryRefs.Length, GalleonSdOnboardProbe.MaxProfiles); i++)
+        {
+            var res = view.RegistryRefs[i];
+            ushort[] slots;
+            ushort[] list = Array.Empty<ushort>();
+            if (res == view.ProfileRes)
+            {
+                slots = view.ProfileSlots;
+                list = view.ListRefs;
+            }
+            else
+            {
+                var pb = TxRead(slot, res, $"profile {res:X4}")!;
+                if (!GalleonSdOnboardCodec.TryParseProfile(pb, out _, out slots)) throw new TxAbort($"profile {res:X4} layout not recognized");
+                var listRes = slots[GalleonSdOnboardProbe.LayerListSlot];
+                if (listRes != 0)
+                {
+                    var lb = TxRead(slot, listRes, $"list {listRes:X4}")!;
+                    if (!GalleonSdOnboardCodec.TryParseLayerList(lb, out list)) throw new TxAbort($"list {listRes:X4} layout not recognized");
+                }
+            }
+            foreach (var r in slots) if (r != 0) reserved.Add(r);
+            foreach (var r in list) reserved.Add(r);
+        }
+        return reserved;
+    }
+
+    // A free id: above every observed id, referenced nowhere, and refusing an open on a handle proven usable. An OK open means the
+    // resource exists (closed again, next id); silence is ambiguous and aborts. The raw probe-open replies are always logged.
+    private ushort AllocateId(Slot slot, HashSet<ushort> reserved, ushort knownRes)
+    {
+        var inRange = reserved.Where(r => r >= AllocMin && r <= AllocMax).ToList();
+        if (inRange.Count == 0) throw new TxAbort("no observed resource id range to allocate from");
+        if (!slot.Ob.HandleChecked)
+        {
+            TxOpenRequired(slot, LayerHandle, knownRes, "handle check");
+            TxClose(slot, LayerHandle, "handle check");
+            slot.Ob.HandleChecked = true;
+        }
+        var start = inRange.Max() + 1;
         for (var n = 0; n < MaxAllocProbes; n++)
         {
             var id = start + n;
-            if (id >= ushort.MaxValue) break;
+            if (id > AllocMax) break;
             if (reserved.Contains((ushort)id)) continue;
-            var outcome = TxOpen(slot, LayerHandle, (ushort)id, $"probe {id:X4}");
+            var outcome = TxOpen(slot, LayerHandle, (ushort)id, $"probe {id:X4}", force: true);
             reserved.Add((ushort)id);
-            if (outcome == OpenOutcome.Ok)
+            switch (outcome)
             {
-                TxClose(slot, LayerHandle, $"probe {id:X4}");
-                continue;
+                case OpenOutcome.Ok:
+                    TxClose(slot, LayerHandle, $"probe {id:X4}");
+                    continue;
+                case OpenOutcome.Refused:
+                    return (ushort)id;
+                default:
+                    throw new TxAbort($"probe-open of {id:X4} unanswered; its state is ambiguous");
             }
-            return (ushort)id;
         }
         throw new TxAbort("no free resource id found");
     }
 
-    // Layer list, software mode again, profile with a new timestamp, hardware mode, registry unchanged, hardware mode.
-    private void WriteTail(Slot slot, BoardView view, byte[] listBytes)
+    // Layer list, then (when given) the deletes it made safe, software mode again, profile with a new timestamp, hardware mode, registry unchanged, hardware mode.
+    private void WriteTail(Slot slot, BoardView view, byte[] listBytes, Action? afterList)
     {
         TxWrite(slot, ListHandle, view.ListRes, listBytes, "list");
+        afterList?.Invoke();
 
         EnterSoftware(slot);
         var profile = TxRead(slot, view.ProfileRes, "profile")!;
@@ -650,21 +798,37 @@ public sealed partial class GalleonSdHub
         if (rec is null || rec.Owned.Count == 0) return true;
 
         EnterSoftware(slot);
-        var view = ReadBoard(slot);
-        var verified = VerifyOwned(slot, rec, new Dictionary<ushort, byte[]>());
-        var ours = new HashSet<ushort>(verified.Select(v => v.Id));
+        var view = ReadBoard(slot, rec);
+        if (view.RecordedGone)
+        {
+            ServiceLog.Warn("[galleon-sd-onboard] the recorded profile is no longer in the registry; nothing to undo there");
+            RestoreHardwareLocked(slot, "no-op");
+            rec.Owned = new List<GalleonOwnedLayer>();
+            rec.WrittenListB64 = "";
+            _onboard.Save(serial, rec, flush: true);
+            return true;
+        }
+        UndoOnView(slot, view, rec);
+        return true;
+    }
+
+    // Writes the list without our ids first, then deletes the layers, so the list never points at a deleted layer.
+    private void UndoOnView(Slot slot, BoardView view, GalleonOnboardRecord rec)
+    {
+        var serial = slot.Info.Serial;
+        var (verified, gone) = VerifyOwned(slot, rec, new Dictionary<ushort, byte[]>());
+        var ours = new HashSet<ushort>(verified.Select(v => v.Id).Concat(gone));
         var restored = view.ListRefs.Where(r => !ours.Contains(r)).ToList();
         var backupList = FromB64(rec.ListB64);
         ServiceLog.Info($"[galleon-sd-onboard] undo list={FormatRefs(restored.ToArray())} equalsBackup={backupList is not null && GalleonSdOnboardCodec.BuildLayerList(restored).AsSpan().SequenceEqual(backupList)}");
 
-        foreach (var id in verified.Select(v => v.Id))
-        {
-            DeleteOwned(slot, id);
-        }
         var listBytes = GalleonSdOnboardCodec.BuildLayerList(restored);
-        if (ours.Count > 0 || !listBytes.AsSpan().SequenceEqual(view.ListBytes))
+        if (verified.Count > 0 || !listBytes.AsSpan().SequenceEqual(view.ListBytes))
         {
-            WriteTail(slot, view, listBytes);
+            WriteTail(slot, view, listBytes, () =>
+            {
+                foreach (var v in verified) DeleteOwned(slot, v.Id);
+            });
         }
         else
         {
@@ -674,6 +838,5 @@ public sealed partial class GalleonSdHub
         rec.Owned = new List<GalleonOwnedLayer>();
         rec.WrittenListB64 = "";
         _onboard.Save(serial, rec, flush: true);
-        return true;
     }
 }

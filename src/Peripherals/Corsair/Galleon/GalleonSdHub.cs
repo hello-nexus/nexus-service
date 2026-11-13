@@ -105,6 +105,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     private GalleonSdAttached? _snapshot;
     private int _version;
     private bool _disposed;
+    private volatile bool _stopRequested;
     private string? _openFailedPath;
 
     private readonly bool _matchOnLinux;
@@ -128,6 +129,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     /// <summary>Opens the unit when <paramref name="allowed"/> and closes it (board back in hardware mode) when not. True when the attached state changed.</summary>
     public bool Reconcile(bool allowed)
     {
+        if (!allowed) _stopRequested = true;
         lock (_io)
         {
             if (_disposed) return false;
@@ -180,6 +182,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             var serial = !string.IsNullOrWhiteSpace(chosen.Serial) ? chosen.Serial! : StableIdFromPath(chosen.Path);
             var slot = new Slot(new GalleonSdAttached(serial, chosen.Path), dev);
             _slot = slot;
+            _stopRequested = false;
             Volatile.Write(ref _snapshot, slot.Info);
             Interlocked.Increment(ref _version);
             ServiceLog.Info($"[galleon-sd] connected serial={serial} path={chosen.Path} usage={chosen.UsagePage:X4}/{chosen.Usage:X2} rpt={chosen.InputReportByteLength}/{chosen.OutputReportByteLength}/{chosen.FeatureReportByteLength} layoutConfirmed={GalleonSdProtocol.ReportLayoutConfirmed(chosen.OutputReportByteLength)}");
@@ -190,6 +193,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
 
     public void Disconnect()
     {
+        _stopRequested = true;
         lock (_io) CloseLocked();
     }
 
@@ -256,10 +260,11 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     /// board back to hardware mode (keys work) and hold it there. With a <paramref name="frame"/> (in
     /// <see cref="GalleonSdProtocol.KeyIds"/> order) the settled frame is written into onboard layers
     /// (see GalleonSdHub.Onboard.cs); without one the read-only onboard probe runs once per session.
-    /// Off: Nexus-owned layers are undone, then live streaming resumes through <see cref="WriteFrame"/>.
+    /// Off: Nexus-owned layers are undone (unless <paramref name="undo"/> is false, used when the device is only
+    /// taken out of Nexus control), then live streaming resumes through <see cref="WriteFrame"/>.
     /// Idempotent, safe to call every writer tick.
     /// </summary>
-    public void SetSavedToDevice(bool saved, ReadOnlySpan<RgbColor> frame = default)
+    public void SetSavedToDevice(bool saved, ReadOnlySpan<RgbColor> frame = default, bool undo = true)
     {
         Slot? probe = null;
         lock (_io)
@@ -269,7 +274,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             if (!saved)
             {
                 slot.SavedMode = false;
-                UndoOnboardIfNeededLocked(slot);
+                if (undo) UndoOnboardIfNeededLocked(slot);
                 return;
             }
             try
@@ -342,6 +347,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
 
     public void Dispose()
     {
+        _stopRequested = true;
         lock (_io)
         {
             if (_disposed) return;

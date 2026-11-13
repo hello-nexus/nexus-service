@@ -108,7 +108,7 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
         {
             _wasStreaming = false;
-            _hub.SetSavedToDevice(false);
+            _hub.SetSavedToDevice(false, undo: false);
             _hub.ReleaseToHardware();
             return;
         }
