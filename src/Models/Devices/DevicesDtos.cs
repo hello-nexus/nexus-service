@@ -241,6 +241,9 @@ public class LightingDevice
     /// <summary>True while the toggle is on: the board stays in hardware mode and Nexus streams no live frames. Phase 1 applies no colors and saves nothing to the board, so it shows its own onboard profile; omitted when false.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool SavedToDevice { get; set; }
+    /// <summary>Set while the toggle is on but the keyboard cannot hold the colors, so Nexus streams live instead: "foreign-host" (another program holds the command interface), "write-failed" (writes gave up) or "write-cap" (write limit reached). Omitted otherwise.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? SavedToDeviceReason { get; set; }
     public int Brightness { get; set; }
     public float Hue { get; set; }
     public float Saturation { get; set; }

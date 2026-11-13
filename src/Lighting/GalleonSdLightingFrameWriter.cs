@@ -86,8 +86,12 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         }
 
         var settings = _store.Load();
-        var saved = settings.Devices.SaveToDeviceLightingDevices.Contains(unit.DeviceId);
-        if (!saved) _hub.SetSavedToDevice(false);
+        var wanted = settings.Devices.SaveToDeviceLightingDevices.Contains(unit.DeviceId);
+        if (!wanted) _hub.SetSavedToDevice(false);
+        // Onboard writes cannot run (foreign host, gave up, cap): stream live instead of leaving the board on its own defaults.
+        var blocked = wanted && _hub.SavedBlockedReason is not null;
+        if (blocked) _hub.FallBackToLive();
+        var saved = wanted && !blocked;
 
         if (!saved && _engine.CurrentEffectName == "none")
         {

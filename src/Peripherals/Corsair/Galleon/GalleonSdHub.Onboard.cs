@@ -142,6 +142,7 @@ public sealed partial class GalleonSdHub
         if (ob.GaveUp) return;
         if (slot.NegotiationFailures > 0 || slot.ForeignHandle)
         {
+            _savedBlocked = SavedBlockedForeignHost;
             if (!ob.ForeignLogged)
             {
                 ob.ForeignLogged = true;
@@ -178,7 +179,11 @@ public sealed partial class GalleonSdHub
             ob.DoneVersion = ob.FrameVersion;
             return;
         }
-        if (!CapAllows(ob, now)) return;
+        if (!CapAllows(ob, now))
+        {
+            _savedBlocked ??= SavedBlockedWriteCap;
+            return;
+        }
         var bodies = desired.Select(GalleonSdOnboardCodec.BuildLayerBody).ToList();
 
         ob.ReRun = false;
@@ -201,6 +206,7 @@ public sealed partial class GalleonSdHub
         if (ob.Failures >= MaxOnboardFailures)
         {
             ob.GaveUp = true;
+            _savedBlocked = SavedBlockedWriteFailed;
             ServiceLog.Error($"[galleon-sd-onboard] giving up writing saved colors after {ob.Failures} failed transactions; toggle saved colors off and on to retry");
         }
     }

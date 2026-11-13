@@ -107,6 +107,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     private bool _disposed;
     private volatile bool _stopRequested;
     private string? _openFailedPath;
+    private volatile string? _savedBlocked;
 
     private readonly bool _matchOnLinux;
 
@@ -125,6 +126,13 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     public bool IsConnected => Attached is not null;
 
     public int Version => Volatile.Read(ref _version);
+
+    /// <summary>Why saved colors cannot be written right now (<see cref="SavedBlockedForeignHost"/>, <see cref="SavedBlockedWriteFailed"/>, <see cref="SavedBlockedWriteCap"/>), else null. Read lock-free; cleared when saving is turned off, or for a foreign host once handle 0 opens again.</summary>
+    public string? SavedBlockedReason => _savedBlocked;
+
+    public const string SavedBlockedForeignHost = "foreign-host";
+    public const string SavedBlockedWriteFailed = "write-failed";
+    public const string SavedBlockedWriteCap = "write-cap";
 
     /// <summary>Opens the unit when <paramref name="allowed"/> and closes it (board back in hardware mode) when not. True when the attached state changed.</summary>
     public bool Reconcile(bool allowed)
@@ -227,6 +235,8 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
                 }
                 if (!slot.SoftwareMode || StampsToMs(now - slot.LastModeStamp) >= ModeReassertMs)
                 {
+                    // Handle 0 was refused earlier; try it again so a host that let go is noticed.
+                    if (slot.ForeignHandle && slot.HandleSettled && slot.Handle != 0) slot.HandleSettled = false;
                     if (!EnterSoftwareLocked(slot)) return RecordFailureLocked(slot, "software-mode");
                     slot.LastModeStamp = now;
                 }
@@ -274,13 +284,12 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             if (!saved)
             {
                 slot.SavedMode = false;
+                _savedBlocked = null;
                 if (undo) UndoOnboardIfNeededLocked(slot);
                 return;
             }
             try
             {
-                // A settled handle other than 0 means handle 0 was refused earlier in the session, so another host holds it.
-                if (slot.HandleSettled && slot.Handle != 0) slot.ForeignHandle = true;
                 if (!slot.SavedMode)
                 {
                     slot.SavedMode = true;
@@ -333,6 +342,21 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         if (probe is not null) RunProbe(probe);
     }
 
+    /// <summary>
+    /// Leaves saved mode without touching the onboard layers or the blocked reason, so live streaming resumes
+    /// while the toggle is still on. Used when onboard writes cannot run (see <see cref="SavedBlockedReason"/>).
+    /// </summary>
+    public void FallBackToLive()
+    {
+        lock (_io)
+        {
+            var slot = _slot;
+            if (slot is null) return;
+            slot.SavedMode = false;
+            slot.HasLast = false;
+        }
+    }
+
     // A restore counts as confirmed unless the board answered with an error status; silence is accepted like the stream path does.
     private static bool RestoreConfirmed(GalleonReply reply) => !(reply.Parsed && reply.Status != 0);
 
@@ -363,6 +387,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         ReleaseLocked(slot);
         try { slot.Device.Dispose(); } catch { /* best effort */ }
         _slot = null;
+        _savedBlocked = null;
         Volatile.Write(ref _snapshot, null);
         Interlocked.Increment(ref _version);
         ServiceLog.Info($"[galleon-sd] released serial={slot.Info.Serial} frames={slot.FramesSent}");
@@ -639,6 +664,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             var logRound = slot.NegotiationRounds++ < ProbeNegotiations;
             byte? accepted = null;
             GalleonReply last = default;
+            var handle0Refused = false;
             for (byte handle = 0; handle <= GalleonSdProtocol.MaxHandle; handle++)
             {
                 if (TryStart(slot, handle, $"start tx h={handle}", replyMs, logRound, out last))
@@ -646,6 +672,8 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
                     accepted = handle;
                     break;
                 }
+                // Only a parsed non-OK answer for handle 0 is a refusal; an unparsed or stale reply proves nothing.
+                if (handle == 0) handle0Refused = last.Parsed && !last.IsOk;
             }
             if (accepted is null)
             {
@@ -655,6 +683,8 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             slot.Handle = accepted.Value;
             slot.HandleSettled = true;
             slot.NegotiationFailures = 0;
+            slot.ForeignHandle = accepted.Value != 0 && handle0Refused;
+            if (!slot.ForeignHandle && _savedBlocked == SavedBlockedForeignHost) _savedBlocked = null;
             ServiceLog.Info($"[galleon-sd] direct handle {slot.Handle} (start reply parsed={last.Parsed} status={last.Status:X2})");
         }
 

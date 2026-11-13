@@ -58,6 +58,8 @@ public class GalleonSdOnboardTests
         public Action? OnFirstWrite { get; set; }
         public HashSet<byte> BusyHandles { get; } = new();
         public bool GarbleCreateReply { get; set; }
+        /// <summary>The next start of the direct resource on handle 0 answers one stale, unparsed reply and nothing else (a late reply to the earlier mode set).</summary>
+        public bool StaleOnHandle0Start { get; set; }
         public bool DropContinuation { get; set; }
         /// <summary>Close of a handle that has a write pending answers an error status (the write still commits).</summary>
         public bool FailWriteClose { get; set; }
@@ -156,6 +158,12 @@ public class GalleonSdOnboardTests
                     _opens[res] = _opens.GetValueOrDefault(res) + 1;
                     TotalOpens++;
                     var n = _opens[res];
+                    if (StaleOnHandle0Start && w[4] == 0 && res == GalleonSdProtocol.DirectResource)
+                    {
+                        StaleOnHandle0Start = false;
+                        _replies.Enqueue(Reply(GalleonSdProtocol.CmdSet));
+                        break;
+                    }
                     if (SilentOpen?.Invoke(res, n) == true) break;
                     if (BusyHandles.Contains(w[4]) || _open.ContainsKey(w[4]) || (BusyAfter.TryGetValue(w[4], out var after) && TotalOpens > after))
                     {
@@ -356,6 +364,92 @@ public class GalleonSdOnboardTests
 
     private static readonly RgbColor Red = new(255, 0, 0);
     private static readonly RgbColor Blue = new(0, 0, 255);
+
+    // ---- live stream negotiation must not poison saved mode ----
+
+    private static ushort[] OnboardWrites(Rig rig) => rig.Board.Written.Where(r => r != GalleonSdProtocol.DirectResource).ToArray();
+
+    [Fact]
+    public void Stale_handle_zero_reply_and_a_settled_handle_one_do_not_block_saved_writes()
+    {
+        var rig = new Rig();
+        rig.Board.StaleOnHandle0Start = true;
+
+        rig.Hub.WriteFrame(Solid(Red));
+        rig.Settle(Solid(Blue));
+
+        Assert.Null(rig.Hub.SavedBlockedReason);
+        Assert.NotEmpty(OnboardWrites(rig));
+        Assert.NotNull(rig.Record);
+    }
+
+    [Fact]
+    public void A_parsed_busy_answer_for_handle_zero_blocks_saved_writes_and_reports_the_reason()
+    {
+        var rig = new Rig();
+        rig.Board.BusyHandles.Add(0);
+
+        rig.Hub.WriteFrame(Solid(Red));
+        rig.Settle(Solid(Blue));
+
+        Assert.Equal(GalleonSdHub.SavedBlockedForeignHost, rig.Hub.SavedBlockedReason);
+        Assert.Empty(OnboardWrites(rig));
+    }
+
+    [Fact]
+    public void A_blocked_saved_mode_falls_back_to_live_frames_and_turning_it_off_clears_the_reason()
+    {
+        var rig = new Rig();
+        rig.Board.BusyHandles.Add(0);
+        rig.Hub.WriteFrame(Solid(Red));
+        rig.Settle(Solid(Blue));
+        Assert.Equal("01", rig.Board.Modes[^1]);
+        rig.Board.Modes.Clear();
+
+        rig.Hub.FallBackToLive();
+        rig.Advance(1);
+        rig.Hub.WriteFrame(Solid(Blue));
+
+        Assert.Equal("02", rig.Board.Modes[^1]);
+        Assert.Equal(GalleonSdHub.SavedBlockedForeignHost, rig.Hub.SavedBlockedReason);
+
+        rig.Hub.SetSavedToDevice(false);
+        Assert.Null(rig.Hub.SavedBlockedReason);
+    }
+
+    [Fact]
+    public void The_foreign_state_clears_when_handle_zero_opens_again()
+    {
+        var rig = new Rig();
+        rig.Board.BusyHandles.Add(0);
+        rig.Hub.WriteFrame(Solid(Red));
+        rig.Settle(Solid(Blue));
+        Assert.Equal(GalleonSdHub.SavedBlockedForeignHost, rig.Hub.SavedBlockedReason);
+
+        rig.Hub.FallBackToLive();
+        rig.Board.BusyHandles.Clear();
+        rig.Advance(31);
+        rig.Hub.WriteFrame(Solid(Blue));
+
+        Assert.Null(rig.Hub.SavedBlockedReason);
+        rig.Settle(Solid(Blue));
+        Assert.NotEmpty(OnboardWrites(rig));
+    }
+
+    [Fact]
+    public void Giving_up_on_failed_writes_blocks_saved_mode_with_a_reason()
+    {
+        var rig = new Rig();
+        rig.Board.ErrorStatusOn = cmd => cmd == GalleonSdProtocol.CmdBlockFirst;
+
+        for (var i = 0; i < 12 && rig.Hub.SavedBlockedReason is null; i++)
+        {
+            rig.Settle(Solid(new RgbColor((byte)(20 + i * 10), 0, 0)));
+            rig.Advance(120);
+        }
+
+        Assert.Equal(GalleonSdHub.SavedBlockedWriteFailed, rig.Hub.SavedBlockedReason);
+    }
 
     // ---- quantizer ----
 

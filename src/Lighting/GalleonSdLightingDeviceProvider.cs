@@ -56,18 +56,18 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         var dials = _dials?.Attached;
         if (unit is null && dials is null) return resp;
         var settings = _store.Load();
-        if (unit is not null) resp.Devices.AddRange(BuildCards(unit, settings));
+        if (unit is not null) resp.Devices.AddRange(BuildCards(unit, settings, _hub.SavedBlockedReason));
         if (dials is not null) resp.Devices.AddRange(BuildDialsCards(dials, settings));
         return resp;
     }
 
-    internal static List<LightingDevice> BuildCards(GalleonSdAttached unit, NexusSettings settings)
+    internal static List<LightingDevice> BuildCards(GalleonSdAttached unit, NexusSettings settings, string? savedBlockedReason = null)
     {
         var structure = BuildStructure(unit);
         var zones = ZoneResolution.Resolve(structure, settings);
         var cards = new List<LightingDevice>(zones.Count);
         var slot = 0;
-        foreach (var zone in zones) cards.Add(BuildCard(unit.DeviceId, structure, zone, slot++, settings, dials: false));
+        foreach (var zone in zones) cards.Add(BuildCard(unit.DeviceId, structure, zone, slot++, settings, dials: false, savedBlockedReason));
         return cards;
     }
 
@@ -81,7 +81,7 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         return cards;
     }
 
-    private static LightingDevice BuildCard(string deviceId, DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, bool dials)
+    private static LightingDevice BuildCard(string deviceId, DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, bool dials, string? savedBlockedReason = null)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var isOn = !disabled.Contains(zone.Id);
@@ -115,7 +115,8 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
             ControlHandlerId = GalleonSdProtocol.HandlerId,
             ZoneCustomizable = true,
             SaveToDeviceSupported = !dials,
-            SavedToDevice = !dials && settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId),
+            SavedToDevice = !dials && settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId) && savedBlockedReason is null,
+            SavedToDeviceReason = dials ? null : (settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId) ? savedBlockedReason : null),
         };
     }
 
