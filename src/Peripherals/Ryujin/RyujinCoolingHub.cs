@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
@@ -23,6 +24,7 @@ public sealed class RyujinCoolingHub : IDisposable
 {
     private const int ReplyTimeoutMs = 200;
     private const int MaxRepliesPerRequest = 4;
+    private const int MaxDrainedReports = 16;
     private const long ParseLogIntervalMs = 60_000;
 
     /// <summary>Status older than this many keepalive cycles no longer counts as a live reading.</summary>
@@ -53,6 +55,9 @@ public sealed class RyujinCoolingHub : IDisposable
     internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
 
     public bool IsConnected => _connected;
+
+    /// <summary>USB serial of the attached cooler, or null.</summary>
+    public string? Serial { get { lock (_stateLock) { return _device?.Serial; } } }
 
     public RyujinSnapshot Snapshot => _snapshot;
 
@@ -201,7 +206,7 @@ public sealed class RyujinCoolingHub : IDisposable
     /// False only when a write fails or the device reads as gone; a silent device is not a failure.
     /// Worker thread only.
     /// </summary>
-    public bool Poll()
+    public bool Poll(Func<IReadOnlyList<byte[]>>? sensorFrames = null)
     {
         IHidDevice? device;
         lock (_stateLock)
@@ -214,6 +219,7 @@ public sealed class RyujinCoolingHub : IDisposable
         }
         if (!WriteGated(device, RyujinCoolingProtocol.EncodeStatusRequest())
             || !ReadReplies(device, status: true)
+            || !SendAll(device, sensorFrames?.Invoke())
             || !WriteGated(device, RyujinCoolingProtocol.EncodeDutyRequest())
             || !ReadReplies(device, status: false))
         {
@@ -225,6 +231,49 @@ public sealed class RyujinCoolingHub : IDisposable
             {
                 _fallback = true;
                 Warn($"[asus-ryujin-cooling] no duty reply parsed in {_pollsWithoutDuty} polls; an undriven channel will ride at {RyujinCoolingProtocol.FallbackDuty}%");
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Writes display reports in order, pausing where Armoury Crate does, then drops anything the
+    /// device answered so a stale reply cannot be mistaken for the next poll's. Worker thread only.
+    /// </summary>
+    public bool Send(IReadOnlyList<byte[]> frames)
+    {
+        IHidDevice? device;
+        lock (_stateLock)
+        {
+            device = _device;
+        }
+        if (device is null || !SendAll(device, frames))
+        {
+            return false;
+        }
+        Span<byte> sink = stackalloc byte[RyujinCoolingProtocol.ReportLength];
+        for (int i = 0; i < MaxDrainedReports && device.Read(sink, 0) > 0; i++)
+        {
+        }
+        return true;
+    }
+
+    private static bool SendAll(IHidDevice device, IReadOnlyList<byte[]>? frames)
+    {
+        if (frames is null)
+        {
+            return true;
+        }
+        foreach (var frame in frames)
+        {
+            if (!WriteGated(device, frame))
+            {
+                return false;
+            }
+            int gap = RyujinMonitorProtocol.GapAfterMs(frame[1]);
+            if (gap > 0)
+            {
+                Thread.Sleep(gap);
             }
         }
         return true;

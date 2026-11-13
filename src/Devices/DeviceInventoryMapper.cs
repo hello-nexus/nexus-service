@@ -447,16 +447,34 @@ public static class DeviceInventoryMapper
         {
             return null;
         }
-        var extreme = productId == RyujinProtocol.ProductIdExtreme;
         return new SystemDeviceDto
         {
             Key = handlerId + ":" + (string.IsNullOrEmpty(serial) ? productId.ToString("x4", CultureInfo.InvariantCulture) : serial),
-            ModelKey = extreme ? "asus:ryujin-3-extreme-lcd" : "asus:ryujin-lcd",
+            ModelKey = "asus:ryujin-lcd",
             Category = SystemDeviceCategories.Cooler,
             Vendor = "ASUS",
-            Model = extreme ? "ROG Ryujin III Extreme" : "ROG Ryujin LCD",
+            Model = "ROG Ryujin LCD",
             Vid = vendorId,
             Pid = productId,
+        };
+    }
+
+    /// <summary>The Ryujin III Extreme, which its own handler drives for pump, fan and the built-in monitor screen.</summary>
+    public static SystemDeviceDto? FromRyujinExtreme(bool connected, string? serial)
+    {
+        if (!connected)
+        {
+            return null;
+        }
+        return new SystemDeviceDto
+        {
+            Key = "asus-ryujin-extreme:" + (string.IsNullOrEmpty(serial) ? RyujinProtocol.ProductIdExtreme.ToString("x4", CultureInfo.InvariantCulture) : serial),
+            ModelKey = "asus:ryujin-3-extreme-lcd",
+            Category = SystemDeviceCategories.Cooler,
+            Vendor = "ASUS",
+            Model = "ROG Ryujin III Extreme",
+            Vid = 0x0B05,
+            Pid = RyujinProtocol.ProductIdExtreme,
         };
     }
 

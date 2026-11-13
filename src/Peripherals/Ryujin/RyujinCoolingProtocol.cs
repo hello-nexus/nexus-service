@@ -10,8 +10,14 @@ namespace Nexus.Service.Peripherals.Ryujin;
 /// </summary>
 internal static class RyujinCoolingProtocol
 {
-    /// <summary>The Nexus Control gate key and device id shared with the LCD driver, so one toggle governs the whole unit.</summary>
-    public const string HandlerId = "asus-ryujin-lcd";
+    /// <summary>The Nexus Control gate key and device id for the Extreme, apart from the 360's live-panel key.</summary>
+    public const string HandlerId = "asus-ryujin-extreme";
+
+    /// <summary>
+    /// Prefix of the channel and sensor ids. It predates <see cref="HandlerId"/>, and curves and
+    /// manual speeds saved under it stay bound to the channels.
+    /// </summary>
+    public const string ChannelPrefix = "asus-ryujin-lcd";
 
     public const int VendorId = 0x0B05;
     public const int ProductId = 0x1BCB;

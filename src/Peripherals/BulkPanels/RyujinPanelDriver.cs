@@ -20,10 +20,10 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public int VendorId => 0x0B05;
 
     /// <summary>
-    /// Only these product ids carry a screen. Other Ryujin controllers share the VID and
-    /// have no panel at all.
+    /// Only the Ryujin III 360 takes a live stream. The Extreme's screen stores uploaded media
+    /// and has no streaming path, so it is driven by <see cref="Nexus.Service.Peripherals.Ryujin.RyujinCoolingWorker"/> instead.
     /// </summary>
-    public IReadOnlyList<int> ProductIds { get; } = new[] { RyujinProtocol.ProductIdWithLcd, RyujinProtocol.ProductIdExtreme };
+    public IReadOnlyList<int> ProductIds { get; } = new[] { RyujinProtocol.ProductIdWithLcd };
 
     public string Surface => Models.Panel.PanelSurfaces.LcdSquare;
     public int Fps => 20;

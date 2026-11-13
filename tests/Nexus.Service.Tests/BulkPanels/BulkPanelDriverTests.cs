@@ -139,14 +139,14 @@ public class BulkPanelDriverTests
     // ── Ryujin: bulk pixels, HID commit ──
 
     [Fact]
-    public void Ryujin_binds_the_360_and_the_extreme()
+    public void Ryujin_binds_the_360_only_and_never_the_extreme()
     {
-        Assert.Equal(new[] { 0x1AA2, 0x1BCB }, new RyujinPanelDriver().ProductIds);
+        Assert.Equal(new[] { 0x1AA2 }, new RyujinPanelDriver().ProductIds);
+        Assert.DoesNotContain(RyujinProtocol.ProductIdExtreme, new RyujinPanelDriver().ProductIds);
     }
 
     [Theory]
     [InlineData(0x1AA2)]
-    [InlineData(0x1BCB)]
     public void Ryujin_hub_reports_the_attached_product_id(int pid)
     {
         using var hub = new BulkPanelHub(new RyujinPanelDriver());

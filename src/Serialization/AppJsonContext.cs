@@ -1325,6 +1325,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdSettingsRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdSlotDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.GlacialLcdSlotDto[]))]
+[JsonSerializable(typeof(Nexus.Service.Routes.RyujinDisplayStateResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.RyujinDisplayRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DeepCoolMystiqueStateResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DeepCoolMystiqueSettingsRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.DeepCoolMystiqueSensorDto))]

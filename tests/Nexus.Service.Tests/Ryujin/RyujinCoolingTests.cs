@@ -652,10 +652,12 @@ public class RyujinCoolingTests
     }
 
     [Fact]
-    public void Ids_and_gate_key_line_up_with_the_lcd_driver()
+    public void The_extreme_has_its_own_control_key_and_keeps_the_legacy_channel_ids()
     {
-        Assert.Equal(RyujinCoolingProtocol.HandlerId, new RyujinPanelDriver().HandlerId);
+        Assert.Equal("asus-ryujin-extreme", RyujinCoolingProtocol.HandlerId);
+        Assert.NotEqual(RyujinCoolingProtocol.HandlerId, new RyujinPanelDriver().HandlerId);
         Assert.Equal(RyujinCoolingProtocol.HandlerId, RyujinCoolingProvider.DeviceId);
+        Assert.All(Connected().provider.GetFanChannels(), c => Assert.Equal("asus-ryujin-extreme", c.DeviceId));
         Assert.Equal(RyujinProtocol.ProductIdExtreme, RyujinCoolingProtocol.ProductId);
         Assert.True(RyujinCoolingProvider.IsRyujinId("asus-ryujin-lcd:pump"));
         Assert.False(RyujinCoolingProvider.IsRyujinId("asus-slc4-lcd:pump"));

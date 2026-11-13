@@ -9,8 +9,8 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// animation. Reconstructed from third-party documentation of the Ryujin II, which shares
 /// the controller; no unit has been run against it.
 ///
-/// Product ids 0x1AA2 (Ryujin III 360) and 0x1BCB (Ryujin III Extreme) carry the screen; the
-/// other documented Ryujin ids are the same controller without one.
+/// Product id 0x1AA2 (Ryujin III 360) takes the live stream. 0x1BCB (Ryujin III Extreme) has a
+/// screen that only plays stored media, so it never reaches this protocol.
 /// </summary>
 public static class RyujinProtocol
 {

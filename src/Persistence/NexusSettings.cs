@@ -1701,6 +1701,8 @@ public sealed class DevicesSettings
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
     public DeepCoolMystiqueSettings DeepCoolMystique { get; set; } = new();
+    /// <summary>What the ROG Ryujin III Extreme's screen is set to. The device cannot be read back, so this is what Nexus last sent, not a reading.</summary>
+    public RyujinDisplaySettings RyujinDisplay { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2430,6 +2432,15 @@ public sealed class GlacialLcdSettings
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
+public sealed class RyujinDisplaySettings
+{
+    /// <summary>Armoury Crate's default, and the value assumed until the user changes it.</summary>
+    public int Brightness { get; set; } = 40;
+
+    /// <summary>0 or 90, the two values Armoury Crate sends.</summary>
+    public int Rotation { get; set; }
+}
+
 public sealed class DeepCoolMystiqueMediaItem
 {
     public const string KindPicture = "picture";

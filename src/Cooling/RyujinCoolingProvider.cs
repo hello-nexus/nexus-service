@@ -14,12 +14,12 @@ namespace Nexus.Service.Cooling;
 /// </summary>
 public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvider
 {
-    public const string DeviceId = "asus-ryujin-lcd";
+    public const string DeviceId = RyujinCoolingProtocol.HandlerId;
     public const string DeviceName = "ASUS ROG Ryujin III Extreme";
 
-    private const string PumpChannelId = DeviceId + ":pump";
-    private const string FanChannelId = DeviceId + ":fan";
-    private const string LiquidSensorId = DeviceId + ":liquid";
+    private const string PumpChannelId = RyujinCoolingProtocol.ChannelPrefix + ":pump";
+    private const string FanChannelId = RyujinCoolingProtocol.ChannelPrefix + ":fan";
+    private const string LiquidSensorId = RyujinCoolingProtocol.ChannelPrefix + ":liquid";
 
     private readonly RyujinCoolingHub _hub;
 
@@ -37,7 +37,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
     }
 
     public static bool IsRyujinId(string id) =>
-        !string.IsNullOrEmpty(id) && id.StartsWith(DeviceId + ":", StringComparison.Ordinal);
+        !string.IsNullOrEmpty(id) && id.StartsWith(RyujinCoolingProtocol.ChannelPrefix + ":", StringComparison.Ordinal);
 
     public IReadOnlyList<FanChannel> GetFanChannels()
     {

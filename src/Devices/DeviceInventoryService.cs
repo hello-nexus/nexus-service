@@ -15,6 +15,7 @@ using Nexus.Service.Peripherals.LianLi;
 using Nexus.Service.Peripherals.LianLiTl;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Peripherals.Nzxt;
+using Nexus.Service.Peripherals.Ryujin;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Devices;
@@ -31,6 +32,7 @@ public sealed class DeviceInventoryService
     private readonly CorsairLinkHubs _corsair;
     private readonly KrakenHub _kraken;
     private readonly Galahad2Hub _galahad;
+    private readonly RyujinCoolingHub _ryujin;
     private readonly NzxtFanControllerHub _nzxtFans;
     private readonly QSeriesCoolerHub _qSeries;
     private readonly IReadOnlyList<IDeviceHandler> _handlers;
@@ -46,6 +48,7 @@ public sealed class DeviceInventoryService
         CorsairLinkHubs corsair,
         KrakenHub kraken,
         Galahad2Hub galahad,
+        RyujinCoolingHub ryujin,
         NzxtFanControllerHub nzxtFans,
         QSeriesCoolerHub qSeries,
         IEnumerable<IDeviceHandler> handlers,
@@ -60,6 +63,7 @@ public sealed class DeviceInventoryService
         _corsair = corsair;
         _kraken = kraken;
         _galahad = galahad;
+        _ryujin = ryujin;
         _nzxtFans = nzxtFans;
         _qSeries = qSeries;
         _handlers = handlers.ToList();
@@ -104,6 +108,7 @@ public sealed class DeviceInventoryService
         }
         AddClaimed(KrakenHub.DeviceId, DeviceInventoryMapper.FromKraken(_kraken.IsConnected, _kraken.Model, _kraken.Serial));
         AddClaimed("lianli-aio", DeviceInventoryMapper.FromGalahad2(_galahad.IsConnected, _galahad.ConnectedProductId));
+        AddClaimed(RyujinCoolingProtocol.HandlerId, DeviceInventoryMapper.FromRyujinExtreme(_ryujin.IsConnected, _ryujin.Serial));
         AddClaimed(NzxtFanControllerHub.DeviceId, DeviceInventoryMapper.FromNzxtFanController(_nzxtFans.IsConnected, _nzxtFans.Fans));
         AddClaimed("qseries", DeviceInventoryMapper.FromQSeries(_qSeries.IsConnected, _qSeries.Variant, _qSeries.State.Serial));
         Add(rows, DeviceInventoryMapper.FromTlLcd(_tlLcd.Attached.Count));

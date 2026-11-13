@@ -331,16 +331,26 @@ public class DeviceInventoryMapperTests
         Assert.Null(DeviceInventoryMapper.FromRyujin("other", true, 0x0B05, 0x1AA2, null));
     }
 
-    [Theory]
-    [InlineData(0x1AA2, "asus:ryujin-lcd", "ROG Ryujin LCD", "asus-ryujin-lcd:1aa2")]
-    [InlineData(0x1BCB, "asus:ryujin-3-extreme-lcd", "ROG Ryujin III Extreme", "asus-ryujin-lcd:1bcb")]
-    public void Ryujin_labels_the_attached_product_id(int pid, string modelKey, string model, string key)
+    [Fact]
+    public void Ryujin_360_is_labelled_as_the_lcd()
     {
-        var row = DeviceInventoryMapper.FromRyujin("asus-ryujin-lcd", true, 0x0B05, pid, null)!;
-        Assert.Equal(modelKey, row.ModelKey);
-        Assert.Equal(model, row.Model);
-        Assert.Equal(key, row.Key);
-        Assert.Equal(pid, row.Pid);
+        var row = DeviceInventoryMapper.FromRyujin("asus-ryujin-lcd", true, 0x0B05, 0x1AA2, null)!;
+        Assert.Equal("asus:ryujin-lcd", row.ModelKey);
+        Assert.Equal("ROG Ryujin LCD", row.Model);
+        Assert.Equal("asus-ryujin-lcd:1aa2", row.Key);
+        Assert.Equal(0x1AA2, row.Pid);
+    }
+
+    [Fact]
+    public void Ryujin_extreme_is_its_own_row_under_its_own_key()
+    {
+        var row = DeviceInventoryMapper.FromRyujinExtreme(true, "204432745532")!;
+        Assert.Equal("asus:ryujin-3-extreme-lcd", row.ModelKey);
+        Assert.Equal("ROG Ryujin III Extreme", row.Model);
+        Assert.Equal("asus-ryujin-extreme:204432745532", row.Key);
+        Assert.Equal(0x1BCB, row.Pid);
+        Assert.Equal("asus-ryujin-extreme:1bcb", DeviceInventoryMapper.FromRyujinExtreme(true, null)!.Key);
+        Assert.Null(DeviceInventoryMapper.FromRyujinExtreme(false, null));
     }
 
     [Fact]
