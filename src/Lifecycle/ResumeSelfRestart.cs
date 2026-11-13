@@ -43,9 +43,18 @@ public sealed class ResumeSelfRestart
             return false;
         }
         ServiceLog.Warn($"[resume] restarting the service to release the SMBus mutex ({context})");
-        if (_restart())
+        try
         {
-            return true;
+            if (_restart())
+            {
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[resume] service self-restart failed: {ex.GetType().Name}: {ex.Message}");
+            DeleteFiles();
+            return false;
         }
         ServiceLog.Warn("[resume] service self-restart refused (a firmware or service update or another restart is in progress)");
         DeleteFiles();

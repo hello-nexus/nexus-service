@@ -194,4 +194,16 @@ public class ResumeSelfRestartTests : IDisposable
         // The install's own claim is the same compare-and-swap on the same gate.
         Assert.NotEqual(0, Interlocked.CompareExchange(ref h.InstallGate, 1, 0));
     }
+
+    [Fact]
+    public void A_restart_action_that_throws_is_a_refusal_that_clears_the_stamp_and_the_marker()
+    {
+        var policy = new ResumeSelfRestart(Stamp, () => throw new InvalidOperationException("spawn failed"), () => _now);
+
+        Assert.False(policy.TryRestart("test"));
+
+        Assert.False(File.Exists(Stamp));
+        Assert.False(File.Exists(Stamp + ".started"));
+        Assert.True(Create().TryRestart("test"));
+    }
 }

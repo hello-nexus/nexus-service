@@ -238,7 +238,7 @@ internal static class FactoryReset
         // kill below handles it, so a long wait only stalls the relaunch.
         WaitForProcessExit(parentPid, TimeSpan.FromSeconds(5));
 #elif WINDOWS
-        EnsureParentGone(parentPid, ParentExitGrace, ParentExitAfterKill, OpenProcess, Console.Error.WriteLine);
+        EnsureParentGone(parentPid, ParentExitGrace, ParentExitAfterKill, OpenProcess, IsOurImage, Console.Error.WriteLine);
 #else
         WaitForProcessExit(parentPid, TimeSpan.FromSeconds(30));
 #endif
@@ -360,6 +360,19 @@ internal static class FactoryReset
         public void Dispose() => _process.Dispose();
     }
 
+    /// <summary>True only when the process's image path is read and equals this process's own; an unreadable path is not ours.</summary>
+    internal static bool IsOurImage(int pid)
+    {
+        try
+        {
+            return string.Equals(OwnNexusExe.ImagePathOf(pid), Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     internal static IWaitableProcess? OpenProcess(int pid)
     {
         try { return new RealProcess(Process.GetProcessById(pid)); }
@@ -376,7 +389,7 @@ internal static class FactoryReset
     /// Waits for the old service process to exit and force-kills it if it will not, so a process stuck in a driver call
     /// cannot keep the service down. Returns true when the process is gone. Every step is logged.
     /// </summary>
-    internal static bool EnsureParentGone(int pid, TimeSpan grace, TimeSpan afterKill, Func<int, IWaitableProcess?> open, Action<string> log)
+    internal static bool EnsureParentGone(int pid, TimeSpan grace, TimeSpan afterKill, Func<int, IWaitableProcess?> open, Func<int, bool> isOurImage, Action<string> log)
     {
         if (pid <= 0)
         {
@@ -402,6 +415,12 @@ internal static class FactoryReset
                 {
                     log($"[factory-reset] pid {pid} exited");
                     return true;
+                }
+                // The pid could have been reused by an unrelated process, so only an image that is positively ours is killed.
+                if (!isOurImage(pid))
+                {
+                    log($"[factory-reset] pid {pid} still running after {grace.TotalSeconds:F0}s but its image is not this service; not killing it");
+                    return false;
                 }
                 log($"[factory-reset] pid {pid} still running after {grace.TotalSeconds:F0}s; force-killing it");
                 process.Kill();
