@@ -23,10 +23,20 @@ public static class MediaPositionMath
         return advanced;
     }
 
-    /// <summary>True when a live position sits further than <paramref name="slackMs"/> from where a 1x ticker anchored at the last push would be.</summary>
-    public static bool DriftsFromPrediction(
-        double pushedPositionMs, double durationMs, TimeSpan sincePush, double currentPositionMs, double slackMs)
-        => Math.Abs(currentPositionMs - Advance(pushedPositionMs, durationMs, sincePush)) > slackMs;
+    /// <summary>
+    /// Helper-side decision to push a snapshot for one session. Mirrors what the
+    /// service can predict: it advances a playing session at 1x only when the
+    /// duration is known, and holds a paused one still.
+    /// </summary>
+    public static bool ShouldPush(
+        bool pushedPlaying, double pushedPositionMs, double durationMs, TimeSpan sincePush,
+        bool playing, double livePositionMs, double slackMs)
+    {
+        if (pushedPlaying != playing) return true;
+        if (durationMs <= 0) return false;
+        var expected = playing ? Advance(pushedPositionMs, durationMs, sincePush) : pushedPositionMs;
+        return Math.Abs(livePositionMs - expected) > slackMs;
+    }
 
     /// <summary>Elapsed time since a player's timeline stamp; zero when the stamp is missing or implausible.</summary>
     public static TimeSpan SinceTimelineStamp(DateTimeOffset lastUpdated, DateTimeOffset now)

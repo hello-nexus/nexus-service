@@ -8,23 +8,56 @@ namespace Nexus.Service.Tests.Activity;
 
 public class MediaPositionMathTests
 {
+    private const double Slack = MediaTopicPublisher.PositionSlackMs;
+
     [Theory]
     [InlineData(60_000, 5, 65_000, false)]
     [InlineData(60_000, 5, 66_400, false)]
     [InlineData(60_000, 5, 120_000, true)]
     [InlineData(60_000, 5, 10_000, true)]
     [InlineData(60_000, 5, 60_000, true)]
-    public void DriftsFromPrediction_FlagsSeeksOnly(double pushed, int sinceSec, double live, bool drifts)
+    public void ShouldPush_PlayingFlagsSeeksOnly(double pushed, int sinceSec, double live, bool push)
     {
-        var result = MediaPositionMath.DriftsFromPrediction(
-            pushed, 200_000, TimeSpan.FromSeconds(sinceSec), live, MediaTopicPublisher.PositionSlackMs);
-        Assert.Equal(drifts, result);
+        Assert.Equal(push, MediaPositionMath.ShouldPush(true, pushed, 200_000, TimeSpan.FromSeconds(sinceSec), true, live, Slack));
     }
 
     [Fact]
-    public void DriftsFromPrediction_PredictionClampsToDuration()
+    public void ShouldPush_PredictionClampsToDuration()
     {
-        Assert.False(MediaPositionMath.DriftsFromPrediction(195_000, 200_000, TimeSpan.FromSeconds(30), 200_000, 1500));
+        Assert.False(MediaPositionMath.ShouldPush(true, 195_000, 200_000, TimeSpan.FromSeconds(30), true, 200_000, Slack));
+    }
+
+    [Fact]
+    public void ShouldPush_NoDurationNeverDrifts()
+    {
+        Assert.False(MediaPositionMath.ShouldPush(true, 5_000, 0, TimeSpan.FromSeconds(30), true, 35_000, Slack));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ShouldPush_PlayStateChangePushes(bool pushedPlaying, bool playing)
+    {
+        Assert.True(MediaPositionMath.ShouldPush(pushedPlaying, 5_000, 200_000, TimeSpan.Zero, playing, 5_000, Slack));
+    }
+
+    [Theory]
+    [InlineData(5_000, false)]
+    [InlineData(5_800, false)]
+    [InlineData(90_000, true)]
+    [InlineData(1_000, true)]
+    public void ShouldPush_PausedHoldsStillAndCatchesSeek(double live, bool push)
+    {
+        Assert.Equal(push, MediaPositionMath.ShouldPush(false, 5_000, 200_000, TimeSpan.FromSeconds(60), false, live, Slack));
+    }
+
+    [Fact]
+    public void ShouldPush_NonUnityRateWithLivePositionMatchingPrediction_StaysQuiet()
+    {
+        // The helper's live position includes the rate; the anchor was taken with it too, so a steady 2x session
+        // drifts from the 1x prediction only by its own rate surplus, which the next anchor absorbs.
+        Assert.False(MediaPositionMath.ShouldPush(true, 60_000, 200_000, TimeSpan.FromSeconds(1), true, 62_000, Slack));
+        Assert.True(MediaPositionMath.ShouldPush(true, 60_000, 200_000, TimeSpan.FromSeconds(4), true, 68_000, Slack));
     }
 
     [Fact]
