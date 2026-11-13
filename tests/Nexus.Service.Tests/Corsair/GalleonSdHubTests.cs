@@ -15,6 +15,10 @@ public class GalleonSdHubTests
     {
         public List<byte[]> Writes { get; } = new();
         public Queue<byte[]> Replies { get; } = new();
+        /// <summary>Replies delivered only on the second empty read after <see cref="ArmLate"/>, so they arrive after the first exchange timed out.</summary>
+        public Queue<byte[]> LateReplies { get; } = new();
+        private int _emptyReads;
+        public void ArmLate(byte[] reply) { LateReplies.Enqueue(reply); _emptyReads = 0; }
         public Func<byte[], byte[]?>? OnWrite { get; set; }
         public bool FailWrites { get; set; }
         public bool FailWritesAfterRecording { get; set; }
@@ -44,7 +48,11 @@ public class GalleonSdHubTests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
-            if (!Replies.TryDequeue(out var r)) return 0;
+            if (!Replies.TryDequeue(out var r))
+            {
+                if (LateReplies.Count == 0 || ++_emptyReads < 2) return 0;
+                r = LateReplies.Dequeue();
+            }
             r.CopyTo(buffer);
             return r.Length;
         }
@@ -642,7 +650,7 @@ public class GalleonSdHubTests
     }
 
     [Fact]
-    public void Unanswered_open_gets_one_close_in_case_it_opened_late_and_stops_the_probe()
+    public void Unanswered_open_sends_no_close_and_stops_the_probe()
     {
         var hid = new ScriptedHid();
         using var hub = NewHub(hid);
@@ -652,8 +660,100 @@ public class GalleonSdHubTests
         hub.SetSavedToDevice(true);
 
         Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
+        Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
+        Assert.DoesNotContain(hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdSize or GalleonSdProtocol.CmdRead);
+    }
+
+    [Fact]
+    public void Foreign_unparsed_input_during_the_open_means_no_close()
+    {
+        var hid = new ScriptedHid();
+        hid.Device.OnWrite = wire =>
+        {
+            if (wire[3] == GalleonSdProtocol.CmdStartTx) hid.Device.Replies.Enqueue(Reply(0x77, Registry));
+            return null;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
+        Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
+    }
+
+    [Fact]
+    public void A_late_ok_inside_the_drain_window_gets_exactly_one_close()
+    {
+        var hid = new ScriptedHid();
+        hid.Device.OnWrite = wire =>
+        {
+            if (wire[3] == GalleonSdProtocol.CmdStartTx) hid.Device.ArmLate(Reply(GalleonSdProtocol.CmdStartTx));
+            return null;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
         Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
         Assert.DoesNotContain(hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdSize or GalleonSdProtocol.CmdRead);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
+    }
+
+    [Fact]
+    public void A_settled_handle_other_than_zero_skips_the_probe()
+    {
+        _clock = 10_000_000_000;
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        var store = ObjectStore(opened);
+        hid.Device.OnWrite = wire =>
+        {
+            var r = store(wire);
+            if (r is not null && wire[3] == GalleonSdProtocol.CmdStartTx && wire[4] == 0 && (wire[5] | (wire[6] << 8)) == GalleonSdProtocol.DirectResource) r[4] = 3;
+            return r;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Frame);
+        opened.Clear();
+
+        hub.SetSavedToDevice(true);
+        hub.SetSavedToDevice(true);
+
+        Assert.Empty(opened);
+    }
+
+    [Fact]
+    public void Failures_reset_after_a_confirmed_hold_so_later_stream_failures_start_from_zero()
+    {
+        _clock = 11_000_000_000;
+        var hid = new ScriptedHid();
+        var errors = 3;
+        hid.Device.OnWrite = wire =>
+        {
+            var r = Reply(wire[3]);
+            if (wire[3] == GalleonSdProtocol.CmdSet && errors > 0)
+            {
+                errors--;
+                r[4] = 3;
+            }
+            return r;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+
+        for (var i = 0; i < 4; i++) hub.SetSavedToDevice(true);
+        Assert.NotNull(hub.Attached);
+        hub.SetSavedToDevice(false);
+        hid.Device.FailWrites = true;
+        for (var i = 0; i < 4; i++) hub.WriteFrame(Frame);
+
+        Assert.NotNull(hub.Attached);
     }
 
     [Fact]

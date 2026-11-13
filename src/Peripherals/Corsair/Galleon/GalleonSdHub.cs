@@ -53,6 +53,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         public bool SavedMode { get; set; }
         public bool HardwareHeld { get; set; }
         public bool ProbeDone { get; set; }
+        public bool ForeignHandle { get; set; }
         public byte[] ParsedReply { get; } = new byte[GalleonSdProtocol.WireLength + 1];
         public int ParsedReplyLength { get; set; }
         public byte Handle { get; set; }
@@ -267,6 +268,8 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             }
             try
             {
+                // A settled handle other than 0 means handle 0 was refused earlier in the session, so another host holds it.
+                if (slot.HandleSettled && slot.Handle != 0) slot.ForeignHandle = true;
                 if (!slot.SavedMode)
                 {
                     slot.SavedMode = true;
@@ -283,7 +286,11 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                 {
                     var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware (saved)", ProbeReplyMs, log: slot.ErrorLogs < MaxErrorLogs);
                     slot.HardwareHeld = RestoreConfirmed(reply);
-                    if (!slot.HardwareHeld)
+                    if (slot.HardwareHeld)
+                    {
+                        slot.Failures = 0;
+                    }
+                    else
                     {
                         if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] saved-mode hardware hold answered status {reply.Status:X2}");
                         RecordFailureLocked(slot, "saved-hold");
@@ -292,9 +299,9 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                 if (!slot.ProbeDone && slot.HardwareHeld)
                 {
                     slot.ProbeDone = true;
-                    if (slot.NegotiationFailures > 0)
+                    if (slot.NegotiationFailures > 0 || slot.ForeignHandle)
                     {
-                        ServiceLog.Info("[galleon-sd-onboard] probe skipped: the direct resource was contended");
+                        ServiceLog.Info($"[galleon-sd-onboard] probe skipped: another host holds the command interface (negotiationFailures={slot.NegotiationFailures} foreignHandle={slot.ForeignHandle})");
                     }
                     else
                     {
@@ -366,6 +373,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         {
             if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode handback threw: {ex.GetType().Name}");
         }
+        if (confirmed) slot.Failures = 0;
         if (confirmed || ++slot.Failures >= ConsecutiveWriteFailureThreshold) slot.ModeTouched = false;
         return confirmed;
     }
@@ -402,8 +410,8 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                 DrainInput(s);
                 s.ModeTouched = true;
                 s.HardwareHeld = false;
-                Exchange(s, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "onboard mode->software", ProbeReplyMs, log: true);
-                Exchange(s, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "onboard get 6E", ProbeReplyMs, log: true);
+                Exchange(s, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "onboard mode->software", ProbeWait(deadline, ProbeReplyMs), log: true);
+                Exchange(s, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "onboard get 6E", ProbeWait(deadline, ProbeReplyMs), log: true);
             });
             if (!begun) return;
 
@@ -443,22 +451,24 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
         finally
         {
-            RestoreAfterProbe(slot);
+            RestoreAfterProbe(slot, deadline);
             ServiceLog.Info("[galleon-sd-onboard] probe end");
         }
     }
 
     // A slot that was released or replaced in the meantime already had hardware mode written by its release, so there is nothing to restore.
-    private void RestoreAfterProbe(Slot slot)
+    // The wait is clamped to the remaining budget (floor 20 ms), so an error reply that arrives later goes unseen and silence counts as confirmed.
+    private void RestoreAfterProbe(Slot slot, long deadline)
     {
         lock (_io)
         {
             if (_disposed || _slot != slot) return;
             try
             {
-                var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "onboard mode->hardware", ProbeReplyMs, log: true);
+                var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "onboard mode->hardware", ProbeWait(deadline, ProbeReplyMs), log: true);
                 if (RestoreConfirmed(reply))
                 {
+                    slot.Failures = 0;
                     slot.ModeTouched = false;
                     slot.HardwareHeld = true;
                 }
@@ -511,26 +521,30 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     }
 
     // open, size, two reads (Web Hub reads big objects twice), close. The body is the first read reply that parses as an OK 08 reply.
-    // Open outcomes: OK proceeds; an explicit refusal (parsed, non-OK) sends nothing more because no handle exists; silence is
-    // treated as a possibly late OK, so a close for handle 0 is sent (this probe only runs when no other host was seen contending,
-    // so a stray close can only hit a handle this probe itself opened). Steps past the deadline are skipped; the close never is.
+    // Open outcomes: a parsed OK proceeds. A parsed refusal means no handle exists, so nothing more is sent. Without a parsed
+    // reply the open is given up to OpenReplyMs in total while draining: a parsed OK arriving late is closed once (handle 0 is
+    // ours), a late refusal sends nothing, and so does no parsed reply at all. Unparsed input can be another host's report on
+    // this handle, so silence never justifies a close; a late open that never answers can leak handle 0 and that is accepted.
+    // Steps past the deadline are skipped; the close of an opened handle never is. Waits are clamped to the remaining budget
+    // (floor 20 ms), so a reply that comes later than that is not seen.
     private bool ReadResourceLocked(Slot slot, ushort resource, long deadline, out byte[] body)
     {
         const byte handle = 0;
         var tag = $"onboard {resource:X4}";
         body = Array.Empty<byte>();
-        var open = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeWait(deadline, OpenReplyMs), log: true);
+        var open = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeWait(deadline, ProbeReplyMs), log: true);
+        if (!open.Parsed) open = AwaitLateOpen(slot, tag, ProbeWait(deadline, OpenReplyMs - ProbeReplyMs));
         if (!open.IsOk)
         {
-            if (open.Parsed)
-            {
-                ServiceLog.Info($"[galleon-sd-onboard] {tag} open refused (status={open.Status:X2}); probe stops");
-            }
-            else
-            {
-                ServiceLog.Info($"[galleon-sd-onboard] {tag} open unanswered; closing handle in case it opened late, probe stops");
-                Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"{tag} close (unanswered open)", ProbeReplyMs, log: true);
-            }
+            ServiceLog.Info(open.Parsed
+                ? $"[galleon-sd-onboard] {tag} open refused (status={open.Status:X2}); probe stops"
+                : $"[galleon-sd-onboard] {tag} open unanswered; sending no close, a possible late-open leak is accepted; probe stops");
+            return false;
+        }
+        if (open.Late)
+        {
+            ServiceLog.Info($"[galleon-sd-onboard] {tag} open answered late; closing it and stopping");
+            Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"{tag} close (late open)", ProbeWait(deadline, ProbeReplyMs), log: true);
             return false;
         }
         try
@@ -544,9 +558,27 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
         finally
         {
-            Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"{tag} close", ProbeReplyMs, log: true);
+            Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"{tag} close", ProbeWait(deadline, ProbeReplyMs), log: true);
         }
         return true;
+    }
+
+    // Keeps reading after an open went unparsed; only a parsed 0D reply ends the wait. Replies that do not parse are ignored.
+    private GalleonReply AwaitLateOpen(Slot slot, string tag, int waitMs)
+    {
+        var end = _clock() + (long)(waitMs * Stopwatch.Frequency / 1000.0);
+        var buf = new byte[InputBufferBytes];
+        while (true)
+        {
+            var remaining = (int)Math.Max(0, (end - _clock()) * 1000.0 / Stopwatch.Frequency);
+            if (remaining <= 0) return default;
+            var n = slot.Device.Read(buf, remaining);
+            if (n <= 0) return default;
+            slot.RepliesEver++;
+            var reply = GalleonSdProtocol.ParseReply(GalleonSdProtocol.CmdStartTx, buf.AsSpan(0, n));
+            ServiceLog.Info($"[galleon-sd] IN  {tag} open (late): {Hex(buf.AsSpan(0, n))} parsed={reply.Parsed} status={reply.Status:X2}");
+            if (reply.Parsed) return reply with { Late = true };
+        }
     }
 
     private static string FormatRefs(ushort[] refs)

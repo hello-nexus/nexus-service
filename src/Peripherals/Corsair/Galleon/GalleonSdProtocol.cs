@@ -7,6 +7,9 @@ namespace Nexus.Service.Peripherals.Corsair.Galleon;
 /// <summary>Outcome of matching a device reply to the command it answers.</summary>
 public readonly record struct GalleonReply(bool Parsed, byte Status)
 {
+    /// <summary>Set only on a reply that arrived after its exchange had already timed out.</summary>
+    public bool Late { get; init; }
+
     public bool IsOk => Parsed && Status == 0;
 }
 
