@@ -150,8 +150,9 @@ internal static class RyujinMonitorProtocol
 
     /// <summary>
     /// The startup run once on attach, in the order Armoury Crate sends it, then the stored
-    /// brightness and rotation, which the reset may have cleared and a change made while the
-    /// cooler was away never reached.
+    /// brightness and rotation, placed before the clock and layout as in the captured rotation
+    /// change. The reset may have cleared them, and a change made while the cooler was away
+    /// never reached it.
     /// </summary>
     public static byte[][] EncodeStartup(DateTime local, int rotationDegrees, int brightnessPercent)
     {
@@ -161,14 +162,14 @@ internal static class RyujinMonitorProtocol
             EncodeReset(),
             EncodeDc(),
             EncodeDc(),
-            EncodeClock(local),
-            EncodeColors(),
-            select[0],
-            select[1],
             EncodeDc(),
             EncodeDisplay(rotationDegrees, brightnessPercent),
             EncodeDc(),
             EncodeDc(),
+            EncodeClock(local),
+            EncodeColors(),
+            select[0],
+            select[1],
             EncodeFirmwareQuery(),
         };
     }

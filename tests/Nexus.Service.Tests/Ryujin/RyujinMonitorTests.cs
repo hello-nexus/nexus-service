@@ -103,8 +103,8 @@ public class RyujinMonitorTests
     {
         var startup = RyujinMonitorProtocol.EncodeStartup(new DateTime(2026, 11, 13, 17, 43, 7), 90, 70);
 
-        Assert.Equal(new byte[] { 0xD0, 0xDC, 0xDC, 0x11, 0x5E, 0x5D, 0x51, 0xDC, 0x5C, 0xDC, 0xDC, 0x82 }, startup.Select(f => f[1]).ToArray());
-        Assert.Equal(RyujinMonitorProtocol.EncodeDisplay(90, 70), startup[8]);
+        Assert.Equal(new byte[] { 0xD0, 0xDC, 0xDC, 0xDC, 0x5C, 0xDC, 0xDC, 0x11, 0x5E, 0x5D, 0x51, 0x82 }, startup.Select(f => f[1]).ToArray());
+        Assert.Equal(RyujinMonitorProtocol.EncodeDisplay(90, 70), startup[4]);
         Assert.All(startup, f => Assert.Equal(0xEC, f[0]));
         Assert.Equal(RyujinMonitorProtocol.ResetGapMs, RyujinMonitorProtocol.GapAfterMs(0xD0));
     }
@@ -177,6 +177,9 @@ public class RyujinMonitorTests
         // The session detaches last, after any release write, so nothing can follow it.
         Assert.True(SpinWait.SpinUntil(() => !hub.IsConnected, 8000));
         int after = fake.Writes.Count;
+        // The worker loops back to its gate check once the session is over; a write after that would show.
+        int checks = worker.GateChecks;
+        Assert.True(SpinWait.SpinUntil(() => worker.GateChecks > checks, 8000));
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(after, fake.Writes.Count);
