@@ -87,6 +87,7 @@ public sealed class DiagnosticsHealthModel
     private readonly EventLogMonitor _events;
     private readonly MemoryDiagnosticOrchestrator _memDiag;
     private readonly PnpProblemScanner _pnp;
+    private readonly HostHealthProbe _host;
     private readonly ISensorProvider _sensors;
     private readonly IConfigStore _store;
     private readonly Alerts.SensorAlertEngine? _alerts;
@@ -110,9 +111,11 @@ public sealed class DiagnosticsHealthModel
         PnpProblemScanner pnp,
         ISensorProvider sensors,
         IConfigStore store,
-        Alerts.SensorAlertEngine? alerts = null)
+        Alerts.SensorAlertEngine? alerts = null,
+        HostHealthProbe? host = null)
     {
         _alerts = alerts;
+        _host = host ?? new HostHealthProbe();
         _smart = smart;
         _cooling = cooling;
         _gpu = gpu;
@@ -231,6 +234,7 @@ public sealed class DiagnosticsHealthModel
                 counts30d: _events.CountsSince(EventWindow),
                 lastMemoryTest: _memDiag.LastResult(),
                 pnp: _pnp.Snapshot(),
+                host: _host.Snapshot(),
                 knownGpuModels: _sensors.GetGpuModels(),
                 windowsSupported: OperatingSystem.IsWindows(),
                 generatedAtUtc: now,
@@ -249,9 +253,9 @@ public sealed class DiagnosticsHealthModel
     /// every platform - each self-guards on its own snapshot's Supported flag,
     /// so on Linux/macOS they contribute only when the underlying source
     /// (smartctl, NVML, IFanControlProvider) produced real data. Memory and
-    /// system/pnp are Windows-only diagnostics (Windows Memory Diagnostic,
-    /// Win32_PnPEntity) with no cross-platform data, so they stay behind
-    /// <paramref name="windowsSupported"/>.
+    /// system/pnp are Windows diagnostics (Windows Memory Diagnostic,
+    /// Win32_PnPEntity) and stay behind <paramref name="windowsSupported"/>;
+    /// elsewhere <paramref name="host"/> supplies their tiles.
     ///
     /// Every component reflects current state only: SMART classification,
     /// active GPU throttle, last memory test result, live pnp problems, and
@@ -273,7 +277,8 @@ public sealed class DiagnosticsHealthModel
         bool windowsSupported,
         DateTime generatedAtUtc,
         DiagnosticsSettings? diagnostics = null,
-        ThermalGuardTripRecord? thermalTrip = null)
+        ThermalGuardTripRecord? thermalTrip = null,
+        HostHealthSnapshot? host = null)
     {
         var diag = diagnostics ?? new DiagnosticsSettings();
         var ignored = new HashSet<string>(diag.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
@@ -293,8 +298,8 @@ public sealed class DiagnosticsHealthModel
         {
             AddGpuComponents(components, gpu, knownGpuModels);
         }
-        // Memory and system/pnp have no non-Windows data source and their
-        // Add* helpers do not self-guard, so keep them Windows-only.
+        // The Windows memory test and pnp scan exist only on Windows and their
+        // Add* helpers do not self-guard, so they stay Windows-only.
         if (windowsSupported)
         {
             AddMemoryComponent(components, lastMemoryTest);
@@ -303,14 +308,24 @@ public sealed class DiagnosticsHealthModel
                 AddSystemComponent(components, pnp);
             }
         }
+        // Off Windows the host snapshot stands in for the Windows-only sources.
+        if (!windowsSupported && host is not null)
+        {
+            AddHostMemoryComponent(components, host);
+            if (diag.Components.System)
+            {
+                AddHostSystemComponent(components, host);
+            }
+        }
         AddCoolingComponents(components, cooling);
         AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
 
         // Windows always reports the grid (its per-domain scanners exist even
-        // when a domain is empty). Elsewhere the grid is meaningful only when
-        // a working sub-domain (SMART, GPU, cooling) produced a component -
-        // otherwise the tab is hidden client-side. Counted before the ignore
-        // filter: ignoring every device is still a working grid.
+        // when a domain is empty). Elsewhere the host Memory and System tiles
+        // keep it populated; without a host snapshot it is meaningful only
+        // when a working sub-domain (SMART, GPU, cooling) produced a component.
+        // Counted before the ignore filter: ignoring every device is still a
+        // working grid.
         var supported = windowsSupported || components.Count > 0;
 
         // User-ignored devices drop out here, after every module has run, so
@@ -565,6 +580,97 @@ public sealed class DiagnosticsHealthModel
             Kind = "system",
             Name = "System",
             Status = WorstReasonStatus(reasons, HealthStatuses.Ok),
+            Reasons = reasons,
+        });
+    }
+
+    private static void AddHostMemoryComponent(List<HealthComponent> components, HostHealthSnapshot host)
+    {
+        var reasons = new List<HealthComponentReason>();
+
+        if (host.Supported && host.HardwareCorruptedKb > 0)
+        {
+            reasons.Add(new HealthComponentReason("memory.hardwareCorrupted", HealthStatuses.Act,
+                "The kernel has retired memory pages as corrupted",
+                $"/proc/meminfo reports HardwareCorrupted={host.HardwareCorruptedKb} kB.",
+                new Dictionary<string, string> { ["kb"] = ReasonParams.Num(host.HardwareCorruptedKb) }));
+        }
+        if (host.Supported && (host.EdacUncorrected > 0 || host.EdacCorrected > 0))
+        {
+            var uncorrected = host.EdacUncorrected > 0;
+            reasons.Add(new HealthComponentReason("memory.edacErrors",
+                uncorrected ? HealthStatuses.Act : HealthStatuses.Watch,
+                uncorrected
+                    ? "The memory controller has logged uncorrectable errors"
+                    : "The memory controller has corrected errors",
+                $"EDAC reports corrected={host.EdacCorrected} uncorrected={host.EdacUncorrected} memory errors.",
+                new Dictionary<string, string>
+                {
+                    ["corrected"] = ReasonParams.Num(host.EdacCorrected),
+                    ["uncorrected"] = ReasonParams.Num(host.EdacUncorrected),
+                }));
+        }
+        if (reasons.Count == 0)
+        {
+            // No memory self-test or error counter exists on consumer non-ECC
+            // RAM here, so "healthy" is not something this tile can claim.
+            reasons.Add(new HealthComponentReason("memory.noHealthSource", HealthStatuses.Unknown,
+                "Memory health cannot be read on this system",
+                "This system exposes no memory error counters (they need ECC memory), so memory reports no health signal either way."));
+        }
+
+        components.Add(new HealthComponent
+        {
+            Id = "memory",
+            Kind = "memory",
+            Name = "Memory",
+            Status = reasons.Any(r => r.Severity != HealthStatuses.Unknown)
+                ? WorstReasonStatus(reasons, HealthStatuses.Ok)
+                : HealthStatuses.Unknown,
+            Reasons = reasons,
+        });
+    }
+
+    private static void AddHostSystemComponent(List<HealthComponent> components, HostHealthSnapshot host)
+    {
+        var reasons = new List<HealthComponentReason>();
+        var status = HealthStatuses.Unknown;
+
+        if (!host.Supported || host.FailedUnits is null)
+        {
+            reasons.Add(new HealthComponentReason("system.noHealthSource", HealthStatuses.Unknown,
+                "System health cannot be read on this system",
+                "Windows reports device faults through Device Manager. This system has no readable equivalent, so System reports no health signal either way."));
+        }
+        else
+        {
+            status = HealthStatuses.Ok;
+            if (host.FailedUnits.Count > 0)
+            {
+                const int MaxListed = 5;
+                var listed = host.FailedUnits.Take(MaxListed).ToList();
+                var names = string.Join(", ", listed);
+                var detailNames = host.FailedUnits.Count > MaxListed
+                    ? $"{names} and {host.FailedUnits.Count - MaxListed} more"
+                    : names;
+                reasons.Add(new HealthComponentReason("system.failedUnits", HealthStatuses.Watch,
+                    host.FailedUnits.Count == 1 ? "1 system service failed" : $"{host.FailedUnits.Count} system services failed",
+                    $"systemd reports failed system units: {detailNames}.",
+                    new Dictionary<string, string>
+                    {
+                        ["count"] = ReasonParams.Num(host.FailedUnits.Count),
+                        ["units"] = names,
+                    }));
+                status = HealthStatuses.Watch;
+            }
+        }
+
+        components.Add(new HealthComponent
+        {
+            Id = "system",
+            Kind = "system",
+            Name = "System",
+            Status = status,
             Reasons = reasons,
         });
     }
