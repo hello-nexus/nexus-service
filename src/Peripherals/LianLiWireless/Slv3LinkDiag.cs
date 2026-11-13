@@ -65,7 +65,7 @@ internal sealed class Slv3LinkDiag : IDisposable
     private const long Gap10Ms = 10_000;
     internal const long ReplyWindowMs = 60_000;
     private const int MaxQueuedLines = 4000;
-    private const int MaxQueuedDumps = 8;
+    private const int MaxQueuedDumps = 2 * Slv3Protocol.MaxSlot;
     private const int RawDumpCount = 3;
 
     private readonly object _gate = new();

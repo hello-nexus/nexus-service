@@ -509,7 +509,8 @@ public class Slv3LinkDiagTests
     {
         var d = Up();
         Poll(d, 0, true);
-        for (var i = 0; i < 40; i++)
+        const int total = 3 * Slv3Protocol.MaxSlot;
+        for (var i = 0; i < total; i++)
         {
             var key = "A0000000" + i.ToString("X4");
             d.OnSeen(key, 0, Record, 1, 1);
@@ -517,7 +518,33 @@ public class Slv3LinkDiagTests
         }
 
         var lines = Drain(d);
-        Assert.Equal(8, lines.Count(l => l.Contains(" DUMP ")));
-        Assert.Single(lines, l => l.Contains("EVT dropped-dumps 32"));
+        Assert.Equal(2 * Slv3Protocol.MaxSlot, lines.Count(l => l.Contains(" DUMP ")));
+        Assert.Single(lines, l => l.Contains("EVT dropped-dumps " + Slv3Protocol.MaxSlot));
+    }
+
+    [Fact]
+    public void A_full_slot_count_of_chains_reappearing_in_one_poll_all_get_dumps()
+    {
+        var d = Up();
+        var keys = Enumerable.Range(0, Slv3Protocol.MaxSlot).Select(i => "B0000000" + i.ToString("X4")).ToList();
+        d.OnReply(0, Reply, 3, Slv3ReplyKind.Ok, keys.Count);
+        foreach (var k in keys)
+        {
+            d.OnSeen(k, 0, Record, 1, 1);
+        }
+        d.EndPoll(0, gotList: true);
+        d.OnLinkDown(1_000);
+        Drain(d);
+
+        d.OnReply(5_000, Reply, 3, Slv3ReplyKind.Ok, keys.Count);
+        foreach (var k in keys)
+        {
+            d.OnSeen(k, 5_000, Record, 1, 1);
+        }
+        d.EndPoll(5_000, gotList: true);
+
+        var lines = Drain(d);
+        Assert.Equal(keys.Count, lines.Count(l => l.Contains(" DUMP ") && l.Contains("reason=reappeared")));
+        Assert.DoesNotContain(lines, l => l.Contains("dropped-dumps"));
     }
 }
