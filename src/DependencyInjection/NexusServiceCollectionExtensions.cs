@@ -475,6 +475,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Diagnostics.Gpu.GpuHealthMonitor>();
         services.AddSingleton<Nexus.Service.Diagnostics.Memory.MemoryDiagnosticOrchestrator>();
         services.AddSingleton<Nexus.Service.Diagnostics.SystemInfo.PnpProblemScanner>();
+        services.AddSingleton<Nexus.Service.Diagnostics.SystemInfo.HostHealthProbe>();
 
         services.AddSingleton<Nexus.Service.Diagnostics.Cooling.CoolingStallDetector>();
         services.AddSingleton<Nexus.Service.Diagnostics.Cooling.CoolingStallFeeder>();
