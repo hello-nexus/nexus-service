@@ -62,7 +62,7 @@ public class KrakenStreamBucketTests
     }
 
     [Fact]
-    public void Elite_2023_streams_raw_bgr_frames_without_touching_buckets()
+    public void Elite_2023_streams_one_q565_payload_per_frame_without_touching_buckets()
     {
         var hid = new AckingHidDevice();
         var lcd = new RecordingLcdTransport();
@@ -80,22 +80,51 @@ public class KrakenStreamBucketTests
         Assert.DoesNotContain(hid.Writes, w => w[0] == 0x38 && w[1] == 0x01 && w[2] == (byte)KrakenDisplayMode.Bucket);
         var starts = hid.Writes.Where(w => w[0] == 0x36 && w[1] == 0x01).ToList();
         Assert.Equal(3, starts.Count);
-        Assert.All(starts, s => Assert.Equal(new byte[] { 0x36, 0x01, 0x00, 0x01, 0x09 }, s[..5]));
+        Assert.All(starts, s => Assert.Equal(new byte[] { 0x36, 0x01, 0x00, 0x01, 0x08 }, s[..5]));
         Assert.Equal(3, hid.Writes.Count(w => w[0] == 0x36 && w[1] == 0x02));
         // The one-time entry runs once per stream, not per frame.
         Assert.Single(hid.Writes, w => w[0] == 0x36 && w[1] == 0x03);
 
-        int rawBytes = EliteNoRgb.LcdWidth * EliteNoRgb.LcdHeight * 3;
         Assert.Equal(3, lcd.Frames);
-        Assert.All(lcd.Headers, h =>
+        Assert.Equal(3, lcd.ChunkSizes.Count);
+        for (int i = 0; i < 3; i++)
         {
-            Assert.Equal(KrakenProtocol.BulkFormatBgr888, h[12]);
-            Assert.Equal(rawBytes, BitConverter.ToInt32(h, 16));
-        });
-        Assert.Equal(3 * rawBytes, lcd.ChunkSizes.Sum());
-        // The direct-path transfer size divides a full frame evenly.
-        Assert.All(lcd.ChunkSizes, n => Assert.Equal(245_760, n));
+            var h = lcd.Headers[i];
+            Assert.Equal(KrakenProtocol.BulkFormatQ565, h[12]);
+            Assert.Equal(lcd.ChunkSizes[i], BitConverter.ToInt32(h, 16));
+            Assert.True(lcd.ChunkSizes[i] < EliteNoRgb.LcdWidth * EliteNoRgb.LcdHeight * 3);
+        }
+        Assert.Equal(new byte[] { (byte)'q', (byte)'5' }, lcd.LastPayloadFirstBytes);
         Assert.Equal(KrakenDisplayMode.Liquid, hub.Snapshot.DisplayMode);
+    }
+
+    [Fact]
+    public void Elite_2023_falls_back_to_raw_bgr_when_q565_is_not_smaller()
+    {
+        var hid = new AckingHidDevice();
+        var lcd = new RecordingLcdTransport();
+        var hub = new KrakenHub(new FixedLcdFactory(lcd));
+        hub.Attach(hid, EliteNoRgb, 64);
+        Assert.True(hub.Connect());
+
+        var frame = new byte[EliteNoRgb.LcdFrameBytes];
+        // Green alternates by half its range so no pixel is a diff or luma op; red and blue
+        // walk so the palette never holds the pixel, leaving every pixel a 3-byte literal.
+        for (int px = 0; px < frame.Length / 4; px++)
+        {
+            frame[px * 4] = (byte)(((px >> 6) & 31) << 3);
+            frame[px * 4 + 1] = (byte)((px & 1) * 128);
+            frame[px * 4 + 2] = (byte)(((px >> 1) & 31) << 3);
+            frame[px * 4 + 3] = 0xFF;
+        }
+        Assert.True(hub.PushStreamFrame(frame));
+
+        int rawBytes = EliteNoRgb.LcdWidth * EliteNoRgb.LcdHeight * 3;
+        Assert.Single(hid.Writes, w => w[0] == 0x36 && w[1] == 0x01 && w[4] == KrakenProtocol.BulkFormatBgr888);
+        Assert.Equal(KrakenProtocol.BulkFormatBgr888, Assert.Single(lcd.Headers)[12]);
+        Assert.Equal(rawBytes, BitConverter.ToInt32(lcd.Headers[0], 16));
+        Assert.Equal(rawBytes, lcd.ChunkSizes.Sum());
+        Assert.All(lcd.ChunkSizes, n => Assert.Equal(245_760, n));
     }
 
     [Fact]
