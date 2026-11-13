@@ -534,7 +534,7 @@ public class Slv3LightingFrameWriterTests
         {
             // One step lower must break either the coverage or the air budget (a round within the base window's budget share).
             var lower = ticks - step;
-            var airOk = cycleMs / 750.0 * baseTicks <= lower;
+            var airOk = cycleMs / Slv3LightingFrameWriter.WindowCycleMs * baseTicks <= lower;
             Assert.False(airOk && Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, lower));
         }
     }
@@ -545,6 +545,69 @@ public class Slv3LightingFrameWriterTests
         var (ticks, cycleMs) = Slv3LightingFrameWriter.WindowPlan(40, 4000);
         Assert.Equal(Slv3LightingFrameWriter.MaxWindowIntervalTicks, ticks);
         Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
+    }
+
+    private static int Hold(Slv3LightingFrameWriter.PlanHold hold, double nowMs, int target, int current = 53, bool independent = false) =>
+        hold.Update(nowMs, target, current, independent);
+
+    [Fact]
+    public void PlanHold_applies_a_changed_plan_only_after_it_has_held()
+    {
+        var hold = new Slv3LightingFrameWriter.PlanHold();
+        Assert.Equal(0, Hold(hold, 1000, 69));
+        Assert.Equal(0, Hold(hold, 1000 + Slv3LightingFrameWriter.PlanUpHoldMs - 1, 69));
+        Assert.Equal(69, Hold(hold, 1000 + Slv3LightingFrameWriter.PlanUpHoldMs, 69));
+    }
+
+    [Fact]
+    public void PlanHold_forgets_a_change_that_returns_to_the_current_plan()
+    {
+        var hold = new Slv3LightingFrameWriter.PlanHold();
+        Assert.Equal(0, Hold(hold, 1000, 69));
+        Assert.Equal(0, Hold(hold, 1500, 53));
+        Assert.Equal(0, Hold(hold, 1600, 69));
+        Assert.Equal(0, Hold(hold, 1600 + Slv3LightingFrameWriter.PlanUpHoldMs - 1, 69));
+    }
+
+    [Fact]
+    public void PlanHold_applies_at_once_when_nothing_depends_on_the_current_interval()
+    {
+        var hold = new Slv3LightingFrameWriter.PlanHold();
+        Assert.Equal(69, Hold(hold, 1000, 69, independent: true));
+        Assert.Equal(45, Hold(hold, 1001, 45, current: 69, independent: true));
+    }
+
+    [Fact]
+    public void PlanHold_keeps_the_largest_candidate_when_the_plan_flips_between_two_higher_values()
+    {
+        var hold = new Slv3LightingFrameWriter.PlanHold();
+        Assert.Equal(0, Hold(hold, 1000, 69));
+        Assert.Equal(0, Hold(hold, 1300, 77));
+        Assert.Equal(0, Hold(hold, 1600, 69));
+        Assert.Equal(0, Hold(hold, 1900, 77));
+        Assert.Equal(77, Hold(hold, 1000 + Slv3LightingFrameWriter.PlanUpHoldMs, 69));
+    }
+
+    [Fact]
+    public void PlanHold_waits_longer_to_lower_the_plan_and_restarts_on_a_direction_change()
+    {
+        var hold = new Slv3LightingFrameWriter.PlanHold();
+        Assert.Equal(0, Hold(hold, 1000, 61, current: 77));
+        Assert.Equal(0, Hold(hold, 1000 + Slv3LightingFrameWriter.PlanUpHoldMs, 61, current: 77));
+        Assert.Equal(0, Hold(hold, 20000, 85, current: 77));
+        Assert.Equal(0, Hold(hold, 20000 + Slv3LightingFrameWriter.PlanUpHoldMs - 1, 85, current: 77));
+        Assert.Equal(85, Hold(hold, 20000 + Slv3LightingFrameWriter.PlanUpHoldMs, 85, current: 77));
+        Assert.Equal(0, Hold(hold, 30000, 61, current: 85));
+        Assert.Equal(61, Hold(hold, 30000 + Slv3LightingFrameWriter.PlanDownHoldMs, 61, current: 85));
+    }
+
+    [Fact]
+    public void PlanHold_reset_drops_a_pending_hold()
+    {
+        var hold = new Slv3LightingFrameWriter.PlanHold();
+        Assert.Equal(0, Hold(hold, 1000, 61, current: 77));
+        hold.Reset();
+        Assert.Equal(0, Hold(hold, 1000 + Slv3LightingFrameWriter.PlanDownHoldMs, 61, current: 77));
     }
 
     [Theory]
