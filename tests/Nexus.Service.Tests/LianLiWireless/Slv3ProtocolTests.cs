@@ -863,4 +863,17 @@ public class Slv3ProtocolTests
         Assert.True(Slv3Protocol.MacIsZero(new byte[6]));
         Assert.False(Slv3Protocol.MacIsZero(FanMac));
     }
+
+    [Fact]
+    public void HydroShift_pwm_tuple_drives_radiator_fans_only_and_floors_at_the_fan_minimum()
+    {
+        var follow = Slv3Protocol.PwmFollowMotherboard;
+        var tuple = Slv3Protocol.BuildHydroShiftPwmTuple(new int?[] { 100, 5, null, 90 }, fanCount: 3);
+        Assert.Equal(new byte[] { 255, Slv3Protocol.EncodeDuty(10), follow, follow }, tuple);
+
+        // Fans beyond the reported count and the pump slot never take a port target.
+        Assert.Equal(new byte[] { 127, follow, follow, follow },
+            Slv3Protocol.BuildHydroShiftPwmTuple(new int?[] { 50, 50, 50, 50 }, fanCount: 1));
+        Assert.All(Slv3Protocol.BuildHydroShiftPwmTuple(new int?[] { null, null, null, null }, fanCount: 3), b => Assert.Equal(follow, b));
+    }
 }
