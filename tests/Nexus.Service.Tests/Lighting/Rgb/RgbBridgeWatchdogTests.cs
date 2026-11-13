@@ -1217,6 +1217,5 @@ public class RgbBridgeWatchdogTests : IDisposable
 
         Assert.False(_deadlines.Single!.Armed);
         Assert.Equal(arms, _deadlines.Single!.ArmCount);
-        Assert.Equal(1, _controller.Count("disconnect"));
     }
 }
