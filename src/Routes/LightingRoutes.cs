@@ -22,6 +22,22 @@ public static class LightingRoutes
 
     private const int MaxSunLabelLength = 80;
 
+    // The response body is serialized after the handler returns, outside the store lock, while edits mutate these
+    // dictionaries in place. A copy taken under the lock is what the serializer then walks.
+    internal static T SnapshotUnderLock<T>(
+        Nexus.Service.Persistence.IConfigStore store,
+        Func<Nexus.Service.Persistence.NexusSettings, T> pick,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> info)
+        where T : class, new()
+    {
+        byte[]? json = null;
+        store.Read(s => json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(pick(s), info));
+        return System.Text.Json.JsonSerializer.Deserialize(json!, info) ?? new T();
+    }
+
+    private static Models.Lighting.GlobalBrightnessBody ToGlobalBrightnessBody(Nexus.Service.Persistence.NexusSettings settings) =>
+        new() { Value = settings.Lighting.GlobalBrightness, MasterScalesDevices = settings.MasterScalesDevices };
+
     private static Models.Lighting.BrightnessScheduleBody BuildBrightnessScheduleBody(
         Nexus.Service.Persistence.BrightnessSchedule schedule, Nexus.Service.Lighting.Sun.SunLocationResolver resolver, bool forceResolve = false)
     {
@@ -58,6 +74,7 @@ public static class LightingRoutes
         return new Models.Lighting.BrightnessScheduleBody
         {
             Enabled = schedule.Enabled,
+            LightingFollows = schedule.LightingFollowsOn,
             Points = schedule.Points ?? new(),
             Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
             SunShift = schedule.SunShiftOn,
@@ -68,13 +85,80 @@ public static class LightingRoutes
         };
     }
 
+    private const int MaxScheduleFollowing = 64;
+
+    private static bool IsKnownFollowKey(string key, Nexus.Service.Persistence.NexusSettings settings,
+        Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow, Nexus.Service.Platform.Displays.DisplayBrightnessController displays,
+        Nexus.Service.Panel.PanelDeviceRegistry registry)
+    {
+        const string slv3 = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix;
+        const string panel = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix;
+        if (key is Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70
+            or Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd
+            or Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd)
+        {
+            return true;
+        }
+        if (key.StartsWith(slv3, StringComparison.Ordinal))
+        {
+            return settings.Devices.LianLiWireless.AioScreens.ContainsKey(key.Substring(slv3.Length)) || follow.TrackedKeys.Contains(key);
+        }
+        if (key.StartsWith(panel, StringComparison.Ordinal))
+        {
+            return registry.Get(key.Substring(panel.Length)) is not null;
+        }
+        return follow.TrackedKeys.Contains(key)
+            || registry.List().Any(r => string.Equals(r.DisplayId, key, StringComparison.Ordinal))
+            || displays.ListDisplays().Displays.Any(d => string.Equals(d.Id, key, StringComparison.Ordinal));
+    }
+
+    private static Models.Lighting.ScheduleFollowDevicesResponse BuildFollowDevices(
+        Nexus.Service.Persistence.NexusSettings settings, Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
+        Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
+    {
+        var keys = new List<string>(follow.TrackedKeys);
+        foreach (var key in settings.Devices.ScheduleFollowing)
+        {
+            if (!keys.Contains(key))
+            {
+                keys.Add(key);
+            }
+        }
+        var response = new Models.Lighting.ScheduleFollowDevicesResponse();
+        foreach (var key in keys)
+        {
+            int? slider = key switch
+            {
+                Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70 => settings.Y70.Brightness,
+                Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd => settings.Devices.Corsair.LcdBrightness,
+                Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd => kraken is { IsConnected: true, HasLcd: true } ? kraken.Snapshot.LcdBrightness : null,
+                _ when key.StartsWith(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix, StringComparison.Ordinal) =>
+                    panels?.Slider(key.Substring(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix.Length)),
+                _ when key.StartsWith(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix, StringComparison.Ordinal) =>
+                    settings.Devices.LianLiWireless.AioScreens.TryGetValue(key.Substring(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix.Length), out var aio) ? aio.Brightness : null,
+                _ => settings.Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
+            };
+            var multiplier = follow.Multiplier(key);
+            var follows = follow.Follows(settings, key);
+            response.Devices.Add(new Models.Lighting.ScheduleFollowDeviceDto
+            {
+                Key = key,
+                Follows = follows,
+                CapPercent = follows && settings.Lighting.BrightnessSchedule is { Enabled: true } ? (int)Math.Round(multiplier * 100) : null,
+                LevelPercent = (int)Math.Round(multiplier * 100),
+                AppliedPercent = slider is { } sl ? Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowMath.Scale(sl, multiplier) : null,
+            });
+        }
+        return response;
+    }
+
     private static Models.Lighting.SunLocationDto ToDto(Nexus.Service.Persistence.WeatherSavedLocation l) =>
         new() { Lat = l.Lat, Lon = l.Lon, Label = l.Label, Cc = l.Cc };
 
     public static void MapLightingEndpoints(this WebApplication app)
     {
         app.MapPost("/lighting/stop", (ILightingProvider l, MultiplexHub hub) => { l.StopAll(); ResetEffectSignature(); PanelTopics.BroadcastLighting(hub); return ApiResponse.Ok(); }).AllowPanel();
-        app.MapGet("/lighting/current", (ILightingProvider l, Nexus.Service.Persistence.IConfigStore store) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive, GameSyncRemovedNotice = store.Load().GameSyncRemovedNotice }).AllowPanel();
+        app.MapGet("/lighting/current", (ILightingProvider l) => new CurrentSyncResponse { Sync = l.GetSync(), Paused = l.IsPaused, StudioLive = l.StudioLiveActive }).AllowPanel();
         // Freeze/resume the active effect's rendered frame. No-op with no active
         // effect (engine not running); returns the resulting paused state either way.
         app.MapPost("/lighting/pause", (Models.Lighting.LightingPauseBody body, ILightingProvider l, MultiplexHub hub) =>
@@ -84,9 +168,9 @@ public static class LightingRoutes
             return Results.Json(new Models.Lighting.LightingPauseResponse { Paused = l.IsPaused }, AppJsonContext.Default.LightingPauseResponse);
         }).AllowPanel();
         app.MapGet("/lighting/animate/settings", (Nexus.Service.Persistence.IConfigStore store) =>
-            store.Load().Lighting.Animate).AllowPanel();
+            SnapshotUnderLock(store, s => s.Lighting.Animate, AppJsonContext.Default.AnimateSettings)).AllowPanel();
         app.MapGet("/lighting/static/settings", (Nexus.Service.Persistence.IConfigStore store) =>
-            store.Load().Lighting.Static).AllowPanel();
+            SnapshotUnderLock(store, s => s.Lighting.Static, AppJsonContext.Default.StaticSettings)).AllowPanel();
         // Canonical default template bundles. The web keeps no copy of these
         // tables; it merges this over the sparse user deltas from
         // /lighting/animate/settings. Static per binary, so clients revalidate
@@ -278,24 +362,31 @@ public static class LightingRoutes
                 GpuSoftwareForced = gpu is { Available: true, IsWarp: true } && GpuBackend.SoftwareForced,
             };
         }).AllowPanel();
-        // Master brightness slider: caps every LED channel before it leaves the
-        // RGB bridge (a device never renders brighter than master). Read live by
+        // Master brightness slider: joined to each device's brightness before an LED
+        // leaves the RGB bridge, as a cap or (masterScalesDevices) a multiplier. Read live by
         // RgbBridge.OnFrame, so a POST takes effect on the next frame push
         // without restarting any effect.
         app.MapGet("/lighting/global-brightness", (Nexus.Service.Persistence.IConfigStore store) =>
-            new Models.Lighting.GlobalBrightnessBody { Value = store.Load().Lighting.GlobalBrightness }).AllowPanel();
+            ToGlobalBrightnessBody(store.Load())).AllowPanel();
         app.MapPost("/lighting/global-brightness", (Models.Lighting.GlobalBrightnessBody body,
             Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub) =>
         {
             // Math.Clamp(NaN, ...) returns NaN, which would propagate through
             // RgbBridge.OnFrame and zero every LED. Treat a non-finite payload
-            // as "no change requested" - fall back to the documented default.
-            var safe = float.IsFinite(body.Value) ? body.Value : 1.0f;
-            var clamped = Math.Clamp(safe, 0f, 1f);
+            // as "no change requested".
+            float? clamped = body.Value is { } v && float.IsFinite(v) ? Math.Clamp(v, 0f, 1f) : null;
+            var scales = body.MasterScalesDevices;
             store.Update(s =>
             {
-                s.Lighting.GlobalBrightness = clamped;
-                Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+                if (scales is { } on)
+                {
+                    s.MasterScalesDevices = on;
+                }
+                if (clamped is { } level)
+                {
+                    s.Lighting.GlobalBrightness = level;
+                    Nexus.Service.Lighting.LightingPresetLooks.CaptureIntoActive(s);
+                }
             });
             PanelTopics.BroadcastLighting(hub);
             return ApiResponse.Ok();
@@ -395,6 +486,7 @@ public static class LightingRoutes
                 s.Lighting.BrightnessSchedule = new()
                 {
                     Enabled = body.Enabled,
+                    LightingFollows = body.LightingFollows ?? current?.LightingFollows,
                     Points = points,
                     SunShift = sunShift,
                     SunNight = savedNight,
@@ -409,6 +501,56 @@ public static class LightingRoutes
             var saved = store.Load().Lighting.BrightnessSchedule;
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));
+        }).AllowPanel();
+        // Which devices follow the schedule, with the cap each wears now. A
+        // device follows only once the user opted it in (the default is off);
+        // the master switch above must be on for any following to happen.
+        app.MapGet("/lighting/brightness-schedule/devices", (Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
+            Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels,
+            Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken) =>
+            Results.Json(BuildFollowDevices(store.Load(), follow, panels, kraken), AppJsonContext.Default.ScheduleFollowDevicesResponse)).AllowPanel();
+        app.MapPost("/lighting/brightness-schedule/devices", (Models.Lighting.ScheduleFollowSetBody body,
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
+            Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels,
+            Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken,
+            Nexus.Service.Platform.Displays.DisplayBrightnessController displays,
+            Nexus.Service.Panel.PanelDeviceRegistry registry) =>
+        {
+            var key = (body.Key ?? "").Trim();
+            if (key.Length == 0 || key.Length > 200)
+            {
+                return Results.BadRequest(ApiResponse.Fail("key is required"));
+            }
+            // Un-following is always allowed, so a stale entry can be cleaned up.
+            if (body.Follows && !IsKnownFollowKey(key, store.Load(), follow, displays, registry))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown device key"));
+            }
+            var tooMany = false;
+            store.Update(s =>
+            {
+                var list = s.Devices.ScheduleFollowing;
+                list.RemoveAll(x => string.Equals(x, key, StringComparison.Ordinal));
+                if (body.Follows)
+                {
+                    if (list.Count >= MaxScheduleFollowing)
+                    {
+                        tooMany = true;
+                        return;
+                    }
+                    list.Add(key);
+                }
+            });
+            if (tooMany)
+            {
+                return Results.BadRequest(ApiResponse.Fail("too many followed devices"));
+            }
+            PanelTopics.BroadcastLighting(hub);
+            var device = BuildFollowDevices(store.Load(), follow, panels, kraken).Devices.FirstOrDefault(d => d.Key == key)
+                ?? new Models.Lighting.ScheduleFollowDeviceDto { Key = key, Follows = body.Follows };
+            return Results.Json(device, AppJsonContext.Default.ScheduleFollowDeviceDto);
         }).AllowPanel();
         // Dim to a user-set level while the PC is idle. The controller picks the
         // change up from the store, so a POST applies at once (a dimmed room
@@ -504,6 +646,16 @@ public static class LightingRoutes
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
             StartAndCapture(telemetry, store, "animate", body.Effect, null, () => l.StartAnimate(body));
+            PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+        app.MapPost("/lighting/animate/simple", (AnimateSimpleBody body, ILightingProvider l, MultiplexHub hub, FeatureGates gates) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            l.SetAnimateSimple(body.Simple);
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
@@ -635,7 +787,7 @@ public static class LightingRoutes
         });
         app.MapDelete("/lighting/custom-effects/{id}", (string id,
             Nexus.Service.Lighting.CustomEffects.CustomEffectStore custom,
-            ILightingProvider l, MultiplexHub hub) =>
+            ILightingProvider l, MultiplexHub hub, Nexus.Service.Persistence.IConfigStore config) =>
         {
             if (!custom.EnsureAvailable())
             {
@@ -645,7 +797,22 @@ public static class LightingRoutes
             {
                 return Results.NotFound();
             }
-            l.DropCustomEffect(ShaderLibrary.CustomPrefix + id);
+            var key = ShaderLibrary.CustomPrefix + id;
+            l.DropCustomEffect(key);
+            // Recents live in settings and every client reads them, so the entries go here, not in one client.
+            var pruned = false;
+            config.Update(s =>
+            {
+                if (Nexus.Service.Persistence.UiRecents.PruneEffect(s.Ui.RecentAnimations, key) is { } kept)
+                {
+                    s.Ui.RecentAnimations = kept;
+                    pruned = true;
+                }
+            });
+            if (pruned)
+            {
+                PanelTopics.BroadcastPrefs(hub);
+            }
             PanelTopics.BroadcastLighting(hub);
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         });

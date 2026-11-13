@@ -98,6 +98,69 @@ public sealed class DeckRoutesTests : IClassFixture<DeckRoutesHostFactory>
     }
 
     [Fact]
+    public async Task CreatePreset_Fresh_CreatesTheStockEssentialsDeckUnderTheGivenName()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"Stock","cols":3,"rows":2,"fresh":true}"""));
+
+            Assert.True(res.IsSuccessStatusCode, await res.Content.ReadAsStringAsync());
+            var created = factory.Services.GetRequiredService<IConfigStore>().Load().StreamDeck.Presets.Single();
+            var (cols, rows, expected) = DeckDefaultPresets.EssentialsFor(3, 2);
+            Assert.Equal("Stock", created.Name);
+            Assert.Equal((cols, rows), (created.Cols, created.Rows));
+            var ops = created.Deck.Pages[0].Slots.Select(s => s.Action?.SystemAction?.Op).ToList();
+            Assert.Equal(expected.Pages[0].Slots.Select(s => s.Action?.SystemAction?.Op), ops);
+            Assert.Contains("volumeDown", ops);
+            Assert.Equal(6, created.Deck.Pages[0].Slots.Count);
+            Assert.Null(created.TemplateId);
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_Fresh_OnATooSmallGridFallsBackToTheSeedGrid()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"Tiny","cols":1,"rows":1,"fresh":true}"""));
+
+            Assert.True(res.IsSuccessStatusCode);
+            var created = factory.Services.GetRequiredService<IConfigStore>().Load().StreamDeck.Presets.Single();
+            Assert.Equal((2, 2), (created.Cols, created.Rows));
+            Assert.Equal(4, created.Deck.Pages[0].Slots.Count(s => s.Action is not null));
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_FreshWithAnotherSource_Returns400()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"X","cols":2,"rows":2,"fresh":true,"deck":{"pages":[]}}"""));
+
+            Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+            Assert.Empty(factory.Services.GetRequiredService<IConfigStore>().Load().StreamDeck.Presets);
+        }
+    }
+
+    [Fact]
+    public async Task CreatePreset_FreshFalse_StillCreatesTheBlankPreset()
+    {
+        var (factory, client) = Boot();
+        using (factory)
+        {
+            var res = await client.PostAsync("/deck/presets", Json("""{"name":"Blank","cols":2,"rows":2,"fresh":false}"""));
+
+            Assert.True(res.IsSuccessStatusCode);
+            var created = factory.Services.GetRequiredService<IConfigStore>().Load().StreamDeck.Presets.Single();
+            Assert.Empty(created.Deck.Pages[0].Slots);
+        }
+    }
+
+    [Fact]
     public async Task CreatePreset_ColsAndRowsOutOfRange_AreClampedTo1And8()
     {
         var (factory, client) = Boot();

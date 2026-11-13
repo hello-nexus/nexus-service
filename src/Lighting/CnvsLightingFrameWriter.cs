@@ -161,7 +161,7 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
 
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         var brightnessMul = ComputeBrightnessMul(id, disabled, prefs, globalBrightness, out var adjust);
@@ -171,6 +171,7 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         EnsureCapacity(CnvsHub.LedCount);
         var dst = _buffer!;
         FillBufferSlice(dst, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+        _engine.Live.Report(id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
         // Any LEDs beyond the engine-frame count: zero so the mat is fully
         // owned by us, no firmware residue.
         for (var i = ledCount; i < CnvsHub.LedCount; i++) dst[i] = default;
@@ -191,10 +192,10 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         if (_buffer is null || _buffer.Length < n) _buffer = new CnvsColor[Math.Max(n, CnvsHub.LedCount)];
     }
 
-    private static double ComputeBrightnessMul(string id,
+    internal static double ComputeBrightnessMul(string id,
         System.Collections.Generic.IReadOnlyList<string> disabled,
         System.Collections.Generic.IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -217,10 +218,10 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
-    private static void FillBufferSlice(CnvsColor[] dst, ReadOnlySpan<byte> src, int ledCount,
+    internal static void FillBufferSlice(CnvsColor[] dst, ReadOnlySpan<byte> src, int ledCount,
         double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)

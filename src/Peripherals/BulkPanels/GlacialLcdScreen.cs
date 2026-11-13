@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Sensors;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
@@ -487,30 +488,34 @@ public sealed class GlacialLcdScreen
     /// Text for a widget reading. Temperature, voltage, fan speed and clock use the exact glyph forms the
     /// vendor app sent in its captures; every other type is plain ASCII, as nothing else is known to render.
     /// </summary>
-    public static string FormatValue(string sensorType, float value)
+    public static string FormatValue(string sensorType, float value, bool wholeNumbers = false)
     {
         if (!float.IsFinite(value))
         {
             return NoReading;
         }
         var c = CultureInfo.InvariantCulture;
+        var number = MonitoringDecimals.FormatNumber(value, sensorType, wholeNumbers);
         return sensorType switch
         {
-            "Temperature" => value.ToString("0.0", c) + "℃",
-            "Voltage" => value.ToString("0.000", c) + "↊",
-            "Fan" => value.ToString("0", c) + "↌",
+            // The vendor app always sends a temperature with one decimal and no capture shows the firmware
+            // taking an integer one, so whole numbers keep that form with a zero decimal.
+            "Temperature" => number + (wholeNumbers ? ".0" : "") + "℃",
+            "Voltage" => number + "↊",
+            "Fan" => number + "↌",
             "Clock" => (value / 1000f).ToString("0.000", c) + "㎓",
-            "Load" or "Control" or "Level" => value.ToString("0.0", c) + "%",
-            "Power" => value.ToString("0.0", c) + "W",
-            "Current" => value.ToString("0.000", c) + "A",
+            "Load" or "Control" or "Level" => number + "%",
+            "Power" => number + "W",
+            "Current" => number + "A",
+            // No capture shows these forms, so they stay outside the shared rule as whole numbers.
             "Frequency" => value.ToString("0", c) + "Hz",
             "Flow" => value.ToString("0", c) + "L/h",
-            "Noise" => value.ToString("0.0", c) + "dBA",
+            "Noise" => number + "dBA",
             "Energy" => value.ToString("0", c) + "mWh",
             "Data" => value.ToString("0.00", c) + "GB",
             "SmallData" => value.ToString("0", c) + "MB",
-            "Framerate" => value.ToString("0", c) + "FPS",
-            "FrameTime" => value.ToString("0.0", c) + "ms",
+            "Framerate" => number + "FPS",
+            "FrameTime" => number + "ms",
             "Factor" => value.ToString("0.00", c),
             "Throughput" or "Rate" => FormatRate(value),
             "TimeSpan" => FormatSpan(value),

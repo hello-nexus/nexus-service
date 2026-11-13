@@ -96,8 +96,8 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
 
         var settings         = _store.Load();
         var ls               = settings.Devices.Galahad2Lighting;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
-        var brightnessRaw    = (byte)Math.Clamp((int)Math.Round(Math.Min((double)ls.Brightness, globalBrightness * 4.0)), 0, 4);
+        var globalBrightness = MasterBrightness.Resolve(settings);
+        var brightnessRaw    = (byte)Math.Clamp((int)Math.Round(globalBrightness.CombineSteps(ls.Brightness, 4.0)), 0, 4);
 
         // Both rings share one wire packet: only leave the AIO alone entirely
         // once every ring is uncontrolled. A single uncontrolled ring stays on the
@@ -171,6 +171,9 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
             outerR = 0; outerG = 0; outerB = 0;
         }
 
+        // One color per ring goes out and every LED of the ring shows it, at the brightness step sent with it.
+        ReportRing("lianli-aio:ring:inner", devices, innerR, innerG, innerB, brightnessRaw);
+        ReportRing("lianli-aio:ring:outer", devices, outerR, outerG, outerB, brightnessRaw);
         DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:inner"), ref innerR, ref innerG, ref innerB);
         DeviceColorAdjust.ReorderChannels(DeviceColorAdjust.OrderOf(orders, "lianli-aio:ring:outer"), ref outerR, ref outerG, ref outerB);
 
@@ -188,6 +191,27 @@ public sealed class Galahad2LightingFrameWriter : IHostedService, IDisposable
         _lastInnerR = innerR; _lastInnerG = innerG; _lastInnerB = innerB;
         _lastOuterR = outerR; _lastOuterG = outerG; _lastOuterB = outerB;
         _lastWasCanvas = true;
+    }
+
+    /// <summary>Assumes the step is linear in the level the writer asked for (<see cref="MasterLevel.CombineSteps"/> over the top step); the device's own step table is not documented.</summary>
+    private const double MaxBrightnessStep = 4.0;
+
+    internal static byte AtBrightnessStep(byte channel, byte step) => (byte)(channel * (step / MaxBrightnessStep));
+
+    private void ReportRing(string id, DeviceFrame[] devices, byte r, byte g, byte b, byte step)
+    {
+        if (!_engine.Live.Enabled)
+        {
+            return;
+        }
+        foreach (var frame in devices)
+        {
+            if (frame.Id == id && frame.LedCount > 0)
+            {
+                _engine.Live.ReportSolid(id, AtBrightnessStep(r, step), AtBrightnessStep(g, step), AtBrightnessStep(b, step), frame.LedCount);
+                return;
+            }
+        }
     }
 
     private void CommitFirmwareMode(Galahad2LightingSettings ls, Galahad2ModeInfo mode, byte brightnessRaw, string? innerOrder, string? outerOrder)

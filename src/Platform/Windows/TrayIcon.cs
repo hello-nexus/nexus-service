@@ -21,6 +21,8 @@ public static class TrayIcon
     private const int NIF_TIP = 0x04;
     private const int NIF_INFO = 0x10;   // szInfo/szInfoTitle carry a balloon
     private const int NIIF_INFO = 0x01;  // info (i) glyph on the balloon
+    private const int NIIF_WARNING = 0x02;
+    private const int NIIF_ERROR = 0x03;
     private const int WM_USER = 0x0400;
     private const int WM_TRAYICON = WM_USER + 88;
     // Shell balloon notifications arrive through the same WM_TRAYICON
@@ -321,7 +323,7 @@ public static class TrayIcon
                         // service's connect-time push, or the retry poll
                         // re-attempts; latching it true here is what stranded
                         // the icon invisible until a manual off/on toggle.
-                        DiagFile("NIM_ADD failed; shell tray not ready");
+                        DiagFile("NIM_ADD failed; shell tray not ready", warn: true);
                         StartIconRetry();
                     }
                 }
@@ -405,7 +407,7 @@ public static class TrayIcon
             ApplyDisplayWatch();
             RegisterScreenOffTimeoutWatch(hwnd);
             var sessionWatch = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
-            if (!sessionWatch) DiagFile($"session lock watch: register failed ({Marshal.GetLastWin32Error()})");
+            if (!sessionWatch) DiagFile($"session lock watch: register failed ({Marshal.GetLastWin32Error()})", warn: true);
             _sessionWatchActive = sessionWatch;
             _taskbarCreatedMsg = RegisterWindowMessage("TaskbarCreated");
 
@@ -507,7 +509,7 @@ public static class TrayIcon
             var guid = setting;
             if (RegisterPowerSettingNotification(hwnd, ref guid, DEVICE_NOTIFY_WINDOW_HANDLE) == IntPtr.Zero)
             {
-                DiagFile($"screen-off timeout watch: register {setting} failed ({Marshal.GetLastWin32Error()})");
+                DiagFile($"screen-off timeout watch: register {setting} failed ({Marshal.GetLastWin32Error()})", warn: true);
             }
         }
     }
@@ -544,14 +546,17 @@ public static class TrayIcon
         }
     }
 
-    private static void DiagFile(string msg)
+    private static void DiagFile(string msg, bool warn = false)
     {
         // Co-located with nexus-service.log under the canonical logs dir, which
         // both LocalSystem and the user-session helper can write (each owns the
         // file it creates).
         try
         {
-            var line = $"{DateTime.Now:HH:mm:ss.fff} [TrayIcon p{Environment.ProcessId}] {msg}\n";
+            var line = Nexus.Service.Platform.LogLineFormat.Line(
+                DateTime.UtcNow,
+                warn ? Nexus.Service.Platform.LogLineFormat.Warn : Nexus.Service.Platform.LogLineFormat.Info,
+                "tray", msg, Environment.ProcessId, newline: true);
             Nexus.Service.Platform.ServiceLog.AppendUserSessionLog("nexus-tray.log", System.Text.Encoding.UTF8.GetBytes(line));
         }
         catch { }
@@ -1008,7 +1013,7 @@ public static class TrayIcon
     /// tray icon is hidden - and while a pairing balloon is pending, which is
     /// time-sensitive and must not lose its click routing to a notice.
     /// </summary>
-    public static void ShowNoticeBalloon(string title, string text, string? folderPath, string? windowPath = null)
+    public static void ShowNoticeBalloon(string title, string text, string? folderPath, string? windowPath = null, string? severity = null)
     {
         var folder = string.IsNullOrEmpty(folderPath) ? null : folderPath;
         // The click hint is appended here, not by the notice producer - other
@@ -1018,7 +1023,7 @@ public static class TrayIcon
             text = $"{text} Click to open the folder.";
         }
         ModifyBalloon(title, text, BalloonKind.Notice, folder, notWhileKind: BalloonKind.Pair,
-            windowPath: string.IsNullOrEmpty(windowPath) ? null : windowPath);
+            windowPath: string.IsNullOrEmpty(windowPath) ? null : windowPath, infoFlags: InfoFlagsFor(severity));
     }
 
     /// <summary>
@@ -1036,6 +1041,14 @@ public static class TrayIcon
             notWhileKind: BalloonKind.Pair);
     }
 
+    /// <summary>Warning glyph for a "watch" notice, error glyph for "act"; anything else keeps the info glyph.</summary>
+    internal static int InfoFlagsFor(string? severity) => severity switch
+    {
+        "watch" => NIIF_WARNING,
+        "act" => NIIF_ERROR,
+        _ => NIIF_INFO,
+    };
+
     private static void ModifyBalloon(
         string title,
         string text,
@@ -1043,7 +1056,8 @@ public static class TrayIcon
         string? folderPath,
         BalloonKind? onlyIfKind = null,
         BalloonKind? notWhileKind = null,
-        string? windowPath = null)
+        string? windowPath = null,
+        int infoFlags = NIIF_INFO)
     {
         lock (_sync)
         {
@@ -1070,7 +1084,7 @@ public static class TrayIcon
                 nid.uFlags = NIF_INFO;
                 nid.szInfo = text ?? string.Empty;
                 nid.szInfoTitle = title ?? string.Empty;
-                nid.dwInfoFlags = NIIF_INFO;
+                nid.dwInfoFlags = infoFlags;
                 Shell_NotifyIcon(NIM_MODIFY, ref nid);
             }
             catch { /* tray is non-critical */ }

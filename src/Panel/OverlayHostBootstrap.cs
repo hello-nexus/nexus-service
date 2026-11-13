@@ -50,6 +50,24 @@ internal static class OverlayHostBootstrap
             catch { }
         }
         topology?.PrimaryDisplayChanged += OnPrimaryChanged;
+        if (topology is not null)
+        {
+            var streams = app.Services.GetService<Streams.StreamedPanelCoordinator>();
+            topology.DevicePanelOwner = () => streams?.MonitorOwner();
+            // The owned display's appearance is not a settings edit, so the host is told directly.
+            topology.OwnedDisplayChanged += () =>
+            {
+                try
+                {
+#if WINDOWS
+                    if (helperRegistry is not null)
+                        LifecycleCommands.NotifyOverlayPrefsChangedAsync(helperRegistry).ObserveFaults();
+#endif
+                    overlayHost.NotifyDisplayAssignmentsChanged();
+                }
+                catch { }
+            };
+        }
         store.OnChanged += () =>
         {
             try
@@ -94,10 +112,28 @@ internal static class OverlayHostBootstrap
             });
         });
 #endif
+#if LINUX
+        // Kiosk teardown is a browser kill plus waits. It runs beside the hosted-service
+        // stops, so a slow browser cannot delay the fan release or the Lian Li disconnect;
+        // ApplicationStopped joins it, bounded, before the DI container disposes (which kills OpenRGB).
+        Task? kioskStop = null;
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            kioskStop = Task.Run(() =>
+            {
+                try { linuxKiosks?.Shutdown(); } catch { }
+            });
+        });
+        app.Lifetime.ApplicationStopped.Register(() =>
+        {
+            try { kioskStop?.Wait(Platform.Linux.LinuxPanelKioskHost.ShutdownBudgetMs); } catch { }
+        });
+#else
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             try { overlayHost.Stop(); } catch { }
         });
+#endif
     }
 
     internal static string AssignmentsSignature(NexusSettings snapshot, Func<string, bool>? isPrimary = null)

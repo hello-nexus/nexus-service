@@ -80,6 +80,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     private readonly FeatureGates _gates;
     private readonly SensorFeed? _sensorFeed;
 
+    private readonly LiveLedDashboardFeed _dashboard;
+
     public LightingProvider(IConfigStore store, LightingEngine engine, LightingOutputHub hub, GpuContext gpu, MediaLibrary media, IMonitorEnumerator monitors, IScreenFrameSource? frameSource = null, RgbBridge? rgb = null, IBeatsProvider? beats = null, FeatureGates? gates = null, Nexus.Service.Lighting.CustomEffects.CustomEffectStore? customEffects = null, MultiplexHub? panelHub = null, ScreenPreviewHub? previewHub = null, SensorFeed? sensorFeed = null)
     {
         _panelHub = panelHub;
@@ -114,7 +116,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         _screenPP.Set(s.ScreenEffect.Hue, s.ScreenEffect.Colorize, s.ScreenEffect.Saturation, s.ScreenEffect.Contrast, s.ScreenEffect.FlipX, s.ScreenEffect.FlipY, s.ScreenEffect.Reactive, s.ScreenEffect.Reactivity, s.ScreenEffect.Intensity);
         _mediaPP.Set(s.MediaEffect.Hue, s.MediaEffect.Colorize, s.MediaEffect.Saturation, s.MediaEffect.Contrast, s.MediaEffect.FlipX, s.MediaEffect.FlipY);
 
-        _engine.OnFrame += frame => _ = _hub.BroadcastBinaryAsync(frame);
+        _dashboard = new LiveLedDashboardFeed(_engine.Live, () => _hub.ClientCount, () => _engine.IsStopped,
+            copy => _hub.BroadcastLatestBinary(copy), raw => _ = _hub.BroadcastBinaryAsync(raw));
+        _engine.FrameSerialized += _dashboard.OnFrame;
         _engine.OnEffectChanged += ReconcileAudioCapture;
         // Any settings write can move a pinned effect's look, the pin set, or the mirrored screen.
         _store.OnChanged += RefreshPinnedLooks;
@@ -138,7 +142,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     /// </summary>
     private void EnsureRgbActive()
     {
-        // Only simple mode's sweep set samples every device across the whole
+        // Only the full-frame set samples every device across the whole
         // canvas; StartAnimate re-asserts it, so a mode start cannot inherit it.
         _engine.FullFrameSampling = false;
         _rgb?.Activate();
@@ -156,7 +160,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         return _engine.Frozen ? "static" : _engine.CurrentEffectName;
     }
 
-    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = RemovedSyncModes.Normalize(sync));
+    public void SetSync(string sync) => _store.Update(s => s.Lighting.Sync = SimplePatternMigration.Normalize(RemovedSyncModes.Normalize(sync)));
 
     public bool IsPaused => _engine.Paused;
 
@@ -318,14 +322,26 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         SelectionMode = OperatingSystem.IsLinux() ? "system" : "app",
     };
 
+    // Every effect start and SetAnimateSimple read and write FullFrameSampling with the running
+    // effect; one at a time keeps the pair consistent with it.
+    private readonly object _animateGate = new();
+
     public void StartAnimate(AnimateHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartAnimateCore(body);
+        }
+    }
+
+    private void StartAnimateCore(AnimateHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
             return;
         }
         EnsureRgbActive();
-        var name = (body.Effect ?? "rainbow").ToLowerInvariant();
+        var name = SimplePatternMigration.Normalize((body.Effect ?? "rainbow").ToLowerInvariant());
         // The static catalog lives in Static mode now. Callers that predate it -
         // restored settings written before the split, Stream Deck rgbEffect
         // Deck rgbEffect buttons, MCP scenarios, set_static_color - still name one
@@ -361,9 +377,9 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         var extras = ParamsToDict(body.Params);
         var sensors = Nexus.Service.Persistence.SensorBinding.CopyMap(body.Sensors);
         var effectSpeed = name == "pulse" ? speed * 0.5f : speed;
-        // A sweep is meant to read end to end on every device at once, so the
-        // engine stops treating the canvas as a shared scene for these.
-        _engine.FullFrameSampling = ShaderLibrary.IsSweepEffect(name);
+        // Simple mode shows a sweep end to end on every device at once; the advanced
+        // Animation page maps it by layout position like any other effect.
+        _engine.FullFrameSampling = body.Simple && ShaderLibrary.IsFullFrame(name, extras);
 
         // Fast path: if the currently running effect is the same shader, just
         // update its uniforms in place. Creating a new ShaderEffect every
@@ -417,6 +433,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             s.Lighting.Sync = name;
             s.Lighting.Animate.Effect = name;
+            s.Lighting.Animate.Simple = body.Simple;
             // States holds only deltas from the effect's selected preset look:
             // merely activating an effect (the UI replays the resolved slot
             // verbatim) must not grow settings.json by a full dense state.
@@ -452,7 +469,45 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         });
     }
 
+    public void SetAnimateSimple(bool simple)
+    {
+        lock (_animateGate)
+        {
+            SetAnimateSimpleCore(simple);
+        }
+    }
+
+    private void SetAnimateSimpleCore(bool simple)
+    {
+        if (!_gates.Lighting)
+        {
+            return;
+        }
+        var lighting = _store.Load().Lighting;
+        if (!string.Equals(lighting.Sync, lighting.Animate.Effect, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (_engine.CurrentEffect is ShaderEffect cur)
+        {
+            _engine.FullFrameSampling = simple && ShaderLibrary.IsFullFrame(cur.Name, cur.ExtraParams);
+        }
+        _store.Update(s =>
+        {
+            s.Lighting.Animate.Simple = simple;
+            LightingPresetLooks.CaptureIntoActive(s);
+        });
+    }
+
     public void StartStatic(StaticHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartStaticCore(body);
+        }
+    }
+
+    private void StartStaticCore(StaticHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -738,7 +793,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     // through green. The windows follow the shaders' tempos and default colours.
     private static (double StartMs, double SpanMs)? TimeLapseWindowMs(string name) => name switch
     {
-        "breathing" or "sweepbreathing" => (14000.0, 4000.0),
+        "breathing" => (14000.0, 4000.0),
         "sweepcycle" => (3170.0, 2000.0),
         _ => null,
     };
@@ -956,6 +1011,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             Saturation = look.Saturation,
             Contrast = look.Contrast,
             Params = list,
+            Simple = a.Simple,
         });
     }
 
@@ -1055,14 +1111,6 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
                     continue;
                 }
                 var slot = AnimateTemplateDefaults.ResolveSelected(s.Lighting.Animate.Templates, key);
-                if (slot is null && ShaderLibrary.IsSweepEffect(key))
-                {
-                    // Simple mode's sweeps have no preset bundle: use what simple
-                    // mode last persisted for them, else the plain defaults.
-                    slot = s.Lighting.Animate.States.TryGetValue(key, out var persisted) && persisted is not null
-                        ? persisted
-                        : new Nexus.Service.Persistence.AnimateEffectState();
-                }
                 if (slot is null && (ShaderLibrary.IsCustomKey(key) || ShaderLibrary.IsSensorEffect(key)))
                 {
                     // A custom effect with no saved preset runs as a fresh start of it does: its last
@@ -1424,7 +1472,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "sharplines" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "breathing" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
         "clockfill" => new(0.00f, 0.00f, 50f, 1.00f, 1.00f, 1f),
-        "fire" => new(0.03f, 0.80f, 70f, 1.10f, 1.05f, 1f),
+        "fire" => new(0.00f, 0.15f, 70f, 1.10f, 1.05f, 1f),
         "plasma" => new(0.85f, 0.30f, 60f, 1.00f, 1.00f, 1f),
         "spiral" => new(0.00f, 0.00f, 55f, 1.00f, 1.00f, 1f),
         "matrix" => new(0.33f, 0.75f, 80f, 1.10f, 1.10f, 1f),
@@ -1441,7 +1489,7 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         "lavalamp" => new(0.85f, 0.50f, 35f, 1.00f, 1.00f, 1f),
         "starfield" => new(0.60f, 0.25f, 55f, 1.00f, 1.00f, 1f),
         "voronoi" => new(0.40f, 0.50f, 40f, 1.05f, 1.00f, 1f),
-        "neonrain" => new(0.88f, 0.50f, 85f, 1.10f, 1.05f, 1f),
+        "neonrain" => new(0.88f, 0.50f, 70f, 1.10f, 1.05f, 1f),
         "nebula" => new(0.72f, 0.35f, 30f, 1.00f, 1.00f, 1f),
         "bursts" => new(0.08f, 0.50f, 65f, 1.05f, 1.00f, 1f),
         "lavafissure" => new(0.03f, 0.45f, 40f, 1.05f, 1.05f, 1f),
@@ -1579,9 +1627,8 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
         }
-        // Simple mode's sweep set loads its own .frag by name, same as the
-        // static patterns below - the switch has no arm for them and its
-        // rainbow default would render them all identically.
+        // The full-frame set loads its own .frag by name; the switch below has
+        // no arm for the sweep* keys and its rainbow default would render them all identically.
         if (ShaderLibrary.IsSweepEffect(name))
         {
             return MakeShader(name, ShaderLibrary.Get(name), effectSpeed, intensity, hue, colorize, saturation, contrast, extras);
@@ -1696,6 +1743,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
 
     public void StartMusic(MusicHeadlessStart body)
     {
+        lock (_animateGate)
+        {
+            StartMusicCore(body);
+        }
+    }
+
+    private void StartMusicCore(MusicHeadlessStart body)
+    {
         if (!_gates.Lighting)
         {
             return;
@@ -1710,6 +1765,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartScreen(ScreenHeadlessStart body)
+    {
+        lock (_animateGate)
+        {
+            StartScreenCore(body);
+        }
+    }
+
+    private void StartScreenCore(ScreenHeadlessStart body)
     {
         if (!_gates.Lighting)
         {
@@ -1824,14 +1887,19 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
             return false;
         }
 
-        EnsureRgbActive();
-        _engine.SetEffect(new MediaFramesEffect(framesPath, item.Width, item.Height, item.Fps, _mediaPP));
-        _store.Update(s =>
+        // Reads frames.bin, so it is built before the gate is taken.
+        var effect = new MediaFramesEffect(framesPath, item.Width, item.Height, item.Fps, _mediaPP);
+        lock (_animateGate)
         {
-            s.Lighting.Sync = "media";
-            s.Lighting.LastMediaId = mediaId;
-            LightingPresetLooks.CaptureIntoActive(s);
-        });
+            EnsureRgbActive();
+            _engine.SetEffect(effect);
+            _store.Update(s =>
+            {
+                s.Lighting.Sync = "media";
+                s.Lighting.LastMediaId = mediaId;
+                LightingPresetLooks.CaptureIntoActive(s);
+            });
+        }
         return true;
     }
 
@@ -1863,6 +1931,14 @@ public sealed partial class LightingProvider : ILightingProvider, IDisposable
     }
 
     public void StartMediaIdle()
+    {
+        lock (_animateGate)
+        {
+            StartMediaIdleCore();
+        }
+    }
+
+    private void StartMediaIdleCore()
     {
         if (!_gates.Lighting)
         {

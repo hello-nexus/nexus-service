@@ -86,11 +86,12 @@ public static class SystemRoutes
         });
 
         // Rendered image of this PC for the dashboard Build widget. Desktop-token only. The GET answers
-        // only while the stored image was rendered for the current case, so a case changed elsewhere
+        // only while the stored image was rendered for the current case (or for no case, while none is set), so a case changed elsewhere
         // drops the widget back to its placeholder.
         app.MapPut("/system/preview", async (HttpRequest req, string? caseId, SystemPreviewStore previews, CancellationToken ct) =>
         {
-            if (string.IsNullOrEmpty(caseId) || !SystemCaseService.IsValidCaseId(caseId))
+            // An absent caseId is a PC with no case chosen; a present one must be valid.
+            if (caseId is not null && (caseId.Length == 0 || !SystemCaseService.IsValidCaseId(caseId)))
             {
                 return Results.BadRequest(ApiResponse.Fail("caseId must be 1-64 characters of letters, digits, '.', '_', ':' or '-'."));
             }

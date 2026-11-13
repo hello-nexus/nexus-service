@@ -9,11 +9,11 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// <summary>Turns a saved widget into the label and value text the panel shows.</summary>
 public static class GlacialLcdSensors
 {
-    public static (string Label, string Value) Read(ISensorProvider sensors, GlacialLcdSlot slot, int index, SensorSnapshotSources sources = default)
+    public static (string Label, string Value) Read(ISensorProvider sensors, GlacialLcdSlot slot, int index, SensorSnapshotSources sources = default, bool wholeNumbers = false)
     {
         var sensor = Find(sensors, slot, index, sources);
         string label = !string.IsNullOrEmpty(slot.Label) ? slot.Label : sensor?.Name ?? "";
-        return (label, sensor is null ? GlacialLcdScreen.NoReading : GlacialLcdScreen.FormatValue(sensor.Type, sensor.Value));
+        return (label, sensor is null ? GlacialLcdScreen.NoReading : GlacialLcdScreen.FormatValue(sensor.Type, sensor.Value, wholeNumbers));
     }
 
     /// <summary>The category an unpicked widget reads from.</summary>
@@ -51,13 +51,18 @@ public static class GlacialLcdSensors
     /// snapshot, the capture sensors, the network aggregate and the fan header renames.
     /// </summary>
     public static SensorSnapshotSources Gather(
-        ISensorProvider sensors, string category, Nexus.Service.Fps.IFpsProvider? fps, Func<IReadOnlyDictionary<string, string>?>? fanNames)
+        ISensorProvider sensors, string category, Nexus.Service.Fps.IFpsProvider? fps, Func<IReadOnlyDictionary<string, string>?>? fanNames,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
         SensorExtras? extras = null;
         IReadOnlyList<HardwareSensor>? network = null;
         if (SensorSnapshotResolver.CategoryUsesExtras(category))
         {
             extras = sensors.GetSensorExtras();
+            if (Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(category))
+            {
+                Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, fans);
+            }
             if (category == "network")
             {
                 network = SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics);

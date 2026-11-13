@@ -38,9 +38,6 @@ public class CurrentSyncResponse : ApiResponse
 
     /// <summary>True while a Shader Studio live session drives the LEDs. Sync and Paused then report the state before the session, which is what a client should keep and save.</summary>
     public bool StudioLive { get; set; }
-
-    /// <summary>True on an install upgraded from a version that had Game Sync, which is gone. Drives a one-release notice.</summary>
-    public bool GameSyncRemovedNotice { get; set; }
 }
 
 /// <summary>POST body for /lighting/pause. Freezes the active effect's rendered
@@ -63,13 +60,18 @@ public class BrightnessScale
     public bool Enabled { get; set; }
 }
 
-/// <summary>Master brightness cap applied to every LED channel before it leaves
-/// the RGB bridge: a device never renders brighter than this. 0..1 (UI slider is
+/// <summary>Master brightness applied to every LED channel before it leaves
+/// the RGB bridge: by default a device never renders brighter than this, with
+/// <see cref="MasterScalesDevices"/> it multiplies the device level instead. 0..1 (UI slider is
 /// 0..100% and divides client-side). Both the /lighting/global-brightness GET
 /// response and POST body share this shape.</summary>
 public class GlobalBrightnessBody
 {
-    public float Value { get; set; } = 1.0f;
+    /// <summary>Master level. On POST, null leaves the slider unchanged.</summary>
+    public float? Value { get; set; }
+    /// <summary>True when master multiplies per-device brightness instead of capping it.
+    /// On POST, null leaves the setting unchanged.</summary>
+    public bool? MasterScalesDevices { get; set; }
 }
 
 /// <summary>GET response / POST body for /lighting/brightness-schedule: the
@@ -84,6 +86,9 @@ public sealed class BrightnessScheduleBody
     private SunLocationDto? _location;
 
     public bool Enabled { get; set; }
+
+    /// <summary>Whether the lighting master brightness follows the schedule. GET returns the resolved value (true for a file that predates it); on a POST absent keeps the stored one.</summary>
+    public bool? LightingFollows { get; set; }
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint> Points { get; set; } = new();
     public List<Nexus.Service.Persistence.BrightnessSchedulePoint>? Defaults { get; set; }
     public bool? SunShift { get; set; }
@@ -167,6 +172,12 @@ public sealed class IdleDimStatus
     public bool Supported { get; set; }
     public bool ScreenOffSupported { get; set; }
     public int? OsScreenOffSeconds { get; set; }
+}
+
+/// <summary>POST body for /lighting/animate/simple.</summary>
+public class AnimateSimpleBody
+{
+    public bool Simple { get; set; }
 }
 
 /// <summary>GET response / POST body for /lighting/render-gpu. "auto" or a GPU
@@ -260,6 +271,8 @@ public class AnimateHeadlessStart
     /// slider release or explicit mode change, which also persists the state.
     /// </summary>
     public bool Persist { get; set; } = true;
+    /// <summary>True only from simple mode, where a sweep effect shows its whole pattern on every device. Absent or false maps the effect by layout position like any advanced effect.</summary>
+    public bool Simple { get; set; }
 }
 
 public class ShaderParam
@@ -365,4 +378,32 @@ public class ScreenSyncOptions
     /// shows a "Change screen" action that re-opens that picker instead of a list.
     /// </summary>
     public string SelectionMode { get; set; } = "app";
+}
+
+/// <summary>One device's place in the brightness schedule. Key is the surface's stable id: "y70", "corsair-lcd",
+/// "nzxt-kraken-lcd", "panel-lcd:" plus a panel device id, "slv3-aio:" plus a MAC, or a display id.
+/// LevelPercent is the schedule cap on the device right now (100 while it does not follow);
+/// AppliedPercent is min(slider, level), null when the slider is unknown.</summary>
+public sealed class ScheduleFollowDeviceDto
+{
+    public string Key { get; set; } = "";
+    public bool Follows { get; set; }
+    public int LevelPercent { get; set; } = 100;
+
+    /// <summary>The schedule cap while the schedule is on and the device follows (equal to <see cref="LevelPercent"/>), else null.</summary>
+    public int? CapPercent { get; set; }
+    public int? AppliedPercent { get; set; }
+}
+
+/// <summary>GET response of /lighting/brightness-schedule/devices. A device that is absent does not follow.</summary>
+public sealed class ScheduleFollowDevicesResponse
+{
+    public List<ScheduleFollowDeviceDto> Devices { get; set; } = new();
+}
+
+/// <summary>POST body of /lighting/brightness-schedule/devices.</summary>
+public sealed class ScheduleFollowSetBody
+{
+    public string Key { get; set; } = "";
+    public bool Follows { get; set; }
 }

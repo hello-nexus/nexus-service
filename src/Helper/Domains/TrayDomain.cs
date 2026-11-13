@@ -47,6 +47,8 @@ public sealed class TrayNoticePayload
     public string WindowPath { get; set; } = "";
     /// <summary>Label for an action button on the notice. Non-empty asks for an interactive toast, which the helper falls back off to the plain balloon when unavailable.</summary>
     public string ButtonLabel { get; set; } = "";
+    /// <summary>"watch" or "act" picks the balloon's warning or error glyph; empty keeps the info glyph.</summary>
+    public string Severity { get; set; } = "";
 }
 
 /// <summary>Payload for <c>trayIcon.updateReady</c>. Service-to-helper.</summary>
@@ -111,18 +113,18 @@ public static class TrayCommands
             ct: ct);
     }
 
-    public static Task NoticeAsync(HelperRegistry registry, string title, string text, string? folderPath, string? windowPath = null, string? buttonLabel = null, CancellationToken ct = default)
+    public static Task NoticeAsync(HelperRegistry registry, string title, string text, string? folderPath, string? windowPath = null, string? buttonLabel = null, bool urgent = false, string? severity = null, CancellationToken ct = default)
     {
-        // Held while first-run onboarding owns the screen; released after.
+        // Held while first-run onboarding owns the screen; released after. An urgent notice passes a focus mode.
         if (Nexus.Service.Notifications.NotificationGate.TryHold(
-                () => SendAsync_notice(registry, title, text, folderPath, windowPath, buttonLabel, ct), out var gated))
+                () => SendAsync_notice(registry, title, text, folderPath, windowPath, buttonLabel, severity, ct), out var gated, urgent))
         {
             return gated;
         }
-        return SendAsync_notice(registry, title, text, folderPath, windowPath, buttonLabel, ct);
+        return SendAsync_notice(registry, title, text, folderPath, windowPath, buttonLabel, severity, ct);
     }
 
-    private static Task SendAsync_notice(HelperRegistry registry, string title, string text, string? folderPath, string? windowPath, string? buttonLabel, CancellationToken ct)
+    private static Task SendAsync_notice(HelperRegistry registry, string title, string text, string? folderPath, string? windowPath, string? buttonLabel, string? severity, CancellationToken ct)
     {
         var conn = registry.GetAny();
         if (conn is null) return Task.CompletedTask;
@@ -135,6 +137,7 @@ public static class TrayCommands
                 FolderPath = folderPath ?? "",
                 WindowPath = windowPath ?? "",
                 ButtonLabel = buttonLabel ?? "",
+                Severity = severity ?? "",
             },
             payloadType: AppJsonContext.Default.TrayNoticePayload,
             ct: ct);
@@ -206,7 +209,7 @@ public sealed class TrayHandler
     private readonly Action<bool> _setVisible;
     private readonly Action<string> _showPairNotice;
     private readonly Action _dismissPairNotice;
-    private readonly Action<string, string, string?, string?, string?> _showNotice;
+    private readonly Action<string, string, string?, string?, string?, string?> _showNotice;
     private readonly Action<string> _showUpdateReady;
     private readonly Action _openDashboard;
     private readonly Action<string, string> _showUpdaterWindow;
@@ -218,7 +221,7 @@ public sealed class TrayHandler
         Action<bool> setVisible,
         Action<string> showPairNotice,
         Action dismissPairNotice,
-        Action<string, string, string?, string?, string?> showNotice,
+        Action<string, string, string?, string?, string?, string?> showNotice,
         Action<string> showUpdateReady,
         Action openDashboard,
         Action<string, string> showUpdaterWindow,
@@ -267,7 +270,8 @@ public sealed class TrayHandler
                     p.Text ?? "",
                     string.IsNullOrEmpty(p.FolderPath) ? null : p.FolderPath,
                     string.IsNullOrEmpty(p.WindowPath) ? null : p.WindowPath,
-                    string.IsNullOrEmpty(p.ButtonLabel) ? null : p.ButtonLabel);
+                    string.IsNullOrEmpty(p.ButtonLabel) ? null : p.ButtonLabel,
+                    string.IsNullOrEmpty(p.Severity) ? null : p.Severity);
             }
             return Task.FromResult(env.Ok());
         });

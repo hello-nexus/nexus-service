@@ -22,6 +22,57 @@ namespace Nexus.Service.Routes;
 
 public static class DisplayRoutes
 {
+    /// <summary>
+    /// Kiosk bindings for the overlay: the display-bound records, with the virtual monitor a USB
+    /// device owns bound to that device's own panel instead (nothing while its Nexus Control is off,
+    /// so the glass shows the desktop). A separate panel record on that display stays in settings, unhosted.
+    /// </summary>
+    internal static List<DisplayAssignmentDto> ComposeAssignments(
+        PanelDeviceRegistry registry, DisplayTopologyService topology, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams)
+    {
+        var list = new List<DisplayAssignmentDto>();
+        // While a device's monitor is up, its virtual display belongs to the device: a separate record on it is excluded by identity, so a stale display-id cache cannot host it.
+        var monitorUp = streams.MonitorOwner() is not null;
+        var ownedId = topology.OwnedVirtualDisplayId();
+        foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
+        {
+            if (ownedId.Length > 0 && string.Equals(displayId, ownedId, StringComparison.Ordinal)) continue;
+            if (monitorUp && registry.Get(panelDeviceId) is { } bound && UsbMonitorPanelMigration.IsVirtualMonitorRecord(bound))
+            {
+                if (ownedId.Length == 0 && topology.GetAttachedIds()?.Contains(displayId) == true) ownedId = displayId;
+                continue;
+            }
+            list.Add(new DisplayAssignmentDto
+            {
+                DisplayId = displayId,
+                PanelDeviceId = panelDeviceId,
+                ReserveMonitor = reserveMonitor,
+                Backdrop = backdrop,
+                KeepCursorOff = keepCursorOff,
+                AlwaysOnTop = alwaysOnTop,
+                ClickThrough = clickThrough,
+                IsPrimary = isPrimary,
+            });
+        }
+        if (ownedId.Length > 0 && streams.MonitorProjectedPanelId() is { } projected)
+        {
+            var record = registry.Get(projected);
+            var primary = topology.IsPrimaryDisplay(ownedId);
+            list.Add(new DisplayAssignmentDto
+            {
+                DisplayId = ownedId,
+                PanelDeviceId = projected,
+                ReserveMonitor = !primary && (record?.ReserveMonitor ?? true),
+                Backdrop = "",
+                KeepCursorOff = !primary && (record?.KeepCursorOff ?? false),
+                AlwaysOnTop = true,
+                ClickThrough = false,
+                IsPrimary = primary,
+            });
+        }
+        return list;
+    }
+
 #if WINDOWS
     // Guards the setup-wizard route below: a second POST while MultiDigiMon
     // is already running must not spawn another instance/poll.
@@ -173,32 +224,27 @@ public static class DisplayRoutes
         }).AllowPanel();
 
         // System monitors (external DDC/CI + internal panels)
-        app.MapGet("/displays", (DisplayBrightnessController d) => d.ListDisplays()).AllowPanel();
+        app.MapGet("/displays", (DisplayBrightnessController d, DisplayTopologyService topology) =>
+        {
+            var list = d.ListDisplays();
+            foreach (var display in list.Displays)
+            {
+                if (topology.DevicePanelNameFor(display.Id) is { } deviceName) display.Name = deviceName;
+            }
+            return list;
+        }).AllowPanel();
 
         // OS monitor topology (positions, modes, scale) merged with panel state.
         app.MapGet("/displays/topology", (DisplayTopologyService topology) => topology.GetTopology()).AllowPanel();
 
         // displayId -> panelDeviceId bindings; the overlay reconciles its
         // kiosk windows against this on every prefs poll / push.
-        app.MapGet("/displays/assignments", (HttpContext ctx, PanelDeviceRegistry registry, DisplayTopologyService topology, TokenService tokens) =>
+        app.MapGet("/displays/assignments", (HttpContext ctx, PanelDeviceRegistry registry, DisplayTopologyService topology, Nexus.Service.Panel.Streams.StreamedPanelCoordinator streams, TokenService tokens) =>
         {
             if (!ServiceTokenRequests.HasServiceToken(ctx, tokens))
                 return Results.Unauthorized();
             var response = new DisplayAssignmentsResponse { PanelBackdrop = registry.GetY70Backdrop() };
-            foreach (var (displayId, panelDeviceId, reserveMonitor, backdrop, keepCursorOff, alwaysOnTop, clickThrough, isPrimary) in registry.ListAssignments(topology.IsPrimaryDisplay))
-            {
-                response.Assignments.Add(new DisplayAssignmentDto
-                {
-                    DisplayId = displayId,
-                    PanelDeviceId = panelDeviceId,
-                    ReserveMonitor = reserveMonitor,
-                    Backdrop = backdrop,
-                    KeepCursorOff = keepCursorOff,
-                    AlwaysOnTop = alwaysOnTop,
-                    ClickThrough = clickThrough,
-                    IsPrimary = isPrimary,
-                });
-            }
+            response.Assignments.AddRange(ComposeAssignments(registry, topology, streams));
             return Results.Json(response, AppJsonContext.Default.DisplayAssignmentsResponse);
         });
 
@@ -403,6 +449,8 @@ public static class DisplayRoutes
             PanelDeviceRegistry registry,
             XeneonEdgeOrientationWorker xeneon,
             MultiplexHub hub,
+            IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
             CancellationToken ct) =>
         {
             var record = registry.FindByDisplayId(id);
@@ -412,10 +460,16 @@ public static class DisplayRoutes
             var block = await xeneon.ReadSettingsAsync(ct);
             if (block is null)
                 return Results.UnprocessableEntity(ApiResponse.Fail("could not read the panel's settings"));
+            // While the schedule dims the panel the register reads the scaled value; the slider is what the user set.
+            var followKey = record.DisplayId ?? id;
+            var shownBrightness = follow.Multiplier(followKey) < 1.0
+                && store.Load().Devices.DisplaySliderBrightness.TryGetValue(followKey, out var rememberedSlider)
+                ? rememberedSlider
+                : block.Value.Brightness;
 
             var dto = new XeneonEdgeSettingsDto
             {
-                Brightness = block.Value.Brightness,
+                Brightness = shownBrightness,
                 Backlight = block.Value.Backlight,
                 Contrast = block.Value.Contrast,
                 Red = block.Value.Red,
@@ -433,6 +487,8 @@ public static class DisplayRoutes
             PanelDeviceRegistry registry,
             XeneonEdgeOrientationWorker xeneon,
             MultiplexHub hub,
+            IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
             CancellationToken ct) =>
         {
             var record = registry.FindByDisplayId(id);
@@ -457,9 +513,13 @@ public static class DisplayRoutes
 
             if (body.Brightness.HasValue)
             {
-                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Brightness, body.Brightness.Value, ct);
+                // The slider is the ceiling: remembered as the user's value, and the schedule-scaled level goes to the panel.
+                var slider = Math.Clamp(body.Brightness.Value, 0, 100);
+                var followKey = record.DisplayId ?? id;
+                var v = await xeneon.SetControlAsync(XeneonEdgeControl.Brightness, follow.Scale(followKey, slider), ct);
                 if (v is null) return Fail("failed to set brightness");
-                applied.Brightness = v;
+                store.Update(s => s.Devices.DisplaySliderBrightness[followKey] = slider);
+                applied.Brightness = slider;
                 wrote = true;
             }
             if (body.Backlight.HasValue)

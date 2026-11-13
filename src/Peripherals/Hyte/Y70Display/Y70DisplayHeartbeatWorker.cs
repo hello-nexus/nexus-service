@@ -23,6 +23,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private readonly DeviceControlGate _gate;
     private readonly IY70Provider _y70;
     private readonly Y70CaseAssigner? _caseAssigner;
+    private readonly Nexus.Service.Lighting.Y70GtLightingDeviceProvider? _lighting;
     private bool _wasDetected;
     private bool _caseHandled;
     private int _caseAbsentTicks;
@@ -38,8 +39,9 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private int _absentTicks;
     private const int DetectDropTicks = 3;
 
-    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null)
+    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null, Nexus.Service.Lighting.Y70GtLightingDeviceProvider? lighting = null)
     {
+        _lighting = lighting;
         _caseAssigner = caseAssigner;
         _hub = hub;
         _presence = presence;
@@ -82,6 +84,14 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
 
     public void Tick()
     {
+        // Every path, including the early returns, nudges the lighting provider so a
+        // replugged panel re-fires its devices-changed edge; the provider debounces.
+        try { TickCore(); }
+        finally { _lighting?.OnHubStateUpdated(); }
+    }
+
+    private void TickCore()
+    {
         // Read before the gate: the panel kiosk is a display surface, not
         // device control, so it must still open when Nexus Control is off.
         Detected = _y70.IsConnected();
@@ -89,7 +99,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
 
         if (!_gate.IsEnabled(Y70Handler.HandlerId))
         {
-            if (_hub.IsConnected) _hub.Disconnect();
+            if (_hub.IsConnected || _hub.HasBacklight) _hub.Disconnect();
             _wasDetected = false;
             _absentTicks = 0;
             return;
@@ -124,9 +134,16 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
                 Y70DisplayProtocol.VendorId,
                 Y70DisplayProtocol.Y70TouchProductId,
                 Y70DisplayProtocol.Y70InfiniteProductId,
-                Y70DisplayProtocol.Y70TrulyProductId))
+                Y70DisplayProtocol.Y70TrulyProductId,
+                Y70DisplayProtocol.Y70GtProductId))
         {
             return;
+        }
+
+        if (_hub.IsConnected && !_hub.HasBacklight
+            && _presence.UsbPresent(Y70DisplayProtocol.VendorId, Y70DisplayProtocol.Y70GtProductId))
+        {
+            _hub.EnsureBacklightConnected();
         }
 
         var connectedBefore = _hub.IsConnected;

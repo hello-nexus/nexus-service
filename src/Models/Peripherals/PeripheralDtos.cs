@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace Nexus.Service.Models.Peripherals;
 
@@ -18,6 +19,10 @@ public sealed class SupportedDeviceDto
     /// or "openrgb" (the bundled OpenRGB engine). The UI shows a per-row source icon.
     /// </summary>
     public string Source { get; set; } = "openrgb";
+
+    /// <summary>Kept out of the public supported-devices listing; never on the wire.</summary>
+    [JsonIgnore]
+    public bool Hidden { get; set; }
 }
 
 public sealed class GetSupportedDevicesResponse

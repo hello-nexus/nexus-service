@@ -105,7 +105,7 @@ public sealed class GalleryRoutesTests : IDisposable
         var pairing = _factory.Services.GetRequiredService<PanelPhonePairingService>();
         pairing.CreatePairQr();
         var pairToken = pairing.GetOutstandingPairTokens()[0].Token;
-        var claim = pairing.ClaimCore(pairToken, "Test Phone", "TestUA", "192.168.1.50", "itest-device",
+        var claim = pairing.ClaimCoreApproved(pairToken, "Test Phone", "TestUA", "192.168.1.50", "itest-device",
             overRelay: false, claimedOverHttps: true);
         Assert.True(claim.Ok, claim.Error);
 
@@ -371,6 +371,42 @@ public sealed class GalleryRoutesTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, restore.StatusCode);
         var restored = await ReadAs(await client.GetAsync("/gallery/items"), AppJsonContext.Default.GalleryItemsResponse);
         Assert.Equal(2, restored!.Items.Count);
+    }
+
+    [Fact]
+    public async Task Sort_Put_ReordersItems_AndIsReadBackOnItems()
+    {
+        var client = DesktopClient();
+        WriteImage("a.png");
+        WriteImage("b.jpg");
+        await client.PostAsJsonAsync("/gallery/sources",
+            new AddGallerySourceBody { Path = _photosDir, Kind = GallerySourceKinds.Folder });
+
+        var put = await client.PutAsJsonAsync("/gallery/sort",
+            new GallerySort { By = GallerySortKeys.Name, Direction = GallerySortDirections.Desc });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var items = await ReadAs(await client.GetAsync("/gallery/items"), AppJsonContext.Default.GalleryItemsResponse);
+        Assert.Equal(new[] { "b.jpg", "a.png" }, items!.Items.Select(i => i.Name).ToArray());
+        Assert.Equal(GallerySortDirections.Desc, items.Sort.Direction);
+
+        var saved = await ReadAs(put, AppJsonContext.Default.GallerySortMutationResponse);
+        Assert.False(saved!.Error);
+        Assert.Equal(GallerySortDirections.Desc, saved.Sort!.Direction);
+
+        var bad = await client.PutAsJsonAsync("/gallery/sort", new GallerySort { By = "size", Direction = GallerySortDirections.Asc });
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        var refused = await ReadAs(bad, AppJsonContext.Default.GallerySortMutationResponse);
+        Assert.True(refused!.Error);
+        Assert.False(string.IsNullOrEmpty(refused.Msg));
+    }
+
+    [Fact]
+    public async Task PanelSession_CannotChangeSort()
+    {
+        var put = await PanelClient().PutAsJsonAsync("/gallery/sort",
+            new GallerySort { By = GallerySortKeys.Name, Direction = GallerySortDirections.Desc });
+        Assert.Equal(HttpStatusCode.Forbidden, put.StatusCode);
     }
 
     // ── Auth tiers ───────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ public sealed class CorsairLinkDevice
     public int LedCount { get; init; }
     public bool HasSpeed { get; init; }
     public bool HasTemperature { get; init; }
+    public bool FanProbe { get; init; }
     public string Serial { get; init; } = "";
 
     /// <summary>Physical hub port: 0 for channels 1..12, 1 for channels 13..24.</summary>

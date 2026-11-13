@@ -63,13 +63,47 @@ public class OpenRgbNativeDetectorPolicyTests : IDisposable
     }
 
     [Theory]
-    [InlineData("np50")]
-    [InlineData("qseries")]
-    public void Hyte_nexus_detector_is_on_only_where_control_is_on_and_no_native_driver_exists(string handler)
+    [InlineData("np50", "HYTE THICC Q60")]
+    [InlineData("np50", "HYTE Nexus Portal NP50")]
+    [InlineData("qseries", "HYTE THICC Q60")]
+    [InlineData("qseries", "HYTE Nexus Portal NP50")]
+    public void Hyte_nexus_detector_is_on_only_where_control_is_on_and_no_native_driver_exists(string handler, string detector)
     {
-        Assert.Contains("HYTE Nexus", Resolve(h => h == handler, macOS: false));
-        Assert.DoesNotContain("HYTE Nexus", Resolve(h => h == handler, macOS: true));
-        Assert.Contains("HYTE Nexus", Resolve(_ => false, macOS: true));
+        Assert.Contains(detector, Resolve(h => h == handler, macOS: false));
+        Assert.DoesNotContain(detector, Resolve(h => h == handler, macOS: true));
+        Assert.Contains(detector, Resolve(_ => false, macOS: true));
+    }
+
+    [Theory]
+    [InlineData("HYTE THICC Q60")]
+    [InlineData("HYTE Nexus Portal NP50")]
+    public void Every_current_hyte_detector_is_held_off_then_released_in_the_openrgb_config(string detector)
+    {
+        Assert.Contains(detector, OpenRgbProcessManager.BuildDisabledDetectors(macOS: false));
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), null, Resolve(h => h == "qseries", macOS: false));
+        Assert.True(IsOff(Map(), detector));
+
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), null, Resolve(h => h == "qseries", macOS: true));
+        Assert.False(Map().ContainsKey(detector));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void The_legacy_hyte_nexus_detector_is_never_held_but_a_stale_false_is_cleared(bool macOS)
+    {
+        Assert.DoesNotContain("HYTE Nexus", Resolve(_ => true, macOS));
+        Assert.DoesNotContain("HYTE Nexus", Resolve(_ => false, macOS));
+        Assert.DoesNotContain("HYTE Nexus", OpenRgbProcessManager.BuildDisabledDetectors(macOS));
+
+        File.WriteAllText(Path.Combine(_dir, "OpenRGB.json"),
+            """{"Detectors":{"detectors":{"HYTE Nexus":false,"Unrelated":false}}}""");
+        OpenRgbProcessManager.EnsureDetectorOverrides(_dir, Array.Empty<string>(), null, Resolve(h => h == "qseries", macOS));
+
+        var map = Map();
+        Assert.False(map.ContainsKey("HYTE Nexus"));
+        Assert.True(IsOff(map, "Unrelated"));
     }
 
     [Fact]

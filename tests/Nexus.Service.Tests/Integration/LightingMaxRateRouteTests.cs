@@ -75,7 +75,7 @@ public sealed class LightingMaxRateRouteTests : IClassFixture<SiblingZoneHostFac
     }
 
     [Theory]
-    [InlineData("""{"id":"openrgb-s-OTHER","maxRateHz":25}""")]
+    [InlineData("""{"id":"openrgb-s-OTHER","maxRateHz":24}""")]
     [InlineData("""{"id":"openrgb-s-OTHER","maxRateHz":0}""")]
     [InlineData("""{"id":"openrgb-s-OTHER","maxRateHz":60}""")]
     [InlineData("""{"id":"","maxRateHz":10}""")]

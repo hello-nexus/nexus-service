@@ -35,3 +35,5 @@ void main() {
     col += mix(vec3(1.0), tint, 0.3) * head * lane;
     fragColor = vec4(finalize(col), 1.0);
 }
+
+float outGain() { return 1.30; }

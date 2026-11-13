@@ -228,7 +228,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                             var reading = _sensorReader.Read(settings.SensorSource, settings.TempUnit);
                             var jpeg = Slv3LcdSensorRenderer.Render(
                                 settings.SensorStyle, reading.Value, reading.Min, reading.Max, reading.Label, reading.Unit,
-                                settings.ColorA, settings.ColorB);
+                                settings.ColorA, settings.ColorB, reading.ValueType, _store.Load().Units.MonitoringWholeNumbers == true);
                             _screens.PushImage(serial, jpeg);
                             await IdleAsync(serial, pick, SensorClockPollMs, ct).ConfigureAwait(false);
                             break;
@@ -270,8 +270,23 @@ public sealed class FanLcdStreamingWorker : BackgroundService
         finally
         {
             // After this loop's last push, so nothing it sends can follow the hand-back.
-            _screens.SetPanelOwned(serial, false);
-            _screens.Release(serial);
+            // Each step guarded: a throw from this finally would fault the loop task with nobody awaiting it.
+            try
+            {
+                _screens.SetPanelOwned(serial, false);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[{_screens.LogTag}] panel hand-back failed for {serial}: {ex.Message}");
+            }
+            try
+            {
+                _screens.Release(serial);
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[{_screens.LogTag}] release failed for {serial}: {ex.Message}");
+            }
         }
     }
 

@@ -75,6 +75,13 @@ public sealed partial class Slv3Hub : IDisposable
     public Func<string?>? UsbAioMac { get; set; }
     private volatile string? _usbAioMac;
 
+    /// <summary>A HydroShift II is enumerated on USB, opened or not; read once per tick, outside the hub lock.</summary>
+    public Func<bool>? UsbAioPresent { get; set; }
+    private volatile bool _usbAioPresent;
+
+    // With several unbound HydroShift IIs listed, the USB one cannot be told apart by MAC.
+    private bool _soleUnboundHydroShift;
+
     /// <summary>Tells whether a MAC belongs to a fan that is plugged in over USB and driven by its own handler; the radio never binds, steers or writes to it.</summary>
     public Func<string, bool>? WiredOwned { get; set; }
 
@@ -120,6 +127,9 @@ public sealed partial class Slv3Hub : IDisposable
 
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
+
+    /// <summary>Brightness schedule: the level for a screen's MAC key and stored slider. The slider stays the user's; only the byte on the wire is scaled. Called outside the hub lock.</summary>
+    public Func<string, int, int>? ScheduleScale { get; set; }
 
     /// <summary>
     /// Raised under the hub lock with an AIO's MAC hex when it acknowledges RF control.
@@ -348,6 +358,24 @@ public sealed partial class Slv3Hub : IDisposable
     private const long SaveCfgQuietMs = 5_000;
     private long _saveCfgDueMs;
     private long _lastConfigChangeMs;
+
+    // A rebind that converged arms one save, sent once every owned chain has sat at its target for
+    // BindSaveStablePolls consecutive polls with no binding change anywhere. Effect uploads do not touch it.
+    // A chain that flaps keeps resetting the run, and a sent save is followed by at least BindSaveMinIntervalMs of quiet.
+    internal const int BindSaveStablePolls = 10;
+    internal const long BindSaveMinIntervalMs = 120_000;
+    internal const int BindSaveMaxPerWindow = 3;
+    internal const long BindSaveWindowMs = 3_600_000;
+    internal const long BindSaveRetryMs = 30_000;
+    private long _bindSaveRetryAtMs;
+    private int _uploadsInFlight;
+    private bool _bindSaveArmed;
+    private int _bindSaveStablePolls;
+    private long _bindSaveEvalPoll;
+    private long _lastBindingChangePoll;
+    private long? _lastSaveSentMs;
+    private readonly Queue<long> _bindSaveTimesMs = new();
+    private bool _bindSaveCapLogged;
 
     // Sends a sequenced control frame (RF_Select / RF_RebootLcd) gets before it
     // is dropped without an echo (L-Connect selected / reboot_lcd counters).
@@ -602,6 +630,8 @@ public sealed partial class Slv3Hub : IDisposable
         _bothAbsentSinceMs = 0;
         _lastBindMs = null;
         _saveCfgDueMs = 0;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
         _videoModeActive = false;
         _videoModePreppedCount = 0;
     }
@@ -990,6 +1020,7 @@ public sealed partial class Slv3Hub : IDisposable
     public bool PollTick()
     {
         _usbAioMac = ReadUsbAioMac();
+        _usbAioPresent = ReadUsbAioPresent();
         RefreshLockSetting();
         EnsureOwnedLoaded();
         try
@@ -1014,15 +1045,18 @@ public sealed partial class Slv3Hub : IDisposable
     public bool DriveTick()
     {
         _usbAioMac = ReadUsbAioMac();
+        _usbAioPresent = ReadUsbAioPresent();
         RefreshLockSetting();
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        // The schedule cap reads settings, so it is resolved here for every bound AIO, never under the hub lock.
+        var aioScaled = aio ? ScaleAios(BoundAioKeys(aioScreens), aioScreens) : null;
         var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
         {
-            return DriveLocked(aioSensors, aioScreens, flexLcd);
+            return DriveLocked(aioSensors, aioScreens, aioScaled, flexLcd);
         }
         finally
         {
@@ -1030,7 +1064,36 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, Slv3FlexLcdFrame? flexLcd)
+    // The AIOs SyncAioLocked drives: bound to us, with pump control or a saved screen.
+    private List<string> BoundAioKeys(IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        lock (_lock)
+        {
+            return _lastFanRecords
+                .Where(r => r.IsHydroShift && IsBoundToUsLocked(r))
+                .Select(r => Convert.ToHexString(r.Mac))
+                .Where(k => _aioControl.ContainsKey(k) || screens?.ContainsKey(k) == true)
+                .ToList();
+        }
+    }
+
+    /// <summary>The schedule-scaled screen brightness per bound AIO; one with no saved screen scales the default.</summary>
+    internal Dictionary<string, int>? ScaleAios(IReadOnlyList<string> boundKeys, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        if (ScheduleScale is not { } scale || boundKeys.Count == 0)
+        {
+            return null;
+        }
+        var scaled = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var key in boundKeys)
+        {
+            var slider = screens is not null && screens.TryGetValue(key, out var screen) ? screen.Brightness : Slv3AioScreen.Default.Brightness;
+            scaled[key] = scale(key, slider);
+        }
+        return scaled;
+    }
+
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, IReadOnlyDictionary<string, int>? aioScaled, Slv3FlexLcdFrame? flexLcd)
     {
         lock (_lock)
         {
@@ -1045,7 +1108,7 @@ public sealed partial class Slv3Hub : IDisposable
                     return true;
                 }
                 SyncPwmLocked();
-                SyncAioLocked(aioSensors, aioScreens);
+                SyncAioLocked(aioSensors, aioScreens, aioScaled);
                 RefreshMasterMacLocked();
                 SendClockHeartbeatLocked(SyncFlexLcdLocked(flexLcd, _nowMs()));
                 RunSaveCfgScheduleLocked();
@@ -1447,6 +1510,10 @@ public sealed partial class Slv3Hub : IDisposable
     {
         if (!NeedsBind(intent, record))
         {
+            if (intent.Sends > 0 && !intent.Manual)
+            {
+                _bindSaveArmed = true;
+            }
             intent.Sends = 0;
             intent.Manual = false;
             if (!_lockBound)
@@ -1678,7 +1745,7 @@ public sealed partial class Slv3Hub : IDisposable
 
         if (_lastBindMs is { } bound && _nowMs() - bound < PostBindSaveCfgMs)
         {
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("manual");
         }
     }
 
@@ -1740,7 +1807,7 @@ public sealed partial class Slv3Hub : IDisposable
     // echoes its cmdSeq, and the param block (pump timer plus LCD settings and
     // readings) goes out every DriveTick. The block always carries a pump timer,
     // so a screen-only AIO gets the default pump speed.
-    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens, IReadOnlyDictionary<string, int>? scaled)
     {
         if (_aioControl.Count == 0 && (screens is null || screens.Count == 0))
         {
@@ -1804,8 +1871,11 @@ public sealed partial class Slv3Hub : IDisposable
             // With the AIO's USB cable connected and Nexus widgets on, the streamed panel owns the
             // glass and the panel record's own setting is the only one that applies; this byte
             // stays at the user's value then, the same condition the web uses to hide this toggle.
-            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !UsbPanelOwnsGlass(key, shown.NexusWidgets);
-            shown = shown with { Brightness = AioLockBrightness(key, shown.Brightness, sleeping) };
+            var panelOwnsGlass = UsbPanelOwnsGlass(key, shown.NexusWidgets);
+            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !panelOwnsGlass;
+            // One screen can carry two schedule keys (this one and its streamed panel's); the panel's applies while it owns the glass.
+            var level = !panelOwnsGlass && scaled is not null && scaled.TryGetValue(key, out var capped) ? (byte)capped : shown.Brightness;
+            shown = shown with { Brightness = AioLockBrightness(key, level, sleeping) };
             var block = Slv3Protocol.BuildAioParamBlock(
                 sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
                 shown,
@@ -1926,6 +1996,19 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
+    private bool ReadUsbAioPresent()
+    {
+        try
+        {
+            return UsbAioPresent?.Invoke() == true;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] USB AIO presence check failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private IReadOnlyDictionary<string, Slv3AioScreen>? ReadAioScreens()
     {
         try
@@ -2038,9 +2121,10 @@ public sealed partial class Slv3Hub : IDisposable
         {
             _firstPeriodicSaveDone = true;
             _saveCfgDueMs = 0;
-            SendSaveCfgLocked();
+            SendSaveCfgLocked("periodic");
             return;
         }
+        RunBindSaveLocked(now);
         if (_saveCfgDueMs == 0 || now < _saveCfgDueMs)
         {
             return;
@@ -2051,17 +2135,110 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _saveCfgDueMs = 0;
-        SendSaveCfgLocked();
+        SendSaveCfgLocked("config-change");
     }
 
-    private bool SendSaveCfgLocked()
+    private void RunBindSaveLocked(long now)
+    {
+        if (!_bindSaveArmed)
+        {
+            return;
+        }
+        if (_bindSaveEvalPoll != _devicePolls)
+        {
+            _bindSaveEvalPoll = _devicePolls;
+            _bindSaveStablePolls = AllOwnedStableLocked() ? _bindSaveStablePolls + 1 : 0;
+        }
+        // An upload between its header and its last data pass must not be split by a save.
+        if (_bindSaveStablePolls < BindSaveStablePolls
+            || _uploadsInFlight > 0
+            || now < _bindSaveRetryAtMs
+            || (_lastSaveSentMs is { } last && now - last < BindSaveMinIntervalMs))
+        {
+            return;
+        }
+        while (_bindSaveTimesMs.Count > 0 && now - _bindSaveTimesMs.Peek() >= BindSaveWindowMs)
+        {
+            _bindSaveTimesMs.Dequeue();
+        }
+        if (_bindSaveTimesMs.Count >= BindSaveMaxPerWindow)
+        {
+            if (!_bindSaveCapLogged)
+            {
+                _bindSaveCapLogged = true;
+                ServiceLog.Info("[lianli-wireless] bind-save deferred, hourly cap reached");
+            }
+            return;
+        }
+        if (!SendSaveCfgLocked("bind-save"))
+        {
+            _bindSaveRetryAtMs = now + BindSaveRetryMs;
+            return;
+        }
+        _bindSaveCapLogged = false;
+        _bindSaveArmed = false;
+        _bindSaveStablePolls = 0;
+        _saveCfgDueMs = 0;
+        _bindSaveTimesMs.Enqueue(now);
+    }
+
+    // Every owned chain in the list was heard this poll bound to our master at its target slot and channel,
+    // none has a bind or unbind in flight, and no chain's binding changed (or was misread) this poll.
+    private bool AllOwnedStableLocked()
+    {
+        if (_devicePolls - _lastBindingChangePoll < 1)
+        {
+            return false;
+        }
+        foreach (var intent in _intents.Values)
+        {
+            if (intent.Unbinding || intent.Sends > 0)
+            {
+                return false;
+            }
+        }
+        foreach (var (key, slot) in _owned)
+        {
+            if (_userUnbound.Contains(key) || !_knownChains.TryGetValue(key, out var chain))
+            {
+                continue;
+            }
+            var record = chain.Record;
+            if (chain.Poll != _devicePolls
+                || (_intents.TryGetValue(key, out var intent) && NeedsBind(intent, record)))
+            {
+                return false;
+            }
+            if (!IsBoundToUsLocked(record) || record.RxType != slot || record.Channel != _channel)
+            {
+                if (IsWiredOwned(key))
+                {
+                    continue;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private bool SendSaveCfgLocked(string reason)
     {
         if (_tx is null)
         {
             return false;
         }
         _lastSaveMs = _nowMs();
-        return WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        var sent = WriteRfPayloadLocked(_channel, 0xFF, Slv3Protocol.BuildSaveCfg(_masterMac));
+        if (sent)
+        {
+            _lastSaveSentMs = _lastSaveMs;
+            ServiceLog.Info($"[lianli-wireless] SaveCfg sent ({reason})");
+        }
+        else
+        {
+            ServiceLog.Warn($"[lianli-wireless] SaveCfg failed ({reason})");
+        }
+        return sent;
     }
 
     // Pages needed to hold recordCount records at RecordsPerPage each, >=1 and
@@ -2141,6 +2318,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (IsZeroedCopyOfKnownChainLocked(record.Mac))
                     {
+                        _lastBindingChangePoll = _devicePolls;
                         continue;
                     }
                     if (ConfirmNewChains)
@@ -2159,10 +2337,18 @@ public sealed partial class Slv3Hub : IDisposable
                         : record.IsHydroShift ? $"HydroShift II dev_type {record.DevType}, {record.FanCount} fan(s)"
                         : $"{record.FanCount} fan(s), {record.Family}";
                     ServiceLog.Info($"[lianli-wireless] chain {key} appeared ({what}, {DescribeBinding(record, _masterMac)})");
+                    Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Note(Slv3LightingDeviceProvider.DeviceIdFor(key), "lianli-wireless", Nexus.Service.Diagnostics.DeviceEventKind.Connect);
                 }
-                else if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                else
                 {
-                    ServiceLog.Info(line);
+                    if (BindingChanged(known.Record, record))
+                    {
+                        _lastBindingChangePoll = _devicePolls;
+                    }
+                    if (TraceBindingLocked(key, known.Record, record, reply, offset, nowMs) is { } line)
+                    {
+                        ServiceLog.Info(line);
+                    }
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
                 Diag.OnSeen(key, nowMs, reply.AsSpan(offset, Slv3Protocol.RecordLength), record.RxType, record.Channel);
@@ -2253,6 +2439,8 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 Diag.OnDropped(key, nowMs);
+                var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
+                Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);
@@ -2285,6 +2473,12 @@ public sealed partial class Slv3Hub : IDisposable
     {
         var records = new List<Slv3DeviceRecord>(_knownChains.Count);
         var fans = new List<Slv3FanInfo>(_knownChains.Count);
+        var unboundHydroShifts = 0;
+        foreach (var chain in _knownChains.Values)
+        {
+            unboundHydroShifts += chain.Record.IsHydroShift && !IsBoundToUsLocked(chain.Record) ? 1 : 0;
+        }
+        _soleUnboundHydroShift = unboundHydroShifts == 1;
         foreach (var key in SortedChainKeysLocked())
         {
             var chain = _knownChains[key];
@@ -2499,6 +2693,7 @@ public sealed partial class Slv3Hub : IDisposable
         UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
             && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
             || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
+        UsbPresent = record.IsHydroShift && !IsBoundToUsLocked(record) && _soleUnboundHydroShift && _usbAioMac is null && _usbAioPresent,
         WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
         RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,
@@ -3046,67 +3241,75 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        lock (_lock)
+        BeginUpload();
+        try
         {
-            if (_tx is null)
+            lock (_lock)
             {
-                outcome.Reason = Slv3UploadReason.TxFail;
-                return false;
-            }
-            for (var i = 0; i < WindowHeaderRepeats; i++)
-            {
-                if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                if (_tx is null)
                 {
                     outcome.Reason = SendFailReasonLocked();
                     return false;
                 }
+                for (var i = 0; i < WindowHeaderRepeats; i++)
+                {
+                    if (!SendRfPayloadLocked(channel, rxType, packets[0]))
+                    {
+                        outcome.Reason = SendFailReasonLocked();
+                        return false;
+                    }
+                }
+                for (var pass = 0; pass < WindowDataPasses; pass++)
+                {
+                    for (var p = 1; p < packets.Length; p++)
+                    {
+                        if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            outcome.Reason = SendFailReasonLocked();
+                            return false;
+                        }
+                    }
+                }
+                NoteConfigChangedLocked();
             }
-            for (var pass = 0; pass < WindowDataPasses; pass++)
+            // The late passes' cost is booked at decision time so a concurrent
+            // upload's check already sees it; the passes themselves are not re-counted.
+            var lateCost = WindowLatePasses * (packets.Length - 1);
+            var latePasses = 0;
+            lock (_lock)
             {
+                if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
+                {
+                    latePasses = WindowLatePasses;
+                    var now = _nowMs();
+                    for (var i = 0; i < lateCost; i++)
+                    {
+                        _airSendsMs.Enqueue(now);
+                    }
+                }
+            }
+            // Late passes release the lock between packets so the device-list poll keeps running.
+            for (var pass = 0; pass < latePasses; pass++)
+            {
+                await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
                 for (var p = 1; p < packets.Length; p++)
                 {
-                    if (!SendRfPayloadLocked(channel, rxType, packets[p]))
+                    lock (_lock)
                     {
-                        outcome.Reason = SendFailReasonLocked();
-                        return false;
+                        if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
+                        {
+                            outcome.Reason = SendFailReasonLocked();
+                            return false;
+                        }
                     }
                 }
             }
-            NoteConfigChangedLocked();
+            return true;
         }
-        // The late passes' cost is booked at decision time so a concurrent
-        // upload's check already sees it; the passes themselves are not re-counted.
-        var lateCost = WindowLatePasses * (packets.Length - 1);
-        var latePasses = 0;
-        lock (_lock)
+        finally
         {
-            if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
-            {
-                latePasses = WindowLatePasses;
-                var now = _nowMs();
-                for (var i = 0; i < lateCost; i++)
-                {
-                    _airSendsMs.Enqueue(now);
-                }
-            }
+            EndUpload();
         }
-        // Late passes release the lock between packets so the device-list poll keeps running.
-        for (var pass = 0; pass < latePasses; pass++)
-        {
-            await Task.Delay(WindowLateGapMs).ConfigureAwait(false);
-            for (var p = 1; p < packets.Length; p++)
-            {
-                lock (_lock)
-                {
-                    if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
-                    {
-                        outcome.Reason = SendFailReasonLocked();
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
     }
 
     // A chain can misparse effect-index bytes as a bind target and re-bind off
@@ -3198,6 +3401,36 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
 
+        BeginUpload();
+        try
+        {
+            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex, outcome);
+        }
+        finally
+        {
+            EndUpload();
+        }
+    }
+
+    private void BeginUpload()
+    {
+        lock (_lock)
+        {
+            _uploadsInFlight++;
+        }
+    }
+
+    private void EndUpload()
+    {
+        lock (_lock)
+        {
+            _uploadsInFlight--;
+        }
+    }
+
+    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex, UploadOutcome outcome)
+    {
+        effectIndexHex = "";
         // The header gaps run with _lock RELEASED so the device-list poll keeps
         // running even with several chains streaming. The repeats are
         // identical, so a keepalive/poll frame slipping into a gap is harmless.
@@ -3294,6 +3527,11 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     /// <summary>RF payloads handed to the TX over the last <see cref="AirRateWindowMs"/>; drops older entries.</summary>
+    internal int RecentAirSends()
+    {
+        lock (_lock) return RecentAirSendsLocked();
+    }
+
     private int RecentAirSendsLocked()
     {
         var cutoff = _nowMs() - AirRateWindowMs;
@@ -3473,7 +3711,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return SuspendSend.Down;
             }
-            return SendSaveCfgLocked() ? SuspendSend.Sent : SuspendSend.Failed;
+            return SendSaveCfgLocked("suspend") ? SuspendSend.Sent : SuspendSend.Failed;
         }
         finally
         {

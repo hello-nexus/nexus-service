@@ -157,6 +157,43 @@ public class LightingEngineRenderAheadPinTests
         Assert.True(rig.Can("d-0", "d-1"));
     }
 
+    [Fact]
+    public async Task A_pinned_animate_zone_rolls_under_a_frozen_global_and_renders_at_each_tick()
+    {
+        using var rig = new Rig(new RampEffect());
+        rig.Engine.SetFrozen(true);
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "plasma"));
+        Assert.True(await rig.RollsEventually("d-0"));
+        var frames = await rig.Window(new long[] { 10, 20 }, "d-0");
+        Assert.Equal(new byte[] { 10, 0, 0 }, Led(frames[0][0], 0));
+        Assert.Equal(new byte[] { 20, 0, 0 }, Led(frames[1][0], 0));
+    }
+
+    [Fact]
+    public async Task A_zone_that_follows_a_frozen_global_stays_live_and_holds_back_its_chain()
+    {
+        using var rig = new Rig(new RampEffect());
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "plasma"));
+        Assert.True(await rig.RollsEventually("d-0", "d-1"));
+        rig.Engine.SetFrozen(true);
+        Assert.False(rig.Can("d-1"));
+        Assert.False(rig.Can("d-0", "d-1"));
+        Assert.True(rig.Can("d-0"));
+        rig.Engine.SetFrozen(false);
+        Assert.True(await rig.RollsEventually("d-0", "d-1"));
+    }
+
+    [Fact]
+    public async Task A_frozen_global_with_only_static_pins_has_nothing_to_roll()
+    {
+        using var rig = new Rig(new RampEffect(), anchor: false);
+        rig.Engine.SetFrozen(true);
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Static, "red"));
+        await rig.WaitFrames(20);
+        Assert.False(rig.Can("d-0"));
+        Assert.False(rig.Can("d-1"));
+    }
+
     [Theory]
     [InlineData(DevicePinKinds.Mirror)]
     [InlineData(DevicePinKinds.Media)]
@@ -228,17 +265,19 @@ public class LightingEngineRenderAheadPinTests
     }
 
     [Fact]
-    public async Task A_sweep_pin_samples_the_whole_frame_and_a_plain_pin_only_its_own_rect()
+    public async Task A_sweep_pin_maps_by_layout_like_a_plain_pin()
     {
         using var rig = new Rig(new TickRedEffect());
         rig.Build = _ => new RampEffect();
-        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "sweeprainbow"));
+        rig.Pins.Set("d-0", Pin(DevicePinKinds.Animate, "rainbow"));
         rig.Pins.Set("d-1", Pin(DevicePinKinds.Animate, "plasma"));
         var frames = await rig.Window(new long[] { 5 }, "d-0", "d-1");
         var sweepSpread = Led(frames[0][0], 0)[0] - Led(frames[0][0], 3)[0];
         var plainSpread = Led(frames[0][1], 0)[0] - Led(frames[0][1], 3)[0];
-        Assert.True(sweepSpread > 100, $"sweep spread {sweepSpread}");
-        Assert.True(plainSpread < sweepSpread / 2, $"plain spread {plainSpread}");
+        // Pins come from the advanced page: neither reads the whole frame.
+        Assert.True(sweepSpread < 100, $"sweep spread {sweepSpread}");
+        Assert.True(plainSpread < 100, $"plain spread {plainSpread}");
+        Assert.True(Math.Abs(sweepSpread - plainSpread) < 20, $"sweep {sweepSpread} vs plain {plainSpread}");
     }
 
     [Fact]

@@ -39,6 +39,9 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
         Pages = { new PanelPageDto { Id = "p", Widgets = { new PanelWidgetDto { Id = "w", Type = widgetType } } } },
     };
 
+    private static List<string> Types(PanelLayoutDto? layout) =>
+        layout?.Pages.SelectMany(p => p.Widgets).Select(w => w.Type).ToList() ?? new();
+
     private static string? WidgetType(PanelLayoutDto? layout) => layout?.Pages.SingleOrDefault()?.Widgets.SingleOrDefault()?.Type;
 
     private async Task<JsonElement> ReadJson(HttpResponseMessage res)
@@ -118,6 +121,61 @@ public sealed class DashboardPresetRoutesTests : IClassFixture<StubDeviceHostFac
         Assert.Equal("Work", created.GetProperty("name").GetString());
         Assert.Equal(created.GetProperty("id").GetString(), root.GetProperty("activeId").GetString());
         Assert.Equal("calendar", WidgetType(Store.Load().Panel.DashboardPresets!.Single().Layout));
+    }
+
+    [Fact]
+    public async Task Create_fresh_stores_the_starter_dashboard_and_makes_it_live()
+    {
+        await ReadJson(await SeedAsync(("Default", "clock")));
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        var root = await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Blank","fresh":true}""")));
+
+        var stored = Store.Load().Panel;
+        var layout = stored.DashboardPresets!.Single(p => p.Name == "Blank").Layout!;
+        Assert.Equal(root.GetProperty("presets")[1].GetProperty("id").GetString(), stored.DashboardActivePresetId);
+        Assert.Equal("desktop", layout.Surface);
+        Assert.Equal(2, layout.LayoutSchemaVersion);
+        var starter = Types(Nexus.Service.Panel.PanelLayoutDefaults.ForSurface("desktop"));
+        Assert.NotEmpty(starter);
+        Assert.Equal(starter, Types(layout));
+        Assert.Equal(starter, Types(stored.DashboardLayout));
+        Assert.Equal("calendar", WidgetType(stored.DashboardPresets!.Single(p => p.Name == "Default").Layout));
+    }
+
+    [Fact]
+    public async Task Create_fresh_without_an_active_preset_snapshots_the_live_layout()
+    {
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"First","fresh":true}""")));
+
+        var stored = Store.Load().Panel;
+        Assert.Equal("calendar", WidgetType(stored.DashboardPresets!.Single().Layout));
+        Assert.Equal("calendar", WidgetType(stored.DashboardLayout));
+    }
+
+    [Fact]
+    public async Task Create_fresh_leaves_the_previously_active_preset_holding_its_layout()
+    {
+        await ReadJson(await SeedAsync(("Default", "clock")));
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Blank","fresh":true}""")));
+
+        var presets = Store.Load().Panel.DashboardPresets!;
+        Assert.Equal("calendar", WidgetType(presets.Single(p => p.Name == "Default").Layout));
+    }
+
+    [Fact]
+    public async Task Create_fresh_false_still_snapshots_the_live_layout()
+    {
+        Store.Update(s => s.Panel.DashboardLayout = Layout("calendar"));
+
+        await ReadJson(await _client.PostAsync("/dashboard/presets", Json("""{"name":"Snap","fresh":false}""")));
+
+        Assert.Equal("calendar", WidgetType(Store.Load().Panel.DashboardPresets!.Single().Layout));
+        Assert.Equal("calendar", WidgetType(Store.Load().Panel.DashboardLayout));
     }
 
     [Fact]

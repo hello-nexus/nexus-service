@@ -1,8 +1,7 @@
 uniform float u_flow; // hint_range(0.2, 2.5, 0.05) = 1.0  lava current rate
 uniform float u_crackWidth; // hint_range(0.1, 0.9, 0.02) = 0.35  ridge thickness 0.1..0.9
 uniform float u_shimmer; // hint_range(0.0, 1.5, 0.02) = 0.6  heat-haze distortion
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Magma fissure: dark cracked rock with glowing lava rivers. Ridge-mask
 // carves channels where fbm crosses 0.5; a second warped field gives the
@@ -38,8 +37,8 @@ void main() {
     vec3 rock = mix(vec3(0.02, 0.01, 0.01), vec3(0.09, 0.04, 0.02),
                     smoothstep(0.3, 0.7, n));
     // Lava colour is driven by the noise field so different regions pick
-    // different hues. At hue=0 colorize=0 the full field reads as rainbow
-    // lava; at hue=0.03 colorize=0.45 finalize() collapses it toward red.
+    // different hues. A full wheel arc reads as rainbow lava; a narrow arc
+    // collapses it toward one tone.
     float lavaHue = n * 0.9 + lavaFlow * 0.15 + t * 0.02;
     vec3 lava = mix(tintedPalette(lavaHue), tintedPalette(lavaHue + 0.08),
                     smoothstep(0.15, 0.7, heat));
@@ -49,5 +48,7 @@ void main() {
     // Heat bleeds into the rock around the cracks.
     col += tintedPalette(lavaHue) * pow(cracks, 0.5) * 0.12 * pulse;
 
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
+
+float outGain() { return 1.45; }

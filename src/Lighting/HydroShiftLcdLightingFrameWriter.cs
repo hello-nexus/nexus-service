@@ -95,6 +95,7 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
         if (_identify.TryGetActive(id, DateTime.UtcNow.Ticks, out var startTicks))
         {
             var elapsedMs = (DateTime.UtcNow.Ticks - startTicks) / TimeSpan.TicksPerMillisecond;
+            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, 1.0, DeviceColorAdjust.Identity, true, startTicks, DateTime.UtcNow.Ticks, IdentifyFlashHalfPeriodMs);
             if ((elapsedMs / IdentifyFlashHalfPeriodMs) % 2 == 0)
             {
                 Array.Fill(_payload, (byte)255);
@@ -103,7 +104,7 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
         else if (!settings.Devices.DisabledLightingDevices.Contains(id))
         {
             settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
-            var brightness = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, MasterBrightness.Effective(settings.Lighting));
+            var brightness = MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
             var adjust = DeviceColorAdjust.For(pref);
             var src = frame.LedBytes;
             for (int i = 0; i < LedBytes && i + 2 < src.Length; i += 3)
@@ -113,6 +114,11 @@ public sealed class HydroShiftLcdLightingFrameWriter : BackgroundService
                 _payload[i + 1] = g;
                 _payload[i + 2] = b;
             }
+            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, brightness, adjust, LiveScale.Adjust);
+        }
+        else
+        {
+            _engine.Live.Report(id, frame.LedBytes, LedBytes / 3, 0.0, DeviceColorAdjust.Identity, LiveScale.Adjust);
         }
         if (_haveLast && nowMs - _lastSentMs < ReassertMs && _payload.AsSpan().SequenceEqual(_last))
         {

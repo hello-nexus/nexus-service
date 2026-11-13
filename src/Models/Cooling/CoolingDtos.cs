@@ -223,7 +223,7 @@ public sealed class TemperatureSource
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
-    /// <summary>"CPU" | "GPU" | "Motherboard" | "Storage" | "Hub"</summary>
+    /// <summary>"CPU" | "GPU" | "Motherboard" | "Storage" | "Hub" | "Fan sensors"</summary>
     public string Category { get; set; } = "";
     public float Value { get; set; }
 
@@ -232,6 +232,9 @@ public sealed class TemperatureSource
 
     /// <summary>Product name of the owning device, for grouping these into the monitoring "Cooler" category. Null when DeviceId is.</summary>
     public string? DeviceName { get; set; }
+
+    /// <summary>True for a probe built into a fan (iCUE LINK QX): listed as a fan sensor, not under the monitoring "Cooler" category.</summary>
+    public bool FanProbe { get; set; }
 }
 
 // ----- Device warnings (AmpScale / device-count / LED-count overloads) -----
@@ -399,6 +402,8 @@ public sealed class CoolingPresetsResponse : ApiResponse
 public sealed class CreateCoolingPresetBody
 {
     public string Name { get; set; } = "";
+    /// <summary>Build the preset from clean-install cooling defaults and apply it, instead of snapshotting the live state.</summary>
+    public bool Fresh { get; set; }
 }
 
 public sealed class CreateCoolingPresetResponse : ApiResponse

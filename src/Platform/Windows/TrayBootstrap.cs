@@ -187,7 +187,7 @@ internal static class TrayBootstrap
         var diagAlerts = app.Services.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         diagAlerts.AlertNeedsAttention += notice =>
         {
-            try { Nexus.Service.Notifications.NotificationGate.SendOrHold(() => TrayIcon.ShowNoticeBalloon(notice.Title, notice.Text, null, Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind))); }
+            try { Nexus.Service.Notifications.NotificationGate.SendOrHold(() => TrayIcon.ShowNoticeBalloon(notice.Title, notice.Text, null, Nexus.Service.Diagnostics.DiagnosticsAlertService.AlertPath(notice.Kind), notice.Severity), notice.Urgent); }
             catch { /* best-effort */ }
         };
     }
@@ -262,7 +262,7 @@ internal static class TrayBootstrap
                 }
                 else
                 {
-                    TrayCommands.NoticeAsync(helperRegistry, notice.Title, notice.Text, null, path).ObserveFaults();
+                    TrayCommands.NoticeAsync(helperRegistry, notice.Title, notice.Text, null, path, urgent: notice.Urgent, severity: notice.Severity).ObserveFaults();
                 }
             }
             catch (Exception ex) { Console.Error.WriteLine($"[diagnostics-notify] show failed: {ex.Message}"); }
@@ -399,7 +399,8 @@ internal static class TrayBootstrap
         // End task on a launch notice. Ended here, not in the helper: the
         // service runs as LocalSystem and can end an elevated vendor app.
         var noticeWatcher = app.Services.GetService<Nexus.Service.Conflicts.ConflictWatcher>();
-        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env, noticeWatcher);
+        var noticeEnder = app.Services.GetService<Nexus.Service.Conflicts.ConflictGracefulEnd>();
+        helperRegistry.InboundEnvelope += (_, env) => EndConflictFromNotice(env, noticeWatcher, noticeEnder);
 
         // Theme.ResolvedThemeMode is the Windows light/dark theme and this is its
         // only writer. The helper reports it on every connect and on change.
@@ -418,7 +419,7 @@ internal static class TrayBootstrap
             catch (Exception ex) { Console.Error.WriteLine($"[theme-sync] apply failed: {ex.Message}"); }
         };
 
-        static void EndConflictFromNotice(HelperEnvelope env, Nexus.Service.Conflicts.ConflictWatcher? watcher)
+        static void EndConflictFromNotice(HelperEnvelope env, Nexus.Service.Conflicts.ConflictWatcher? watcher, Nexus.Service.Conflicts.ConflictGracefulEnd? graceful)
         {
             if (env.Type != ConflictNoticeCommands.EndType || env.Payload is null) return;
             Nexus.Service.Conflicts.ConflictAppDefinition? def;
@@ -438,7 +439,7 @@ internal static class TrayBootstrap
             {
                 try
                 {
-                    var outcome = Nexus.Service.Conflicts.ConflictKiller.Kill(def);
+                    var outcome = (graceful ?? new Nexus.Service.Conflicts.ConflictGracefulEnd(null)).EndWithOutcome(def);
                     ServiceLog.Info($"[conflicts] end task from notice: {def.DisplayName} runningBefore={outcome.RunningBefore} runningAfter={outcome.RunningAfter}");
                     // Rescans like the kill route, so the dashboard sees the setting go off at once.
                     if (def.IsSetting) watcher?.PillarsChanged();

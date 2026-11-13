@@ -92,7 +92,6 @@ public sealed class DiagnosticsToolsTests : IDisposable
         new MemoryDiagnosticOrchestrator(),
         new PnpProblemScanner(),
         new McpTestHarness.StubSensorProvider(),
-        new InMemoryMetricsHistoryStore(),
         store);
 
     /// <summary>All seven real tools, wired the same way AddNexusMcp wires them

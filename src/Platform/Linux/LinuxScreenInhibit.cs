@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Platform.Linux.DBus;
 
@@ -15,51 +16,112 @@ namespace Nexus.Service.Platform.Linux;
 /// </summary>
 internal static class LinuxScreenInhibit
 {
+    private static readonly TimeSpan RetryMin = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan RetryMax = TimeSpan.FromSeconds(30);
+
     private static readonly object Gate = new();
+    // Non-null from Acquire until Release; cancelled by Release to stop the retry loop.
+    private static CancellationTokenSource? _wanted;
     private static uint? _cookie;
 
-    public static async Task AcquireAsync(DBusConnection dbus)
+    /// <summary>
+    /// At cold boot the provider (the compositor's idle daemon) registers on the
+    /// session bus after the kiosk spawns, so the first call fails with ServiceUnknown.
+    /// Retries with a capped backoff until it lands or <see cref="ReleaseAsync"/> runs.
+    /// </summary>
+    public static Task AcquireAsync(DBusConnection dbus)
+        => AcquireAsync(() => InhibitCallAsync(dbus), c => UnInhibitAsync(dbus, c), RetryMin);
+
+    private static async Task<uint> InhibitCallAsync(DBusConnection dbus)
     {
+        try { await dbus.StartAsync(); } catch { }
+        var reply = await dbus.CallAsync("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
+            "org.freedesktop.ScreenSaver", "Inhibit", "ss",
+            w => { w.WriteString("Nexus"); w.WriteString("Y70 panel is showing"); });
+        return new DBusReader(reply.Body).ReadUInt32();
+    }
+
+    internal static async Task AcquireAsync(Func<Task<uint>> inhibit, Func<uint, Task<bool>> unInhibit, TimeSpan firstDelay)
+    {
+        CancellationTokenSource mine;
         lock (Gate)
         {
-            if (_cookie is not null) return;
-            _cookie = 0; // claimed; the real cookie lands below
+            if (_wanted is not null) return;
+            mine = _wanted = new CancellationTokenSource();
         }
-        try
+        var ct = mine.Token;
+        var delay = firstDelay;
+        var logged = false;
+        while (!ct.IsCancellationRequested)
         {
-            try { await dbus.StartAsync(); } catch { }
-            var reply = await dbus.CallAsync("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
-                "org.freedesktop.ScreenSaver", "Inhibit", "ss",
-                w => { w.WriteString("Nexus"); w.WriteString("Y70 panel is showing"); });
-            var cookie = new DBusReader(reply.Body).ReadUInt32();
-            lock (Gate) _cookie = cookie;
-            Console.Error.WriteLine($"[panel-kiosk] screen blanking inhibited (cookie {cookie})");
-        }
-        catch (Exception ex)
-        {
-            lock (Gate) _cookie = null;
-            Console.Error.WriteLine($"[panel-kiosk] screen inhibit unavailable: {ex.Message}");
+            try
+            {
+                var cookie = await inhibit();
+                bool stale;
+                // Identity, not the token: Release clears _wanted under this same lock, so a
+                // reply that lands after it can never store a cookie nobody will release.
+                lock (Gate)
+                {
+                    stale = !ReferenceEquals(_wanted, mine);
+                    if (!stale) _cookie = cookie;
+                }
+                if (stale)
+                {
+                    await unInhibit(cookie);
+                    return;
+                }
+                Console.Error.WriteLine($"[panel-kiosk] screen blanking inhibited (cookie {cookie})");
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (!logged)
+                {
+                    logged = true;
+                    Console.Error.WriteLine($"[panel-kiosk] screen inhibit unavailable, retrying: {ex.Message}");
+                }
+            }
+            try { await Task.Delay(delay, ct); }
+            catch (OperationCanceledException) { return; }
+            delay = NextDelay(delay);
         }
     }
 
-    public static async Task ReleaseAsync(DBusConnection dbus)
+    internal static TimeSpan NextDelay(TimeSpan current)
+        => TimeSpan.FromTicks(Math.Min(current.Ticks * 2, RetryMax.Ticks));
+
+    public static Task ReleaseAsync(DBusConnection dbus)
+        => ReleaseAsync(c => UnInhibitAsync(dbus, c));
+
+    internal static async Task ReleaseAsync(Func<uint, Task<bool>> unInhibit)
     {
-        uint cookie;
+        uint? cookie;
         lock (Gate)
         {
-            if (_cookie is not { } c || c == 0) { _cookie = null; return; }
-            cookie = c;
+            try { _wanted?.Cancel(); } catch { }
+            _wanted = null;
+            cookie = _cookie;
             _cookie = null;
         }
+        if (cookie is { } c)
+        {
+            if (await unInhibit(c))
+                Console.Error.WriteLine("[panel-kiosk] screen blanking inhibit released");
+        }
+    }
+
+    private static async Task<bool> UnInhibitAsync(DBusConnection dbus, uint cookie)
+    {
         try
         {
             await dbus.CallAsync("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver",
                 "org.freedesktop.ScreenSaver", "UnInhibit", "u", w => w.WriteUInt32(cookie));
-            Console.Error.WriteLine("[panel-kiosk] screen blanking inhibit released");
+            return true;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[panel-kiosk] screen inhibit release failed: {ex.Message}");
+            return false;
         }
     }
 }

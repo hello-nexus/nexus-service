@@ -16,7 +16,7 @@ public class CorsairLinkLcdPanelTests
     [Fact]
     public void Discover_reports_nothing_until_hub_and_lcd_are_both_up()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         var (lcd, _) = AttachLcd();
         var hubs = new CorsairLinkHubs();
         hubs.Add(hub);
@@ -35,7 +35,7 @@ public class CorsairLinkLcdPanelTests
     [Fact]
     public void Discover_offers_a_480_round_panel_keyed_by_the_lcd_serial()
     {
-        var hub = new CorsairLinkHub();
+        var hub = new CorsairLinkHub(modeCycleWaitMs: 0);
         hub.State.IsConnected = true;
         hub.State.HasLcd = true;
         var (lcd, _) = AttachLcd();
@@ -156,7 +156,7 @@ public class CorsairLinkLcdPanelTests
         Assert.False(lcd.IsStreamLive);
     }
 
-    private static (CorsairLinkLcd lcd, RecordingHidDevice device) AttachLcd()
+    internal static (CorsairLinkLcd lcd, RecordingHidDevice device) AttachLcd()
     {
         var device = new RecordingHidDevice();
         var info = new HidDeviceInfo
@@ -174,7 +174,7 @@ public class CorsairLinkLcdPanelTests
         return (lcd, device);
     }
 
-    private sealed class RecordingHidDevice : IHidDevice
+    internal sealed class RecordingHidDevice : IHidDevice
     {
         public List<byte[]> Writes { get; } = new();
         public List<byte[]> Features { get; } = new();

@@ -96,7 +96,7 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         foreach (var controller in controllers)
@@ -168,7 +168,7 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
     private void FillPort(DeviceFrame[] devices, NollieController controller, NolliePort port,
         IReadOnlyList<ResolvedZone> zones,
         IReadOnlyList<string> disabled, IReadOnlyList<string> uncontrolled,
-        IReadOnlyDictionary<string, LightingDevicePreference> prefs, float globalBrightness, long nowTicks,
+        IReadOnlyDictionary<string, LightingDevicePreference> prefs, MasterLevel globalBrightness, long nowTicks,
         List<ChannelSend> sends)
     {
         var total = 0;
@@ -190,6 +190,10 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
                 var brightnessMul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust);
                 var hasIdentify = _identify.TryGetActive(zone.Id, nowTicks, out var startTicks);
                 FillSlice(buf, offset, ledCount, frame, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+                if (frame is not null)
+                {
+                    _engine.Live.Report(zone.Id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
+                }
             }
             offset += ledCount;
         }
@@ -258,7 +262,7 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
 
     internal static double ComputeBrightnessMul(string id,
         IReadOnlyList<string> disabled, IReadOnlyList<string> uncontrolled,
-        IReadOnlyDictionary<string, LightingDevicePreference> prefs, float globalBrightness,
+        IReadOnlyDictionary<string, LightingDevicePreference> prefs, MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -285,7 +289,7 @@ public sealed class NollieLightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
     /// <summary>Fills a slice of the port buffer starting at LED index <paramref name="dstStart"/>, so several zones can tile one port back to back.</summary>

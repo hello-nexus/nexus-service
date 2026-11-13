@@ -76,6 +76,9 @@ public static partial class LinuxSession
     private const int SessionPollFastMs = 2_000;
     private const int SessionPollSlowMs = 30_000;
     private const int SessionFastWindowMs = 2 * 60 * 1000;
+    // How long a wayland session may sit without a socket in its runtime dir before
+    // it is adopted anyway with the default display name.
+    internal const int WaylandSocketGraceMs = 45_000;
 
     public static void AdoptActiveSessionEnv()
     {
@@ -101,12 +104,44 @@ public static partial class LinuxSession
             return;
         }
 
+        var (decision, wait) = NextAdoption(null, s.Uid, s.Type, s.Wayland, Environment.TickCount64);
+        if (decision == AdoptDecision.Defer)
+        {
+            Console.Error.WriteLine(DeferLog);
+            StartSessionWatch(wait);
+            return;
+        }
+
         Apply(s);
+    }
+
+    private const string DeferLog = "[session] root daemon: wayland session is active but its compositor socket is not up yet; waiting for it before adopting";
+
+    internal enum AdoptDecision { None, Defer, Adopt, AdoptGuess }
+
+    /// <summary>When a socketless wayland session was first seen; keyed on its uid so a
+    /// different session restarts the clock.</summary>
+    internal readonly record struct SocketWait(uint Uid, long SinceMs);
+
+    /// <summary>One poll's adoption decision. A wayland session without a compositor
+    /// socket is deferred for <see cref="WaylandSocketGraceMs"/> (adopting early would
+    /// freeze a guessed WAYLAND_DISPLAY that adoption never corrects), then adopted
+    /// with the guess. Any other session adopts at once; no session, or one that is
+    /// not socketless wayland, clears the wait.</summary>
+    internal static (AdoptDecision Decision, SocketWait? Wait) NextAdoption(
+        SocketWait? wait, uint? uid, string? sessionType, string? waylandSocket, long nowMs)
+    {
+        if (uid is not { } u)
+            return (AdoptDecision.None, null);
+        if (!string.Equals(sessionType, "wayland", StringComparison.Ordinal) || waylandSocket is not null)
+            return (AdoptDecision.Adopt, null);
+        var current = wait is { } w && w.Uid == u ? w : new SocketWait(u, nowMs);
+        return (nowMs - current.SinceMs < WaylandSocketGraceMs ? AdoptDecision.Defer : AdoptDecision.AdoptGuess, current);
     }
 
     // Poll for the session the daemon booted without, then adopt it and let the
     // session-bound subsystems re-arm.
-    private static void StartSessionWatch()
+    private static void StartSessionWatch(SocketWait? wait = null)
     {
         var t = new Thread(() =>
         {
@@ -118,9 +153,15 @@ public static partial class LinuxSession
                 waited += nap;
                 SessionInfo? found;
                 try { found = Detect(); }
-                catch { continue; }
-                if (found is null)
+                catch { found = null; }
+                var (decision, next) = NextAdoption(wait, found?.Uid, found?.Type, found?.Wayland, Environment.TickCount64);
+                if (decision == AdoptDecision.Defer && next != wait)
+                    Console.Error.WriteLine(DeferLog);
+                wait = next;
+                if (found is null || decision is AdoptDecision.None or AdoptDecision.Defer)
                     continue;
+                if (decision == AdoptDecision.AdoptGuess)
+                    Console.Error.WriteLine("[session] root daemon: no wayland socket appeared; adopting with the default display name");
                 Apply(found);
                 try { SessionAdopted?.Invoke(); }
                 catch (Exception ex)

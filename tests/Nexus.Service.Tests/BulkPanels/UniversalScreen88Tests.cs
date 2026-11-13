@@ -55,6 +55,32 @@ public class UniversalScreen88Tests
     }
 
     [Fact]
+    public void A_refused_frame_write_clears_the_pipe_halt_and_is_retried_once()
+    {
+        var driver = new UniversalScreen88Driver();
+        var pipe = new GlassPipe();
+        driver.Connect(pipe, null);
+        pipe.Clear();
+        pipe.FailWrites = 1;
+
+        Assert.True(driver.SendFrame(pipe, null, Quadrants(1920, 480)));
+
+        Assert.Equal(1, pipe.HaltsCleared);
+        Assert.Single(pipe.Payloads);
+    }
+
+    [Fact]
+    public void A_frame_write_that_still_fails_after_the_halt_is_cleared_is_rejected()
+    {
+        var driver = new UniversalScreen88Driver();
+        var pipe = new GlassPipe();
+        driver.Connect(pipe, null);
+        pipe.FailWrites = 2;
+
+        Assert.False(driver.SendFrame(pipe, null, Quadrants(1920, 480)));
+    }
+
+    [Fact]
     public void A_glass_that_never_answers_is_not_connected()
     {
         var driver = new UniversalScreen88Driver();
@@ -167,6 +193,30 @@ public class UniversalScreen88Tests
         Assert.Empty(pipe.Payloads);
     }
 
+    // The quarter turn of the strip is its firmware portrait mode, so the frame only ever takes the half turn.
+    private static byte[] FramePushedWith(int rotation)
+    {
+        var driver = new UniversalScreen88Driver();
+        var pipe = new GlassPipe();
+        using var hub = new BulkPanelHub(driver);
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial");
+        transport.BindOrientation(() => (rotation, false));
+        pipe.Clear();
+
+        transport.Write(Quadrants(1920, 480));
+
+        return pipe.Payloads.Single().ToArray();
+    }
+
+    [Fact]
+    public void A_quarter_turn_leaves_the_frame_to_the_firmware_portrait_mode()
+    {
+        Assert.Equal(FramePushedWith(0), FramePushedWith(90));
+        Assert.Equal(FramePushedWith(180), FramePushedWith(270));
+        Assert.NotEqual(FramePushedWith(0), FramePushedWith(180));
+    }
+
     [Fact]
     public void Discovery_offers_a_widget_panel_that_can_go_portrait()
     {
@@ -217,7 +267,7 @@ public class UniversalScreen88Tests
         Assert.Equal(OpenRgbLightingDeviceProvider.DefaultCardLayout(0), OpenRgbLightingDeviceProvider.DefaultCardLayout(0, strip));
     }
 
-    private static byte[] Quadrants(int width, int height)
+    internal static byte[] Quadrants(int width, int height)
     {
         var frame = new byte[width * height * 4];
         for (int y = 0; y < height; y++)
@@ -240,7 +290,7 @@ public class UniversalScreen88Tests
     private static bool IsRed(SKColor p) => p.Red > 200 && p.Green < 60 && p.Blue < 60;
 
     /// <summary>Decrypts each command header, answers it like the glass does, and keeps any payload after the header.</summary>
-    private sealed class GlassPipe : IBulkUsbPipe
+    internal sealed class GlassPipe : IBulkUsbPipe
     {
         private readonly Queue<byte[]> _pending = new();
         public bool Answers { get; set; } = true;
@@ -255,8 +305,22 @@ public class UniversalScreen88Tests
             Payloads.Clear();
         }
 
+        public int FailWrites { get; set; }
+        public int HaltsCleared { get; private set; }
+
+        public bool ClearHalt(byte pipeId)
+        {
+            HaltsCleared++;
+            return true;
+        }
+
         public bool Write(ReadOnlySpan<byte> data)
         {
+            if (FailWrites > 0)
+            {
+                FailWrites--;
+                return false;
+            }
 #pragma warning disable CA5351 // The glass's own framing.
             using var des = System.Security.Cryptography.DES.Create();
 #pragma warning restore CA5351
@@ -286,6 +350,8 @@ public class UniversalScreen88Tests
         }
 
         public bool Write(byte pipeId, ReadOnlySpan<byte> data) => Write(data);
+
+        public int WriteCounted(byte pipeId, ReadOnlySpan<byte> data) => Write(data) ? data.Length : 0;
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {

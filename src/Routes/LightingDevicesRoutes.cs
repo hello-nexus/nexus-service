@@ -453,6 +453,10 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
             }
+            if (body.Pin is { Kind: Nexus.Service.Persistence.DevicePinKinds.Animate })
+            {
+                body.Pin.Effect = Nexus.Service.Lighting.SimplePatternMigration.Normalize(body.Pin.Effect);
+            }
             if (body.Pin is not null && Nexus.Service.Lighting.DevicePinTracker.Validate(body.Pin) is { } why)
             {
                 return Results.Json(
@@ -481,9 +485,21 @@ public static partial class DevicesRoutes
 
         app.MapPost("/devices/lighting-devices/layout-presets", (
             CreateLayoutPresetBody body,
-            Nexus.Service.Persistence.IConfigStore store) =>
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Sockets.MultiplexHub hub,
+            ILightingDeviceProvider lightingProvider,
+            Nexus.Service.Lighting.ILightingProvider lighting,
+            Nexus.Service.Lighting.Rgb.RgbBridge? bridge,
+            Nexus.Service.Lighting.Smart.SmartLightProvider smart,
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            FeatureGates gates) =>
         {
+            if (body.Fresh && !gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
             bool capped = false;
+            bool fresh = false;
             Nexus.Service.Persistence.LayoutPreset? created = null;
             store.Update(s =>
             {
@@ -492,18 +508,43 @@ public static partial class DevicesRoutes
                     capped = true;
                     return;
                 }
+                // With no preset active, fresh would discard the only copy of the live look.
+                fresh = body.Fresh && s.Lighting.LayoutPresets.Exists(p => p.Id == s.Lighting.ActiveLayoutPresetId);
                 var id = Guid.NewGuid().ToString("n");
                 created = new Nexus.Service.Persistence.LayoutPreset
                 {
                     Id = id,
                     Name = body.Name,
                     Layouts = DeepCopyLayouts(s.Lighting.DeviceLayouts),
-                    Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(s.Lighting),
+                    Look = Nexus.Service.Lighting.LightingPresetLooks.Capture(
+                        fresh ? new Nexus.Service.Persistence.LightingSettings() : s.Lighting),
                     SceneView = CopySceneView(s.Lighting.SceneView),
                 };
                 CaptureDeviceSlices(s, created);
+                if (fresh)
+                {
+                    // Unsaved pins and prefs live only in the settings, so the outgoing preset takes them before the reset.
+                    CaptureDeviceSlices(s, s.Lighting.LayoutPresets.Find(p => p.Id == s.Lighting.ActiveLayoutPresetId)!);
+                    // A fresh LightingSettings has no template bundles, which captures slot -1 and would keep the user's selected slot.
+                    created.Look!.AnimateSlot = 0;
+                    created.Look.StaticSlot = 0;
+                    created.DevicePins = new();
+                    // Color order is a wiring correction, so it survives the reset.
+                    created.DevicePrefs = new();
+                    foreach (var kv in s.Devices.LightingDevicePrefs)
+                    {
+                        if (kv.Value?.ColorOrder is { } order)
+                        {
+                            created.DevicePrefs[kv.Key] = new Nexus.Service.Persistence.LightingDevicePreference { ColorOrder = order };
+                        }
+                    }
+                }
                 s.Lighting.LayoutPresets.Add(created);
-                s.Lighting.ActiveLayoutPresetId = id;
+                // Fresh keeps the old active id until ActivateLayoutPreset sets it with the look, so no live mirror lands in between.
+                if (!fresh)
+                {
+                    s.Lighting.ActiveLayoutPresetId = id;
+                }
             });
             if (capped)
             {
@@ -511,6 +552,16 @@ public static partial class DevicesRoutes
                     ApiResponse.Fail("Layout preset cap of 10 reached"),
                     Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
                     statusCode: 400);
+            }
+            if (fresh)
+            {
+                if (!ActivateLayoutPreset(created!.Id, store, hub, lightingProvider, lighting, bridge, smart, engine))
+                {
+                    return Results.Json(
+                        ApiResponse.Fail("Layout preset not found"),
+                        Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse,
+                        statusCode: 404);
+                }
             }
             return Results.Json(
                 new CreateLayoutPresetResponse { Preset = ToDto(created!), ActiveId = created!.Id },
@@ -982,6 +1033,46 @@ public static partial class DevicesRoutes
                 s.Devices.SamplingModes = modes;
             });
             engine.SetSamplingModes(store.Load().Devices.SamplingModes);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
+        // How a card's LED combines the canvas pixels it reads. Broadcasts `lighting` so the card refetches.
+        app.MapPost("/devices/lighting-devices/color-sampling", (
+            SetLightingDeviceColorSamplingBody body,
+            ILightingDeviceProvider ld,
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            FeatureGates gates,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            if (!Nexus.Service.Lighting.Engine.ColorSamplings.TryParse(body.Mode, out var mode))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid mode."));
+            }
+            // Back to "standard" needs no listed card, so a stale id of an unplugged device can still be cleared.
+            if (string.IsNullOrEmpty(body.Id) || (mode != Nexus.Service.Lighting.Engine.ColorSampling.Standard && !ld.GetAll().Devices.Any(c => c.Id == body.Id)))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid id."));
+            }
+            store.Update(s =>
+            {
+                var modes = new Dictionary<string, string>(s.Devices.ColorSamplingModes);
+                if (mode == Nexus.Service.Lighting.Engine.ColorSampling.Standard)
+                {
+                    modes.Remove(body.Id);
+                }
+                else
+                {
+                    modes[body.Id] = body.Mode;
+                }
+                s.Devices.ColorSamplingModes = modes;
+            });
+            engine.SetColorSamplingModes(store.Load().Devices.ColorSamplingModes);
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();

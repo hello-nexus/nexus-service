@@ -755,7 +755,7 @@ public class DevicePinEngineTests : IDisposable
 
     private sealed class HalfAndHalf : IEffect
     {
-        public string Name => "sweeprainbow";
+        public string Name => "rainbow";
         public void RenderFrame(CanvasBuffer canvas, double tickMs)
         {
             for (int y = 0; y < canvas.Height; y++)
@@ -766,19 +766,19 @@ public class DevicePinEngineTests : IDisposable
     }
 
     [Fact]
-    public async Task A_device_pinned_to_a_sweep_reads_the_whole_canvas()
+    public async Task A_device_pinned_to_a_sweep_maps_by_layout_like_any_pin()
     {
-        Assert.True(DevicePinTracker.IsAnimateEffect("sweeprainbow"));
+        Assert.True(DevicePinTracker.IsAnimateEffect("rainbow"));
         var pins = new DevicePinTracker();
-        pins.Set("dev-a", new DevicePin { Kind = DevicePinKinds.Animate, Effect = "sweeprainbow" });
+        pins.Set("dev-a", new DevicePin { Kind = DevicePinKinds.Animate, Effect = "rainbow" });
         // A small strip parked in the red half of the canvas.
         var dev = new DeviceFrame(0, "dev-a", 10, x: 20, y: 20, w: 100, h: 20);
         using var engine = Engine(pins, dev, (_, _) => new HalfAndHalf());
         engine.SetEffect(new Fill("green", 0, 255, 0));
 
-        var leds = await WaitFor(dev, l => l[2] > 200 || l[27] > 200);
-        Assert.Equal(255, leds[0]);        // first LED: red end
-        Assert.Equal(255, leds[9 * 3 + 2]); // last LED: blue end
+        var leds = await WaitFor(dev, l => l[0] == 255);
+        Assert.Equal(255, leds[0]);
+        Assert.Equal(0, leds[9 * 3 + 2]);
     }
 
     private sealed class Halves : IEffect
@@ -803,7 +803,7 @@ public class DevicePinEngineTests : IDisposable
         var dev = new DeviceFrame(0, "dev-a", 10, x: 20, y: 20, w: 100, h: 20);
         using var engine = Engine(pins, dev, (_, _) => new Halves("red"));
         engine.FullFrameSampling = true;
-        engine.SetEffect(new Fill("sweeprainbow", 0, 255, 0));
+        engine.SetEffect(new Fill("rainbow", 0, 255, 0));
 
         var leds = await WaitFor(dev, l => l[0] == 255);
         Assert.Equal(255, leds[0]);

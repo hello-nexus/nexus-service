@@ -267,7 +267,9 @@ public static class OpenRgbZoneSupport
     }
 
     /// <summary>Caps are keyed by the owning device (the cards' ParentDeviceId, else the card id), so they survive re-partitioning.</summary>
-    private static int? MaxRateFor(Dictionary<string, int> rates, string id) => rates.TryGetValue(id, out var hz) ? hz : null;
+    // The user's explicit choice wins; otherwise report the cap the bridge enforces by default, so the UI matches the wire.
+    private static int? MaxRateFor(Dictionary<string, int> rates, string id, RgbDevice? d = null) =>
+        rates.TryGetValue(id, out var hz) ? hz : d?.DefaultMaxRateHz;
 
     /// <summary>Full GetAll card emission; static and bridge-free so tests cover it with fake controller data.</summary>
     public static GetLightingDevicesResponse BuildCards(IReadOnlyList<RgbDevice> devices, NexusSettings settings, bool isInit)
@@ -322,7 +324,7 @@ public static class OpenRgbZoneSupport
                     Hue = pref?.Hue ?? 0,
                     Saturation = pref?.Saturation ?? 1.0f,
                     RateCapSupported = true,
-                    MaxRateHz = MaxRateFor(maxRates, baseId),
+                    MaxRateHz = MaxRateFor(maxRates, baseId, d),
                     LedCount = d.LedCount,
                     EnabledLedCount = ZoneResolution.CountEnabled(structure, zones[0], baseId, d.LedCount, zones[0].LegacyZoneIndex, settings),
                     CanvasX = layout?.X ?? dx,
@@ -383,7 +385,7 @@ public static class OpenRgbZoneSupport
                         Hue = pref?.Hue ?? 0,
                         Saturation = pref?.Saturation ?? 1.0f,
                         RateCapSupported = true,
-                        MaxRateHz = MaxRateFor(maxRates, baseId),
+                        MaxRateHz = MaxRateFor(maxRates, baseId, d),
                         LedCount = effectiveLedCount,
                         EnabledLedCount = ZoneResolution.CountEnabled(portStructures[z], portZone, zoneId, effectiveLedCount, zoneHint, settings),
                         CanvasX = layout?.X ?? sx,
@@ -436,7 +438,7 @@ public static class OpenRgbZoneSupport
                     Hue = pref?.Hue ?? 0,
                     Saturation = pref?.Saturation ?? 1.0f,
                     RateCapSupported = true,
-                    MaxRateHz = MaxRateFor(maxRates, baseId),
+                    MaxRateHz = MaxRateFor(maxRates, baseId, d),
                     LedCount = zone.LedCount,
                     EnabledLedCount = ZoneResolution.CountEnabled(structure, zone, zone.Id, zone.LedCount, zone.Ordinal, settings),
                     CanvasX = layout?.X ?? zx,

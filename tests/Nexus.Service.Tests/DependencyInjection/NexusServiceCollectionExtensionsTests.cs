@@ -108,13 +108,19 @@ public class NexusServiceCollectionExtensionsTests
         var handlers = sp.GetServices<IDeviceHandler>().ToArray();
         // CNVS, QSeries (Q60+Q80 collapsed), Y70, Keeb, IbpKeyboard, IbpMouse, GalleonSd, FanHub, AW5,
         // NP50, SmartHub, LianLi (one per hub slot), LianLiWireless, LianLiFlex, LianLiTl, Galahad2, CorsairLink,
-        // CorsairLinkLcd, Strimer, Nollie, AsiahorseUmbra, Tryx, StreamDeck, Kraken, NzxtFanController, SmbusDram (the chipset
+        // CorsairLinkLcd, Strimer, Nollie, AsiahorseUmbra, Tryx, LogitechSpeaker, StreamDeck, Kraken, NzxtFanController, SmbusDram (the chipset
         // bus as a device), Astral (the ROG Astral GPU), plus one JpegPanelHandler per JpegPanelModel (Galahad II LCD,
         // Corsair XC7, Corsair Elite Capellix, ID-Cooling FX-LCD).
         // ... plus one BulkPanelHandler per bulk-pipe driver (Thermalright, Ryujin, Screen 8.8,
-        // ZMatrices, HydroShift II, HydroShift II OLED Curved), plus the Glacial LCD and DeepCool Mystique handlers.
+        // ZMatrices Glacier Matrix, ZMatrices MAX E87, HydroShift II, HydroShift II OLED Curved), plus the Glacial LCD and DeepCool Mystique handlers.
+        // ApexOled registers only where its streamed panel does (Windows and Linux).
+#if WINDOWS || LINUX
+        const int platformHandlers = 1;
+#else
+        const int platformHandlers = 0;
+#endif
         Assert.Equal(
-            26 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 8,
+            27 + Nexus.Service.Peripherals.LianLi.LianLiHubSet.Capacity + Nexus.Service.Peripherals.JpegPanels.JpegPanelModel.All.Length + 9 + platformHandlers,
             handlers.Length);
     }
 

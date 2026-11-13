@@ -46,11 +46,50 @@ public sealed partial class LightingEngine
     /// <summary>Where the live per-card modes (card id to wire name) come from. When set, the engine re-reads it once per pass and adopts a replaced dictionary, so every writer that swaps <c>Devices.SamplingModes</c> (route, chain reorder, zone drop, profile switch) reaches sampling without a call here.</summary>
     public Func<IReadOnlyDictionary<string, string>?>? SamplingModeSource { get; set; }
 
+    // Per-card color sampling, only for cards off the standard mean. Replaced wholesale, never mutated.
+    private volatile Dictionary<string, ColorSampling>? _colorModes;
+    private object? _colorSrc;
+    private bool _colorSrcSet;
+
+    /// <summary>Where the live per-card color sampling modes (card id to wire name) come from; re-read once per pass like <see cref="SamplingModeSource"/>.</summary>
+    public Func<IReadOnlyDictionary<string, string>?>? ColorSamplingModeSource { get; set; }
+
+    /// <summary>Replaces the per-card color sampling modes (card id to wire name); <c>standard</c> and unknown names are the default and are not kept.</summary>
+    public void SetColorSamplingModes(IReadOnlyDictionary<string, string>? modes)
+    {
+        _colorSrc = modes;
+        _colorSrcSet = true;
+        Dictionary<string, ColorSampling>? next = null;
+        if (modes is not null)
+        {
+            foreach (var kv in modes)
+            {
+                if (ColorSamplings.TryParse(kv.Value, out var m) && m != ColorSampling.Standard)
+                {
+                    (next ??= new Dictionary<string, ColorSampling>(StringComparer.Ordinal))[kv.Key] = m;
+                }
+            }
+        }
+        _colorModes = next;
+    }
+
+    /// <summary>The card's color sampling mode.</summary>
+    internal ColorSampling ColorModeOf(string id) =>
+        _colorModes is { } modes && modes.TryGetValue(id, out var m) ? m : ColorSampling.Standard;
+
     private object? _modesSrc;
     private bool _modesSrcSet;
 
     internal void RefreshSamplingModes()
     {
+        if (ColorSamplingModeSource is { } colorSource)
+        {
+            var colors = colorSource();
+            if (!_colorSrcSet || !ReferenceEquals(colors, _colorSrc))
+            {
+                SetColorSamplingModes(colors);
+            }
+        }
         var source = SamplingModeSource;
         if (source is null)
         {
@@ -350,9 +389,9 @@ public sealed partial class LightingEngine
         disabled = dev.LedDisabled;
     }
 
-    private (byte r, byte g, byte b) SampleAreaCell(AreaOwnerMap map, int led)
+    private (byte r, byte g, byte b) SampleAreaCell(AreaOwnerMap map, int led, ColorSampling color)
     {
-        map.Sample(_sampleCanvas.Pixels, led, out var r, out var g, out var b);
+        map.Sample(_sampleCanvas.Pixels, led, out var r, out var g, out var b, color);
         return (r, g, b);
     }
 }

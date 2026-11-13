@@ -267,6 +267,7 @@ public static class ProfileRoutes
                 StartupDelaySeconds = s.StartupDelaySeconds,
                 DisableGpuMonitoring = s.DisableGpuMonitoring,
                 ReadRamTemperatures = s.ReadRamTemperatures,
+                PowerMonitorsEnabled = s.PowerMonitorsEnabled,
                 AmdGpuLighting = OperatingSystem.IsLinux() && s.AmdGpuLighting,
                 AmdGpuLightingApplicable = OperatingSystem.IsLinux(),
                 Features = s.Features,
@@ -501,7 +502,7 @@ public static class ProfileRoutes
                     if (panel.BackgroundColor is not null)       s.Panel.BackgroundColor       = panel.BackgroundColor;
                     if (panel.BackgroundColorLight is not null)  s.Panel.BackgroundColorLight  = panel.BackgroundColorLight;
                     if (panel.BackgroundMode is not null)        s.Panel.BackgroundMode        = panel.BackgroundMode;
-                    if (panel.BackgroundEffect is not null)      s.Panel.BackgroundEffect      = panel.BackgroundEffect;
+                    if (panel.BackgroundEffect is not null)      s.Panel.BackgroundEffect      = Nexus.Service.Lighting.SimplePatternMigration.Normalize(panel.BackgroundEffect);
                     if (panel.BackgroundTemplate.HasValue)       s.Panel.BackgroundTemplate    = panel.BackgroundTemplate.Value;
                     if (panel.BackgroundOpacity.HasValue)        s.Panel.BackgroundOpacity     = panel.BackgroundOpacity.Value;
                     if (panel.PanelOpacity.HasValue)             s.Panel.PanelOpacity          = Math.Clamp(panel.PanelOpacity.Value, 0.0, 1.0);
@@ -569,7 +570,7 @@ public static class ProfileRoutes
                             .ToList();
                     }
                     if (ui.RecentStaticColors is not null) s.Ui.RecentStaticColors = UiRecents.SanitizeColors(ui.RecentStaticColors);
-                    if (ui.RecentAnimations is not null) s.Ui.RecentAnimations = UiRecents.SanitizeKeys(ui.RecentAnimations);
+                    if (ui.RecentAnimations is not null) s.Ui.RecentAnimations = UiRecents.SanitizeKeys(ui.RecentAnimations.Select(Nexus.Service.Lighting.SimplePatternMigration.Normalize));
                     if (ui.LightingDashboardMode is "simple" or "advanced")
                     {
                         if (!string.Equals(s.Ui.LightingDashboardMode, ui.LightingDashboardMode, StringComparison.Ordinal))
@@ -589,6 +590,7 @@ public static class ProfileRoutes
                     if (units.TimeFormat is { } v2) s.Units.TimeFormat = v2;
                     if (units.NumberFormat is { } v3) s.Units.NumberFormat = v3;
                     if (units.DateFormat is { } v4) s.Units.DateFormat = v4;
+                    if (units.MonitoringWholeNumbers is { } v5) s.Units.MonitoringWholeNumbers = v5;
                 }
                 if (body.Update is { } update)
                 {
@@ -610,6 +612,10 @@ public static class ProfileRoutes
                 {
                     s.ReadRamTemperatures = readRam;
                 }
+                if (body.PowerMonitorsEnabled is { } powerMonitors)
+                {
+                    s.PowerMonitorsEnabled = powerMonitors;
+                }
                 if (body.AmdGpuLighting is { } amdGpu && OperatingSystem.IsLinux() && amdGpu != s.AmdGpuLighting)
                 {
                     s.AmdGpuLighting = amdGpu;
@@ -624,13 +630,7 @@ public static class ProfileRoutes
                 }
                 if (body.Diagnostics is { } diagnostics)
                 {
-                    if (diagnostics.Thresholds is { } thresholds)
-                    {
-                        if (thresholds.CpuC.HasValue)     s.Diagnostics.Thresholds.CpuC     = thresholds.CpuC.Value;
-                        if (thresholds.GpuC.HasValue)     s.Diagnostics.Thresholds.GpuC     = thresholds.GpuC.Value;
-                        if (thresholds.StorageC.HasValue) s.Diagnostics.Thresholds.StorageC = thresholds.StorageC.Value;
-                        if (thresholds.RamC.HasValue)     s.Diagnostics.Thresholds.RamC     = thresholds.RamC.Value;
-                    }
+                    // Thresholds and the GPU, storage and cooling toggles are retired: older clients may still send them, so they are accepted and dropped.
                     if (diagnostics.WarningLingerMinutes.HasValue)
                         s.Diagnostics.WarningLingerMinutes = Math.Max(0, diagnostics.WarningLingerMinutes.Value);
                     if (diagnostics.Notifications is { } notifications)
@@ -648,10 +648,7 @@ public static class ProfileRoutes
                     if (diagnostics.Components is { } components)
                     {
                         if (components.Cpu.HasValue)     s.Diagnostics.Components.Cpu     = components.Cpu.Value;
-                        if (components.Gpu.HasValue)     s.Diagnostics.Components.Gpu     = components.Gpu.Value;
-                        if (components.Storage.HasValue) s.Diagnostics.Components.Storage = components.Storage.Value;
                         if (components.Ram.HasValue)     s.Diagnostics.Components.Ram     = components.Ram.Value;
-                        if (components.Cooling.HasValue) s.Diagnostics.Components.Cooling = components.Cooling.Value;
                         if (components.System.HasValue)  s.Diagnostics.Components.System  = components.System.Value;
                     }
                     if (diagnostics.IgnoredComponents is { } ignored)

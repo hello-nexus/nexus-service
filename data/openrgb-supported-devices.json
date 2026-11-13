@@ -1,5 +1,5 @@
 {
-  "count": 2012,
+  "count": 2051,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -114,12 +114,28 @@
       "type": "motherboard"
     },
     {
+      "name": "ASRock Intel Arc B580 Steel Legend 12GB OC",
+      "vid": null,
+      "pid": null,
+      "controller": "ASRockSMBusController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "ASRock Motherboard SMBus Controllers",
       "vid": null,
       "pid": null,
       "controller": "ASRockSMBusController",
       "kind": "i2c",
       "type": "motherboard"
+    },
+    {
+      "name": "ASRock Radeon RX 7900 XT Phantom Gaming 20GB OC",
+      "vid": null,
+      "pid": null,
+      "controller": "ASRockSMBusController",
+      "kind": "i2c",
+      "type": "gpu"
     },
     {
       "name": "ASRock Radeon RX 7900 XTX Phantom Gaming",
@@ -280,6 +296,22 @@
       "controller": "ArcticController",
       "kind": "generic",
       "type": "ledstrip"
+    },
+    {
+      "name": "Redragon M901P-KS",
+      "vid": "0x25A7",
+      "pid": "0xFA08",
+      "controller": "AresonController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "Redragon M901P-KS (Wireless)",
+      "vid": "0x25A7",
+      "pid": "0xFA07",
+      "controller": "AresonController",
+      "kind": "hid",
+      "type": "mouse"
     },
     {
       "name": "Redragon M914 NIX",
@@ -863,7 +895,7 @@
       "pid": "0x18F3",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
-      "type": null
+      "type": "motherboard"
     },
     {
       "name": "ASUS Aura Motherboard",
@@ -871,7 +903,7 @@
       "pid": "0x1939",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
-      "type": null
+      "type": "motherboard"
     },
     {
       "name": "ASUS Aura Motherboard",
@@ -879,7 +911,7 @@
       "pid": "0x19AF",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
-      "type": null
+      "type": "motherboard"
     },
     {
       "name": "ASUS Aura Motherboard",
@@ -887,7 +919,7 @@
       "pid": "0x1AA6",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
-      "type": null
+      "type": "motherboard"
     },
     {
       "name": "ASUS Aura Motherboard",
@@ -895,7 +927,7 @@
       "pid": "0x1BED",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
-      "type": null
+      "type": "motherboard"
     },
     {
       "name": "ASUS ROG AURA Terminal",
@@ -954,9 +986,41 @@
       "type": "mousemat"
     },
     {
+      "name": "ASUS ROG Chakram (Wired)",
+      "vid": "0x0B05",
+      "pid": "0x18E3",
+      "controller": "AsusAuraUSBController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
       "name": "ASUS ROG Chakram (Wireless)",
       "vid": "0x0B05",
       "pid": "0x18E5",
+      "controller": "AsusAuraUSBController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "ASUS ROG Chakram Core",
+      "vid": "0x0B05",
+      "pid": "0x1958",
+      "controller": "AsusAuraUSBController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "ASUS ROG Chakram X 2.4GHz",
+      "vid": "0x0B05",
+      "pid": "0x1A1A",
+      "controller": "AsusAuraUSBController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "ASUS ROG Chakram X USB",
+      "vid": "0x0B05",
+      "pid": "0x1A18",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
       "type": "mouse"
@@ -1335,7 +1399,7 @@
       "pid": "0x1B29",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
-      "type": null
+      "type": "motherboard"
     },
     {
       "name": "ASUS ROG Strix Scope",
@@ -1373,6 +1437,14 @@
       "name": "ASUS ROG Strix Scope II RX",
       "vid": "0x0B05",
       "pid": "0x1AB5",
+      "controller": "AsusAuraUSBController",
+      "kind": "hid",
+      "type": "keyboard"
+    },
+    {
+      "name": "ASUS ROG Strix Scope NX TKL Moonlight White",
+      "vid": "0x0B05",
+      "pid": "0x19D0",
       "controller": "AsusAuraUSBController",
       "kind": "hid",
       "type": "keyboard"
@@ -1570,38 +1642,6 @@
       "type": "mouse"
     },
     {
-      "name": "Asus ROG Chakram (Wired)",
-      "vid": "0x0B05",
-      "pid": "0x18E3",
-      "controller": "AsusAuraUSBController",
-      "kind": "hid",
-      "type": "mouse"
-    },
-    {
-      "name": "Asus ROG Chakram Core",
-      "vid": "0x0B05",
-      "pid": "0x1958",
-      "controller": "AsusAuraUSBController",
-      "kind": "hid",
-      "type": "mouse"
-    },
-    {
-      "name": "Asus ROG Chakram X 2.4GHz",
-      "vid": "0x0B05",
-      "pid": "0x1A1A",
-      "controller": "AsusAuraUSBController",
-      "kind": "hid",
-      "type": "mouse"
-    },
-    {
-      "name": "Asus ROG Chakram X USB",
-      "vid": "0x0B05",
-      "pid": "0x1A18",
-      "controller": "AsusAuraUSBController",
-      "kind": "hid",
-      "type": "mouse"
-    },
-    {
       "name": "Asus ROG Spatha X 2.4GHz",
       "vid": "0x0B05",
       "pid": "0x1979",
@@ -1704,6 +1744,14 @@
       "controller": "AsusMonitorController",
       "kind": "hid",
       "type": "monitor"
+    },
+    {
+      "name": "ASUS Super IO RGB",
+      "vid": null,
+      "pid": null,
+      "controller": "AsusSuperIORGBController",
+      "kind": "generic",
+      "type": "motherboard"
     },
     {
       "name": "ASUS TUF Laptop",
@@ -2123,6 +2171,14 @@
     },
     {
       "name": "iGame GeForce RTX 5060 Ti Ultra W DUO OC",
+      "vid": null,
+      "pid": null,
+      "controller": "ColorfulGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "iGame GeForce RTX 5060 Ultra W DUO OC",
       "vid": null,
       "pid": null,
       "controller": "ColorfulGPUController",
@@ -2778,14 +2834,6 @@
       "type": null
     },
     {
-      "name": "Corsair K65 Mini",
-      "vid": "0x1B1C",
-      "pid": "0x1BAF",
-      "controller": "CorsairPeripheralController",
-      "kind": "hid",
-      "type": "keyboard"
-    },
-    {
       "name": "Corsair K65 RGB",
       "vid": "0x1B1C",
       "pid": "0x1B17",
@@ -3154,6 +3202,14 @@
       "type": "keyboard"
     },
     {
+      "name": "Corsair K65 Mini",
+      "vid": "0x1B1C",
+      "pid": "0x1BAF",
+      "controller": "CorsairPeripheralV2Controller",
+      "kind": "hid",
+      "type": "keyboard"
+    },
+    {
       "name": "Corsair K70 Core RGB",
       "vid": "0x1B1C",
       "pid": "0x1BFD",
@@ -3344,6 +3400,38 @@
       "controller": "CorsairVengeanceController",
       "kind": "i2c",
       "type": "dram"
+    },
+    {
+      "name": "Corsair Void Pro USB",
+      "vid": "0x1B1C",
+      "pid": "0x0A17",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
+    },
+    {
+      "name": "Corsair Void Pro USB",
+      "vid": "0x1B1C",
+      "pid": "0x0A1D",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
+    },
+    {
+      "name": "Corsair Void Pro Wireless",
+      "vid": "0x1B1C",
+      "pid": "0x0A14",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
+    },
+    {
+      "name": "Corsair Void Pro Wireless",
+      "vid": "0x1B1C",
+      "pid": "0x0A1A",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
     },
     {
       "name": "Cougar 700K EVO Gaming Keyboard",
@@ -3682,7 +3770,7 @@
       "type": "keyboard"
     },
     {
-      "name": "Das Keyboard Q4 RGB",
+      "name": "Das Keyboard 4Q RGB",
       "vid": "0x24F0",
       "pid": "0x2037",
       "controller": "DasKeyboardController",
@@ -3690,7 +3778,7 @@
       "type": "keyboard"
     },
     {
-      "name": "Das Keyboard Q5 RGB",
+      "name": "Das Keyboard 5Q RGB",
       "vid": "0x24F0",
       "pid": "0x2020",
       "controller": "DasKeyboardController",
@@ -3698,7 +3786,7 @@
       "type": "keyboard"
     },
     {
-      "name": "Das Keyboard Q5S RGB",
+      "name": "Das Keyboard 5QS RGB",
       "vid": "0x24F0",
       "pid": "0x209A",
       "controller": "DasKeyboardController",
@@ -5946,6 +6034,14 @@
       "type": "keyboard"
     },
     {
+      "name": "Framework Desktop",
+      "vid": null,
+      "pid": null,
+      "controller": "FrameworkDesktopController",
+      "kind": "generic",
+      "type": "motherboard"
+    },
+    {
       "name": "GaiZhongGai 17 PRO",
       "vid": "0x3061",
       "pid": "0x4771",
@@ -7706,6 +7802,14 @@
       "type": "keyboard"
     },
     {
+      "name": "HYTE CNVS",
+      "vid": null,
+      "pid": null,
+      "controller": "HYTEMousematController",
+      "kind": "generic",
+      "type": "mousemat"
+    },
+    {
       "name": "HYTE Mousemat",
       "vid": null,
       "pid": null,
@@ -7714,7 +7818,15 @@
       "type": "mousemat"
     },
     {
-      "name": "HYTE Nexus",
+      "name": "HYTE Nexus Portal NP50",
+      "vid": null,
+      "pid": null,
+      "controller": "HYTENexusController",
+      "kind": "generic",
+      "type": "ledstrip"
+    },
+    {
+      "name": "HYTE THICC Q60",
       "vid": null,
       "pid": null,
       "controller": "HYTENexusController",
@@ -8144,6 +8256,14 @@
       "controller": "KingstonFuryDRAMController",
       "kind": "i2c",
       "type": "dram"
+    },
+    {
+      "name": "Klipsch ProMedia Lumina",
+      "vid": "0x18B5",
+      "pid": "0x0070",
+      "controller": "KlipschLuminaController",
+      "kind": "hid",
+      "type": "speaker"
     },
     {
       "name": "LED Strip",
@@ -8930,6 +9050,14 @@
       "type": "laptop"
     },
     {
+      "name": "MSI Clutch GM11 controller",
+      "vid": "0x0DB0",
+      "pid": "0x0D11",
+      "controller": "MSIClutchController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
       "name": "MSI GeForce GTX 1070 Gaming X",
       "vid": null,
       "pid": null,
@@ -9243,6 +9371,14 @@
     },
     {
       "name": "MSI GeForce RTX 3070 Gaming Trio",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 3070 Gaming Trio Plus",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -9706,7 +9842,31 @@
       "type": "gpu"
     },
     {
+      "name": "MSI GeForce RTX 5060 Ti Gaming Trio OC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5060 Ti VANGUARD SOC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "MSI GeForce RTX 5070 Gaming Trio",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5070 Ti 16G SHADOW 3X",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -9722,7 +9882,23 @@
       "type": "gpu"
     },
     {
+      "name": "MSI GeForce RTX 5070 Ti MLG Edition",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "MSI GeForce RTX 5070 Ti VANGUARD SOC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5070 VANGUARD SOC",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -9976,6 +10152,14 @@
       "controller": "MSIMonitorController",
       "kind": "hid",
       "type": "monitor"
+    },
+    {
+      "name": "MSI Mystic Light 0DB0:E777",
+      "vid": "0x0DB0",
+      "pid": "0xE777",
+      "controller": "MSIMotherboardController",
+      "kind": "hid",
+      "type": "motherboard"
     },
     {
       "name": "MSI Mystic Light Common",
@@ -10725,6 +10909,14 @@
       "name": "MSI Mystic Light MS_7D78",
       "vid": "0x1462",
       "pid": "0x7D78",
+      "controller": "MSIMotherboardController",
+      "kind": "hid",
+      "type": "motherboard"
+    },
+    {
+      "name": "MSI Mystic Light MS_7D85",
+      "vid": "0x1462",
+      "pid": "0x7D85",
       "controller": "MSIMotherboardController",
       "kind": "hid",
       "type": "motherboard"
@@ -11682,6 +11874,22 @@
       "type": "gpu"
     },
     {
+      "name": "Gainward GeForce RTX 5070 Ti Phoenix",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "Gainward GeForce RTX 5070 Ti Phoenix-S",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "Gainward GeForce RTX 5080 Phoenix",
       "vid": null,
       "pid": null,
@@ -11842,6 +12050,14 @@
       "type": "gpu"
     },
     {
+      "name": "Palit GeForce RTX 3060 Ti Dual",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "Palit GeForce RTX 3060 Ti LHR",
       "vid": null,
       "pid": null,
@@ -11851,6 +12067,14 @@
     },
     {
       "name": "Palit GeForce RTX 3070",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "Palit GeForce RTX 3070 Gamerock LHR",
       "vid": null,
       "pid": null,
       "controller": "PalitGPUController",
@@ -11874,7 +12098,39 @@
       "type": "gpu"
     },
     {
+      "name": "Palit GeForce RTX 3070 Ti GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "Palit GeForce RTX 3080",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "Palit GeForce RTX 3080 12GB GamingPro",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "Palit GeForce RTX 3080 Gamerock",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "Palit GeForce RTX 3080 Gamerock LHR",
       "vid": null,
       "pid": null,
       "controller": "PalitGPUController",
@@ -11891,6 +12147,14 @@
     },
     {
       "name": "Palit GeForce RTX 3080 Ti",
+      "vid": null,
+      "pid": null,
+      "controller": "PalitGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "Palit GeForce RTX 3080 Ti Gamerock",
       "vid": null,
       "pid": null,
       "controller": "PalitGPUController",
@@ -12341,6 +12605,22 @@
       "name": "Razer Basilisk V3 X HyperSpeed",
       "vid": "0x1532",
       "pid": "0x00B9",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "Razer Basilisk V4 Pro (Wired)",
+      "vid": "0x1532",
+      "pid": "0x00E2",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "Razer Basilisk V4 Pro (Wireless)",
+      "vid": "0x1532",
+      "pid": "0x00E3",
       "controller": "RazerController",
       "kind": "hid",
       "type": "mouse"
@@ -12874,6 +13154,14 @@
       "type": "ledstrip"
     },
     {
+      "name": "Razer Chroma Wireless ARGB Controller",
+      "vid": "0x1532",
+      "pid": "0x0F2C",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "ledstrip"
+    },
+    {
       "name": "Razer Cobra",
       "vid": "0x1532",
       "pid": "0x00A3",
@@ -13205,6 +13493,14 @@
       "name": "Razer Huntsman V3 Pro",
       "vid": "0x1532",
       "pid": "0x02A6",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "keyboard"
+    },
+    {
+      "name": "Razer Huntsman V3 Pro TKL 8KHz",
+      "vid": "0x1532",
+      "pid": "0x02D0",
       "controller": "RazerController",
       "kind": "hid",
       "type": "keyboard"
@@ -13906,6 +14202,14 @@
       "type": "mouse"
     },
     {
+      "name": "Redragon M901-K-2 Perdition",
+      "vid": "0x04D9",
+      "pid": "0xFC5E",
+      "controller": "RedragonController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
       "name": "Redragon M908 Impact",
       "vid": "0x04D9",
       "pid": "0xFC4D",
@@ -13928,6 +14232,14 @@
       "controller": "RedragonController",
       "kind": "hid",
       "type": "mouse"
+    },
+    {
+      "name": "Retroid/AYN RGB",
+      "vid": null,
+      "pid": null,
+      "controller": "RetroidAYNController",
+      "kind": "generic",
+      "type": "gamepad"
     },
     {
       "name": "Robobloq Monitor Light Strip",
@@ -14162,7 +14474,7 @@
       "type": "keyboard"
     },
     {
-      "name": "Akko 3068B Plus",
+      "name": "Akko 3068B Plus / PC75B Plus",
       "vid": "0x3151",
       "pid": "0x4003",
       "controller": "RoyuanKeyboardController",

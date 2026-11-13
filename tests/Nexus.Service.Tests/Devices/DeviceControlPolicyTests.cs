@@ -29,6 +29,7 @@ public class DeviceControlPolicyTests
     [Theory]
     [InlineData("nzxt-kraken")]
     [InlineData("zmatrices-lcd")]
+    [InlineData("zmatrices-max-e87")]
     public void DefaultOn_HintOnlyConflictHandler_WhoseAppStartsWhitelisted_IsFalse(string handlerId)
     {
         Assert.False(DeviceControlPolicy.DefaultOn(handlerId));
@@ -45,6 +46,7 @@ public class DeviceControlPolicyTests
     [InlineData("streamdeck")]
     [InlineData("nzxt-kraken")]
     [InlineData("zmatrices-lcd")]
+    [InlineData("zmatrices-max-e87")]
     [InlineData("deepcool-mystique")]
     public void ConflictAppFor_KnownHandlers_ReturnsANonEmptyId(string handlerId)
     {

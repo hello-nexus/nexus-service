@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
+using Nexus.Service.Peripherals.IoSafety;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Tryx.Panorama;
@@ -76,7 +77,11 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
         // retirement (ERROR_OPERATION_ABORTED), the drain stopped, and the undrained
         // pipe reset the interface ~70s later - so reads are issued from a dedicated
         // thread that blocks on each completion and therefore never exits mid-read.
-        _drainThread = new Thread(() => DrainReads(_drainCts.Token))
+        _drainThread = new Thread(() =>
+        {
+            try { DrainReads(_drainCts.Token); }
+            finally { _drainDone.TrySetResult(); }
+        })
         {
             IsBackground = true,
             Name = "tryx-drain",
@@ -104,6 +109,11 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
     // turns that hang into a fast failure: the hub drops the transport, the heartbeat
     // resumes on the next tick, and the panel recovers on its own once it settles.
     private const int WriteTimeoutMs = 2500;
+    // How long a cancelled operation gets to finish before its stream is judged stuck.
+    private const int IoSettleMs = 3000;
+    private volatile Task? _stuckIo;
+    // Completes when the drain thread has left its read; the stream must outlive that read as well as any stuck write.
+    private readonly TaskCompletionSource _drainDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public void Write(ReadOnlySpan<byte> data)
     {
@@ -118,24 +128,35 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
             // would collide with the background ReadAsync and stall the drain. Bound the
             // wait (the caller is a worker thread, no sync context to deadlock). A failing
             // or timed-out write throws so the hub drops and rebuilds the transport.
-            AwaitBounded(_stream.WriteAsync(copy, 0, copy.Length), "write");
-            AwaitBounded(_stream.FlushAsync(), "flush");
+            AwaitBounded(ct => _stream.WriteAsync(copy.AsMemory(), ct).AsTask(), "write");
+            AwaitBounded(ct => _stream.FlushAsync(ct), "flush");
         }
     }
 
-    // Blocks up to WriteTimeoutMs for the overlapped write/flush. On timeout the pending
-    // task is abandoned - its I/O aborts when the hub disposes the stream on the drop, and
-    // its exception is observed so it never surfaces as unobserved - and a TimeoutException
-    // is thrown so the hub rebuilds the transport instead of parking behind the stall.
-    private static void AwaitBounded(Task io, string what)
+    // Blocks up to WriteTimeoutMs for the overlapped write/flush. On timeout the operation is cancelled
+    // (CancelIoEx on its overlapped) and waited out before anything can free the handle: disposing a
+    // FileStream under a pending overlapped call frees the overlapped the kernel then completes into, which
+    // is a native crash rather than an exception. An operation that ignores the cancel strands the stream
+    // (Dispose keeps it alive instead of closing it). A TimeoutException then makes the hub rebuild the
+    // transport instead of parking behind the stall.
+    private void AwaitBounded(Func<CancellationToken, Task> start, string what)
     {
+        using var op = CancellationTokenSource.CreateLinkedTokenSource(_drainCts.Token);
+        var io = start(op.Token);
         try
         {
             if (!io.Wait(WriteTimeoutMs))
             {
-                _ = io.ContinueWith(static t => { _ = t.Exception; }, TaskScheduler.Default);
+                if (!PendingIo.CancelAndSettle(io, op, IoSettleMs))
+                {
+                    _stuckIo = io;
+                }
                 throw new TimeoutException($"Tryx panel {what} did not complete within {WriteTimeoutMs} ms");
             }
+        }
+        catch (AggregateException ex) when (ex.InnerException is OperationCanceledException && _disposed)
+        {
+            throw new ObjectDisposedException(nameof(WindowsTryxRkTransport));
         }
         catch (AggregateException ex) when (ex.InnerException is not null)
         {
@@ -298,13 +319,20 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
     {
         if (_disposed) return;
         _disposed = true;
+        // Cancel first so the parked read (CancelIoEx) and any write end, then let the drain thread finish its
+        // read before the stream goes: the stream is only closed with no operation pending on it.
         _drainCts.Cancel();
+        var drained = _drainThread.Join(IoSettleMs);
         // Serialize against an in-flight Write so the stream can't close mid-write.
         lock (_writeLock)
         {
-            _stream.Dispose();
+            // Released only once the stuck write (if any) and the drain thread's read have both finished.
+            var pending = drained && _stuckIo is null ? null : Task.WhenAll(_stuckIo ?? Task.CompletedTask, _drainDone.Task);
+            if (!PendingIo.Retire(_stream, pending is null, pending))
+            {
+                ServiceLog.Warn($"[tryx] {PortName}: I/O still pending after cancel; stream left open instead of freed under it");
+            }
         }
-        _drainThread.Join(500);
         _drainCts.Dispose();
     }
 

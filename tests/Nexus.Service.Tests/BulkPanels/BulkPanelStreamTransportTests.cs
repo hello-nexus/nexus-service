@@ -58,6 +58,69 @@ public class BulkPanelStreamTransportTests
     }
 
     [Fact]
+    public void Page_touch_reaches_the_sink_as_fractions_of_the_frame()
+    {
+        var pipe = new RecordingPipe();
+        using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial");
+        var contacts = new ConcurrentQueue<PanelTouchContact>();
+        transport.BindTouch(contacts.Enqueue);
+        transport.Open();
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Down, 0, 10));
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Up, 0, 10));
+
+        Assert.True(SpinWait.SpinUntil(() => contacts.Count >= 2, 5000));
+        Assert.Equal(new[]
+        {
+            new PanelTouchContact(1, TouchPhase.Down, 10.5 / 1120, 539.5 / 540),
+            new PanelTouchContact(1, TouchPhase.Up, 10.5 / 1120, 539.5 / 540),
+        }, contacts.Take(2));
+    }
+
+    [Fact]
+    public void The_secondary_monitor_takes_touch_from_the_page_and_hands_it_back()
+    {
+        var pipe = new RecordingPipe();
+        using var hub = new BulkPanelHub(new ZMatricesPanelDriver());
+        Assert.True(hub.Attach(pipe, null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        var contacts = new ConcurrentQueue<PanelTouchContact>();
+        transport.BindTouch(contacts.Enqueue);
+        bool wanted = true;
+        transport.BindSecondaryMonitor(() => wanted);
+        transport.Open();
+
+        transport.ApplySecondaryMonitor();
+        Assert.True(SpinWait.SpinUntil(() => transport.SecondaryMonitorState == SecondaryMonitorStates.Active, 5000));
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Down, 0, 10));
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Up, 0, 10));
+        Assert.True(SpinWait.SpinUntil(() => host.Monitor!.Touches.Count >= 2, 5000));
+        Assert.Empty(contacts);
+
+        wanted = false;
+        transport.ApplySecondaryMonitor();
+        pipe.Input.Enqueue(ZMatricesTouchTests.V1(0, TouchPhase.Down, 0, 10));
+        Assert.True(SpinWait.SpinUntil(() => !contacts.IsEmpty, 5000));
+        Assert.Equal(2, host.Monitor!.Touches.Count);
+    }
+
+    [Fact]
+    public void Discovery_advertises_touch_only_for_glass_that_reports_it()
+    {
+        using var zm = new BulkPanelHub(new ZMatricesPanelDriver(ZMatricesModel.MaxE87));
+        zm.Attach(new RecordingPipe(), null);
+        using var plain = new BulkPanelHub(new UndimmableDriver());
+        plain.Attach(new RecordingPipe(), null);
+
+        var profile = new BulkPanelDiscovery(zm).Discover().Single().Profile;
+        Assert.True(profile.SupportsTouch);
+        Assert.True(profile.BuildCapabilities().Touch);
+        Assert.False(new BulkPanelDiscovery(plain).Discover().Single().Profile.BuildCapabilities().Touch);
+    }
+
+    [Fact]
     public void Secondary_monitor_streams_the_desktop_and_injects_touch()
     {
         var pipe = new RecordingPipe();
@@ -97,6 +160,66 @@ public class BulkPanelStreamTransportTests
 
         Assert.True(SpinWait.SpinUntil(() => host.Monitor is not null, 5000));
         Assert.Equal(225, host.CreatedDpi);
+    }
+
+    [Fact]
+    public void Opening_a_panel_whose_record_already_has_the_monitor_on_starts_it_without_a_keepalive()
+    {
+        using var hub = new BulkPanelHub(new UndimmableDriver { SecondaryMonitor = true });
+        Assert.True(hub.Attach(new RecordingPipe(), null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.Open();
+
+        Assert.True(SpinWait.SpinUntil(() => host.Monitor is not null, 5000));
+    }
+
+    [Fact]
+    public void A_rejected_first_frame_is_resent_while_the_desktop_stays_still()
+    {
+        using var hub = new BulkPanelHub(new UndimmableDriver { SecondaryMonitor = true });
+        var pipe = new RecordingPipe { RejectWrites = 1 };
+        Assert.True(hub.Attach(pipe, null));
+        var host = new FakeMonitorHost();
+        using var transport = new BulkPanelStreamTransport(hub, "serial", host);
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.ApplySecondaryMonitor();
+
+        Assert.True(SpinWait.SpinUntil(() => transport.SecondaryMonitorState == SecondaryMonitorStates.Active, 8000));
+    }
+
+    [Fact]
+    public void A_panel_that_keeps_rejecting_frames_is_handshaken_again()
+    {
+        var driver = new UndimmableDriver { SecondaryMonitor = true, RenegotiateOnRejectedFrames = true };
+        using var hub = new BulkPanelHub(driver);
+        var pipe = new RecordingPipe { RejectWrites = 3 };
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial", new FakeMonitorHost());
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.ApplySecondaryMonitor();
+
+        Assert.True(SpinWait.SpinUntil(() => driver.Connects >= 2, 10000));
+    }
+
+    [Fact]
+    public void A_driver_that_did_not_opt_in_is_never_handshaken_again_for_rejected_frames()
+    {
+        var driver = new UndimmableDriver { SecondaryMonitor = true };
+        using var hub = new BulkPanelHub(driver);
+        var pipe = new RecordingPipe { RejectWrites = 3 };
+        Assert.True(hub.Attach(pipe, null));
+        using var transport = new BulkPanelStreamTransport(hub, "serial", new FakeMonitorHost());
+        transport.BindSecondaryMonitor(() => true);
+
+        transport.ApplySecondaryMonitor();
+
+        Assert.True(SpinWait.SpinUntil(() => transport.SecondaryMonitorState == SecondaryMonitorStates.Active, 10000));
+        Assert.Equal(1, driver.Connects);
     }
 
     [Fact]
@@ -180,6 +303,7 @@ public class BulkPanelStreamTransportTests
         public bool SecondaryMonitor { get; init; }
         public bool SupportsSecondaryMonitor => SecondaryMonitor;
         public double? Dpi => SecondaryMonitor ? 225 : null;
+        public bool RenegotiateOnRejectedFrames { get; init; }
         public string HandlerId => "test-undimmable";
         public string Name => "Undimmable";
         public int VendorId => 0x1234;
@@ -189,7 +313,12 @@ public class BulkPanelStreamTransportTests
         public byte WritePipeId => 0x01;
         public byte ReadPipeId => 0;
         public bool NeedsHidChannel => false;
-        public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid) => (16, 16);
+        public int Connects;
+        public (int Width, int Height)? Connect(IBulkUsbPipe pipe, IHidDevice? hid)
+        {
+            Interlocked.Increment(ref Connects);
+            return (16, 16);
+        }
         public bool SendFrame(IBulkUsbPipe pipe, IHidDevice? hid, ReadOnlySpan<byte> bgra) => pipe.Write(bgra);
         public void Disconnect(IBulkUsbPipe pipe, IHidDevice? hid) { }
     }
@@ -200,8 +329,14 @@ public class BulkPanelStreamTransportTests
         public ConcurrentBag<byte[]> FrameWrites { get; } = new();
         public ConcurrentQueue<byte[]> Input { get; } = new();
 
+        public int RejectWrites;
+
         public bool Write(ReadOnlySpan<byte> data)
         {
+            if (Interlocked.Decrement(ref RejectWrites) >= 0)
+            {
+                return false;
+            }
             FrameWrites.Add(data.ToArray());
             return true;
         }

@@ -15,10 +15,11 @@ internal sealed class StubSensorProvider : ISensorProvider
     public int ExtrasReads { get; private set; }
 
     public string GetCpuModel() => "test-cpu";
+    public IReadOnlyList<HardwareSensor>? CpuSensors { get; init; }
     public IReadOnlyList<HardwareSensor> GetCpuSensors()
     {
         CpuSensorReads++;
-        return new[]
+        return CpuSensors ?? new[]
         {
             new HardwareSensor
             {

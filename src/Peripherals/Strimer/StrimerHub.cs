@@ -27,7 +27,7 @@ public sealed class StrimerHub : IDisposable
         {
             _device = device;
             State.IsConnected = true;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey, deviceLeft: false);
         }
     }
 

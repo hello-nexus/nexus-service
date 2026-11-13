@@ -57,6 +57,9 @@ public class DiagnosticsAlertServiceTests
         public IReadOnlyList<GpuDecimatedSlot> QueryGpuDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<GpuDecimatedSlot>();
         public IReadOnlyList<TemperatureBucketRow> QueryTemperatureBuckets(long fromUtcMs, long toUtcMs) => Array.Empty<TemperatureBucketRow>();
         public IReadOnlyList<FanDecimatedSlot> QueryFanDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<FanDecimatedSlot>();
+        public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds, System.Collections.Generic.IReadOnlySet<string>? seriesIds = null) => Array.Empty<SensorSeriesDecimatedSlot>();
+        public void DeleteSensorSeries(string seriesId, long nowSec) { }
+        public void PruneSensorSeries(System.Collections.Generic.IReadOnlySet<string> liveIds) { }
         public IReadOnlyList<ComponentTempDecimatedSlot> QueryComponentTempDecimated(long fromSec, long toSec, int stepSeconds) => Array.Empty<ComponentTempDecimatedSlot>();
         public int ResetAll() => 0;
         public int BlankFpsSeries() => 0;
@@ -76,7 +79,6 @@ public class DiagnosticsAlertServiceTests
             new MemoryDiagnosticOrchestrator(),
             new PnpProblemScanner(),
             new ThrowingSensorProvider(),
-            new EmptyMetricsHistoryStore(),
             configStore);
         var service = new DiagnosticsAlertService(health, configStore, new FeatureGates(configStore));
         var fired = false;
@@ -85,6 +87,96 @@ public class DiagnosticsAlertServiceTests
         service.Tick();
 
         Assert.False(fired);
+    }
+
+    private sealed class StepTime : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = new(T0);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private static (DiagnosticsAlertService Service, List<DiagnosticsAlertNotice> Notices, StepTime Time, Nexus.Service.Tests.InMemoryConfigStore Store) SensorAlertService(bool master, int cooldownMinutes)
+    {
+        var store = new Nexus.Service.Tests.InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Diagnostics.Notifications.Enabled = master;
+            s.Diagnostics.Notifications.CooldownMinutes = cooldownMinutes;
+        });
+        var time = new StepTime();
+        var service = new DiagnosticsAlertService(null!, store, FeatureGates.AllEnabled, time);
+        var notices = new List<DiagnosticsAlertNotice>();
+        service.AlertNeedsAttention += notices.Add;
+        return (service, notices, time, store);
+    }
+
+    private static DiagnosticsAlertNotice SensorNotice() => new("Sensor alert", "CPU Package Temperature above 80", "sensorAlert");
+
+    [Fact]
+    public void RaiseCooled_MasterOff_SuppressesTheSensorToast()
+    {
+        var (service, notices, _, _) = SensorAlertService(master: false, cooldownMinutes: 60);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+
+        Assert.Empty(notices);
+    }
+
+    [Fact]
+    public void RaiseCooled_AppliesTheSharedCooldownPerKey()
+    {
+        var (service, notices, time, _) = SensorAlertService(master: true, cooldownMinutes: 60);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+        time.Now = time.Now.AddMinutes(30);
+        service.RaiseCooled("alert:r1", SensorNotice());
+        service.RaiseCooled("alert:r2", SensorNotice());
+        Assert.Equal(2, notices.Count);
+
+        time.Now = time.Now.AddMinutes(31);
+        service.RaiseCooled("alert:r1", SensorNotice());
+        Assert.Equal(3, notices.Count);
+    }
+
+    [Fact]
+    public void RaiseCooled_UsesTheSameCooldownSettingAsTheHealthNotices()
+    {
+        var (service, notices, time, store) = SensorAlertService(master: true, cooldownMinutes: 60);
+        store.Update(s => s.Diagnostics.Notifications.CooldownMinutes = 5);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+        time.Now = time.Now.AddMinutes(6);
+        service.RaiseCooled("alert:r1", SensorNotice());
+
+        Assert.Equal(2, notices.Count);
+    }
+
+    [Fact]
+    public void RaiseCooled_UrgentNoticeIsNotHeldForTheFullCooldown()
+    {
+        var (service, notices, time, _) = SensorAlertService(master: true, cooldownMinutes: 60);
+        var urgent = SensorNotice() with { Urgent = true };
+
+        service.RaiseCooled("alert:r1", urgent);
+        time.Now = time.Now.AddMinutes(2);
+        service.RaiseCooled("alert:r1", urgent);
+        Assert.Single(notices);
+
+        time.Now = time.Now.AddMinutes(4);
+        service.RaiseCooled("alert:r1", urgent);
+        Assert.Equal(2, notices.Count);
+    }
+
+    [Fact]
+    public void RaiseCooled_NonUrgentNoticeKeepsTheFullCooldown()
+    {
+        var (service, notices, time, _) = SensorAlertService(master: true, cooldownMinutes: 60);
+
+        service.RaiseCooled("alert:r1", SensorNotice());
+        time.Now = time.Now.AddMinutes(10);
+        service.RaiseCooled("alert:r1", SensorNotice());
+
+        Assert.Single(notices);
     }
 
     private static HealthComponent Component(string id, string kind, string status, string reasonSeverity, string code = "x.reason") =>
@@ -110,9 +202,9 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
-    public void DefaultSettings_AllTogglesOff_ProducesNoNotifications()
+    public void MasterSwitchOff_ProducesNoNotifications()
     {
-        var notifications = new DiagnosticsNotifications();
+        var notifications = new DiagnosticsNotifications { Enabled = false };
         var components = new[]
         {
             Component("storage:1", "storage", HealthStatuses.Act, HealthStatuses.Act),
@@ -168,10 +260,10 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
-    public void CoolingAggregateId_MapsToHighTemp_NotCooling()
+    public void CoolingAggregateId_NeverNotifies()
     {
-        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = true, HighTemp = false };
-        var aggregate = Component("cooling", "cooling", HealthStatuses.Watch, HealthStatuses.Watch, "cooling.sustainedHighTemp");
+        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = true };
+        var aggregate = Component("cooling", "cooling", HealthStatuses.Watch, HealthStatuses.Watch, "cooling.fanStall");
 
         var notices = DiagnosticsAlertService.EvaluateNotifications(
             new[] { aggregate }, notifications, new Dictionary<string, DateTime>(), T0);
@@ -180,9 +272,9 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
-    public void PerDeviceStallId_MapsToCooling_NotHighTemp()
+    public void PerDeviceStallId_MapsToCooling()
     {
-        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = false, HighTemp = true };
+        var notifications = new DiagnosticsNotifications { Enabled = true, Cooling = false };
         var stall = Component("cooling:pump1", "cooling", HealthStatuses.Act, HealthStatuses.Act, "cooling.pumpStall");
 
         var notices = DiagnosticsAlertService.EvaluateNotifications(

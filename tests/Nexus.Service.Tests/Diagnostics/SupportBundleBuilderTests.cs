@@ -37,6 +37,43 @@ public class SupportBundleBuilderTests : IDisposable
     }
 
     [Fact]
+    public void Writes_the_pc_setup_record_with_custom_item_names_blanked_and_omits_it_when_absent()
+    {
+        var response = new Nexus.Service.Models.Lighting.PcSetupResponse { Rev = 7 };
+        response.Setup.Case.RadiatorMount = "front";
+        response.Setup.Resolved.CaseLayout = JsonDocument.Parse("{\"cooler\":\"aio\"}").RootElement.Clone();
+        response.Setup.Items.Add(new() { Id = "a", Kind = "desk", Custom = new() { Name = "Alex's desk", WidthMm = 1200 } });
+        response.Setup.Resolved.Objects.Add(new() { Id = "a", Kind = "box", Label = "Alex's desk" });
+        response.Setup.Items.Add(new() { Id = "b", Kind = "monitor", Catalog = new() { Title = "Some Monitor" } });
+
+        var entries = Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources { PcSetup = response }));
+
+        var text = System.Text.Encoding.UTF8.GetString(entries["diagnostics/pc-setup.json"]);
+        var back = JsonSerializer.Deserialize(text, AppJsonContext.Default.PcSetupResponse)!;
+        Assert.Equal(7, back.Rev);
+        Assert.Equal("front", back.Setup.Case.RadiatorMount);
+        Assert.Equal("aio", back.Setup.Resolved.CaseLayout!.Value.GetProperty("cooler").GetString());
+        Assert.Equal("Some Monitor", back.Setup.Items[1].Catalog!.Title);
+        Assert.DoesNotContain("Alex", text);
+        Assert.Equal("Alex's desk", response.Setup.Items[0].Custom!.Name);
+        Assert.Equal("Alex's desk", response.Setup.Resolved.Objects[0].Label);
+
+        Assert.DoesNotContain("diagnostics/pc-setup.json", Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources())).Keys);
+    }
+
+    [Fact]
+    public void A_throwing_pc_setup_load_leaves_the_file_out_and_the_bundle_intact()
+    {
+        var pcSetup = Nexus.Service.Routes.DiagnosticsHealthRoutes.TryLoadPcSetup(() => throw new IOException("disk"));
+        Assert.Null(pcSetup);
+
+        var entries = Entries(SupportBundleBuilder.Build(new SupportBundleBuilder.Sources { PcSetup = pcSetup }));
+
+        Assert.Contains("support-info.json", entries.Keys);
+        Assert.DoesNotContain("diagnostics/pc-setup.json", entries.Keys);
+    }
+
+    [Fact]
     public void Bundles_every_log_the_install_logs_the_daemon_logs_and_config_and_caps_oversized_logs_to_a_tail()
     {
         var logs = Path.Combine(_root, "logs");
@@ -112,7 +149,7 @@ public class SupportBundleBuilderTests : IDisposable
             UserLogDirectories = dirs,
         }));
 
-        Assert.Contains("logs/user-alice/nexus-overlay.log", entries.Keys);
+        Assert.Contains("logs/user-1/nexus-overlay.log", entries.Keys);
         Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-bob/"));
     }
 
@@ -145,7 +182,7 @@ public class SupportBundleBuilderTests : IDisposable
             UserLogDirectories = SupportBundleBuilder.UserLogDirectoriesFor(new[] { carol, dave }),
         }));
 
-        Assert.Contains("logs/user-dave/ok.log", entries.Keys);
+        Assert.Contains("logs/user-1/ok.log", entries.Keys);
         Assert.DoesNotContain("logs/user-dave/linked.log", entries.Keys);
         Assert.DoesNotContain(entries.Keys, k => k.StartsWith("logs/user-carol/"));
     }
@@ -178,9 +215,9 @@ public class SupportBundleBuilderTests : IDisposable
         Assert.DoesNotContain("session-bearer", text);
         Assert.DoesNotContain("s3cr3t", text);
         var shipped = JsonSerializer.Deserialize(text, PersistenceJsonContext.Default.NexusSettings)!;
-        Assert.Equal("Moose", shipped.HostDisplayName);
+        Assert.Equal("<redacted>", shipped.HostDisplayName);
         Assert.True(shipped.Auth!.RelayEnabled);
-        Assert.Equal("acct", shipped.Auth.CloudAccounts[0].AccountId);
+        Assert.Equal("account-1", shipped.Auth.CloudAccounts[0].AccountId);
         Assert.Single(shipped.Auth.PanelPhoneSessions);
         Assert.Null(shipped.Auth.PanelPhoneSessions[0].PushTarget);
         Assert.NotNull(settings.Auth.PanelPhoneSessions[0].PushTarget);

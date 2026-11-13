@@ -88,7 +88,11 @@ Q-series screens.
   `/devices/nollie`, `Routes/NollieRoutes.cs`); the Asiahorse Umbra V2 ARGB/PWM
   controller (`Peripherals/AsiahorseUmbra/`, `Routes/AsiahorseUmbraRoutes.cs`),
   whose LED zones and fan channel exist only in the modes that hand them to
-  Nexus. The curated
+  Nexus; the Logitech G560 speaker's G HUB pages (Acoustics, Surround
+  sound) through Logitech's speaker audio effect and a HID++ subwoofer level
+  (`Peripherals/LogitechAudio/`, `Routes/LogitechSpeakerRoutes.cs`,
+  `/devices/logitech-speaker`, Windows only; a dev-tools simulator sits
+  under `/dev/sim/logitech-speaker`). The curated
   supported-hardware catalogs sit behind `/peripherals/supported` and
   `/peripherals/all-supported`.
 - `Conflicts/` detects competing vendor software, tracks which app owns a
@@ -181,7 +185,10 @@ support-bundle ZIP export.
   (`Bundled/macos/overlay-helper/streamhost.swift`: an off-screen WKWebView
   captured by ScreenCaptureKit, raw frames only, needs the Screen Recording
   grant). Bulk-pipe screens open over WinUSB on Windows and IOUSBHost on macOS
-  (`Peripherals/BulkPanels/`). The ArtInChip D213 reference transport is
+  (`Peripherals/BulkPanels/`). A glass that reports touch (driver `HasTouch` plus
+  a `CreateTouchDecoder`) streams its contacts back to the render host on
+  `GET /panel/streams/{sessionId}/touch`; the Windows host replays them as CDP
+  touch events, the macOS host as mouse events under `touchViaPointer=injected`. The ArtInChip D213 reference transport is
   dev-tools only.
 
 ## Apps and the store

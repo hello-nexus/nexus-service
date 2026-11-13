@@ -42,12 +42,16 @@ public class DefaultShaderPresetTests
         var looks = Enumerable.Range(0, AnimateTemplateDefaults.SlotCount)
             .Select(s => AnimateTemplateDefaults.Slot(effect, s)!).ToList();
         // Colorize collapses the palette to one tint, so a vivid default keeps it off.
-        // Ball reads colorize as the color wheel width, so its presets narrow it on purpose.
+        // Wheel-arc effects read colorize as the arc width instead, so their presets narrow it on purpose.
         if (effect == "ball")
         {
             Assert.InRange(looks[0].Colorize, 0.5f, 0.9f);
             Assert.Contains(looks, l => l.Colorize < 0.001f);
             Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.9f));
+        }
+        else if (WheelArcEffects.Contains(effect))
+        {
+            Assert.All(looks, l => Assert.InRange(l.Colorize, 0f, 0.95f));
         }
         else
         {
@@ -58,10 +62,16 @@ public class DefaultShaderPresetTests
         var signatures = looks.Select(l => string.Join("|", new object[] { System.Math.Round(l.Hue, 2), l.Speed }
             .Concat(l.Params.OrderBy(kv => kv.Key).Select(kv => (object)$"{kv.Key}={kv.Value}")))).Distinct().Count();
         Assert.Equal(looks.Count, signatures);
-        // Palette alone tells the presets apart: no two share both mood and hue.
-        var palettes = looks.Select(l => (l.Params.GetValueOrDefault("u_mood"), System.Math.Round(l.Hue, 2))).Distinct().Count();
+        // Palette alone tells the presets apart: no two share both wheel position and arc.
+        var palettes = looks.Select(l => (System.Math.Round(l.Hue, 2), System.Math.Round(l.Colorize, 2))).Distinct().Count();
         Assert.Equal(looks.Count, palettes);
     }
+
+    private static readonly string[] WheelArcEffects =
+    {
+        "bubbles", "circuit", "cosmicdust", "ferrofluid", "flowfield", "hyperspace", "inkbloom", "jellyfish",
+        "lavafissure", "liquidchrome", "nebula", "sacredgeometry", "sandstorm", "starfield", "vapor", "voronoi", "wave",
+    };
 
     private static bool IsBase(string name) =>
         ShaderEffect.BaseParamNames.Contains(name) || name == "u_paletteMix";

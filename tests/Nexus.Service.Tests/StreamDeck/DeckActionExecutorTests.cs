@@ -589,7 +589,7 @@ public sealed class DeckActionExecutorTests : IDisposable
     {
         FanProfiles.Apply("turbo", _fans, _store);
         _store.Update(s => s.Cooling.Presets.Add(
-            Nexus.Service.Cooling.CoolingPresets.Capture("c1", "Quiet night", _store, _fans)));
+            Nexus.Service.Cooling.CoolingPresets.Capture("c1", "Quiet night", _store)));
         _store.Update(s => s.Cooling.Presets[^1].Mode = "silent");
 
         await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "coolingPreset", PresetId = "c1" } });

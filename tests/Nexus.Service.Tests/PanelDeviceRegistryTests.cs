@@ -665,6 +665,62 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void RestrictedMode_DefaultsFalse_AndSerializesAsRestrictedMode()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        Assert.Null(record.RestrictedMode);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+        var persisted = System.Text.Json.JsonSerializer.Serialize(record, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+
+        Assert.DoesNotContain("restrictedMode", json);
+        Assert.DoesNotContain("restrictedMode", persisted);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true });
+        Assert.Contains("\"restrictedMode\":true", System.Text.Json.JsonSerializer.Serialize(_registry.Get(record.Id), Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord));
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false });
+        Assert.Null(_registry.Get(record.Id)!.RestrictedMode);
+    }
+
+    [Theory]
+    [InlineData(PanelSurfaces.Y70)]
+    [InlineData(PanelSurfaces.Q60)]
+    [InlineData(PanelSurfaces.Phone)]
+    public void RestrictedMode_PatchAppliesToAnyPanelKind_AndOtherPatchesKeepIt(string surface)
+    {
+        var record = _registry.Allocate(null, Caps(surface));
+
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true })!.RestrictedMode);
+        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.RestrictedMode);
+        Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = false })!.RestrictedMode);
+    }
+
+    [Fact]
+    public void RestrictedMode_AppliesToDisplayBoundRecords_AndSurvivesReload()
+    {
+        var (display, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
+        var y70 = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Patch(display.Id, new PanelDevicePatch { RestrictedMode = true });
+        _registry.Patch(y70.Id, new PanelDevicePatch { RestrictedMode = true });
+        _store.FlushNow();
+
+        using var store2 = new JsonConfigStore(_path);
+        var reloaded = new PanelDeviceRegistry(store2) { SeeThroughHost = false };
+
+        Assert.True(reloaded.Get(display.Id)!.RestrictedMode);
+        Assert.True(reloaded.Get(y70.Id)!.RestrictedMode);
+    }
+
+    [Fact]
+    public void ResetToDefaults_KeepsRestrictedMode()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Y70));
+        _registry.Patch(record.Id, new PanelDevicePatch { RestrictedMode = true });
+
+        Assert.True(_registry.ResetToDefaults(record.Id)!.RestrictedMode);
+    }
+
+    [Fact]
     public void ResetToDefaults_ClearsTheWidgetsLock()
     {
         var (record, _) = _registry.AllocateForDisplay("DISPLAY-1", "Edge", Caps(PanelSurfaces.Monitor));
@@ -731,14 +787,19 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
-    public void HighResolution_persists_and_hardware_reset_clears_it()
+    public void A_persisted_legacy_highResolution_false_loads_and_the_patch_field_is_ignored()
     {
-        var record = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+        var record = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"id\":\"p1\",\"highResolution\":false}",
+            Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+        Assert.NotNull(record);
+        Assert.DoesNotContain("highResolution", System.Text.Json.JsonSerializer.Serialize(
+            record, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord));
 
-        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { HighResolution = true })!.HighResolution);
-        Assert.True(_registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" })!.HighResolution);
+        var allocated = _registry.Allocate("Screen", Caps(PanelSurfaces.Monitor));
+        var patched = _registry.Patch(allocated.Id, new PanelDevicePatch { HighResolution = false, DisplayName = "Renamed" })!;
 
-        Assert.Null(_registry.ResetHardwareSettings(record.Id)!.HighResolution);
+        Assert.Equal("Renamed", patched.DisplayName);
     }
 
     [Fact]
@@ -921,6 +982,72 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("dark", live.ThemeMode);
         Assert.Equal("#00ff00", live.TextColor);
         Assert.Equal("jura", live.Font);
+    }
+
+    private static List<string> StarterTypes(string surface) =>
+        PanelLayoutDefaults.ForSurface(surface).Pages.SelectMany(p => p.Widgets).Select(w => w.Type).ToList();
+
+    [Fact]
+    public void CreatePreset_Fresh_TakesTheStarterLayoutAndKeepsTheRestOfThePersonalization()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), ThemeMode = "light", AccentColor = "#123456" });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+
+        var created = _registry.CreatePreset(record.Id, "Blank", out var capped, fresh: true)!;
+
+        Assert.False(capped);
+        var live = _registry.Get(record.Id)!;
+        Assert.Equal(StarterTypes(PanelSurfaces.Q60), live.Layout!.Pages.SelectMany(p => p.Widgets).Select(w => w.Type));
+        Assert.Equal("light", live.ThemeMode);
+        Assert.Equal("#123456", live.AccentColor);
+        Assert.Equal(created.ActiveId, _store.Load().PanelDevices[record.Id].ActivePresetId);
+        var presets = _store.Load().PanelDevices[record.Id].Presets!;
+        var stored = presets.Single(p => p.Id == created.ActiveId);
+        Assert.Equal(StarterTypes(PanelSurfaces.Q60), stored.Layout!.Pages.SelectMany(p => p.Widgets).Select(w => w.Type));
+        Assert.Equal("light", stored.ThemeMode);
+        Assert.Equal("gallery", presets.Single(p => p.Id == desk).Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal(record.DisplayName, live.DisplayName);
+        Assert.Equal(PanelSurfaces.Q60, live.Capabilities!.Surface);
+    }
+
+    [Fact]
+    public void CreatePreset_Fresh_DoesNotLetTheOldLayoutBackIntoTheNewPresetOnSwitchAway()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery") });
+        var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
+        var blank = _registry.CreatePreset(record.Id, "Blank", out _, fresh: true)!.ActiveId!;
+
+        _registry.ActivatePreset(record.Id, desk);
+        Assert.Equal("gallery", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
+        _registry.ActivatePreset(record.Id, blank);
+
+        Assert.Equal(StarterTypes(PanelSurfaces.Q60), _registry.Get(record.Id)!.Layout!.Pages.SelectMany(p => p.Widgets).Select(w => w.Type));
+    }
+
+    [Fact]
+    public void CreatePreset_FreshWithNoActivePreset_SnapshotsTheLiveLayout()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock") });
+
+        _registry.CreatePreset(record.Id, "First", out _, fresh: true);
+
+        Assert.Equal("clock", _store.Load().PanelDevices[record.Id].Presets!.Single().Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("clock", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
+    }
+
+    [Fact]
+    public void CreatePreset_WithoutFresh_SnapshotsTheLiveLayout()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Q60));
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("clock") });
+
+        _registry.CreatePreset(record.Id, "Snap", out _);
+
+        Assert.Equal("clock", _store.Load().PanelDevices[record.Id].Presets!.Single().Layout!.Pages[0].Widgets[0].Type);
+        Assert.Equal("clock", _registry.Get(record.Id)!.Layout!.Pages[0].Widgets[0].Type);
     }
 
     [Fact]

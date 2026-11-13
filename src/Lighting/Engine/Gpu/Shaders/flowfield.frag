@@ -1,8 +1,7 @@
 uniform float u_streams; // hint_range(0.5, 3.0, 0.05) = 1.5  stream count multiplier
 uniform float u_flow; // hint_range(0.2, 3.0, 0.05) = 1.0  flow speed
 uniform float u_colorSpread; // hint_range(0.0, 1.5, 0.05) = 0.6  color variance per stream
-uniform float u_mood; // hint_range(0.0, 5.0, 1.0) = 0.0  palette mood: 0 full spectrum, 1 warm, 2 cool, 3 neon, 4 sunset, 5 aurora
-#define tintedPalette(t) moodPalette((t), u_mood)
+#define tintedPalette(t) wheelColor(t)
 
 // Flow direction at a point: a smooth angle field that slowly evolves.
 float fieldAngle(vec2 p, float t) {
@@ -56,5 +55,7 @@ void main() {
     vec3 body = tintedPalette(0.5 + ang0 / 12.0 + spread * (vnoise(uv * 2.0 + t * 0.1) - 0.5) + t * 0.03);
     vec3 col = body * (0.28 + 1.45 * stroke);
     col += tintedPalette(0.1 + ang0 / 12.0) * 0.1;
-    fragColor = vec4(finalize(col), 1.0);
+    fragColor = vec4(finish(col), 1.0);
 }
+
+float outGain() { return 1.33; }

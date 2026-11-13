@@ -109,22 +109,99 @@ public class Slv3LinkDiagTests
             d.EndPoll(t, gotList: false);
         }
 
-        Assert.Single(Drain(d), l => l.Contains(" DUMP ") && l.Contains("reason=unseen5s"));
+        Assert.Single(Drain(d), l => l.Contains(" DUMP ") && l.Contains("reason=stall"));
     }
 
     [Fact]
-    public void Early_dump_repeats_only_after_the_rate_limit_window()
+    public void Chain_episode_dumps_once_however_long_it_lasts_then_writes_one_end_line()
+    {
+        var d = new Slv3LinkDiag();
+        Poll(d, 0, true);
+        var lines = new List<string>();
+        for (long t = 500; t <= 300_000; t += 500)
+        {
+            Poll(d, t, false);
+            lines.AddRange(Drain(d).Where(l => !l.Contains(" SUM ")));
+        }
+        Assert.Single(lines, l => l.Contains(" DUMP "));
+
+        Poll(d, 301_000, true);
+        var end = Assert.Single(Drain(d), l => l.Contains(" EPISODE "));
+        Assert.Contains("ended=recovered", end);
+        Assert.Contains("duration=", end);
+    }
+
+    [Fact]
+    public void Whole_dongle_stall_is_one_dump_for_all_chains_and_one_end_line()
+    {
+        var d = new Slv3LinkDiag();
+        const string other = "AABBCCDDEEFF";
+        d.OnReply(0, Reply, 3, Slv3ReplyKind.Ok, 2);
+        d.OnSeen(Key, 0, Record, 4, 8);
+        d.OnSeen(other, 0, Record, 5, 9);
+        d.EndPoll(0, gotList: true);
+
+        var lines = new List<string>();
+        var blindPolls = 0;
+        for (long t = 1_000; t <= 40 * 60_000; t += 1_000)
+        {
+            d.OnReply(t, Reply, 2, Slv3ReplyKind.NoData, 0);
+            d.EndPoll(t, gotList: true);
+            blindPolls++;
+            lines.AddRange(Drain(d).Where(l => !l.Contains(" SUM ")));
+        }
+        Assert.Single(lines, l => l.Contains(" DUMP "));
+        Assert.Contains(lines, l => l.Contains("reason=stall") && l.Contains("chains=2"));
+        Assert.Contains(lines, l => l.Contains("chain=" + Key) && l.Contains("unseen="));
+        Assert.Contains(lines, l => l.Contains("chain=" + other) && l.Contains("unseen="));
+
+        d.OnReply(2_500_000, Reply, 3, Slv3ReplyKind.Ok, 2);
+        d.OnSeen(Key, 2_500_000, Record, 4, 8);
+        d.OnSeen(other, 2_500_000, Record, 5, 9);
+        d.EndPoll(2_500_000, gotList: true);
+        var after = Drain(d).Where(l => !l.Contains(" SUM ")).ToList();
+        var end = Assert.Single(after);
+        Assert.Contains(" STALL ", end);
+        Assert.Contains("ended=recovered", end);
+        Assert.Contains("kind=nodata", end);
+        Assert.Contains("polls=" + blindPolls, end);
+    }
+
+    [Fact]
+    public void A_second_stall_after_recovery_gets_its_own_dump()
     {
         var d = new Slv3LinkDiag();
         Poll(d, 0, true);
         var dumps = 0;
-        for (long t = 500; t <= 70_000; t += 500)
+        for (var round = 0; round < 2; round++)
         {
-            Poll(d, t, false);
-            dumps += Drain(d).Count(l => l.Contains(" DUMP ") && l.Contains("reason=unseen5s"));
+            var start = 100_000L * (round + 1);
+            for (long t = start; t <= start + 20_000; t += 1_000)
+            {
+                d.OnReply(t, Reply, 2, Slv3ReplyKind.Timeout, 0);
+                d.EndPoll(t, gotList: true);
+                dumps += Drain(d).Count(l => l.Contains(" DUMP "));
+            }
+            Poll(d, start + 30_000, true);
+            Drain(d);
         }
 
-        Assert.Equal(2, dumps); // first at 5.5 s, next 60 s later
+        Assert.Equal(2, dumps);
+    }
+
+    [Fact]
+    public void Drop_inside_a_chain_episode_still_dumps_in_full()
+    {
+        var d = new Slv3LinkDiag();
+        Poll(d, 0, true);
+        Poll(d, 6_000, false);
+        Drain(d);
+
+        d.OnDropped(Key, 30_000);
+        var lines = Drain(d);
+        Assert.Single(lines, l => l.Contains(" DUMP ") && l.Contains("reason=drop"));
+        Assert.Contains(lines, l => l.Contains(" CHRAW "));
+        Assert.Contains(lines, l => l.Contains(" EPISODE ") && l.Contains("ended=drop"));
     }
 
     [Fact]
@@ -212,5 +289,36 @@ public class Slv3LinkDiagTests
         var usb = Assert.Single(lines, l => l.Contains(" EVT usb tx="));
         Assert.DoesNotContain("SECRET", usb);
         Assert.Contains(lines, l => l.EndsWith(@"EVT usb-parent USB\VID_1&PID_2\5&1&0&3"));
+    }
+
+    [Fact]
+    public void Rotation_keeps_the_configured_number_of_older_files_and_drops_the_rest()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-diag-rot-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            for (var i = 1; i <= Slv3LinkDiag.RotatedFiles + 3; i++)
+            {
+                Slv3LinkDiag.AppendRotating(dir, "gen" + i + new string('x', 20) + "\n", 30);
+            }
+
+            var files = System.IO.Directory.GetFiles(dir).Select(System.IO.Path.GetFileName).OrderBy(n => n).ToArray();
+            Assert.Equal(Slv3LinkDiag.RotatedFiles + 1, files.Length);
+            Assert.All(files, n => Assert.True(Slv3LinkDiag.IsLogFileName(n!)));
+            Assert.Contains("gen6", System.IO.File.ReadAllText(System.IO.Path.Combine(dir, Slv3LinkDiag.FileName)));
+            Assert.Contains("gen5", System.IO.File.ReadAllText(System.IO.Path.Combine(dir, Slv3LinkDiag.RotatedFileName(1))));
+            Assert.Contains("gen3", System.IO.File.ReadAllText(System.IO.Path.Combine(dir, Slv3LinkDiag.RotatedFileName(Slv3LinkDiag.RotatedFiles))));
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Retained_history_stays_a_few_megabytes()
+    {
+        Assert.InRange(Slv3LinkDiag.MaxFileBytes * (Slv3LinkDiag.RotatedFiles + 1), 1, 6L * 1024 * 1024);
     }
 }

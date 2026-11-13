@@ -140,7 +140,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
 
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
         var nowTicks = DateTime.UtcNow.Ticks;
 
         if (panelFrame is null)
@@ -158,6 +158,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             EnsureCapacity(ref _buffer, QSeriesCoolerHub.LedCount);
             var dst = _buffer!;
             FillBufferSlice(dst, 0, panelFrame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+            _engine.Live.Report(id, panelFrame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
             for (var i = ledCount; i < QSeriesCoolerHub.LedCount; i++) dst[i] = default;
             _hub.WriteLighting(new ReadOnlySpan<QColor>(dst, 0, QSeriesCoolerHub.LedCount));
         }
@@ -193,7 +194,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
     private void PushLinkChannel(int channel, List<DeviceFrame> chainDevices, ref QColor[]? buffer,
         IReadOnlyList<QSeriesLinkDevice> channelState,
         IReadOnlyList<string> disabled, IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness, long nowTicks)
+        MasterLevel globalBrightness, long nowTicks)
     {
         var total = 0;
         foreach (var d in chainDevices) total += FirmwareLedCountOf(channelState, d.Id, d.LedCount);
@@ -212,6 +213,7 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             var hasIdentify = _identify.TryGetActive(dev.Id, nowTicks, out var startTicks);
             var fillCount = Math.Min(dev.LedCount, blockWidth);
             FillBufferSlice(dst, offset, dev.LedBytes, fillCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+            _engine.Live.Report(dev.Id, dev.LedBytes, fillCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
             for (var i = fillCount; i < blockWidth && offset + i < dst.Length; i++) dst[offset + i] = default;
             offset += blockWidth;
         }
@@ -236,10 +238,10 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
         if (buffer is null || buffer.Length < n) buffer = new QColor[Math.Max(n, MinLinkBufferCapacity)];
     }
 
-    private static double ComputeBrightnessMul(string id,
+    internal static double ComputeBrightnessMul(string id,
         IReadOnlyList<string> disabled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -262,10 +264,10 @@ public sealed class QSeriesLightingFrameWriter : IHostedService, IDisposable
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
-    private static void FillBufferSlice(QColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
+    internal static void FillBufferSlice(QColor[] dst, int dstStart, ReadOnlySpan<byte> src, int ledCount,
         double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)

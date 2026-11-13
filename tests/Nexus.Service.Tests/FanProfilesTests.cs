@@ -381,6 +381,37 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
+    public async Task DerivePresetFromCurves_ReadsUnderTheStoreLockWhileCurvesAreEdited()
+    {
+        FanProfiles.Apply("balanced", _fans, _store);
+        using var stop = new CancellationTokenSource();
+        var writer = Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                _store.Update(s =>
+                {
+                    var curve = s.Cooling.Curves.First(c => c.Preset == "balanced");
+                    curve.Outputs.RemoveAll(o => o.Id == "fan1");
+                    curve.Outputs.Add(new CurveOutputDocument { Id = "fan1", Type = "Fan" });
+                });
+            }
+        });
+        try
+        {
+            for (var i = 0; i < 3000; i++)
+            {
+                FanProfiles.DerivePresetFromCurves(_store, _fans);
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            await writer;
+        }
+    }
+
+    [Fact]
     public void DerivePresetFromCurves_ReturnsOffWhenNothingAttached()
     {
         FanProfiles.Apply("off", _fans, _store);
@@ -438,12 +469,10 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
-    public void DerivePresetFromCurves_IgnoresUnresponsiveFan_KeepsPresetSelected()
+    public void DerivePresetFromCurves_CountsUnresponsiveFan_KeepsPresetSelected()
     {
-        // Two connected fans linked to silent + one disconnected fan must
-        // still resolve to "silent". The disconnected fan can't be wired to
-        // anything, so excluding it from the coverage check is the only way
-        // to keep the preset chip lit while a fan is unplugged.
+        // An Unresponsive fan is wired like any other, so a preset that
+        // covers all three fans resolves to "silent".
         var fans = new FakeFanProvider(
             channels: new List<FanChannel>
             {
@@ -453,9 +482,26 @@ public class FanProfilesTests : IDisposable
             },
             temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
         FanProfiles.Apply("silent", fans, _store);
-        // Apply attaches every channel, including the unresponsive one (a
-        // hardware no-op); the preset must still derive as selected.
         Assert.Equal("silent", FanProfiles.DerivePresetFromCurves(_store, fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_UnresponsiveFanOffThePreset_IsCustom()
+    {
+        var fans = new FakeFanProvider(
+            channels: new List<FanChannel>
+            {
+                new() { Id = "fan1", Classification = "Controllable" },
+                new() { Id = "fan3", Classification = "Unresponsive" },
+            },
+            temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
+        FanProfiles.Apply("silent", fans, _store);
+        _store.Update(s =>
+        {
+            var preset = s.Cooling.Curves.First(c => c.Preset == "silent");
+            preset.Outputs.RemoveAll(o => o.Id == "fan3");
+        });
+        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, fans));
     }
 
     [Fact]
@@ -532,10 +578,9 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
-    public void DerivePresetFromCurves_OnlyUnresponsiveFans_IsCustom()
+    public void DerivePresetFromCurves_OnlyUnresponsiveFansUnattached_IsOff()
     {
-        // No controllable fans at all -> falls into the "no fans to check"
-        // bucket and reports custom, the same as the empty-channels case.
+        // Unresponsive fans are ordinary fans: none attached means all BIOS.
         var fans = new FakeFanProvider(
             channels: new List<FanChannel>
             {
@@ -543,17 +588,14 @@ public class FanProfilesTests : IDisposable
                 new() { Id = "fan2", Classification = "Unresponsive" },
             },
             temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
-        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, fans));
+        Assert.Equal("off", FanProfiles.DerivePresetFromCurves(_store, fans));
     }
 
     [Fact]
     public void DerivePresetFromCurves_AllUnresponsiveAfterApplySilent_StaysSilent()
     {
-        // Edge case: user applies silent with all fans connected, then a fan
-        // becomes disconnected. With only unresponsive fans remaining, there
-        // are no controllable fans to validate, so the derivation falls back
-        // to custom. (Acceptable: the system has no controllable hardware to
-        // honor the preset anyway, so the chip can't be honestly "lit".)
+        // Every fan reads Unresponsive but silent is attached to both, so the
+        // preset still derives as silent.
         var fans = new FakeFanProvider(
             channels: new List<FanChannel>
             {
@@ -577,7 +619,7 @@ public class FanProfilesTests : IDisposable
                 },
             });
         });
-        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, fans));
+        Assert.Equal("silent", FanProfiles.DerivePresetFromCurves(_store, fans));
     }
 
     [Fact]
@@ -1128,38 +1170,54 @@ public class FanProfilesTests : IDisposable
     }
 
     [Fact]
-    public void DerivePresetFromCurves_PinnedUncontrolledOrUnresponsiveFan_StaysOff()
+    public void DerivePresetFromCurves_PinnedUncontrolledFan_StaysOff()
     {
-        // The narrowing halves of the pinned-fan check. An uncontrolled channel
-        // is inert at the write chokepoint and an unresponsive one is physically
-        // gone, so a stale attachment on either is not something Nexus drives.
+        // An uncontrolled channel is inert at the write chokepoint, so a stale
+        // attachment on it is not something Nexus drives.
         var fans = new FakeFanProvider(
             channels: new List<FanChannel>
             {
                 new() { Id = "fan1", Name = "Fan 1" },
-                new() { Id = "fan2", Name = "Fan 2", Classification = "Unresponsive" },
                 new() { Id = "fan3", Name = "Fan 3" },
             },
             temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
-        foreach (var id in new[] { "fan2", "fan3" })
-        {
-            FanProfiles.SetPinOverride(fans.GetFanChannels().First(c => c.Id == id), true, _store);
-        }
+        FanProfiles.SetPinOverride(fans.GetFanChannels().First(c => c.Id == "fan3"), true, _store);
         FanControlledState.SetControlled("fan3", false, _store);
         _store.Update(s =>
         {
             s.Cooling.Curves.Add(new CurveDocument
             {
                 Id = "user-a",
-                Outputs = new List<CurveOutputDocument>
-                {
-                    new() { Id = "fan2", Type = "Fan" },
-                    new() { Id = "fan3", Type = "Fan" },
-                },
+                Outputs = new List<CurveOutputDocument> { new() { Id = "fan3", Type = "Fan" } },
             });
         });
 
         Assert.Equal("off", FanProfiles.DerivePresetFromCurves(_store, fans));
+    }
+
+    [Fact]
+    public void DerivePresetFromCurves_PinnedUnresponsiveFanOnACurve_IsCustom()
+    {
+        // An Unresponsive fan is still driven, so a pinned one on a user curve
+        // means software is driving it and the system is not off.
+        var fans = new FakeFanProvider(
+            channels: new List<FanChannel>
+            {
+                new() { Id = "fan1", Name = "Fan 1" },
+                new() { Id = "fan2", Name = "Fan 2", Classification = "Unresponsive" },
+            },
+            temps: new List<TemperatureSource> { new() { Id = "cpu", Category = "CPU" } });
+        FanProfiles.SetPinOverride(fans.GetFanChannels().First(c => c.Id == "fan2"), true, _store);
+        _store.Update(s =>
+        {
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "user-a",
+                Outputs = new List<CurveOutputDocument> { new() { Id = "fan2", Type = "Fan" } },
+            });
+        });
+
+        Assert.Equal("custom", FanProfiles.DerivePresetFromCurves(_store, fans));
     }
 
     [Fact]
@@ -1267,6 +1325,127 @@ public class FanProfilesTests : IDisposable
 
         Assert.Throws<ArgumentException>(() => FanProfiles.SetFanRole(fan, "motherboard", _store));
         Assert.False(_store.Load().Cooling.FanRoles.ContainsKey("fan1"));
+    }
+
+    [Fact]
+    public void ApplyPreset_KeepsSavedOutputsOfAbsentChannels()
+    {
+        FanProfiles.Apply("turbo", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "turbo").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+
+        FanProfiles.Apply("turbo", _fans, _store);
+
+        var outputs = _store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs;
+        Assert.Equal(new[] { "fan1", "fan2", "wireless-1" }, outputs.Select(o => o.Id).OrderBy(i => i).ToArray());
+    }
+
+    [Fact]
+    public void SwitchingPreset_MovesAbsentChannelsToTheNewPresetCurve()
+    {
+        FanProfiles.Apply("silent", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+
+        FanProfiles.Apply("turbo", _fans, _store);
+
+        var s = _store.Load();
+        Assert.Contains(s.Cooling.Curves.Single(c => c.Preset == "turbo").Outputs, o => o.Id == "wireless-1");
+        Assert.DoesNotContain(s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs, o => o.Id == "wireless-1");
+    }
+
+    [Fact]
+    public void Off_DetachesAbsentOutputsToo()
+    {
+        FanProfiles.Apply("turbo", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "turbo").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+
+        FanProfiles.Apply("off", _fans, _store);
+
+        Assert.All(_store.Load().Cooling.Curves, c => Assert.Empty(c.Outputs));
+    }
+
+    [Fact]
+    public void SwitchingPreset_CarriesAbsentOutputsOnlyFromPresetCurves_AndAbsentPumpNeverOnOneStaysOff()
+    {
+        FanProfiles.Apply("silent", _fans, _store);
+        _store.Update(s =>
+        {
+            s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" });
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c1",
+                Name = "Mine",
+                Type = "Flat",
+                Flat = new FlatCurveData { Speed = 40 },
+                Outputs = { new CurveOutputDocument { Id = "wireless-2", Type = "Fan" }, new CurveOutputDocument { Id = "lianli-wireless-AA:pump", Type = "Fan" } },
+            });
+        });
+
+        FanProfiles.Apply("turbo", _fans, _store);
+
+        var turbo = _store.Load().Cooling.Curves.Single(c => c.Preset == "turbo").Outputs.Select(o => o.Id).ToArray();
+        Assert.Contains("wireless-1", turbo);
+        Assert.DoesNotContain("lianli-wireless-AA:pump", turbo);
+        Assert.DoesNotContain("wireless-2", turbo);
+    }
+
+    [Fact]
+    public void SilentThenCustomThenBalanced_KeepsTheAbsentFanOnBalanced()
+    {
+        FanProfiles.Apply("silent", _fans, _store);
+        _store.Update(s => s.Cooling.Curves.Single(c => c.Preset == "silent").Outputs.Add(new CurveOutputDocument { Id = "wireless-1", Type = "Fan" }));
+        FanProfiles.Apply("custom", _fans, _store);
+
+        FanProfiles.Apply("balanced", _fans, _store);
+
+        Assert.Contains(_store.Load().Cooling.Curves.Single(c => c.Preset == "balanced").Outputs, o => o.Id == "wireless-1");
+    }
+
+    [Fact]
+    public void AbsentChannel_KeepsItsCustomAssignmentAcrossLeavingCustomAndARestart()
+    {
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c1",
+                Name = "Mine",
+                Type = "Flat",
+                Flat = new FlatCurveData { Speed = 40 },
+                Outputs = { new CurveOutputDocument { Id = "fan1", Type = "Fan" }, new CurveOutputDocument { Id = "wireless-1", Type = "Fan" } },
+            });
+        });
+
+        FanProfiles.Apply("turbo", _fans, _store);
+        Assert.Equal("c1", _store.Load().Cooling.CustomFanCurveAssignments["wireless-1"]);
+
+        var restarted = new TestableConfigStore(_settingsPath);
+        FanProfiles.Apply("custom", _fans, restarted);
+
+        var after = restarted.Load().Cooling;
+        Assert.Equal("c1", after.CustomFanCurveAssignments["wireless-1"]);
+        Assert.Contains(after.Curves.Single(c => c.Id == "c1").Outputs, o => o.Id == "wireless-1");
+    }
+
+    [Fact]
+    public void SavedPresetCapture_KeepsAbsentChannelAssignments()
+    {
+        _store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "custom";
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c1",
+                Name = "Mine",
+                Type = "Flat",
+                Flat = new FlatCurveData { Speed = 40 },
+                Outputs = { new CurveOutputDocument { Id = "wireless-1", Type = "Fan" } },
+            });
+        });
+
+        var preset = CoolingPresets.Capture("p1", "A", _store);
+
+        Assert.Equal("c1", preset.FanCurveAssignments["wireless-1"]);
     }
 
     private sealed class FakeFanProvider : IFanControlProvider

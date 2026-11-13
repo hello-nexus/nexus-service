@@ -452,6 +452,23 @@ public class DeviceInventoryMapperTests
         Assert.NotEqual(DeviceInventoryMapper.FromTlLcd(1)!.ModelKey, keys[0]);
     }
 
+    [Theory]
+    [InlineData(0x1011, "tryx:panorama")]
+    [InlineData(0x1021, "tryx:panorama-se")]
+    [InlineData(0x1061, "tryx:panorama-se")]
+    [InlineData(0x1031, "tryx:panorama-waterblock")]
+    [InlineData(0x10A1, "tryx:panorama-waterblock")]
+    [InlineData(0x10B1, "tryx:panorama-v2")]
+    public void Tryx_panorama_pids_key_by_vendor_and_model_as_coolers(int pid, string modelKey)
+    {
+        var catalog = Nexus.Service.Peripherals.LightingDevicesCatalog.All;
+
+        var row = Assert.Single(DeviceInventoryMapper.FromUsb(new[] { Usb(0x391A, pid) }, new Nexus.Service.Devices.IDeviceHandler[0], new HashSet<string>(), new HashSet<(int, int)>(), catalog));
+
+        Assert.Equal(modelKey, row.ModelKey);
+        Assert.Equal("cooler", row.Category);
+    }
+
     [Fact]
     public void Usb_catalog_only_and_handler_only_devices_key_by_vid_pid_under_their_category()
     {

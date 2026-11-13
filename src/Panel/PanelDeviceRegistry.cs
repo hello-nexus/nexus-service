@@ -111,6 +111,7 @@ public sealed class PanelDeviceRegistry
                 FirstSeenAt = now,
                 LastSeenAt = now,
                 Capabilities = capabilities,
+                LayoutSlots = capabilities?.SupportsPortrait == true ? true : null,
             };
             s.PanelDevices[record.Id] = record;
             result = Clone(record);
@@ -441,8 +442,7 @@ public sealed class PanelDeviceRegistry
             && string.Equals(a.Family, b.Family, StringComparison.Ordinal)
             && a.SupportsBrightness == b.SupportsBrightness
             && a.SupportsSecondaryMonitor == b.SupportsSecondaryMonitor
-            && a.SupportsPortrait == b.SupportsPortrait
-            && a.SupportsRenderScale == b.SupportsRenderScale;
+            && a.SupportsPortrait == b.SupportsPortrait;
     }
 
     public PanelDeviceRecord? FindByDisplayId(string displayId)
@@ -618,17 +618,22 @@ public sealed class PanelDeviceRegistry
             changed.Clear();
             foreach (var record in s.PanelDevices.Values)
             {
-                if (record.Layout is null) continue;
                 var removed = 0;
-                foreach (var page in record.Layout.Pages)
-                    removed += page.Widgets.RemoveAll(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal));
-                if (removed == 0) continue;
-                var mark = record.Layout.ImmersiveOnLoadWidgetId;
-                if (!string.IsNullOrEmpty(mark)
-                    && !record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Id, mark, StringComparison.Ordinal))))
+                foreach (var layout in PanelLayoutSlots.All(record))
                 {
-                    record.Layout.ImmersiveOnLoadWidgetId = null;
+                    var removedHere = 0;
+                    foreach (var page in layout.Pages)
+                        removedHere += page.Widgets.RemoveAll(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal));
+                    if (removedHere == 0) continue;
+                    removed += removedHere;
+                    var mark = layout.ImmersiveOnLoadWidgetId;
+                    if (!string.IsNullOrEmpty(mark)
+                        && !layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Id, mark, StringComparison.Ordinal))))
+                    {
+                        layout.ImmersiveOnLoadWidgetId = null;
+                    }
                 }
+                if (removed == 0) continue;
                 changed.Add(record.Id);
             }
         });
@@ -636,8 +641,8 @@ public sealed class PanelDeviceRegistry
     }
 
     private static bool HasWidgetType(PanelDeviceRecord record, string widgetType)
-        => record.Layout is not null
-           && record.Layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal)));
+        => PanelLayoutSlots.All(record).Any(layout =>
+            layout.Pages.Any(p => p.Widgets.Any(w => string.Equals(w.Type, widgetType, StringComparison.Ordinal))));
 
     internal static PanelDeviceRecord? FindNewestY70(NexusSettings settings)
     {
@@ -661,6 +666,14 @@ public sealed class PanelDeviceRegistry
             .ToList();
     }
 
+    /// <summary>Both stored layouts of a record as they are now, for a caller that compares across a patch that may turn it.</summary>
+    public (PanelLayoutDto? Landscape, PanelLayoutDto? Portrait)? StoredLayouts(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || !_store.Load().PanelDevices.TryGetValue(id, out var record))
+            return null;
+        return (PanelPresets.CloneLayout(record.Layout), PanelPresets.CloneLayout(record.PortraitLayout));
+    }
+
     public PanelDeviceRecord? Get(string id)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -672,6 +685,9 @@ public sealed class PanelDeviceRegistry
     }
 
     private const long TouchIntervalMs = 30_000;
+
+    /// <summary>Highest frame cap a patch stores.</summary>
+    public const int MaxFpsCap = 240;
 
     // A single-instance surface is the record's identity, not a viewport sample:
     // a Y70 kiosk that first maps on the desktop monitor would rename itself
@@ -693,7 +709,6 @@ public sealed class PanelDeviceRegistry
             SupportsBrightness = patch.SupportsBrightness ?? existing?.SupportsBrightness,
             SupportsSecondaryMonitor = patch.SupportsSecondaryMonitor ?? existing?.SupportsSecondaryMonitor,
             SupportsPortrait = patch.SupportsPortrait ?? existing?.SupportsPortrait,
-            SupportsRenderScale = patch.SupportsRenderScale ?? existing?.SupportsRenderScale,
         };
     }
 
@@ -747,8 +762,16 @@ public sealed class PanelDeviceRegistry
                 if (!string.IsNullOrEmpty(name))
                     record.DisplayName = name;
             }
+            // Resolved before the layout writes: a patch that turns the glass and saves a layout means the
+            // layout for the new rotation.
+            if (PanelRotation.TryResolve(record, patch, out var rotation) && rotation is { } turn)
+            {
+                record.Rotation = turn == 0 ? null : turn;
+                record.Flip180 = null;
+                record.Portrait = null;
+            }
             if (patch.Layout is not null)
-                record.Layout = patch.Layout;
+                PanelLayoutSlots.SetActiveLayout(record, patch.Layout);
             if (patch.ThemeMode is not null)
                 record.ThemeMode = NullIfEmpty(patch.ThemeMode);
             if (patch.AccentColor is not null)
@@ -760,7 +783,7 @@ public sealed class PanelDeviceRegistry
             if (patch.BackgroundMode is not null)
                 record.BackgroundMode = NullIfEmpty(patch.BackgroundMode);
             if (patch.BackgroundEffect is not null)
-                record.BackgroundEffect = NullIfEmpty(patch.BackgroundEffect);
+                record.BackgroundEffect = NullIfEmpty(Nexus.Service.Lighting.SimplePatternMigration.Normalize(patch.BackgroundEffect));
             if (patch.BackgroundTemplate.HasValue)
                 record.BackgroundTemplate = patch.BackgroundTemplate.Value;
             if (patch.BackgroundTemplates is not null)
@@ -829,17 +852,19 @@ public sealed class PanelDeviceRegistry
                 record.ClickThrough = patch.ClickThrough.Value;
             if (patch.WidgetsLocked.HasValue && !string.IsNullOrEmpty(record.DisplayId))
                 record.WidgetsLocked = patch.WidgetsLocked.Value;
+            if (patch.RestrictedMode.HasValue)
+                record.RestrictedMode = patch.RestrictedMode.Value ? true : null;
             // Zero or less clears the override (a null in a patch means "leave it"); other invalid counts are ignored.
             if (patch.GridSlots is <= 0)
-                record.GridSlots = null;
+                PanelLayoutSlots.SetActiveGridSlots(record, null);
             else if (patch.GridSlots is { } slots && slots is >= MinGridSlots and <= MaxGridSlots && slots % 2 == 0)
-                record.GridSlots = slots;
+                PanelLayoutSlots.SetActiveGridSlots(record, slots);
             if (patch.ClearDesktopImport == true)
                 record.DesktopImport = null;
             // Orientation is a property of how the glass is physically mounted, so it
             // applies to any record; the transport ignores it on surfaces it cannot turn.
-            if (patch.Flip180.HasValue)
-                record.Flip180 = patch.Flip180.Value;
+            // The route has already answered 400 for an unsupported request, so one that reaches here
+            // from another caller is dropped like any other invalid value. Applied above, ahead of the layout.
             if (patch.Mirror.HasValue)
                 record.Mirror = patch.Mirror.Value;
             // Same reasoning: a backlight belongs to the glass, and transports that
@@ -850,19 +875,24 @@ public sealed class PanelDeviceRegistry
                 record.SleepWhenLocked = patch.SleepWhenLocked.Value;
             if (patch.SecondaryMonitor.HasValue)
                 record.SecondaryMonitor = patch.SecondaryMonitor.Value;
-            if (patch.Portrait.HasValue)
-                record.Portrait = patch.Portrait.Value;
-            if (patch.HighResolution.HasValue)
-                record.HighResolution = patch.HighResolution.Value;
+            if (patch.FpsCap is { } fpsCap)
+                record.FpsCap = fpsCap <= 0 ? null : Math.Min(fpsCap, MaxFpsCap);
             if (patch.WidgetSize is PanelWidgetSizes.Large or PanelWidgetSizes.MidLarge or PanelWidgetSizes.Small or PanelWidgetSizes.Medium or PanelWidgetSizes.XSmall or PanelWidgetSizes.Compact)
-                record.WidgetSize = patch.WidgetSize;
+                PanelLayoutSlots.SetActiveWidgetSize(record, patch.WidgetSize);
             if (patch.KioskViewport is { } viewport && !string.IsNullOrEmpty(record.DisplayId) && ValidViewport(viewport))
                 record.KioskViewport = new KioskViewportDto { CssWidth = viewport.CssWidth, CssHeight = viewport.CssHeight, Dpr = viewport.Dpr };
             // Capabilities on display-bound records are owned by the topology
             // sync (rebuilt from OS facts); a client value would ping-pong
             // with the next sync pass.
             if (patch.Capabilities is not null && string.IsNullOrEmpty(record.DisplayId))
+            {
                 record.Capabilities = MergeCapabilities(record.Capabilities, patch.Capabilities);
+                // A record seen with a portrait mode after the schema 32 migration ran stores its layouts per orientation from the start.
+                if (record.Capabilities.SupportsPortrait == true)
+                {
+                    record.LayoutSlots ??= true;
+                }
+            }
 
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -905,6 +935,7 @@ public sealed class PanelDeviceRegistry
             if (!s.PanelDevices.TryGetValue(id, out var record))
                 return;
             record.Layout = PanelLayoutDefaults.StripSeedFor(record);
+            PanelLayoutSlots.ClearPortraitSlot(record);
             record.ThemeMode = null;
             record.AccentColor = null;
             record.BackgroundColor = null;
@@ -977,6 +1008,7 @@ public sealed class PanelDeviceRegistry
             record.KeepCursorOff = null;
             record.AlwaysOnTop = null;
             record.ClickThrough = null;
+            record.Rotation = null;
             record.Flip180 = null;
             record.Mirror = null;
             record.LcdBrightness = null;
@@ -984,7 +1016,7 @@ public sealed class PanelDeviceRegistry
             record.LockRestoreBrightness = null;
             record.SecondaryMonitor = null;
             record.Portrait = null;
-            record.HighResolution = null;
+            record.FpsCap = null;
             record.XeneonEdgeSettings = null;
             record.LastSeenAt = now;
             snapshot = Clone(record);
@@ -1005,7 +1037,7 @@ public sealed class PanelDeviceRegistry
     /// the id is unknown, or when the panel already holds
     /// <see cref="PanelPresets.Cap"/> presets (<paramref name="capped"/>).
     /// </summary>
-    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped)
+    public PanelPresetsResponse? CreatePreset(string id, string name, out bool capped, bool fresh = false)
     {
         PanelPresetsResponse? result = null;
         var hitCap = false;
@@ -1019,9 +1051,21 @@ public sealed class PanelDeviceRegistry
                 hitCap = true;
                 return;
             }
+            // With no preset active, fresh would discard the only copy of the live layout.
+            var useStarter = fresh && record.Presets.Exists(p => p.Id == record.ActivePresetId);
             PanelPresets.CaptureActive(record);
+            // A fresh preset takes the starter layout a new panel of this surface gets and keeps the rest of the personalization; the live record follows so the next switch-away capture does not write the old layout back.
+            if (useStarter)
+            {
+                record.Layout = PanelLayoutDefaults.WithStableIds(
+                    PanelLayoutDefaults.StripSeedFor(record)
+                        ?? PanelLayoutDefaults.ForSurface(record.Capabilities?.Surface ?? PanelSurfaces.Y70),
+                    record.Id);
+                PanelLayoutSlots.ClearPortraitSlot(record);
+            }
             var preset = new PanelPreset { Id = Guid.NewGuid().ToString("n"), Name = name };
             PanelPresets.Copy(record, preset);
+            PanelPresets.Stamp(record, preset);
             record.Presets.Add(preset);
             record.ActivePresetId = preset.Id;
             result = PanelPresets.ToResponse(record);
@@ -1080,7 +1124,7 @@ public sealed class PanelDeviceRegistry
             if (target is null)
                 return;
             PanelPresets.CaptureActive(record);
-            PanelPresets.Copy(target, record);
+            PanelPresets.Copy(target, record, toLive: true);
             record.ActivePresetId = target.Id;
             result = PanelPresets.ToResponse(record);
         });
@@ -1231,6 +1275,12 @@ public sealed class PanelDeviceRegistry
             FirstSeenAt = r.FirstSeenAt,
             LastSeenAt = r.LastSeenAt,
             Capabilities = r.Capabilities,
+            LayoutSlots = r.LayoutSlots,
+            // A response clone always carries a number and what the glass supports; neither is a user's choice.
+            Rotation = r.Rotation == 0 ? 0 : null,
+            SupportedRotations = r.SupportedRotations,
+            RenderWidth = r.RenderWidth,
+            RenderHeight = r.RenderHeight,
         };
         return System.Text.Json.JsonSerializer.Serialize(r, Serialization.AppJsonContext.Default.PanelDeviceRecord)
             != System.Text.Json.JsonSerializer.Serialize(fresh, Serialization.AppJsonContext.Default.PanelDeviceRecord);
@@ -1260,7 +1310,8 @@ public sealed class PanelDeviceRegistry
         {
             Id = r.Id,
             DisplayName = r.DisplayName,
-            Layout = r.Layout,
+            // The slot for the record's rotation travels as THE layout; the web never sees the other one.
+            Layout = PanelLayoutSlots.Active(r),
             ThemeMode = r.ThemeMode,
             AccentColor = r.AccentColor,
             BackgroundColor = r.BackgroundColor,
@@ -1302,15 +1353,17 @@ public sealed class PanelDeviceRegistry
             AutoOrient = r.AutoOrient,
             KeepCursorOff = r.KeepCursorOff,
             AlwaysOnTop = r.AlwaysOnTop,
-            Flip180 = r.Flip180,
+            Rotation = PanelRotation.Effective(r),
+            SupportedRotations = PanelRotation.SupportedFor(r.Capabilities),
             Mirror = r.Mirror,
             LcdBrightness = r.LcdBrightness,
             SleepWhenLocked = r.SleepWhenLocked,
             LockRestoreBrightness = r.LockRestoreBrightness,
             SecondaryMonitor = r.SecondaryMonitor,
-            Portrait = r.Portrait,
-            HighResolution = r.HighResolution,
-            WidgetSize = r.WidgetSize,
+            FpsCap = r.FpsCap,
+            WidgetSize = PanelLayoutSlots.ActiveWidgetSize(r),
+            RenderWidth = PanelLayoutSlots.RenderSize(r)?.Width,
+            RenderHeight = PanelLayoutSlots.RenderSize(r)?.Height,
             KioskViewport = r.KioskViewport,
             XeneonEdgeSettings = r.XeneonEdgeSettings is null
                 ? null
@@ -1327,7 +1380,8 @@ public sealed class PanelDeviceRegistry
             Enabled = r.Hosted ?? r.Enabled,
             ClickThrough = r.ClickThrough,
             WidgetsLocked = r.WidgetsLocked,
-            GridSlots = r.GridSlots is > 0 ? r.GridSlots : null,
+            RestrictedMode = r.RestrictedMode,
+            GridSlots = PanelLayoutSlots.ActiveGridSlots(r) is > 0 ? PanelLayoutSlots.ActiveGridSlots(r) : null,
             DesktopImport = r.DesktopImport,
         };
     }

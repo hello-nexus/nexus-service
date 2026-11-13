@@ -23,6 +23,7 @@ public static class Y70DisplayProtocol
     public const int Y70TouchProductId = 0x0C00;
     public const int Y70InfiniteProductId = 0x0C01;
     public const int Y70TrulyProductId = 0x0C02;
+    public const int Y70GtProductId = 0x0C06;
 
     /// <summary>
     /// Firmware-catalog keys (bundled-.hex directory names). Deliberately none
@@ -32,6 +33,13 @@ public static class Y70DisplayProtocol
     public const string VariantTouch = "y70-touch";
     public const string VariantInfinite = "y70-infinite";
     public const string VariantTruly = "y70-truly";
+
+    /// <summary>
+    /// Y70 GT: serial controller (backlight over FF EE, display over DDC/CI like
+    /// Truly). Nexus does no firmware for this panel, so it has no bundle and no
+    /// <see cref="ProductIdForVariant"/> entry.
+    /// </summary>
+    public const string VariantGt = "y70-gt";
 
     /// <summary>
     /// Variant labels for the DDC-only panels (UI/diagnostics). Not
@@ -96,7 +104,24 @@ public static class Y70DisplayProtocol
     /// PanelDisplay.cs - keep all three in sync.
     /// </summary>
     public static readonly string[] DdcPanelHardwareNames =
-        { "RTK0004", "RTD1100", "RTK1234", "RTK2234", "BOE2143", "RTK409A", "RTK2345" };
+        { "RTK2234", "RTK0004", "RTD1100", "RTK1234", "BOE2143", "RTK409A", "RTK2345" };
+
+    /// <summary>
+    /// Index of the best (lowest) <see cref="DdcPanelHardwareNames"/> fragment
+    /// found in <paramref name="rawHardwareId"/>, or -1. The GT screen leads the
+    /// list so it wins over the touch panel when both are attached, matching the
+    /// overlay kiosk's choice; the GT and touch share every display option.
+    /// </summary>
+    public static int PanelRank(string? rawHardwareId)
+    {
+        if (string.IsNullOrEmpty(rawHardwareId)) return -1;
+        for (var i = 0; i < DdcPanelHardwareNames.Length; i++)
+        {
+            if (rawHardwareId.IndexOf(DdcPanelHardwareNames[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                return i;
+        }
+        return -1;
+    }
 
     // DDC/CI VCP codes (driven via the platform display-brightness provider).
     // Values match the reference Y70DDCCIHelper: screen-off is Standby (0x04),
@@ -133,6 +158,71 @@ public static class Y70DisplayProtocol
     /// buffer, but the device only sends 7; the version is in bytes [3..6].
     /// </summary>
     public const int FirmwareVersionResponseLength = 7;
+
+    // ── Y70 GT backlight ──
+
+    private const byte OpLighting = 0xEE;
+
+    /// <summary>
+    /// Backlight grid dimensions: the panel stands portrait, so the grid is
+    /// tall and narrow, columns along X and rows along Y.
+    /// </summary>
+    public const int BacklightColumns = 5;
+    public const int BacklightRows = 7;
+    public const int BacklightLedCount = 35;
+
+    /// <summary>Streaming frame header, followed by one GRB triple per LED.</summary>
+    public static readonly byte[] BacklightHeader = { Frame0, OpLighting, 0x01, 0x01, 0x00, 0x00, 0x00 };
+
+    /// <summary>
+    /// Wire index of each backlight cell, indexed [column][row] with column 0
+    /// at the left and row 0 at the top. Camera-verified on hardware. Every
+    /// consumer reads this table.
+    /// </summary>
+    public static readonly int[][] BacklightWireIndexByCell =
+    {
+        new[] { 28, 29, 30, 31, 32, 33, 34 },
+        new[] { 27, 26, 25, 24, 23, 22, 21 },
+        new[] { 14, 15, 16, 17, 18, 19, 20 },
+        new[] { 13, 12, 11, 10, 9, 8, 7 },
+        new[] { 0, 1, 2, 3, 4, 5, 6 },
+    };
+
+    /// <summary>The (column, row) cell of each wire index, derived from <see cref="BacklightWireIndexByCell"/>.</summary>
+    public static readonly (int Column, int Row)[] BacklightCellByWireIndex = BuildCellByWireIndex();
+
+    private static (int Column, int Row)[] BuildCellByWireIndex()
+    {
+        var cells = new (int, int)[BacklightLedCount];
+        for (var c = 0; c < BacklightColumns; c++)
+        {
+            for (var r = 0; r < BacklightRows; r++)
+            {
+                cells[BacklightWireIndexByCell[c][r]] = (c, r);
+            }
+        }
+        return cells;
+    }
+
+    /// <summary>
+    /// Backlight streaming frame from RGB triples in wire order (missing LEDs
+    /// stay dark): the header, then G, R, B per LED.
+    /// </summary>
+    public static byte[] BuildBacklightStream(ReadOnlySpan<byte> rgb)
+    {
+        var frame = new byte[BacklightHeader.Length + BacklightLedCount * 3];
+        BacklightHeader.CopyTo(frame, 0);
+        var leds = Math.Min(BacklightLedCount, rgb.Length / 3);
+        for (var i = 0; i < leds; i++)
+        {
+            var src = i * 3;
+            var dst = BacklightHeader.Length + src;
+            frame[dst] = rgb[src + 1];
+            frame[dst + 1] = rgb[src];
+            frame[dst + 2] = rgb[src + 2];
+        }
+        return frame;
+    }
 
     // ── Builders ──
 
@@ -189,6 +279,7 @@ public static class Y70DisplayProtocol
         Y70TouchProductId => VariantTouch,
         Y70InfiniteProductId => VariantInfinite,
         Y70TrulyProductId => VariantTruly,
+        Y70GtProductId => VariantGt,
         _ => "",
     };
 

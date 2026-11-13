@@ -279,7 +279,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
 
         // A rejected init is retried on its own window but never aborts the tick:
         // pre-retry this was fire-and-forget, and custom mode streams without it.
@@ -487,7 +487,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private void TickCustom(
         NexusSettings settings,
         DeviceFrame[] devices,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile)
     {
@@ -508,7 +508,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         if (paced)
         {
             var nowMs = NowMs();
-            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs) return;
+            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs)
+            {
+                // No frame goes out on a paced tick, so the last one stays on show.
+                HoldLive(_engine.Live, _customZones, uncontrolled);
+                return;
+            }
             _lastCustomFrameMs = nowMs;
         }
 
@@ -525,7 +530,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             }
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live);
 
             for (var seg = 0; seg < structure.Segments.Count; seg++)
             {
@@ -564,11 +569,27 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    // A group handed back to firmware shows nothing; the rest keep their last frame on show.
+    internal static void HoldLive(LiveLedSink live, IReadOnlyList<IReadOnlyList<ResolvedZone>> groups, IReadOnlyList<string> uncontrolled)
+    {
+        foreach (var held in groups)
+        {
+            if (ZoneResolution.IsFullyUncontrolled(held, uncontrolled))
+            {
+                live.ReportNoneZones(held);
+            }
+            else
+            {
+                live.TouchZones(held);
+            }
+        }
+    }
+
     /// <summary>Commits the firmware animation on every controlled channel; returns false on the first rejected write, leaving the signature unlatched so the next attempt re-sends every channel.</summary>
     private bool CommitFirmwareMode(
         LianLiLightingSettings ls,
         LianLiModeInfo mode,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
@@ -639,7 +660,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private bool CommitMergedMode(
         LianLiLightingSettings ls,
         LianLiModeInfo mode,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,
@@ -724,10 +745,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private static byte DeviceBrightnessByte(
         ComposedDevice device,
         int brightness,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         IReadOnlyList<string> disabled)
     {
-        if (globalBrightness <= 0f)
+        if (globalBrightness.Level <= 0f)
         {
             return LianLiLightingModes.BrightnessCodes[0];
         }
@@ -735,7 +756,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             return LianLiLightingModes.BrightnessCodes[0];
         }
-        var idx = (int)Math.Round(Math.Min((double)brightness, globalBrightness * 4.0));
+        var idx = (int)Math.Round(globalBrightness.CombineSteps(brightness, 4.0));
         return LianLiLightingModes.BrightnessCodes[Math.Clamp(idx, 0, 4)];
     }
 
@@ -925,7 +946,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private static int ComputeFirmwareSig(
         LianLiLightingSettings ls,
         bool merged,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         List<ComposedDevice> composed,
         in LianLiFanProfile profile,
         IReadOnlyList<string> disabled,

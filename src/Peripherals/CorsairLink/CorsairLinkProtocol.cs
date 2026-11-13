@@ -58,6 +58,21 @@ public static class CorsairLinkProtocol
     public static ReadOnlySpan<byte> CmdGetFirmware => new byte[] { 0x02, 0x13 };
     public static ReadOnlySpan<byte> CmdSoftwareMode => new byte[] { 0x01, 0x03, 0x00, 0x02 };
     public static ReadOnlySpan<byte> CmdHardwareMode => new byte[] { 0x01, 0x03, 0x00, 0x01 };
+    // Takeover and hand-back housekeeping: 02 03 00 reads the current mode (payload
+    // ModeHardware or ModeSoftware), 09 <h> probes handle h (status 00 = open, 03 = not
+    // open), 05 01 <h> closes it.
+    public static ReadOnlySpan<byte> CmdGetMode => new byte[] { 0x02, 0x03, 0x00 };
+    public static ReadOnlySpan<byte> CmdProbeHandle => new byte[] { 0x09 };
+    public static ReadOnlySpan<byte> CmdCloseHandle => new byte[] { 0x05, 0x01 };
+    public const byte ModeHardware = 0x01;
+    public const byte ModeSoftware = 0x02;
+    /// <summary>Handles 0..2 are the ones a previous host can leave open.</summary>
+    public const int TakeoverHandleCount = 3;
+    /// <summary>Hardware-mode dwell of the takeover cycle, as measured between the hardware and the second software mode command in a capture of another host's takeover.</summary>
+    public const int ModeCycleWaitMs = 11_000;
+    /// <summary>Reads of the mode property, spaced <see cref="ModeVerifyStepMs"/>, before a mode change counts as not applied.</summary>
+    public const int ModeVerifyTries = 10;
+    public const int ModeVerifyStepMs = 50;
     public static ReadOnlySpan<byte> CmdOpenEndpoint => new byte[] { 0x0D, 0x01 };
     public static ReadOnlySpan<byte> CmdOpenColorEndpoint => new byte[] { 0x0D, 0x00 };
     public static ReadOnlySpan<byte> CmdCloseEndpoint => new byte[] { 0x05, 0x01, 0x01 };
@@ -105,9 +120,6 @@ public static class CorsairLinkProtocol
     /// <summary>Re-reads to drain stale queued responses until the data-type matches.</summary>
     public const int ReadResyncTries = 5;
 
-    /// <summary>Firmware needs this settle after entering software mode before any other command.</summary>
-    public const int SoftwareModeSettleMs = 500;
-
     /// <summary>A daisy-chained device discovered by <see cref="ParseDevices"/>.</summary>
     public readonly struct DiscoveredDevice
     {
@@ -126,38 +138,83 @@ public static class CorsairLinkProtocol
         public string Serial { get; }
     }
 
+    /// <summary>Header bytes of a continuation report that are not list data ([0], busy, command echo, status).</summary>
+    public const int ContinuationHeaderSize = 4;
+
+    /// <summary>How a device-list parse ended.</summary>
+    public readonly struct DeviceListInfo
+    {
+        public DeviceListInfo(int channels, int bytesUsed, int bytesAvailable, bool truncated, int lastChannel)
+        {
+            Channels = channels;
+            BytesUsed = bytesUsed;
+            BytesAvailable = bytesAvailable;
+            Truncated = truncated;
+            LastChannel = lastChannel;
+        }
+
+        /// <summary>Slot count the hub reported (resp[6]).</summary>
+        public int Channels { get; }
+        public int BytesUsed { get; }
+        public int BytesAvailable { get; }
+        /// <summary>A slot or serial did not fit in the bytes read; later channels were not parsed.</summary>
+        public bool Truncated { get; }
+        /// <summary>Last slot fully parsed (0 when none).</summary>
+        public int LastChannel { get; }
+    }
+
+    public static List<DiscoveredDevice> ParseDevices(ReadOnlySpan<byte> resp) => ParseDevices(resp, out _);
+
     /// <summary>
     /// Decode the connected-device list from a <see cref="ModeGetDevices"/> read.
     /// channels=resp[6]; each slot is an 8-byte record (type=rec[2], model=rec[3])
     /// followed by a variable-length serial whose length is rec[7]. A slot with
-    /// length 0 is empty.
+    /// length 0 is empty. The list can span two reports (see
+    /// <see cref="ContinuationHeaderSize"/>); <paramref name="info"/> reports a cut-off list.
     /// </summary>
-    public static List<DiscoveredDevice> ParseDevices(ReadOnlySpan<byte> resp)
+    public static List<DiscoveredDevice> ParseDevices(ReadOnlySpan<byte> resp, out DeviceListInfo info)
     {
         var list = new List<DiscoveredDevice>();
-        if (resp.Length < 7) return list;
+        if (resp.Length < 7)
+        {
+            info = new DeviceListInfo(0, 0, 0, false, 0);
+            return list;
+        }
         int channels = resp[6];
         var data = resp.Slice(7);
         var pos = 0;
+        var last = 0;
+        var truncated = false;
         for (var i = 1; i <= channels; i++)
         {
-            if (pos + 8 > data.Length) break;
+            if (pos + 8 > data.Length)
+            {
+                truncated = true;
+                break;
+            }
             int idLen = data[pos + 7];
             if (idLen == 0)
             {
                 pos += 8;
+                last = i;
                 continue;
             }
             int type = data[pos + 2];
             int model = data[pos + 3];
-            var serial = "";
-            if (pos + 8 + idLen <= data.Length)
+            if (pos + 8 + idLen > data.Length)
             {
-                serial = System.Text.Encoding.ASCII.GetString(data.Slice(pos + 8, idLen));
+                // The device is real but its serial is cut off; keep it so its channel still lights.
+                list.Add(new DiscoveredDevice(i, type, model, ""));
+                last = i;
+                truncated = true;
+                break;
             }
+            var serial = System.Text.Encoding.ASCII.GetString(data.Slice(pos + 8, idLen));
             list.Add(new DiscoveredDevice(i, type, model, serial));
             pos += 8 + idLen;
+            last = i;
         }
+        info = new DeviceListInfo(channels, pos, data.Length, truncated, last);
         return list;
     }
 

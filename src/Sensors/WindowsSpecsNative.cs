@@ -408,6 +408,53 @@ internal static partial class WindowsSpecsNative
         return written == 0 || written > buffer.Length ? null : buffer.AsSpan(0, (int)written).ToArray();
     }
 
+    // ── Activation (Software Licensing) ───────────────────────────────────
+
+    private static readonly Guid WindowsApplicationId = new("55c92734-d682-4d71-983e-d6ec3f16059f");
+
+    /// <summary>
+    /// True when the Windows licensing service reports any Windows SKU as
+    /// licensed, false when none is, null when the query fails. Local read,
+    /// no network, works unelevated.
+    /// </summary>
+    public static unsafe bool? ReadActivation()
+    {
+        if (SLOpen(out var handle) < 0) return null;
+        try
+        {
+            var appId = WindowsApplicationId;
+            if (SLGetLicensingStatusInformation(handle, &appId, null, null, out var count, out var rows) < 0 || rows == null)
+            {
+                return null;
+            }
+            try
+            {
+                var statuses = new int[count];
+                for (var i = 0; i < count; i++) statuses[i] = rows[i].Status;
+                return WindowsSpecsParsers.IsActivated(statuses);
+            }
+            finally
+            {
+                LocalFree(rows);
+            }
+        }
+        finally
+        {
+            SLClose(handle);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SlLicensingStatus
+    {
+        public Guid SkuId;
+        public int Status;
+        public uint GraceMinutes;
+        public uint TotalGraceDays;
+        public int Reason;
+        public ulong ValidityExpiration;
+    }
+
     // ── P/Invoke ──────────────────────────────────────────────────────────
 
     private static readonly IntPtr InvalidHandle = new(-1);
@@ -472,6 +519,18 @@ internal static partial class WindowsSpecsNative
         public uint PanningWidth;
         public uint PanningHeight;
     }
+
+    [LibraryImport("slc.dll")]
+    private static partial int SLOpen(out nint handle);
+
+    [LibraryImport("slc.dll")]
+    private static partial int SLClose(nint handle);
+
+    [LibraryImport("slc.dll")]
+    private static unsafe partial int SLGetLicensingStatusInformation(nint handle, Guid* appId, Guid* skuId, char* rightName, out uint count, out SlLicensingStatus* status);
+
+    [LibraryImport("kernel32.dll")]
+    private static unsafe partial nint LocalFree(void* memory);
 
     [LibraryImport("ntdll.dll")]
     private static partial int RtlGetVersion(ref RtlOsVersionInfo info);

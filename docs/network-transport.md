@@ -52,6 +52,11 @@ is called out here:
   request/reply, it is one long-lived chunked POST per stream session that
   carries framed H.264 access units or raw BGRA frames for the life of the session (request
   body size and minimum data rate limits are lifted for this route).
+  `GET /panel/streams/{sessionId}/touch` is the reverse direction for a session
+  whose assignment has `touch: true`: one long-lived text/plain response, a line
+  per contact (`<pointerId> <down|move|up> <x> <y>`, x and y fractions of the
+  page), blank keepalive lines, service-token auth like ingest. A newer
+  subscriber supersedes the older one; contacts with no subscriber are dropped.
 - `/diagnostics/*` - health/incident/SMART/GPU/memory snapshots plus
   downloadable support bundle (`/diagnostics/support-bundle/download`) and PDF report
   (`/diagnostics/report.pdf`) endpoints. No WebSocket topic.
@@ -257,8 +262,9 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `lighting/mapping-applied` | event-driven when a community mapping auto-applies to a first-seen device | mapping payload rides the frame directly | `MappingAppliedToasts` | Toast + one-click undo; fires alongside a regular `lighting` broadcast for state refetch. |
 | `cooling` | event-driven on every `/cooling/*` mutation | `{revision: long}` | `CoolingQuickWidget` | Push-driven refetch; replaces the prior 2s `setInterval(refresh)` poll. Distinct from `cooling-realtime` above. |
 | `cooling/warnings` | event-driven on an active-warning-set transition (NP50 heartbeat worker; future warning producers) | `{revision: long, deviceId: string}` | no current REST endpoint or React subscriber found | Broadcast infrastructure only; not yet wired to a route or UI. |
+| `diagnostics/alerts` | event-driven on a sensor alert state transition or rule change (`SensorAlertEngine`), never per evaluation tick | `{states: SensorAlertState[]}` carried inline | Diagnostics Settings sensor alerts | Subscribers may also refetch `GET /diagnostics/alerts` for rules and history. |
 | `panel/device` | event-driven on every panel device CRUD (`POST /panel/devices`, `POST /panel/devices/{id}`, `DELETE /panel/devices/{id}`) | `{revision: long, deviceId: string}` | `usePanelLayout` filters by `deviceId === mine` and refetches the device record | Cross-device layout sync; replaces the BroadcastChannel cross-tab path for cross-device updates. |
-| `gallery` | event-driven on gallery source add/remove/upload | `{revision: long}` | `GalleryPage`, `useGallery()` | Push-driven refetch of `GET /gallery/items`. |
+| `gallery` | event-driven on gallery source add/remove/upload and sort change | `{revision: long}` | `GalleryPage`, `useGallery()` | Push-driven refetch of `GET /gallery/items`. |
 | `cloud/accounts` | event-driven on account activation or logout (login, switch, or a recovery the service's own poll loop approved) | `{revision: long}` | `useCloudAccounts()` | Push-driven refetch of `GET /cloud/accounts`, so a sign-in that no page requested still shows without a reload. |
 | `displays` | event-driven on display topology or monitor-panel assignment change | `{revision: long}` | `useDisplayTopology()` | Push-driven refetch of `GET /displays/topology`. |
 | `homeAssistant` | event-driven on Home Assistant entity cache change | `{revision: long, dashboardsRevision: long, roomsChanged: bool}` | `HomeAssistantPage` | Push-driven refetch of `GET /home-assistant/entities`, coalesced to one frame per short window. `roomsChanged` is false when only watched dashboard entities changed (or a dashboard config updated), so a view showing no dashboard may skip the entities refetch. Refetch `GET /home-assistant/dashboard` only when `dashboardsRevision` differs from the `revision` the last dashboard response carried. |

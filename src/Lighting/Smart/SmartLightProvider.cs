@@ -439,6 +439,9 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         AccumulateOrSubmit(id, new LightFrame(On: true, r, g, b, brightness01, zones));
     }
 
+    /// <summary>True when the device takes one averaged color rather than per-zone colors.</summary>
+    internal bool AveragesToSingle(string id) => !(_plans.TryGetValue(id, out var plan) && !plan.AverageToSingle);
+
     internal static (byte r, byte g, byte b) AverageRgb(ReadOnlySpan<byte> leds, int ledCount)
     {
         if (ledCount <= 0 || leds.Length < 3) return (0, 0, 0);
@@ -574,9 +577,9 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         float hue = 0f, sat = 1f; int bri = 100;
         if (s.Devices.LightingDevicePrefs.TryGetValue(id, out var pref))
         { hue = pref.Hue; sat = pref.Saturation; bri = pref.Brightness; }
-        var global = MasterBrightness.Effective(s.Lighting);
+        var global = MasterBrightness.Resolve(s);
         var (r, g, b) = ColorMath.HsvToRgb(hue, sat, 1f);
-        var b01 = Math.Min(Math.Clamp(bri, 0, 100) / 100f, global);
+        var b01 = (float)global.Combine(Math.Clamp(bri, 0, 100) / 100f);
 
         // A device whose realtime mode lapses without a stream
         // (plan.StaticNeedsStreaming, e.g. Govee) can't hold a single-color

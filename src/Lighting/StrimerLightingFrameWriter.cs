@@ -130,7 +130,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
 
-        var globalBrightness = MasterBrightness.Effective(settings.Lighting);
+        var globalBrightness = MasterBrightness.Resolve(settings);
 
         if (ls.Mode == "custom")
         {
@@ -149,7 +149,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         _lastFirmwareSig = sig;
     }
 
-    internal void TickCustom(NexusSettings settings, DeviceFrame[] devices, float globalBrightness)
+    internal void TickCustom(NexusSettings settings, DeviceFrame[] devices, MasterLevel globalBrightness)
     {
         var ls           = settings.Devices.StrimerLighting;
         var speedByte    = StrimerLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
@@ -168,7 +168,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var atxZones     = ZoneResolution.Resolve(atxStructure, settings);
         SegmentFrameComposer.EnsureBuffers(atxStructure, ref _atxSegBuf);
         SegmentFrameComposer.Compose(
-            atxStructure, atxZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _atxSegBuf);
+            atxStructure, atxZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _atxSegBuf, _engine.Live, segmentGated: true);
         for (var s = 0; s < StrimerProtocol.AtxZoneCount; s++)
         {
             // A fully uncontrolled strip skips its color/commit pair entirely,
@@ -185,7 +185,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var gpuZones     = ZoneResolution.Resolve(gpuStructure, settings);
         SegmentFrameComposer.EnsureBuffers(gpuStructure, ref _gpuSegBuf);
         SegmentFrameComposer.Compose(
-            gpuStructure, gpuZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _gpuSegBuf);
+            gpuStructure, gpuZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _gpuSegBuf, _engine.Live, segmentGated: true);
         var gpuZoneCount = StrimerProtocol.NormalizeGpuZoneCount(settings.Devices.StrimerGpuZones);
         for (var s = 0; s < gpuZoneCount; s++)
         {
@@ -220,7 +220,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void CommitFirmwareMode(StrimerLightingSettings ls, StrimerModeInfo mode, float globalBrightness)
+    private void CommitFirmwareMode(StrimerLightingSettings ls, StrimerModeInfo mode, MasterLevel globalBrightness)
     {
         var speedByte      = StrimerLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
         var dirByte        = StrimerLightingModes.DirectionByte(ls.Direction);
@@ -233,14 +233,14 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         _hub.SendApplyLatch();
     }
 
-    private static byte ComputeBrightnessByte(int brightness, float globalBrightness)
+    internal static byte ComputeBrightnessByte(int brightness, MasterLevel globalBrightness)
     {
-        if (globalBrightness <= 0f) return StrimerLightingModes.BrightnessCodes[0];
-        var idx = (int)Math.Round(Math.Min((double)brightness, globalBrightness * 4.0));
+        if (globalBrightness.Level <= 0f) return StrimerLightingModes.BrightnessCodes[0];
+        var idx = (int)Math.Round(globalBrightness.CombineSteps(brightness, 4.0));
         return StrimerLightingModes.BrightnessCodes[Math.Clamp(idx, 0, 4)];
     }
 
-    private static int ComputeFirmwareSig(StrimerLightingSettings ls, float globalBrightness)
+    private static int ComputeFirmwareSig(StrimerLightingSettings ls, MasterLevel globalBrightness)
     {
         var hc = new HashCode();
         hc.Add(ls.Mode);

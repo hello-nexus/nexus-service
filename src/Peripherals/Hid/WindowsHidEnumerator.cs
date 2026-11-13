@@ -404,6 +404,10 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CancelIoEx(IntPtr handle, IntPtr overlapped);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
         public static extern unsafe bool GetOverlappedResult(IntPtr handle, NativeOverlapped* overlapped, out uint transferred, [MarshalAs(UnmanagedType.Bool)] bool wait);
     }
 }

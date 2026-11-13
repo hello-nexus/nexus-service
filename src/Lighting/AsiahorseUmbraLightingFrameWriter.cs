@@ -104,8 +104,8 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         _lastPlanTimestamp = now;
         var ls = settings.Devices.AsiahorseUmbra;
         var source = UmbraLightingPlan.SourceOf(ls);
-        var master = MasterBrightness.Effective(settings.Lighting);
-        var plan = UmbraLightingPlan.Build(ls, _hub.Snapshot.Ports, master, settings.Devices.LightingDevicePrefs);
+        var master = MasterBrightness.Resolve(settings);
+        var plan = UmbraLightingPlan.Build(ls, _hub.Snapshot.Ports, master.Level, settings.Devices.LightingDevicePrefs, master.Scales);
         var signature = UmbraLightingPlan.Signature(plan);
         if (_planSignature == signature && epoch == _planEpoch)
         {
@@ -141,7 +141,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         var disabled = settings.Devices.DisabledLightingDevices;
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         var prefs = settings.Devices.LightingDevicePrefs;
-        var master = MasterBrightness.Effective(settings.Lighting);
+        var master = MasterBrightness.Resolve(settings);
         if (_buffer.Length != total * 3)
         {
             _buffer = new byte[total * 3];
@@ -153,6 +153,7 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
 
         var offset = 0;
         var anyFrame = false;
+        _liveIds.Clear();
         for (var p = 0; p < ports.Length; p++)
         {
             var count = ports[p].LedCount;
@@ -168,6 +169,8 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
                 anyFrame = true;
                 var mul = NollieLightingFrameWriter.ComputeBrightnessMul(id, disabled, uncontrolled, prefs, master, out var adjust);
                 NollieLightingFrameWriter.FillSlice(_buffer, offset, count, frame, mul, adjust, false, 0, 0);
+                _engine.Live.Stage(id, frame.LedBytes, Math.Min(count, frame.LedCount), mul, adjust, false, 0, 0, 0);
+                _liveIds.Add(id);
             }
             offset += count;
         }
@@ -181,18 +184,45 @@ public sealed class AsiahorseUmbraLightingFrameWriter : IHostedService, IDisposa
         var sinceSend = ElapsedMs(_lastSendTimestamp, now);
         if (!changed && sinceSend < KeepAliveMs)
         {
+            // Unchanged since the last send, so the ports already show it.
+            CommitLive();
             return;
         }
         // The packet count bounds the frame rate so the stream stays under the report budget.
         var packets = UmbraProtocol.StreamPacketCount(total);
         if (changed && sinceSend * MaxReportsPerSecond < packets * 1000L)
         {
+            TouchLive();
             return;
         }
         if (_hub.SendFrames(UmbraProtocol.EncodeStream(_buffer)))
         {
             _lastSent = (byte[])_buffer.Clone();
             _lastSendTimestamp = now;
+            CommitLive();
+        }
+        else
+        {
+            TouchLive();
+        }
+    }
+
+    // Ports staged this tick, published only when the stream is actually sent.
+    private readonly System.Collections.Generic.List<string> _liveIds = new();
+
+    private void CommitLive()
+    {
+        foreach (var id in _liveIds)
+        {
+            _engine.Live.Commit(id);
+        }
+    }
+
+    private void TouchLive()
+    {
+        foreach (var id in _liveIds)
+        {
+            _engine.Live.Touch(id);
         }
     }
 

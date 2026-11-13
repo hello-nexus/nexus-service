@@ -28,7 +28,7 @@ public class StrimerFrameWriterTests
     [Fact]
     public void TickCustom_emits_25_writes_for_12_zones_plus_latch()
     {
-        _writer.TickCustom(_store.Load(), System.Array.Empty<DeviceFrame>(), 1f);
+        _writer.TickCustom(_store.Load(), System.Array.Empty<DeviceFrame>(), new MasterLevel(1f, false));
         // 12 zones * 2 (color + effect commit) + 1 apply latch
         Assert.Equal(25, _spy.Calls.Count);
     }
@@ -36,7 +36,7 @@ public class StrimerFrameWriterTests
     [Fact]
     public void TickCustom_sends_color_then_direct_mode_commit_per_zone()
     {
-        _writer.TickCustom(_store.Load(), System.Array.Empty<DeviceFrame>(), 1f);
+        _writer.TickCustom(_store.Load(), System.Array.Empty<DeviceFrame>(), new MasterLevel(1f, false));
         var calls = _spy.Calls;
         for (var zone = 0; zone < 12; zone++)
         {
@@ -57,7 +57,7 @@ public class StrimerFrameWriterTests
     [Fact]
     public void TickCustom_sends_apply_latch_after_all_zones()
     {
-        _writer.TickCustom(_store.Load(), System.Array.Empty<DeviceFrame>(), 1f);
+        _writer.TickCustom(_store.Load(), System.Array.Empty<DeviceFrame>(), new MasterLevel(1f, false));
         var last = _spy.Calls[^1].Bytes;
         Assert.Equal(0xE0, last[0]);
         Assert.Equal(0x2C, last[1]);

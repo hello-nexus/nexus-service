@@ -86,6 +86,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                     if (proc.WaitForExit(1000))
                     {
                         ServiceLog.Info($"[openrgb-proc] killed orphan PID {proc.Id}");
+                        SmbusMutexReclaimer.Reclaim("after orphan kill");
                     }
                     else
                     {
@@ -629,6 +630,8 @@ public sealed class OpenRgbProcessManager : IDisposable
 
             CleanupProcessLocked();
             CleanupOrphans();
+            // A child that exited on its own can leave the mutex abandoned too, and no kill path ran for it.
+            SmbusMutexReclaimer.Reclaim("before OpenRGB spawn");
 
             // Use a service-owned config directory so we don't collide with any
             // user-installed OpenRGB. Lives under %ProgramData%\Nexus on Windows.
@@ -675,7 +678,7 @@ public sealed class OpenRgbProcessManager : IDisposable
             psi.ArgumentList.Add("--config");
             psi.ArgumentList.Add(configDir);
             psi.ArgumentList.Add("--loglevel");
-            psi.ArgumentList.Add("error");
+            psi.ArgumentList.Add("warning");
 
             var verbosity = ResolveVerbosityFlag(Environment.GetEnvironmentVariable(VerbosityEnvVar));
             if (verbosity is not null)
@@ -704,9 +707,13 @@ public sealed class OpenRgbProcessManager : IDisposable
                 Nexus.Service.Lifecycle.ChildProcessJob.Assign(proc);
 #endif
 
-                // Drain stdout/stderr so the OS pipe buffers don't fill up
-                _ = Task.Run(() => DrainStreamAsync(proc.StandardOutput, "stdout"));
-                _ = Task.Run(() => DrainStreamAsync(proc.StandardError, "stderr"));
+                // Drain stdout/stderr so the OS pipe buffers don't fill up. The readers are taken here, under
+                // the lock: a pool thread that dereferenced them later could find Stop() already disposed the
+                // Process and fault with nobody awaiting the task.
+                var stdoutReader = proc.StandardOutput;
+                var stderrReader = proc.StandardError;
+                _ = Task.Run(() => DrainStreamAsync(stdoutReader, "stdout"));
+                _ = Task.Run(() => DrainStreamAsync(stderrReader, "stderr"));
 
                 // Replace the previous CTS so Stop() can cancel only the current
                 // supervisor - and dispose the old one to avoid leaks.
@@ -759,6 +766,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 if (_proc.WaitForExit(500))
                 {
                     ServiceLog.Info($"[openrgb-proc] killed pid={pid}");
+                    SmbusMutexReclaimer.Reclaim("after OpenRGB kill");
                 }
                 else
                 {

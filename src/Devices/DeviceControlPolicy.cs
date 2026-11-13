@@ -39,6 +39,7 @@ public static class DeviceControlPolicy
         ["lianli-galahad2-lcd"] = "lian-li-l-connect",
         ["corsair"] = "icue",
         ["corsair-link-lcd"] = "icue",
+        ["steelseries-apex-oled"] = "steelseries-gg",
     };
 
     // Lian Li (incl. Strimer) and Corsair handlers drive the hardware whose
@@ -57,7 +58,7 @@ public static class DeviceControlPolicy
         "corsair-xc7-lcd", "corsair-capellix-lcd", "corsair-nautilus-lcd", "idcooling-fx-lcd",
         "asrock-lcd", "asus-slc4-lcd", "corsair-link-lcd",
         "thermalright-lcd", "asus-ryujin-lcd", "lianli-screen88", "asus-glacial-lcd",
-        "deepcool-mystique",
+        "deepcool-mystique", "steelseries-apex-oled",
     };
 
     /// <summary>Feeds <see cref="ConflictAppFor"/> alone: names a competing app for the UI hint; the handler defaults on unless that app starts whitelisted.</summary>
@@ -67,6 +68,7 @@ public static class DeviceControlPolicy
         ["nzxt-kraken"] = "nzxt-cam",
         ["nzxt-fan-controller"] = "nzxt-cam",
         ["zmatrices-lcd"] = "zmatrices",
+        ["zmatrices-max-e87"] = "zmatrices",
         ["streamdeck"] = StreamDeckHandler.ElgatoConflictAppId,
         ["asiahorse-umbra"] = "asiahorse-umbra",
         ["deepcool-mystique"] = "deepcool",

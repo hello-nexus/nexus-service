@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -49,15 +50,14 @@ internal enum Slv3UploadKind : byte
 internal sealed class Slv3LinkDiag : IDisposable
 {
     internal const string FileName = "lianli-link.log";
-    internal const string RotatedFileName = "lianli-link.1.log";
-    internal const long MaxFileBytes = 2L * 1024 * 1024;
+    internal const long MaxFileBytes = 1L * 1024 * 1024;
+    internal const int RotatedFiles = 3;
     internal const int ChainRingSize = 128;
     internal const int ReplyRingSize = 256;
     internal const int UploadRingSize = 48;
     internal const int ReplyKeepBytes = 512;
     internal const long SummaryIntervalMs = 30_000;
     internal const long EarlyDumpGapMs = 5_000;
-    internal const long DumpMinIntervalMs = 60_000;
     internal const long ReplyWindowMs = 60_000;
     private const int MaxQueuedLines = 4000;
     private const int RawDumpCount = 3;
@@ -66,6 +66,10 @@ internal sealed class Slv3LinkDiag : IDisposable
     private readonly Dictionary<string, Chain> _chains = new(StringComparer.OrdinalIgnoreCase);
     private readonly Reply _replies = new();
     private long _pollSeq;
+    private int _seenInPoll;
+    private int _blindRun;
+    private Slv3ReplyKind _lastKind = Slv3ReplyKind.Ok;
+    private Stall? _stall;
     private long _nextSummaryMs = -1;
     private int _dumpId;
 
@@ -105,6 +109,8 @@ internal sealed class Slv3LinkDiag : IDisposable
         lock (_gate)
         {
             _pollSeq++;
+            _seenInPoll = 0;
+            _lastKind = kind;
             _replies.Add(nowMs, reply, latencyMs, kind, records);
         }
     }
@@ -120,6 +126,16 @@ internal sealed class Slv3LinkDiag : IDisposable
                 _chains[key] = c;
             }
             var reappeared = c.Dropped;
+            _seenInPoll++;
+            if (_stall is not null)
+            {
+                EndStallLocked(nowMs, "recovered");
+            }
+            _blindRun = 0;
+            if (c.InEpisode)
+            {
+                EndEpisodeLocked(c, nowMs, "recovered");
+            }
             if (c.LastSeenMs >= 0)
             {
                 c.CloseGap(nowMs - c.LastSeenMs);
@@ -147,6 +163,13 @@ internal sealed class Slv3LinkDiag : IDisposable
             {
                 _nextSummaryMs = nowMs + SummaryIntervalMs;
             }
+            // A reply that is not a populated device list means the dongle itself is blind, so every chain looks unseen at once.
+            var live = _chains.Values.Count(x => !x.Dropped);
+            var blind = !gotList
+                || _lastKind is Slv3ReplyKind.NoData or Slv3ReplyKind.Timeout or Slv3ReplyKind.Invalid or Slv3ReplyKind.SendFail
+                || (_lastKind == Slv3ReplyKind.Empty && _seenInPoll == 0 && live >= 2);
+            _blindRun = blind ? _blindRun + 1 : 0;
+            var stallDue = false;
             foreach (var c in _chains.Values)
             {
                 if (c.Dropped)
@@ -167,10 +190,28 @@ internal sealed class Slv3LinkDiag : IDisposable
                 }
                 var unseen = nowMs - c.LastSeenMs;
                 var seenNow = gotList && c.LastPollSeq == _pollSeq;
-                if (!seenNow && unseen > EarlyDumpGapMs && nowMs >= c.NextDumpMs)
+                if (c.InEpisode)
                 {
-                    DumpLocked(c, nowMs, "unseen5s", unseen);
+                    c.EpisodePolls++;
                 }
+                else if (!seenNow && unseen > EarlyDumpGapMs)
+                {
+                    if (blind)
+                    {
+                        stallDue = true;
+                    }
+                    else
+                    {
+                        c.InEpisode = true;
+                        c.EpisodeStartMs = nowMs;
+                        c.EpisodePolls = 0;
+                        DumpLocked(c, nowMs, "unseen5s", unseen);
+                    }
+                }
+            }
+            if (stallDue && _stall is null)
+            {
+                StartStallLocked(nowMs);
             }
             if (nowMs >= _nextSummaryMs)
             {
@@ -196,6 +237,14 @@ internal sealed class Slv3LinkDiag : IDisposable
                 c.CloseGap(unseen);
                 DumpLocked(c, nowMs, "drop", unseen);
                 c.Dropped = true;
+                if (c.InEpisode)
+                {
+                    EndEpisodeLocked(c, nowMs, "drop");
+                }
+                if (_stall is not null && !_chains.Values.Any(x => !x.Dropped))
+                {
+                    EndStallLocked(nowMs, "drop");
+                }
             }
         }
     }
@@ -268,15 +317,68 @@ internal sealed class Slv3LinkDiag : IDisposable
         c.ResetWindow();
     }
 
+    private void StartStallLocked(long nowMs)
+    {
+        var id = ++_dumpId;
+        var live = _chains.Values.Where(x => !x.Dropped).ToList();
+        _stall = new Stall(id, nowMs, _lastKind);
+        Emit(string.Create(CultureInfo.InvariantCulture, $"DUMP {id} chain=* reason=stall kind={KindName(_lastKind)} chains={live.Count}"));
+        var p = "D" + id.ToString(CultureInfo.InvariantCulture) + " ";
+        foreach (var c in live)
+        {
+            c.InEpisode = true;
+            c.Covered = true;
+            c.EpisodeStartMs = nowMs;
+            Emit(string.Create(CultureInfo.InvariantCulture, $"{p}chain={c.Key} unseen={nowMs - c.LastSeenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, nowMs - c.LastSeenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}"));
+            WriteChainRingLocked(c, nowMs, p);
+            WriteUploadsLocked(c, nowMs, p);
+        }
+        WriteReplyRingLocked(nowMs, p);
+    }
+
+    private void EndStallLocked(long nowMs, string how)
+    {
+        var st = _stall!;
+        _stall = null;
+        foreach (var c in _chains.Values)
+        {
+            if (c.Covered)
+            {
+                c.Covered = false;
+                c.InEpisode = false;
+            }
+        }
+        Emit(string.Create(CultureInfo.InvariantCulture,
+            $"STALL {st.Id} ended={how} kind={KindName(st.Kind)} duration={nowMs - st.StartMs}ms polls={_blindRun}"));
+    }
+
+    private void EndEpisodeLocked(Chain c, long nowMs, string how)
+    {
+        c.InEpisode = false;
+        if (c.Covered)
+        {
+            c.Covered = false;
+            return;
+        }
+        Emit(string.Create(CultureInfo.InvariantCulture,
+            $"EPISODE {c.Key} ended={how} duration={nowMs - c.EpisodeStartMs}ms polls={c.EpisodePolls}"));
+    }
+
     private void DumpLocked(Chain c, long nowMs, string reason, long unseenMs)
     {
-        c.NextDumpMs = nowMs + DumpMinIntervalMs;
         var id = ++_dumpId;
-        var sb = new StringBuilder();
         var p = "D" + id.ToString(CultureInfo.InvariantCulture) + " ";
         var inv = CultureInfo.InvariantCulture;
         Emit(string.Create(inv, $"DUMP {id} chain={c.Key} reason={reason} unseen={unseenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, unseenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}"));
+        WriteChainRingLocked(c, nowMs, p);
+        WriteReplyRingLocked(nowMs, p);
+        WriteUploadsLocked(c, nowMs, p);
+    }
 
+    private void WriteChainRingLocked(Chain c, long nowMs, string p)
+    {
+        var sb = new StringBuilder();
+        var inv = CultureInfo.InvariantCulture;
         // Chain ring, run-length grouped by (present, slot, channel).
         var n = c.Count;
         for (var i = 0; i < n;)
@@ -311,6 +413,12 @@ internal sealed class Slv3LinkDiag : IDisposable
                 + Convert.ToHexString(c.Raw, x * Chain.RecordBytes, Chain.RecordBytes));
         }
 
+    }
+
+    private void WriteReplyRingLocked(long nowMs, string p)
+    {
+        var sb = new StringBuilder();
+        var inv = CultureInfo.InvariantCulture;
         // Dongle reply ring, last ReplyWindowMs, grouped by (kind, records, length).
         var r = _replies;
         var rn = r.Count;
@@ -354,6 +462,11 @@ internal sealed class Slv3LinkDiag : IDisposable
                 + Convert.ToHexString(r.Raw, x * ReplyKeepBytes, kept));
         }
 
+    }
+
+    private void WriteUploadsLocked(Chain c, long nowMs, string p)
+    {
+        var inv = CultureInfo.InvariantCulture;
         // Upload ring, oldest first.
         for (var i = 0; i < c.UploadCount; i++)
         {
@@ -457,19 +570,49 @@ internal sealed class Slv3LinkDiag : IDisposable
         try
         {
             Directory.CreateDirectory(_dir);
-            var path = Path.Combine(_dir, FileName);
-            var text = sb.ToString();
-            var size = new FileInfo(path) is { Exists: true } fi ? fi.Length : 0;
-            if (size + text.Length > MaxFileBytes)
-            {
-                File.Move(path, Path.Combine(_dir, RotatedFileName), overwrite: true);
-            }
-            File.AppendAllText(path, text, new UTF8Encoding(false));
+            AppendRotating(_dir, sb.ToString(), MaxFileBytes);
         }
         catch
         {
             // a full or locked disk must not affect the link
         }
+    }
+
+    internal static string RotatedFileName(int n) => string.Create(CultureInfo.InvariantCulture, $"lianli-link.{n}.log");
+
+    /// <summary>True for the live file and each rotated one, so the support bundle can ship all of them.</summary>
+    internal static bool IsLogFileName(string name)
+    {
+        if (name == FileName)
+        {
+            return true;
+        }
+        for (var n = 1; n <= RotatedFiles; n++)
+        {
+            if (name == RotatedFileName(n))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    internal static void AppendRotating(string dir, string text, long maxFileBytes)
+    {
+        var path = Path.Combine(dir, FileName);
+        var size = new FileInfo(path) is { Exists: true } fi ? fi.Length : 0;
+        if (size + text.Length > maxFileBytes && size > 0)
+        {
+            for (var n = RotatedFiles; n >= 1; n--)
+            {
+                var from = n == 1 ? path : Path.Combine(dir, RotatedFileName(n - 1));
+                if (File.Exists(from))
+                {
+                    File.Move(from, Path.Combine(dir, RotatedFileName(n)), overwrite: true);
+                }
+            }
+        }
+        File.AppendAllText(path, text, new UTF8Encoding(false));
     }
 
     public void Dispose()
@@ -490,8 +633,11 @@ internal sealed class Slv3LinkDiag : IDisposable
         public string Key { get; }
         public long LastSeenMs = -1;
         public long LastPollSeq = -1;
-        public long NextDumpMs;
         public bool Dropped;
+        public bool InEpisode;
+        public bool Covered;
+        public long EpisodeStartMs;
+        public int EpisodePolls;
         public byte LastSlot;
         public byte LastChannel;
 
@@ -575,6 +721,20 @@ internal sealed class Slv3LinkDiag : IDisposable
             Gaps5 = 0;
             Gaps10 = 0;
         }
+    }
+
+    private sealed class Stall
+    {
+        public Stall(int id, long startMs, Slv3ReplyKind kind)
+        {
+            Id = id;
+            StartMs = startMs;
+            Kind = kind;
+        }
+
+        public int Id { get; }
+        public long StartMs { get; }
+        public Slv3ReplyKind Kind { get; }
     }
 
     private sealed class Reply

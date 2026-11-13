@@ -1,3 +1,4 @@
+using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine.Gpu;
 
 namespace Nexus.Service.Tests.Lighting;
@@ -57,9 +58,6 @@ public class ShaderLibraryTests
     [InlineData("synthwave")]
     [InlineData("retropetals")]
     [InlineData("contourbands")]
-    [InlineData("sweeprainbow")]
-    [InlineData("sweepbreathing")]
-    [InlineData("sweepbars")]
     [InlineData("sweepbrush")]
     [InlineData("sweepcomet")]
     [InlineData("sweepliquid")]
@@ -93,9 +91,8 @@ public class ShaderLibraryTests
     {
         // The tag is part of the thumbnail ETag: stable for one source, distinct
         // across sources, and shared by keys that alias one .frag.
-        Assert.Equal(ShaderLibrary.SourceTag("sweepbars"), ShaderLibrary.SourceTag("sweepbars"));
-        Assert.NotEqual(ShaderLibrary.SourceTag("sweepbars"), ShaderLibrary.SourceTag("sweepbrush"));
-        Assert.Equal(ShaderLibrary.SourceTag("breathing"), ShaderLibrary.SourceTag("sweepbreathing"));
+        Assert.Equal(ShaderLibrary.SourceTag("sharplines"), ShaderLibrary.SourceTag("sharplines"));
+        Assert.NotEqual(ShaderLibrary.SourceTag("sharplines"), ShaderLibrary.SourceTag("sweepbrush"));
     }
 
     [Fact]
@@ -108,6 +105,68 @@ public class ShaderLibraryTests
             Assert.Contains(key, ShaderLibrary.AllEffectKeys);
             Assert.True(ShaderLibrary.IsSweepEffect(key));
         }
-        Assert.False(ShaderLibrary.IsSweepEffect("rainbow"));
+        Assert.False(ShaderLibrary.IsSweepEffect("plasma"));
+        Assert.Equal(7, ShaderLibrary.SweepEffectKeys.Count);
+        foreach (var retired in new[] { "sweeprainbow", "sweepbars", "sweepbreathing" })
+        {
+            Assert.DoesNotContain(retired, ShaderLibrary.AllEffectKeys);
+        }
+    }
+
+    [Fact]
+    public void EveryFullFrameEffect_HasFourPresetSlots_AndItsParamsResolve()
+    {
+        foreach (var key in ShaderLibrary.SweepEffectKeys)
+        {
+            Assert.True(AnimateTemplateDefaults.All.TryGetValue(key, out var bundle), key);
+            Assert.Equal(AnimateTemplateDefaults.SlotCount, bundle.Slots.Count);
+            Assert.True(DevicePinTracker.IsAnimateEffect(key), key);
+            var specs = ShaderLibrary.Params(key);
+            foreach (var slot in bundle.Slots)
+            {
+                Assert.All(slot!.Params.Keys, name => Assert.True(specs.ContainsKey(name), $"{key} slot param {name}"));
+            }
+        }
+    }
+
+    [Fact]
+    public void Jellyfish_does_not_wrap_the_master_clock()
+    {
+        // A wrapped clock jumps every sin phase and re-rolls the noise field at each wrap.
+        // The noise terms crossfade two offset copies instead.
+        var src = ShaderLibrary.Get("jellyfish");
+        Assert.DoesNotContain("mod(u_time", src);
+        Assert.DoesNotMatch(@"mod\(\s*t\s*,\s*\d", src);
+        Assert.Contains("haloCol = tintedPalette(fi * 0.14 + 0.35) * halo * seam;", src);
+    }
+
+    [Fact]
+    public void Bubbles_keep_continuous_motion_and_a_per_spawn_opacity()
+    {
+        var src = ShaderLibrary.Get("bubbles");
+        // The master clock is never wrapped; only the rise clock, whose wrap must land on whole cycles.
+        Assert.DoesNotMatch(@"float\s+t\s*=\s*mod\(", src);
+        Assert.Contains("mod(t * rise, 1024.0)", src);
+        // Bubble rates are quantized and the alpha cycle id repeats with a period that divides them.
+        Assert.Contains("floor((0.18 + seed2 * 0.35) * 128.0 + 0.5) / 128.0", src);
+        Assert.Contains("mod(floor(cyc), 8.0)", src);
+        // Particle column rates are quantized to the row-id period so the wrap lands on whole rows.
+        Assert.Contains("* rows * 32.0 + 0.5) / 32.0", src);
+        Assert.Contains("mod(floor(py), 32.0)", src);
+        // Opacity is hashed from the bubble's spawn cycle, never from time.
+        Assert.Contains("hash21(vec2(fi * 3.7 + 1.9, mod(floor(cyc), 8.0)", src);
+    }
+
+    [Fact]
+    public void Plasma_takes_every_color_from_the_wheel_palette()
+    {
+        // The effect body only: the prelude legitimately defines the palettes.
+        var full = ShaderLibrary.Get("plasma");
+        var src = full[full.IndexOf("uniform float u_warp;", System.StringComparison.Ordinal)..];
+        Assert.Contains("tintedPalette(", src);
+        // No private palette: no hue ramp or cosine palette of its own.
+        Assert.DoesNotContain("hsv2rgb(", src);
+        Assert.DoesNotContain("rainbowPalette(", src);
+        Assert.DoesNotContain("palette(t,", src);
     }
 }

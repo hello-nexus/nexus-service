@@ -32,11 +32,14 @@ public static class SegmentFrameComposer
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         double masterMul,
         long nowTicks,
         Np50IdentifyTracker? identify,
-        RgbColor[][] segmentBuffers)
+        RgbColor[][] segmentBuffers,
+        LiveLedSink? live = null,
+        bool segmentGated = false,
+        bool stageLive = false)
     {
         var touched = new bool[structure.Segments.Count];
         for (var s = 0; s < segmentBuffers.Length; s++)
@@ -59,11 +62,12 @@ public static class SegmentFrameComposer
 
             // The keeb firmware-brightness level (masterMul, set by the knob and
             // the Settings slider) multiplies the per-zone software level, which the
-            // global master brightness caps: effective = min(global, zone) * masterMul.
+            // master brightness joins (MasterLevel.Combine, a cap or a multiplier): effective = combine(global, zone) * masterMul.
             var mul = ComputeBrightnessMul(zone.Id, disabled, uncontrolled, prefs, globalBrightness, out var adjust) * masterMul;
             var identifying = false;
             var identifyOn = false;
-            if (identify is not null && identify.TryGetActive(zone.Id, nowTicks, out var startTicks))
+            long startTicks = 0;
+            if (identify is not null && identify.TryGetActive(zone.Id, nowTicks, out startTicks))
             {
                 identifying = true;
                 var elapsedMs = (nowTicks - startTicks) / TimeSpan.TicksPerMillisecond;
@@ -71,6 +75,27 @@ public static class SegmentFrameComposer
             }
 
             var src = frame.LedBytes;
+            if (live is { Enabled: true })
+            {
+                var zoneLeds = 0;
+                foreach (var slice in zone.Slices)
+                {
+                    zoneLeds += slice.Count;
+                }
+                if (segmentGated && SegmentsHandedBack(zone, zones, uncontrolled))
+                {
+                    // The writer skips a fully uncontrolled segment, so nothing per-LED is sent for it.
+                    live.ReportNone(zone.Id);
+                }
+                else if (stageLive)
+                {
+                    live.Stage(zone.Id, src, zoneLeds, mul, adjust, identifying, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
+                }
+                else
+                {
+                    live.Report(zone.Id, src, zoneLeds, mul, adjust, identifying, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
+                }
+            }
             var zoneLocal = 0;
             foreach (var slice in zone.Slices)
             {
@@ -130,6 +155,22 @@ public static class SegmentFrameComposer
         return touched;
     }
 
+    private static bool SegmentsHandedBack(ResolvedZone zone, IReadOnlyList<ResolvedZone> zones, IReadOnlyList<string> uncontrolled)
+    {
+        if (zone.Slices.Count == 0)
+        {
+            return false;
+        }
+        foreach (var slice in zone.Slices)
+        {
+            if (!ZoneResolution.IsSegmentFullyUncontrolled(zones, slice.Segment, uncontrolled))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>Allocate / resize one color buffer per segment, sized to the hardware-reported counts.</summary>
     public static void EnsureBuffers(DeviceStructure structure, ref RgbColor[][] buffers)
     {
@@ -147,8 +188,9 @@ public static class SegmentFrameComposer
         }
     }
 
-    /// <summary>Combined off-switch + per-card brightness capped by the master
-    /// level: a card never renders brighter than master (min(device/100, global)).
+    /// <summary>Combined off-switch + per-card brightness joined to the master level
+    /// by <see cref="MasterLevel.Combine"/>: capped by it, or multiplied by it when the
+    /// master scales devices.
     /// An uncontrolled zone renders black too - the shared hardware transport means
     /// only the whole physical device can be handed back to firmware, so a
     /// zone-level uncontrolled flag on a device with controlled siblings just blacks it.</summary>
@@ -156,7 +198,7 @@ public static class SegmentFrameComposer
         IReadOnlyList<string> disabled,
         IReadOnlyList<string> uncontrolled,
         IReadOnlyDictionary<string, LightingDevicePreference> prefs,
-        float globalBrightness,
+        MasterLevel globalBrightness,
         out DeviceColorAdjust adjust)
     {
         adjust = DeviceColorAdjust.Identity;
@@ -189,6 +231,6 @@ public static class SegmentFrameComposer
             }
         }
         catch (InvalidOperationException) { devBrightness = 100; }
-        return Math.Min(Math.Clamp(devBrightness, 0, 100) / 100.0, globalBrightness);
+        return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 }

@@ -22,6 +22,8 @@ public sealed class GuardPlan
     public ThermalGuardOutput Output { get; init; }
     /// <summary>CPU-side channels the guard may write: Nexus-driven, controlled, unlocked, not GPU.</summary>
     public HashSet<string> Eligible { get; init; } = new(StringComparer.Ordinal);
+    /// <summary>Channels on hardware control (no curve, no manual duty) that Nexus can still drive: the guard raises them too.</summary>
+    public HashSet<string> Hardware { get; init; } = new(StringComparer.Ordinal);
     /// <summary>GPU fans handed back to the driver: no writes.</summary>
     public HashSet<string> GpuBlocked { get; init; } = new(StringComparer.Ordinal);
     public HashSet<string> GpuForced { get; init; } = new(StringComparer.Ordinal);
@@ -30,9 +32,9 @@ public sealed class GuardPlan
     /// <summary>Manual duties to persist before the engine releases the GPU fans.</summary>
     public Dictionary<string, int> GpuBackup { get; init; } = new(StringComparer.Ordinal);
 
-    public static readonly GuardPlan None = new() { Output = new ThermalGuardOutput(ThermalGuardStates.Off, 0, false, false, false, false, false, null) };
+    public static readonly GuardPlan None = new() { Output = new ThermalGuardOutput(ThermalGuardStates.Off, 0, false, false, false, false, null) };
 
-    public bool Overrides => Output.FloorDuty > 0 || Output.StopWriting || GpuBlocked.Count > 0 || GpuForced.Count > 0;
+    public bool Overrides => Output.FloorDuty > 0 || GpuBlocked.Count > 0 || GpuForced.Count > 0;
 
     /// <summary>Final duty for a channel, or null when the guard forbids writing it.</summary>
     public int? Apply(string channelId, int duty)
@@ -49,12 +51,17 @@ public sealed class GuardPlan
         {
             return duty;
         }
-        if (Output.StopWriting)
+        if (Output.FloorDuty > duty)
         {
-            return null;
+            _floorRaised = true;
         }
         return Math.Max(duty, Output.FloorDuty);
     }
+
+    private volatile bool _floorRaised;
+
+    /// <summary>True once the floor beat a guarded channel's own duty.</summary>
+    public bool FloorRaised => _floorRaised;
 }
 
 /// <summary>
@@ -94,10 +101,21 @@ public sealed class ThermalGuardController
     private readonly Dictionary<string, GpuThermalGuard> _gpus = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Name, double? Temp, double? Limit, string? Source)> _gpuInfo = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RpmTrack> _rpm = new(StringComparer.Ordinal);
+    // True while the guard drives fans and one of them has a tach that stays at zero (or writes are not landing).
+    private bool _fansNotResponding;
+    private static readonly HashSet<string> EmptyIds = new(StringComparer.Ordinal);
+    // When the guard started raising fans in the current spell; zero RPM counts only from then, after a spin-up grace.
+    private long? _activeSinceMs;
     private readonly Dictionary<string, long> _lastTripAlertMs = new(StringComparer.Ordinal);
     private readonly ThermalGuardThresholds _thresholds;
 
     private string _publicState = ThermalGuardStates.Inactive;
+    // Reported-state only: gates read _publicState, which follows the ramp.
+    private const int FloorReportDebounceTicks = 3;
+    private GuardPlan? _tickPlan;
+    private bool _floorApplied;
+    private int _floorStreak;
+    private long? _floorReportedSinceMs;
     private double? _guardTemp;
     // What was detected, and the effective limit (the user's override applied when allowed).
     private ThermalLimit _detected = new(ThermalLimits.GenericDefaultC, ThermalLimitSources.Default);
@@ -126,7 +144,20 @@ public sealed class ThermalGuardController
     private bool _watchdogArmed;
     private bool _watchdogFired;
     private bool _watchdogPending;
+    private bool _restoreHandback;
+    // Mirrors the Cooling feature switch for the watchdog thread, which must not wait on the settings lock.
+    private volatile bool _coolingEnabled = true;
+    private readonly object _coolingFlagLock = new();
     private Timer? _watchdog;
+    // Cooling mode targets: the channels a trip drives to full speed (Nexus-driven plus hardware-control
+    // ones), refreshed by every evaluation and swapped whole. The watchdog thread cannot ask the stalled
+    // engine, so it drives this last known set.
+    private string[] _coolingIds = Array.Empty<string>();
+    private HashSet<string> _coolingHardware = new(StringComparer.Ordinal);
+    // Channels already driven in the current cooling spell, so the poll while latched writes only newcomers.
+    private readonly HashSet<string> _coolingAsserted = new(StringComparer.Ordinal);
+    // Hardware-control channels the watchdog drove: handed back to hardware once the engine resumes.
+    private readonly HashSet<string> _watchdogHardware = new(StringComparer.Ordinal);
 
     public ThermalGuardController(
         IFanControlProvider fans,
@@ -149,6 +180,11 @@ public sealed class ThermalGuardController
         _cpu = new ThermalGuard(_thresholds);
         _overrideC = store.Load().Cooling.ThermalGuardLimitOverrideC;
         _detectionResolved = sensors is null;
+        _coolingEnabled = store.Load().Features.Cooling;
+        store.OnChanged += () =>
+        {
+            lock (_coolingFlagLock) { _coolingEnabled = _store.Load().Features.Cooling; }
+        };
         // A trip record still open at construction belongs to a previous run that never closed it.
         CloseOpenTrip();
     }
@@ -159,6 +195,8 @@ public sealed class ThermalGuardController
         public int Streak;
         public int StreakMin;
         public long? ZeroSinceMs;
+        /// <summary>The tach has read above zero at least once, so a zero later is a stop and not a missing tach.</summary>
+        public bool SeenRpm;
     }
 
     /// <summary>Monotonic millisecond clock for the watchdog; tests substitute it.</summary>
@@ -194,6 +232,32 @@ public sealed class ThermalGuardController
         _watchdog = null;
     }
 
+    /// <summary>End of tick: debounces whether the floor beat a written duty.</summary>
+    public void CommitFloorApplied()
+    {
+        var flipped = false;
+        lock (_gate)
+        {
+            var raised = _tickPlan?.FloorRaised ?? false;
+            _tickPlan = null;
+            if (_publicState != ThermalGuardStates.Floor || raised == _floorApplied)
+            {
+                _floorStreak = 0;
+            }
+            else if (++_floorStreak >= FloorReportDebounceTicks)
+            {
+                _floorApplied = raised;
+                _floorStreak = 0;
+                _floorReportedSinceMs = _utcNowMs();
+                flipped = true;
+            }
+        }
+        if (flipped && _hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
+    }
+
     public void TickCompleted()
     {
         var resumed = false;
@@ -211,6 +275,7 @@ public sealed class ThermalGuardController
                     _watchdogLatched = false;
                     _watchdogResumed = true;
                     _watchdogFires.Clear();
+                    _coolingAsserted.Clear();
                     // The engine forgets what it wrote, so the next tick re-drives every fan.
                     _watchdogPending = true;
                     resumed = true;
@@ -221,7 +286,7 @@ public sealed class ThermalGuardController
         }
         if (resumed)
         {
-            Console.Error.WriteLine("[thermal-guard] curve engine steady again: Nexus fan writes resume");
+            Console.Error.WriteLine("[thermal-guard] curve engine steady again: cooling mode ends and Nexus fan curves resume");
             if (_hub is not null)
             {
                 PanelTopics.BroadcastCooling(_hub);
@@ -234,8 +299,30 @@ public sealed class ThermalGuardController
         var latchedNow = false;
         var resumes = false;
         var alert = false;
+        var holdLatched = false;
         long stalled;
         Func<string>? engineStep;
+        lock (_gate)
+        {
+            if (!_watchdogArmed)
+            {
+                return;
+            }
+            if (_watchdogLatched)
+            {
+                // Latched: cooling mode stays asserted for channels that appeared since.
+                holdLatched = true;
+            }
+            else if (_watchdogFired)
+            {
+                return;
+            }
+        }
+        if (holdLatched)
+        {
+            DriveCoolingMode(requireLatch: true);
+            return;
+        }
         lock (_gate)
         {
             if (!_watchdogArmed || _watchdogFired || _watchdogLatched)
@@ -253,7 +340,7 @@ public sealed class ThermalGuardController
             _watchdogFires.RemoveAll(t => nowMs - t > WatchdogLatchWindowMs);
             if (_watchdogFires.Count >= WatchdogLatchFires)
             {
-                // Repeated stalls: stop handing fans back and forth, the BIOS keeps them.
+                // Repeated stalls: the engine cannot be trusted with the fans, so cooling mode holds them at full speed.
                 _watchdogLatched = true;
                 _steadySinceMs = nowMs;
                 latchedNow = true;
@@ -266,20 +353,20 @@ public sealed class ThermalGuardController
                 }
             }
             engineStep = _engineStep;
+            _coolingAsserted.Clear();
         }
         string step;
         try { step = engineStep?.Invoke() ?? "unknown"; }
         catch { step = "unknown"; }
-        Console.Error.WriteLine($"[thermal-guard] curve engine stalled for {stalled / 1000} s at: {step}; releasing all fans to BIOS");
-        try { _fans.ReleaseAll(); }
-        catch { /* the fans are already in an unknown state; nothing more to do */ }
-        // Only now may the engine re-drive: it can never run ahead of a release still in flight.
+        Console.Error.WriteLine($"[thermal-guard] curve engine stalled for {stalled / 1000} s at: {step}; entering cooling mode: fans driven to full speed");
+        DriveCoolingMode(requireLatch: false);
+        // Only now may the engine re-drive: it can never run ahead of a cooling-mode write still in flight.
         lock (_gate) { _watchdogPending = true; }
         if (latchedNow)
         {
             Console.Error.WriteLine(resumes
-                ? $"[thermal-guard] repeated engine stalls: Nexus fan writes stopped until the engine runs steadily for {WatchdogResumeMs / 60_000} min, a restart or a guard toggle"
-                : "[thermal-guard] repeated engine stalls again: Nexus fan writes stopped until restart or a guard toggle");
+                ? $"[thermal-guard] repeated engine stalls: cooling mode held at full speed until the engine runs steadily for {WatchdogResumeMs / 60_000} min, a restart or a guard toggle"
+                : "[thermal-guard] repeated engine stalls again: cooling mode held at full speed until restart or a guard toggle");
             if (alert)
             {
                 Raise(ThermalGuardNotices.LatchedTitle, ThermalGuardNotices.LatchedText);
@@ -291,7 +378,83 @@ public sealed class ThermalGuardController
         }
     }
 
-    /// <summary>True once after the watchdog released the fans: the next tick forgets what it wrote so every duty is written again, unchanged ones included.</summary>
+    /// <summary>Drives every cooling-mode channel not yet driven this spell to full speed, the way a trip does. Never hands a fan to hardware control.</summary>
+    internal void DriveCoolingMode(bool requireLatch)
+    {
+        if (!_coolingEnabled)
+        {
+            return;
+        }
+        string[] ids;
+        lock (_gate)
+        {
+            // The poll chose to hold in an earlier lock; a toggle or a resume since then ended cooling mode.
+            if (requireLatch && !(_watchdogArmed && _watchdogLatched))
+            {
+                return;
+            }
+            ids = _coolingIds.Where(id => _coolingAsserted.Add(id)).ToArray();
+        }
+        if (ids.Length == 0)
+        {
+            return;
+        }
+        try { _fans.DriveFansToFull(ids); }
+        catch (Exception ex) { Console.Error.WriteLine($"[thermal-guard] cooling-mode write failed: {ex.Message}"); }
+        lock (_gate)
+        {
+            // Recorded only after the write. The engine hands the channels back on its own thread, and a
+            // write that landed after a restore or resume still gets the engine's full rewrite.
+            foreach (var id in ids)
+            {
+                if (_coolingHardware.Contains(id))
+                {
+                    _watchdogHardware.Add(id);
+                }
+            }
+            _watchdogPending = true;
+        }
+    }
+
+    /// <summary>
+    /// One atomic read of what the watchdog and a user restore left for the engine: whether to rewrite every duty,
+    /// whether a trip was ended by the user (the engine hands back the channels the guard drove), and the
+    /// hardware channels the watchdog drove (empty while latched).
+    /// </summary>
+    public (bool Rewrite, bool RestoredTrip, IReadOnlyList<string> WatchdogHardware) ConsumeWatchdogOutcome()
+    {
+        lock (_gate)
+        {
+            var rewrite = _watchdogPending;
+            _watchdogPending = false;
+            var restored = _restoreHandback;
+            _restoreHandback = false;
+            IReadOnlyList<string> hardware = Array.Empty<string>();
+            if (rewrite && !_watchdogLatched && _watchdogHardware.Count > 0)
+            {
+                hardware = _watchdogHardware.ToArray();
+                _watchdogHardware.Clear();
+            }
+            return (rewrite, restored, hardware);
+        }
+    }
+
+    /// <summary>Hardware-control channels the watchdog drove, once the engine owns the fans again; empty while latched.</summary>
+    public IReadOnlyList<string> TakeWatchdogHardware()
+    {
+        lock (_gate)
+        {
+            if (_watchdogLatched || _watchdogHardware.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+            var ids = _watchdogHardware.ToArray();
+            _watchdogHardware.Clear();
+            return ids;
+        }
+    }
+
+    /// <summary>True once after the watchdog drove cooling mode: the next tick forgets what it wrote so every duty is written again, unchanged ones included.</summary>
     public bool ConsumeWatchdogRelease()
     {
         lock (_gate)
@@ -311,7 +474,7 @@ public sealed class ThermalGuardController
         }
     }
 
-    /// <summary>True after repeated engine stalls: Nexus writes no fan until the latch clears. The guard still evaluates and reports.</summary>
+    /// <summary>True after repeated engine stalls: cooling mode holds the fans at full speed and no curve is written until the latch clears. The guard still evaluates and reports.</summary>
     public bool WatchdogLatched
     {
         get
@@ -334,6 +497,26 @@ public sealed class ThermalGuardController
         Stand(ThermalGuardStates.Inactive);
     }
 
+    /// <summary>
+    /// Idle-config wake check: true while the guard is acting or the CPU is within the band where
+    /// it can start (the floor ramp and the cooling-loss gate both begin below the limit).
+    /// </summary>
+    public bool IdleNeedsGuard(IReadOnlyList<TemperatureSource> sources)
+    {
+        lock (_gate)
+        {
+            if (_publicState is ThermalGuardStates.Floor or ThermalGuardStates.Tripped or ThermalGuardStates.Escalated)
+            {
+                return true;
+            }
+            var temp = ThermalLimits.MaxPlausible(
+                sources.Where(s => s.Category == "CPU" && s.DeviceId is null && !ThermalLimits.IsDistanceToTjMax(s.Name))
+                    .Select(s => (double)s.Value));
+            var band = Math.Max(_thresholds.FloorStartBelowLimitC, _thresholds.CoolingLossGateBelowLimitC);
+            return temp is { } t && t >= _limit.LimitC - band;
+        }
+    }
+
     // The guard stops acting: reset the machine, publish the state, and close any open trip record.
     private void Stand(string state)
     {
@@ -345,8 +528,11 @@ public sealed class ThermalGuardController
             _watchdogLatched = false;
             _watchdogResumed = false;
             _watchdogFires.Clear();
+            _coolingAsserted.Clear();
             _cpu.Reset();
             _guardTemp = null;
+            _fansNotResponding = false;
+            _activeSinceMs = null;
             SetPublicState(state, null);
         }
         CloseOpenTrip();
@@ -431,6 +617,16 @@ public sealed class ThermalGuardController
                 eligible.Add(ch.Id);
             }
         }
+        var hardware = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ch in channels)
+        {
+            if (!nexusDriven.Contains(ch.Id) && IsGuardWritable(ch, uncontrolled)
+                && !ch.ReadOnly && ch.Kind != FanKinds.Pump && ch.ControlBlocked is null
+                && ch.Classification != "Unresponsive" && _fans.ReleaseRestoresHardwareControl(ch.Id))
+            {
+                hardware.Add(ch.Id);
+            }
+        }
         var writesNotLanding = WritesNotLanding(nowMs, channels, eligible);
 
         ThermalGuardOutput output;
@@ -439,9 +635,18 @@ public sealed class ThermalGuardController
         {
             _watchdogArmed = true;
             _guardTemp = guardTemp;
+            _coolingIds = eligible.Concat(hardware).ToArray();
+            _coolingAsserted.IntersectWith(_coolingIds);
+            _coolingHardware = hardware;
             output = _cpu.Step(nowMs, guardTemp, _limit.LimitC, _cpuLoad, maxCpuDuty, writesNotLanding);
             SetPublicState(output.State, output.TripStarted ? _utcNowMs() : null);
-            plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible);
+            plan = BuildGpuPlan(nowMs, cooling, uncontrolled, manual, channels, sources, nexusDriven, output, eligible, hardware);
+            _tickPlan = plan;
+            var driving = output.FloorDuty > 0;
+            _activeSinceMs = driving ? _activeSinceMs ?? nowMs : null;
+            _fansNotResponding = driving
+                && (writesNotLanding || AnyDrivenFanSilent(nowMs, channels, eligible,
+                    output.State is ThermalGuardStates.Tripped or ThermalGuardStates.Escalated ? hardware : EmptyIds));
         }
 
         if (plan.GpuBackup.Count > 0)
@@ -501,6 +706,25 @@ public sealed class ThermalGuardController
         return qualifying > 0 && allLow;
     }
 
+    // A driven fan with a tach that has read zero for a sustained spell is not running, whatever was commanded.
+    private bool AnyDrivenFanSilent(long nowMs, IReadOnlyList<FanChannel> channels, HashSet<string> eligible, HashSet<string> hardware)
+    {
+        foreach (var ch in channels)
+        {
+            if (ch.RpmUnavailable || ch.Kind == FanKinds.Pump || (!eligible.Contains(ch.Id) && !hardware.Contains(ch.Id)))
+            {
+                continue;
+            }
+            if (_rpm.TryGetValue(ch.Id, out var track) && track.SeenRpm && ch.Rpm <= 0
+                && track.ZeroSinceMs is { } since
+                && nowMs - Math.Max(since, _activeSinceMs ?? nowMs) >= TachZeroSustainMs)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void ObserveRpm(RpmTrack track, int rpm, long nowMs)
     {
         if (rpm <= 0)
@@ -509,6 +733,7 @@ public sealed class ThermalGuardController
             track.Streak = 0;
             return;
         }
+        track.SeenRpm = true;
         track.ZeroSinceMs = null;
         if (rpm > TachMaxRpm || rpm <= track.Best)
         {
@@ -548,9 +773,10 @@ public sealed class ThermalGuardController
         IReadOnlyList<TemperatureSource> sources,
         HashSet<string> nexusDriven,
         ThermalGuardOutput output,
-        HashSet<string> eligible)
+        HashSet<string> eligible,
+        HashSet<string> hardware)
     {
-        var plan = new GuardPlan { Output = output, Eligible = eligible };
+        var plan = new GuardPlan { Output = output, Eligible = eligible, Hardware = hardware };
         var backup = CoolingSnapshots.GpuManualBackup(cooling);
         _gpuInfo.Clear();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -827,6 +1053,9 @@ public sealed class ThermalGuardController
         }
         var previous = _publicState;
         _publicState = state;
+        _floorApplied = false;
+        _floorStreak = 0;
+        _floorReportedSinceMs = null;
         _sinceUtcMs = startedUtcMs ?? _utcNowMs();
         Console.Error.WriteLine($"[thermal-guard] {previous} -> {state} (temp {_guardTemp?.ToString("0.#", CultureInfo.InvariantCulture) ?? "n/a"} C, limit {_limit.LimitC:0.#} C {_limit.Source})");
         if (_hub is not null)
@@ -1205,6 +1434,48 @@ public sealed class ThermalGuardController
         return (GetState(), null);
     }
 
+    /// <summary>
+    /// The user ends full-speed cooling mode: a watchdog latch clears as a guard toggle clears it, and an
+    /// active trip or escalation stops, with no new trip until the CPU is below the floor-start band.
+    /// The engine rewrites every duty and hands driven hardware channels back on its next tick. No saved setting changes.
+    /// </summary>
+    public (ThermalGuardResponse? Result, string? Error) RestoreCurves()
+    {
+        var what = new List<string>();
+        double? temp;
+        lock (_gate)
+        {
+            temp = _guardTemp;
+            if (_watchdogLatched)
+            {
+                _watchdogLatched = false;
+                _watchdogResumed = false;
+                _watchdogFires.Clear();
+                _coolingAsserted.Clear();
+                _watchdogPending = true;
+                what.Add("watchdog latch");
+            }
+            if (_cpu.Restore())
+            {
+                _watchdogPending = true;
+                _restoreHandback = true;
+                SetPublicState(ThermalGuardStates.Normal, null);
+                what.Add("thermal guard override");
+            }
+        }
+        if (what.Count == 0)
+        {
+            return (null, "Nothing to restore.");
+        }
+        Console.Error.WriteLine($"[thermal-guard] user restored fan curves ({string.Join(" and ", what)} ended) at {(temp is { } t ? $"{t:0.#} C" : "unknown temperature")}");
+        CloseOpenTrip();
+        if (_hub is not null)
+        {
+            PanelTopics.BroadcastCooling(_hub);
+        }
+        return (GetState(), null);
+    }
+
     public ThermalGuardResponse SetEnabled(bool enabled)
     {
         _store.Update(s => s.Cooling.ThermalGuardEnabled = enabled);
@@ -1242,6 +1513,7 @@ public sealed class ThermalGuardController
         };
         lock (_gate)
         {
+            response.RestoreAvailable = _watchdogLatched || _cpu.State is ThermalGuardStates.Tripped or ThermalGuardStates.Escalated;
             response.DetectedLimitC = _detected.LimitC;
             response.DetectedLimitSource = _detected.Source;
             var effective = EffectiveFor(_overrideC);
@@ -1252,11 +1524,15 @@ public sealed class ThermalGuardController
             }
             else
             {
-                response.State = _publicState;
+                // A floor that beats no duty is reported as normal.
+                response.State = _publicState == ThermalGuardStates.Floor && !_floorApplied ? ThermalGuardStates.Normal : _publicState;
                 response.GuardTempC = _guardTemp;
                 response.LimitC = effective.LimitC;
                 response.LimitSource = effective.Source;
-                response.SinceUtcMs = _sinceUtcMs;
+                response.SinceUtcMs = _publicState == ThermalGuardStates.Floor
+                    ? _floorReportedSinceMs ?? _sinceUtcMs
+                    : _sinceUtcMs;
+                response.FansNotResponding = _fansNotResponding;
             }
             foreach (var kv in _gpuInfo)
             {

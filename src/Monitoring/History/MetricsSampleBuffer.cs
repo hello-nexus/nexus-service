@@ -14,7 +14,7 @@ public sealed class MetricsSampleBuffer
 {
     // Bounds unflushed growth when the store is failing: a 1Hz sampler with
     // no successful flush would otherwise buffer forever.
-    private const int FailureRetentionCapSeconds = 600;
+    internal const int FailureRetentionCapSeconds = 600;
 
     private readonly object _lock = new();
     private readonly SortedDictionary<long, MetricSample> _samples = new();
@@ -59,6 +59,23 @@ public sealed class MetricsSampleBuffer
         lock (_lock)
         {
             return _samples.Values.Where(s => s.TsSec >= fromSec && s.TsSec <= toSec).ToList();
+        }
+    }
+
+    /// <summary>Strips one tracked sensor's readings from every buffered
+    /// sample, for a rule that was deleted or re-pointed.</summary>
+    public void RemoveSensorSeries(string seriesId)
+    {
+        lock (_lock)
+        {
+            foreach (var ts in _samples.Keys.ToList())
+            {
+                var sample = _samples[ts];
+                if (sample.SensorReadings.Any(r => r.Id == seriesId))
+                {
+                    _samples[ts] = sample with { SensorReadings = sample.SensorReadings.Where(r => r.Id != seriesId).ToList() };
+                }
+            }
         }
     }
 

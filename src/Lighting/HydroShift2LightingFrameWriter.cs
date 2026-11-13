@@ -41,6 +41,9 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     /// <summary>The ring applies an upload a few hundred ms after the request, so rendering starts past that.</summary>
     private const int LoopLeadMs = 300;
 
+    /// <summary>A render-ahead starts only once the loop context has held this long, so a burst of edits uploads its final state once.</summary>
+    internal const int LoopSettleMs = 600;
+
     private readonly LightingEngine _engine;
     private readonly HydroShift2Aio _aio;
     private readonly IConfigStore _store;
@@ -51,6 +54,8 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     private AheadRequest? _loopRequest;
     private string? _loopRequestContext;
     private string? _loopContext;
+    private string? _settlingContext;
+    private long _settlingSince;
 
     public HydroShift2LightingFrameWriter(
         LightingEngine engine, HydroShift2Aio aio, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
@@ -109,6 +114,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             _effectSignature = null;
             DropLoop();
             Array.Fill(_ring, (byte)255);
+            _engine.Live.ReportSolid(id, 255, 255, 255, _ring.Length / 3);
             _aio.SetRing(_ring);
             return;
         }
@@ -146,6 +152,16 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         if (!settings.Devices.DisabledLightingDevices.Contains(id))
         {
             ToRing(settings, id, frame.LedBytes, _ring);
+            if (_engine.Live.Enabled)
+            {
+                settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
+                _engine.Live.Report(id, frame.LedBytes, _ring.Length / 3,
+                    MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0), DeviceColorAdjust.For(pref), LiveScale.Adjust);
+            }
+        }
+        else if (_engine.Live.Enabled)
+        {
+            _engine.Live.ReportSolid(id, 0, 0, 0, _ring.Length / 3);
         }
         _aio.SetRing(_ring);
     }
@@ -153,6 +169,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
     /// <summary>Renders the effect ahead once per change of effect, layout or colour settings, and uploads it as a loop.</summary>
     private void TickLoop(NexusSettings settings, string id, string[] ids)
     {
+        ReportLoop(id);
         var context = LoopContext(settings, id);
         if (_loopRequest is { } request)
         {
@@ -184,11 +201,24 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
             var (packed, count) = FitLoop(source, frames);
             var (upload, uploadCount, interval) = FitUpload(packed, count, LoopIntervalTicks);
             ServiceLog.Info($"[{HydroShift2LcdDriver.Id}] ring loop: {uploadCount} frames from {frames.Count} rendered");
-            _aio.SetRingAnimation(upload, uploadCount, interval);
+            var queued = _aio.SetRingAnimation(upload, uploadCount, interval);
+            // What the ring plays, before the channel swap, to index by playback time.
+            settings.Devices.LightingDevicePrefs.TryGetValue(id, out var loopPref);
+            var hadLoop = _loopLive is not null;
+            _loopLive = (byte[])upload.Clone();
+            Unorder(loopPref?.ColorOrder, _loopLive);
+            _loopLiveCount = uploadCount;
+            _loopLiveFrameMs = interval * HydroShift2Protocol.RingTickMs;
+            _loopLiveStartMs = LoopPhaseStart(queued, hadLoop, _loopLiveStartMs, Environment.TickCount64);
             _loopContext = context;
             return;
         }
         if (_loopContext == context)
+        {
+            _settlingContext = null;
+            return;
+        }
+        if (!HasSettled(ref _settlingContext, ref _settlingSince, context, Environment.TickCount64))
         {
             return;
         }
@@ -208,8 +238,57 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         _loopRequestContext = context;
     }
 
+    /// <summary>True once <paramref name="context"/> has been seen unchanged for <see cref="LoopSettleMs"/>; any change restarts the wait.</summary>
+    internal static bool HasSettled(ref string? pending, ref long since, string context, long now)
+    {
+        if (pending != context)
+        {
+            pending = context;
+            since = now;
+            return false;
+        }
+        return now - since >= LoopSettleMs;
+    }
+
+    /// <summary>An identical upload is not re-sent, so the loop already running keeps its phase; a new loop starts now.</summary>
+    internal static long LoopPhaseStart(bool queued, bool hadLoop, long current, long now) => queued || !hadLoop ? now : current;
+
+    private byte[]? _loopLive;
+    private int _loopLiveCount;
+    private double _loopLiveFrameMs;
+    private long _loopLiveStartMs;
+
+    // The ring loops the uploaded frames from the upload on; the phase is the upload time, since the unit does not report where it is in the loop.
+    private void ReportLoop(string id)
+    {
+        if (_loopLive is not { } frames || !_engine.Live.Enabled)
+        {
+            return;
+        }
+        var size = frames.Length / _loopLiveCount;
+        var index = _loopLiveCount <= 1 ? 0 : (int)((Environment.TickCount64 - _loopLiveStartMs) / _loopLiveFrameMs % _loopLiveCount);
+        _engine.Live.Report(id, frames.AsSpan(index * size, size), size / 3, 1.0, DeviceColorAdjust.Identity, LiveScale.Direct);
+    }
+
+    /// <summary>Undoes <see cref="DeviceColorAdjust.ReorderChannels"/> for <paramref name="order"/> on packed RGB.</summary>
+    internal static void Unorder(string? order, Span<byte> rgb)
+    {
+        byte a = 0, b = 1, c = 2;
+        DeviceColorAdjust.ReorderChannels(order, ref a, ref b, ref c);
+        Span<byte> original = stackalloc byte[3];
+        for (var i = 0; i + 2 < rgb.Length; i += 3)
+        {
+            original[a] = rgb[i];
+            original[b] = rgb[i + 1];
+            original[c] = rgb[i + 2];
+            original.CopyTo(rgb.Slice(i, 3));
+        }
+    }
+
     private void DropLoop()
     {
+        _loopLive = null;
+        _settlingContext = null;
         _loopRequest?.Abandon();
         _loopRequest = null;
         _loopContext = null;
@@ -257,24 +336,25 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         return hc.ToHashCode().ToString(CultureInfo.InvariantCulture);
     }
 
-    private static double LoopMasterBrightness(NexusSettings settings)
+    private static MasterLevel LoopMasterBrightness(NexusSettings settings)
     {
-        double master = MasterBrightness.Effective(settings.Lighting);
+        var resolved = MasterBrightness.Resolve(settings);
+        var master = resolved.Level;
         if (master <= 0)
         {
-            return 0;
+            return resolved with { Level = 0 };
         }
         var steps = master < 0.1 ? LoopDimBrightnessSteps : LoopBrightnessSteps;
-        return Math.Max(1, Math.Round(master * steps)) / steps;
+        return resolved with { Level = (float)(Math.Max(1, Math.Round(master * steps)) / steps) };
     }
 
     private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring) =>
-        ToRing(settings, id, src, ring, MasterBrightness.Effective(settings.Lighting));
+        ToRing(settings, id, src, ring, MasterBrightness.Resolve(settings));
 
-    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring, double master)
+    private static void ToRing(NexusSettings settings, string id, ReadOnlySpan<byte> src, byte[] ring, MasterLevel master)
     {
         settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
-        var brightness = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, master);
+        var brightness = master.Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
         var adjust = DeviceColorAdjust.For(pref);
         for (int i = 0; i + 2 < ring.Length && i + 2 < src.Length; i += 3)
         {
@@ -398,7 +478,7 @@ public sealed class HydroShift2LightingFrameWriter : BackgroundService
         settings.Devices.LightingDevicePrefs.TryGetValue(id, out var pref);
         // The card and master brightness (and the blackouts that zero it) cap the effect's own
         // level, rounded up so a dim setting dims the ring rather than switching it off.
-        var cap = Math.Min(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0, MasterBrightness.Effective(settings.Lighting));
+        var cap = MasterBrightness.Resolve(settings).Combine(Math.Clamp(pref?.Brightness ?? 100, 0, 100) / 100.0);
         var level = Math.Min(ls.Brightness, (int)Math.Ceiling(cap * HydroShift2RingEffects.MaxLevel));
         var signature = $"{mode}|{level}|{ls.Speed}|{ls.Direction}|{string.Join(',', ls.Colors)}|{pref?.ColorOrder}";
         if (signature == _effectSignature)

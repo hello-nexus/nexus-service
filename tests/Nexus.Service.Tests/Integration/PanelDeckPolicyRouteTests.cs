@@ -102,6 +102,25 @@ public sealed class PanelDeckPolicyRouteTests : IDisposable
     }
 
     [Fact]
+    public async Task RestrictedMode_is_desktop_only()
+    {
+        var panel = PanelClient();
+        var desktop = DesktopClient();
+        var id = await CreateDeviceAsync(panel);
+
+        var refused = await panel.PostAsJsonAsync($"/panel/devices/{id}", new PanelDevicePatch { RestrictedMode = true });
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+        Assert.Contains("restricted_mode_requires_desktop", await refused.Content.ReadAsStringAsync());
+
+        var set = await desktop.PostAsJsonAsync($"/panel/devices/{id}", new PanelDevicePatch { RestrictedMode = true });
+        Assert.Equal(HttpStatusCode.OK, set.StatusCode);
+        Assert.True((await set.Content.ReadFromJsonAsync<PanelDeviceRecord>())!.RestrictedMode);
+
+        var other = await panel.PostAsJsonAsync($"/panel/devices/{id}", new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal(HttpStatusCode.OK, other.StatusCode);
+    }
+
+    [Fact]
     public async Task Panel_cannot_author_a_hotkey_but_desktop_can_and_the_panel_may_then_move_it()
     {
         var panel = PanelClient();

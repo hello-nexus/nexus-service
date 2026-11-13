@@ -85,6 +85,9 @@ public interface IBulkPanelDriver
     /// </summary>
     int KeepaliveMs => 0;
 
+    /// <summary>The handshake can be rerun on the open pipe to recover a panel that keeps refusing frames.</summary>
+    bool RenegotiateOnRejectedFrames => false;
+
     /// <summary>Re-sends the last frame <see cref="SendFrame"/> pushed. False means the link is gone.</summary>
     bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => true;
 
@@ -99,6 +102,12 @@ public interface IBulkPanelDriver
     /// <summary>The glass reports touch on <see cref="ReadPipeId"/>; elsewhere that pipe carries command replies.</summary>
     bool HasTouch => false;
 
+    /// <summary>Device-list category of this panel's row.</summary>
+    string Category => "cooler";
+
+    /// <summary>A fresh decoder for the touch pipe; required when <see cref="HasTouch"/> is true.</summary>
+    IPanelTouchDecoder? CreateTouchDecoder() => null;
+
     /// <summary>The glass mounts either way up; <see cref="Connect"/> reports tall geometry when its record asks for portrait.</summary>
     bool SupportsPortrait => false;
 
@@ -107,4 +116,7 @@ public interface IBulkPanelDriver
 
     /// <summary>The geometry <see cref="Connect"/> negotiated no longer matches the panel's settings, so the handshake must run again.</summary>
     bool GeometryStale => false;
+
+    /// <summary>The session should end so <see cref="Disconnect"/> reboots the panel; the worker then reconnects.</summary>
+    bool RebootWanted => false;
 }

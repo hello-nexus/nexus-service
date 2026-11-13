@@ -112,8 +112,8 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         SegmentFrameComposer.EnsureBuffers(structure, ref _buffers);
         var touched = SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
-            settings.Devices.LightingDevicePrefs, MasterBrightness.Effective(settings.Lighting), 1.0,
-            DateTime.UtcNow.Ticks, _identify, _buffers);
+            settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
+            DateTime.UtcNow.Ticks, _identify, _buffers, _engine.Live);
         if (touched[GalleonSdLightingDeviceProvider.LedsSegment])
         {
             _hub.WriteFrame(_buffers[GalleonSdLightingDeviceProvider.LedsSegment]);
