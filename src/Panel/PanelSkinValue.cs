@@ -1,17 +1,11 @@
 namespace Nexus.Service.Panel;
 
-/// <summary>
-/// A panel skin or skin variant is an opaque id owned by the web catalog, stored trimmed and
-/// as given. Unknown ids are not rejected here.
-/// </summary>
+/// <summary>A panel skin is a short lowercase slug naming a web-side skin; the service does not know the catalog.</summary>
 public static class PanelSkinValue
 {
-    public const int MaxLength = 64;
+    public const int MaxLength = 32;
 
-    /// <summary>
-    /// Normalizes a patched value. Empty or whitespace means "clear" (null result); an over-long
-    /// value or one with control characters returns false so the caller keeps the stored value.
-    /// </summary>
+    /// <summary>Normalizes a patched skin id. Empty or whitespace clears (null result); a non-slug or over-long value returns false so the caller keeps the stored value.</summary>
     public static bool TryNormalize(string value, out string? normalized)
     {
         normalized = null;
@@ -26,7 +20,7 @@ public static class PanelSkinValue
         }
         foreach (var c in trimmed)
         {
-            if (char.IsControl(c))
+            if (!(c is >= 'a' and <= 'z' || c is >= '0' and <= '9' || c == '-'))
             {
                 return false;
             }
