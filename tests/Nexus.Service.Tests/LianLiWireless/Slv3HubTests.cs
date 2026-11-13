@@ -3102,6 +3102,49 @@ public partial class Slv3HubTests
         Assert.Equal(settled + 3, CountBindFrames(tx));
     }
 
+    // The AIO's USB stream stalls while it is busy on RF, so its fan frame is sent on change, never once per poll.
+    [Fact]
+    public void HydroShift_fan_frame_is_sent_on_change_with_bounded_retries_never_per_poll()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        net.EchoPwm = false;
+        var mac = Convert.ToHexString(FanMac);
+
+        Assert.True(hub.SetPortDuty(mac, 0, 50));
+        for (var i = 0; i < 40; i++)
+        {
+            clock.AdvanceMs(1_000);
+            Assert.True(hub.DriveTick());
+        }
+        Assert.Equal(3, CountBindFrames(tx));
+
+        Assert.True(hub.SetPortDuty(mac, 0, 70));
+        clock.AdvanceMs(1_000);
+        Assert.True(hub.DriveTick());
+        Assert.Equal(4, CountBindFrames(tx));
+        Assert.True(hub.DriveTick());
+        Assert.Equal(4, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void HydroShift_fan_frame_is_not_repeated_once_the_echo_matches()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.SetPortDuty(Convert.ToHexString(FanMac), 0, 50));
+
+        for (var i = 0; i < 10; i++)
+        {
+            Assert.True(hub.DriveTick());
+        }
+
+        Assert.Equal(1, CountBindFrames(tx));
+    }
+
     [Fact]
     public void Unbind_frame_clears_the_master_mac_and_the_chain_reports_no_master()
     {

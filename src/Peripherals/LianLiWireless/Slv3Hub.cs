@@ -61,6 +61,8 @@ public sealed partial class Slv3Hub : IDisposable
     // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
     // HydroShift IIs whose radiator fans Nexus has written, until the follow-motherboard hand-back is confirmed.
+    private const int HydroShiftFanRetries = 2;
+    private readonly Dictionary<string, (byte[] Pwm, long SentMs, int Sends)> _hydroShiftFanSends = new(StringComparer.Ordinal);
     private readonly HashSet<string> _hydroShiftFansDriven = new(StringComparer.Ordinal);
 
     // HydroShift IIs under RF control (pump driven or screen saved), keyed by AIO
@@ -602,6 +604,7 @@ public sealed partial class Slv3Hub : IDisposable
         _blindTotalMs = 0;
         _unconfirmedPwm.Clear();
         _hydroShiftFansDriven.Clear();
+        _hydroShiftFanSends.Clear();
         foreach (var control in _aioControl.Values)
         {
             control.Switched = false;
@@ -1780,10 +1783,15 @@ public sealed partial class Slv3Hub : IDisposable
             if (!Slv3Protocol.NeedSyncPwm(ReportedForSync(record, pwm), pwm))
             {
                 _unconfirmedPwm.Remove(key);
+                _hydroShiftFanSends.Remove(key);
                 if (record.IsHydroShift && !manual)
                 {
                     _hydroShiftFansDriven.Remove(key);
                 }
+                continue;
+            }
+            if (record.IsHydroShift && !HydroShiftFanSendDue(key, pwm))
+            {
                 continue;
             }
             var confirmable = _blindSinceMs is null && _knownChains.TryGetValue(key, out var chain) && chain.Poll == _devicePolls;
@@ -2450,6 +2458,7 @@ public sealed partial class Slv3Hub : IDisposable
                 _bindingLogs.Remove(key);
                 _unconfirmedPwm.Remove(key);
                 _hydroShiftFansDriven.Remove(key);
+                _hydroShiftFanSends.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -2782,6 +2791,25 @@ public sealed partial class Slv3Hub : IDisposable
         return record.IsHydroShift
             ? Slv3Protocol.BuildHydroShiftPwmTuple(targets, record.FanCount)
             : Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
+    }
+
+    // A HydroShift II's fan frame goes out when its tuple changes, then at most HydroShiftFanRetries more
+    // times a resend interval apart while the echo still differs: a frame per poll would starve the AIO's USB
+    // stream, which stalls whenever the unit is busy on RF. Caller holds _lock.
+    private bool HydroShiftFanSendDue(string key, byte[] pwm)
+    {
+        var nowMs = _nowMs();
+        if (_hydroShiftFanSends.TryGetValue(key, out var last) && last.Pwm.AsSpan().SequenceEqual(pwm))
+        {
+            if (last.Sends > HydroShiftFanRetries || nowMs - last.SentMs < UnconfirmedPwmResendMs)
+            {
+                return false;
+            }
+            _hydroShiftFanSends[key] = (pwm, nowMs, last.Sends + 1);
+            return true;
+        }
+        _hydroShiftFanSends[key] = (pwm, nowMs, 1);
+        return true;
     }
 
     // The pump slot and slots past the fan count report their own values, so a HydroShift II's
