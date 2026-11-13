@@ -4,6 +4,7 @@ using System.Threading;
 using Nexus.Service.Activity;
 using Nexus.Service.Models.Activity;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
 using Nexus.Service.Sockets;
 
@@ -224,19 +225,24 @@ public sealed class AudioMixerService : IDisposable
             _sessions.SetMuted(app.Id, app.Muted);
         }
 
+        // Mute above is a one-shot explicit action; restore never reads Levels.Muted.
         lock (_lock)
         {
             _store.Update(s =>
             {
                 foreach (var app in preset.Apps)
-            {
+                {
                     if (app.Id.Length == 0) continue;
-                    s.AudioMixer.Levels[app.Id] = new AudioMixerLevelDto
+                    var volume = Math.Clamp(app.Volume, 0, 1);
+                    if (s.AudioMixer.Levels.TryGetValue(app.Id, out var existing))
                     {
-                        Name = app.Name,
-                        Volume = Math.Clamp(app.Volume, 0, 1),
-                        Muted = app.Muted,
-                    };
+                        existing.Name = app.Name;
+                        existing.Volume = volume;
+                    }
+                    else
+                    {
+                        s.AudioMixer.Levels[app.Id] = new AudioMixerLevelDto { Name = app.Name, Volume = volume };
+                    }
                 }
             });
         }
@@ -432,8 +438,11 @@ public sealed class AudioMixerService : IDisposable
 
         foreach (var (id, level) in pending)
         {
-            _sessions.SetVolume(id, Math.Clamp(level.Volume, 0, 1));
-            _sessions.SetMuted(id, level.Muted);
+            var volume = Math.Clamp(level.Volume, 0, 1);
+            ServiceLog.Info($"[audio-mixer] sticky restore {id} volume {volume:0.00}");
+            // Volume only: a saved mute is never re-applied, since a session
+            // reappearing (service start, helper reconnect) is not a user action.
+            _sessions.SetVolume(id, volume, defaultOnly: true);
         }
     }
 
