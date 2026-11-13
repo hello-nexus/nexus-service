@@ -23,6 +23,11 @@ public static class MediaPositionMath
         return advanced;
     }
 
+    /// <summary>True when a live position sits further than <paramref name="slackMs"/> from where a 1x ticker anchored at the last push would be.</summary>
+    public static bool DriftsFromPrediction(
+        double pushedPositionMs, double durationMs, TimeSpan sincePush, double currentPositionMs, double slackMs)
+        => Math.Abs(currentPositionMs - Advance(pushedPositionMs, durationMs, sincePush)) > slackMs;
+
     /// <summary>Elapsed time since a player's timeline stamp; zero when the stamp is missing or implausible.</summary>
     public static TimeSpan SinceTimelineStamp(DateTimeOffset lastUpdated, DateTimeOffset now)
     {

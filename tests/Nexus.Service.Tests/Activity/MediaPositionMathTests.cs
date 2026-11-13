@@ -8,6 +8,25 @@ namespace Nexus.Service.Tests.Activity;
 
 public class MediaPositionMathTests
 {
+    [Theory]
+    [InlineData(60_000, 5, 65_000, false)]
+    [InlineData(60_000, 5, 66_400, false)]
+    [InlineData(60_000, 5, 120_000, true)]
+    [InlineData(60_000, 5, 10_000, true)]
+    [InlineData(60_000, 5, 60_000, true)]
+    public void DriftsFromPrediction_FlagsSeeksOnly(double pushed, int sinceSec, double live, bool drifts)
+    {
+        var result = MediaPositionMath.DriftsFromPrediction(
+            pushed, 200_000, TimeSpan.FromSeconds(sinceSec), live, MediaTopicPublisher.PositionSlackMs);
+        Assert.Equal(drifts, result);
+    }
+
+    [Fact]
+    public void DriftsFromPrediction_PredictionClampsToDuration()
+    {
+        Assert.False(MediaPositionMath.DriftsFromPrediction(195_000, 200_000, TimeSpan.FromSeconds(30), 200_000, 1500));
+    }
+
     [Fact]
     public void Advance_AddsElapsedTime()
     {

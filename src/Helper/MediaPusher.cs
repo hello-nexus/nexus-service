@@ -60,9 +60,77 @@ public sealed class MediaPusher : IDisposable
             SchedulePush();
         };
         _manager.OnAnyPlaybackStateChanged += (_, __) => SchedulePush();
+        _manager.OnAnyTimelinePropertyChanged += (_, __) => SchedulePush();
         try { _manager.Start(); }
         catch (Exception ex) { Console.Error.WriteLine($"[media-pusher] MediaManager.Start failed: {ex.Message}"); }
         SchedulePush();
+        _ = Task.Run(PollDriftAsync);
+    }
+
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Dictionary<string, PushedPosition> _pushed = new(StringComparer.Ordinal);
+
+    private readonly record struct PushedPosition(double PositionMs, double DurationMs, bool Playing, long At);
+
+    // Spotify raises no timeline event on a seek, so a push-on-event pusher keeps the service predicting the pre-seek position.
+    private async Task PollDriftAsync()
+    {
+        using var timer = new PeriodicTimer(MediaTopicPublisher.PollInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_cts.Token).ConfigureAwait(false))
+            {
+                if (HasDrifted()) SchedulePush();
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private bool HasDrifted()
+    {
+        try
+        {
+            foreach (var pair in _manager.CurrentMediaSessions)
+            {
+                var ctrl = pair.Value?.ControlSession;
+                if (ctrl is null) continue;
+                var id = pair.Value!.Id;
+                var playing = ctrl.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                PushedPosition pushed;
+                lock (_mapLock)
+                {
+                    if (!_pushed.TryGetValue(id, out pushed)) return true;
+                }
+                if (pushed.Playing != playing) return true;
+                if (!playing) continue;
+                var timeline = ctrl.GetTimelineProperties();
+                var live = LivePositionMs(timeline, rate: 1.0);
+                var since = Stopwatch.GetElapsedTime(pushed.At);
+                if (MediaPositionMath.DriftsFromPrediction(pushed.PositionMs, pushed.DurationMs, since, live, MediaTopicPublisher.PositionSlackMs))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[media-pusher] drift poll failed: {ex.Message}");
+        }
+        return false;
+    }
+
+    private static double LivePositionMs(GlobalSystemMediaTransportControlsSessionTimelineProperties timeline, double rate)
+    {
+        var positionMs = timeline.Position.TotalMilliseconds;
+        if (timeline.EndTime.TotalMilliseconds > 0)
+        {
+            positionMs = MediaPositionMath.Advance(
+                positionMs,
+                timeline.EndTime.TotalMilliseconds,
+                MediaPositionMath.SinceTimelineStamp(timeline.LastUpdatedTime, DateTimeOffset.UtcNow),
+                rate);
+        }
+        return positionMs;
     }
 
     /// <summary>
@@ -97,6 +165,7 @@ public sealed class MediaPusher : IDisposable
     {
         var result = new Dictionary<string, MediaSession>(StringComparer.OrdinalIgnoreCase);
         var freshMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var freshPushed = new Dictionary<string, PushedPosition>(StringComparer.Ordinal);
 
         try
         {
@@ -127,15 +196,8 @@ public sealed class MediaPusher : IDisposable
                 var reportedRate = playback.PlaybackRate ?? 1.0;
                 var rate = double.IsFinite(reportedRate) ? reportedRate : 1.0;
                 // Position is what the player last SET, not a live clock.
-                var positionMs = timeline.Position.TotalMilliseconds;
-                if (playing && timeline.EndTime.TotalMilliseconds > 0)
-                {
-                    positionMs = MediaPositionMath.Advance(
-                        positionMs,
-                        timeline.EndTime.TotalMilliseconds,
-                        MediaPositionMath.SinceTimelineStamp(timeline.LastUpdatedTime, DateTimeOffset.UtcNow),
-                        rate);
-                }
+                var positionMs = playing ? LivePositionMs(timeline, rate) : timeline.Position.TotalMilliseconds;
+                freshPushed[session.Id] = new PushedPosition(positionMs, timeline.EndTime.TotalMilliseconds, playing, Stopwatch.GetTimestamp());
 
                 result[key] = new MediaSession
                 {
@@ -180,6 +242,8 @@ public sealed class MediaPusher : IDisposable
         {
             _friendlyToSessionId.Clear();
             foreach (var kv in freshMap) _friendlyToSessionId[kv.Key] = kv.Value;
+            _pushed.Clear();
+            foreach (var kv in freshPushed) _pushed[kv.Key] = kv.Value;
         }
         return result;
     }
@@ -337,6 +401,7 @@ public sealed class MediaPusher : IDisposable
 
     public void Dispose()
     {
+        try { _cts.Cancel(); } catch { }
         try { _manager.Dispose(); } catch { }
     }
 }
