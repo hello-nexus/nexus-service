@@ -313,6 +313,52 @@ public class RyujinCoolingTests
         Assert.False(hub.SetDuty(55, 30));
     }
 
+    [Fact]
+    public void Reattach_before_the_first_reply_does_not_feed_the_stall_detector()
+    {
+        var (hub, provider, fake) = Connected();
+        fake.QueueReply(StatusReply(30, 0, 2500, 1100));
+        fake.QueueReply(DutyReply(60, 40));
+        hub.Poll();
+        var detector = new Nexus.Service.Diagnostics.Cooling.CoolingStallDetector();
+        var feeder = new Nexus.Service.Diagnostics.Cooling.CoolingStallFeeder(new ProviderFans(provider), detector);
+        feeder.Tick();
+        Assert.Contains(detector.Snapshot().Devices, d => d.Rpm == 2500);
+
+        hub.Detach();
+        hub.Attach(new RyujinDeviceFake());
+        var channels = provider.GetFanChannels();
+
+        Assert.All(channels, c =>
+        {
+            Assert.True(c.RpmUnavailable);
+            Assert.Equal(0, c.Rpm);
+        });
+        feeder.Tick();
+        Assert.Contains(detector.Snapshot().Devices, d => d.Rpm == 2500);
+    }
+
+    private sealed class ProviderFans : IFanControlProvider
+    {
+        private readonly RyujinCoolingProvider _inner;
+
+        public ProviderFans(RyujinCoolingProvider inner)
+        {
+            _inner = inner;
+        }
+
+        public IReadOnlyList<FanChannel> GetFanChannels() => _inner.GetFanChannels();
+        public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<FanCalibrationProgress> progress, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<FanCalibration>>(Array.Empty<FanCalibration>());
+    }
+
     // ---- keepalive ----
 
     [Fact]

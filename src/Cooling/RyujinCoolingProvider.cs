@@ -45,6 +45,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             return Array.Empty<FanChannel>();
         }
         var snap = _hub.Snapshot;
+        bool fresh = _hub.StatusFresh;
         bool pumpSw;
         bool fanSw;
         int pumpWant;
@@ -63,7 +64,8 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
                 Id = PumpChannelId,
                 Name = "Ryujin III Pump",
                 DutyPercent = snap.PumpDuty >= 0 ? snap.PumpDuty : pumpSw ? pumpWant : RyujinCoolingProtocol.SafeDuty,
-                Rpm = snap.PumpRpm,
+                Rpm = fresh ? snap.PumpRpm : 0,
+                RpmUnavailable = !fresh,
                 Mode = pumpSw ? FanModes.Manual : FanModes.Auto,
                 Kind = FanKinds.Pump,
                 MinDuty = RyujinCoolingProtocol.PumpDutyFloor,
@@ -76,7 +78,8 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
                 Id = FanChannelId,
                 Name = "Ryujin III Fan",
                 DutyPercent = snap.FanDuty >= 0 ? snap.FanDuty : fanSw ? fanWant : RyujinCoolingProtocol.SafeDuty,
-                Rpm = snap.FanRpm,
+                Rpm = fresh ? snap.FanRpm : 0,
+                RpmUnavailable = !fresh,
                 Mode = fanSw ? FanModes.Manual : FanModes.Auto,
                 Kind = FanKinds.Fan,
                 DeviceId = DeviceId,
