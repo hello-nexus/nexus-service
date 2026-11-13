@@ -1390,6 +1390,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.StrimerLightingRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.StrimerModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.StrimerModeInfoDto[]))]
+[JsonSerializable(typeof(Nexus.Service.Routes.StrimerLookDto))]
+[JsonSerializable(typeof(Nexus.Service.Routes.StrimerLookDto[]))]
 // Nollie ARGB controllers.
 [JsonSerializable(typeof(Nexus.Service.Routes.NollieBoardDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.NollieBoardDto[]))]

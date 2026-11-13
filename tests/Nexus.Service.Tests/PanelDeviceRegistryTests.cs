@@ -210,6 +210,43 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_Skin_RoundTripsTrimsClearsAndSurvivesOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.Skin);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { Skin = "  lcd " });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal("lcd", patched!.Skin);
+        Assert.Equal("lcd", _registry.Get(record.Id)!.Skin);
+
+        Assert.Equal("lcd", _registry.Patch(record.Id, new PanelDevicePatch { Skin = new string('a', 33) })!.Skin);
+        Assert.Equal("lcd", _registry.Patch(record.Id, new PanelDevicePatch { Skin = "Bad Id" })!.Skin);
+        Assert.Equal("future-skin2", _registry.Patch(record.Id, new PanelDevicePatch { Skin = "future-skin2" })!.Skin);
+
+        Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { Skin = "" })!.Skin);
+    }
+
+    [Fact]
+    public void Patch_SkinOverrides_RoundTripClearAndSurviveOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.SkinAccent);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = "#ff8800", SkinFont = "jura" });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal("#ff8800", patched!.SkinAccent);
+        Assert.Equal("jura", patched.SkinFont);
+
+        Assert.Equal("system:Fira Code", _registry.Patch(record.Id, new PanelDevicePatch { SkinFont = "system:Fira Code" })!.SkinFont);
+        Assert.Equal("system:Fira Code", _registry.Patch(record.Id, new PanelDevicePatch { SkinFont = "system:bad;family" })!.SkinFont);
+
+        var cleared = _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = "", SkinFont = " " });
+        Assert.Null(cleared!.SkinAccent);
+        Assert.Null(cleared.SkinFont);
+    }
+
+    [Fact]
     public void Patch_Font_RoundTripsAndSurvivesOmission()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
@@ -593,6 +630,9 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             WidgetLabels = true,
             WidgetPadding = 25,
             Font = "tektur",
+            Skin = "lcd",
+            SkinAccent = "#ff8800",
+            SkinFont = "jura",
             ThemeSyncWithDesktop = false,
             AccentSyncWithDesktop = false,
         });
@@ -630,6 +670,9 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.WidgetLabels);
         Assert.Null(reset.WidgetPadding);
         Assert.Null(reset.Font);
+        Assert.Null(reset.Skin);
+        Assert.Null(reset.SkinAccent);
+        Assert.Null(reset.SkinFont);
         Assert.Null(reset.ThemeSyncWithDesktop);
         Assert.Null(reset.AccentSyncWithDesktop);
         Assert.Null(_registry.Get(record.Id)!.Layout);
@@ -962,7 +1005,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         var desk = _registry.CreatePreset(record.Id, "Desk", out _)!.ActiveId!;
         var game = _registry.CreatePreset(record.Id, "Game", out _)!.ActiveId!;
         // Edits while Game is loaded belong to Game.
-        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00", Font = "jura" });
+        _registry.Patch(record.Id, new PanelDevicePatch { Layout = Layout("gallery"), AccentColor = "#ff0000", ThemeMode = "dark", TextColorMode = "custom", TextColor = "#00ff00", Font = "jura", Skin = "crt" });
 
         var afterDesk = _registry.ActivatePreset(record.Id, desk);
 
@@ -974,6 +1017,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(live.AccentColor);
         Assert.Null(live.TextColor);
         Assert.Null(live.Font);
+        Assert.Null(live.Skin);
 
         _registry.ActivatePreset(record.Id, game);
         live = _registry.Get(record.Id)!;
@@ -982,6 +1026,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("dark", live.ThemeMode);
         Assert.Equal("#00ff00", live.TextColor);
         Assert.Equal("jura", live.Font);
+        Assert.Equal("crt", live.Skin);
     }
 
     private static List<string> StarterTypes(string surface) =>

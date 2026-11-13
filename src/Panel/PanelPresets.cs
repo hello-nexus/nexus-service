@@ -89,6 +89,9 @@ public static class PanelPresets
         to.TextColorMode = from.TextColorMode;
         to.TextColor = from.TextColor;
         to.Font = from.Font;
+        to.Skin = from.Skin;
+        to.SkinAccent = from.SkinAccent;
+        to.SkinFont = from.SkinFont;
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
     }
