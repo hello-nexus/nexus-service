@@ -342,8 +342,8 @@ internal sealed class AreaOwnerMap
     public int PixelCount(int led) => led < 0 || led >= Rep.Length || Rep[led] < 0 ? 0 : Start[Rep[led] + 1] - Start[Rep[led]];
     public int LedCount => Math.Max(0, Start.Length - 1);
 
-    /// <summary>Plain sRGB byte mean (truncating, like the spot read) of an LED's owned pixels; black for an LED that owns none.</summary>
-    public void Sample(ReadOnlySpan<byte> px, int led, out byte r, out byte g, out byte b)
+    /// <summary>Combined color of an LED's owned pixels under <paramref name="mode"/>; black for an LED that owns none.</summary>
+    public void Sample(ReadOnlySpan<byte> px, int led, out byte r, out byte g, out byte b, ColorSampling mode = ColorSampling.Standard)
     {
         var own = Rep[led];
         if (own < 0)
@@ -352,24 +352,14 @@ internal sealed class AreaOwnerMap
             return;
         }
         int s = Start[own], e = Start[own + 1];
-        if (e <= s)
-        {
-            r = g = b = 0;
-            return;
-        }
         var pix = Pix;
-        long sr = 0, sg = 0, sb = 0;
+        var acc = new ColorAccumulator(mode);
         for (var k = s; k < e; k++)
         {
             var o = pix[k];
-            sr += px[o];
-            sg += px[o + 1];
-            sb += px[o + 2];
+            acc.Add(px[o], px[o + 1], px[o + 2]);
         }
-        long n = e - s;
-        r = (byte)(sr / n);
-        g = (byte)(sg / n);
-        b = (byte)(sb / n);
+        (r, g, b) = acc.Result();
     }
 
     private static AreaOwnerMap Pack(int cw, int ch, int ledCount, int[] owner, int[] fallbackPix, int[] rep)

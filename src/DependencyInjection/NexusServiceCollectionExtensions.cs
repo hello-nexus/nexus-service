@@ -491,7 +491,26 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.SmartHealthMonitor>());
 
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsHealthModel>();
+        services.AddSingleton(sp =>
+        {
+            var engine = new Nexus.Service.Diagnostics.Alerts.SensorAlertEngine(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
+                sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.ISmartHealthSource>(),
+                sp.GetService<Nexus.Service.Cooling.IFanControlProvider>());
+            // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
+            engine.NoticeSink = (notice, key) =>
+                sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().RaiseCooled(key, notice);
+            engine.MobileSink = (notice, key) =>
+                _ = sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>().Raise(key, notice);
+            return engine;
+        });
+        // The sampler records every enabled rule's reading as a tracked-sensor series.
+        services.AddSingleton<Nexus.Service.Monitoring.History.ISensorSeriesSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>());
+        services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
+        services.AddSingleton<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());
 
         services.AddSingleton<Nexus.Service.Routes.SteamGameLibraryCache>();
@@ -520,11 +539,24 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(_ =>
+        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>
         {
             try
             {
-                return new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                var store = new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                // Tracked-sensor series left by a deleted rule (a crash, or an older build) would otherwise count toward the series cap forever.
+                try
+                {
+                    var ruleIds = new HashSet<string>(StringComparer.Ordinal);
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
+                        s => ruleIds.UnionWith((s.Diagnostics.SensorAlerts ?? new()).Where(r => r.BuiltIn is null).Select(r => r.Id)));
+                    store.PruneSensorSeries(ruleIds);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[metrics-history-store] sensor series prune skipped: {ex.Message}");
+                }
+                return store;
             }
             catch (Exception ex)
             {
@@ -662,6 +694,7 @@ public static class NexusServiceCollectionExtensions
             engine.SetStackSlots(areaSettings.Lighting.DeviceStacks);
             var modeStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
             engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
+            engine.ColorSamplingModeSource = () => modeStore.Load().Devices.ColorSamplingModes;
             return engine;
         });
         services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>(sp =>
