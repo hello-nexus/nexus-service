@@ -45,6 +45,10 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
     public static bool IsGalleonId(string id) =>
         !string.IsNullOrEmpty(id) && id.StartsWith(GalleonSdProtocol.DeviceIdPrefix, StringComparison.Ordinal);
 
+    /// <summary>The keyboard's device id, not the dial strip's.</summary>
+    public static bool IsKeyboardId(string id) =>
+        IsGalleonId(id) && !id.StartsWith(GalleonSdProtocol.DialsDeviceIdPrefix, StringComparison.Ordinal);
+
     public GetLightingDevicesResponse GetAll()
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
@@ -110,6 +114,8 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
             DeviceId = deviceId,
             ControlHandlerId = GalleonSdProtocol.HandlerId,
             ZoneCustomizable = true,
+            SaveToDeviceSupported = !dials,
+            SavedToDevice = !dials && settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId),
         };
     }
 

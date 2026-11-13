@@ -235,6 +235,12 @@ public class LightingDevice
     public bool LedsOn { get; set; }
     /// <summary>False when the user marked this device not controlled: Nexus stops pushing frames to it entirely so firmware/vendor lighting can take over. Distinct from <see cref="LedsOn"/> (power off still streams black).</summary>
     public bool Controlled { get; set; } = true;
+    /// <summary>True when the device can hold its colors in onboard memory (Galleon 100 SD keyboard). The web shows the "Save colors to the keyboard" toggle only then; omitted from the wire otherwise.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SaveToDeviceSupported { get; set; }
+    /// <summary>True while the toggle is on: the board stays in hardware mode, Nexus streams no live frames, and only static colors apply. Omitted when false.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SavedToDevice { get; set; }
     public int Brightness { get; set; }
     public float Hue { get; set; }
     public float Saturation { get; set; }
@@ -342,6 +348,8 @@ public class SetDeviceStacksBody
 public class SetDisabledLedsBody { public List<string> Devices { get; set; } = new(); }
 public class SetLightingDevicePowerBody { public string Id { get; set; } = ""; public bool On { get; set; } }
 public class SetLightingDeviceControlledBody { public string Id { get; set; } = ""; public bool Controlled { get; set; } }
+/// <summary>POST /devices/lighting-devices/save-to-device. <see cref="Id"/> is the owning device id (the card's <c>deviceId</c>).</summary>
+public class SetLightingDeviceSaveToDeviceBody { public string Id { get; set; } = ""; public bool Enabled { get; set; } }
 /// <summary>Rename one lighting card. An empty name clears the rename and the card falls back to its hardware name.</summary>
 public class SetLightingDeviceNameBody { public string Id { get; set; } = ""; public string Name { get; set; } = ""; }
 public class SetLightingDeviceBrightness { public string Id { get; set; } = ""; public int Brightness { get; set; } }

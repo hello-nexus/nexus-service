@@ -84,7 +84,11 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        if (_engine.CurrentEffectName == "none")
+        var settings = _store.Load();
+        var saved = settings.Devices.SaveToDeviceLightingDevices.Contains(unit.DeviceId);
+        if (!saved) _hub.SetSavedToDevice(false);
+
+        if (!saved && _engine.CurrentEffectName == "none")
         {
             if (_wasStreaming)
             {
@@ -95,16 +99,24 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         }
 
         var devices = _engine.Devices;
-        if (devices.Length == 0) return;
+        if (!saved && devices.Length == 0) return;
 
-        var settings = _store.Load();
         var structure = GalleonSdLightingDeviceProvider.BuildStructure(unit);
         var zones = ZoneResolution.Resolve(structure, settings);
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
         {
             _wasStreaming = false;
+            _hub.SetSavedToDevice(false);
             _hub.ReleaseToHardware();
+            return;
+        }
+
+        // Saved to the keyboard: the board stays in hardware mode and no live frame is sent.
+        if (saved)
+        {
+            _wasStreaming = false;
+            _hub.SetSavedToDevice(true);
             return;
         }
         _wasStreaming = true;

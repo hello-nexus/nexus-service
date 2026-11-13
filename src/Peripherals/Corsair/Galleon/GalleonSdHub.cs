@@ -50,6 +50,11 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         public bool HasLast { get; set; }
         public bool ModeTouched { get; set; }
         public bool SoftwareMode { get; set; }
+        public bool SavedMode { get; set; }
+        public bool HardwareHeld { get; set; }
+        public bool ProbeDone { get; set; }
+        public byte[] LastReply { get; } = new byte[GalleonSdProtocol.WireLength + 1];
+        public int LastReplyLength { get; set; }
         public byte Handle { get; set; }
         public bool HandleSettled { get; set; }
         public int Failures { get; set; }
@@ -112,6 +117,12 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     public bool IsConnected => Attached is not null;
 
     public int Version => Volatile.Read(ref _version);
+
+    /// <summary>True while the unit is held in hardware mode for "save colors to the keyboard" (no live frames are sent).</summary>
+    public bool SavedToDevice
+    {
+        get { lock (_io) return _slot?.SavedMode ?? false; }
+    }
 
     /// <summary>Opens the unit when <paramref name="allowed"/> and closes it (board back in hardware mode) when not. True when the attached state changed.</summary>
     public bool Reconcile(bool allowed)
@@ -188,6 +199,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         {
             var slot = _slot;
             if (slot is null) return false;
+            if (slot.SavedMode) return true;
             var now = _clock();
             GalleonSdProtocol.EncodeDirect(leds, slot.Payload);
             var sinceSent = StampsToMs(now - slot.LastSentStamp);
@@ -234,6 +246,51 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             {
                 ServiceLog.Error($"[galleon-sd] frame write failed: {ex.GetType().Name}: {ex.Message}");
                 return RecordFailureLocked(slot, ex.GetType().Name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies the per-device "save colors to the keyboard" toggle. On: stop live frames, hand the
+    /// board back to hardware mode (keys work) and hold it there; the read-only onboard probe runs
+    /// once per session. Off: live streaming resumes through <see cref="WriteFrame"/> on its next call.
+    /// Idempotent, safe to call every writer tick.
+    /// </summary>
+    public void SetSavedToDevice(bool saved)
+    {
+        lock (_io)
+        {
+            var slot = _slot;
+            if (slot is null) return;
+            if (!saved)
+            {
+                slot.SavedMode = false;
+                return;
+            }
+            try
+            {
+                if (!slot.SavedMode)
+                {
+                    slot.SavedMode = true;
+                    slot.HasLast = false;
+                    slot.HandleSettled = false;
+                }
+                if (slot.ModeTouched)
+                {
+                    ReleaseLocked(slot);
+                    slot.HardwareHeld = true;
+                }
+                else if (!slot.HardwareHeld)
+                {
+                    Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware (saved)", ProbeReplyMs, log: true);
+                    slot.HardwareHeld = true;
+                }
+                if (!slot.ProbeDone) ProbeOnboardLocked(slot);
+            }
+            catch (ObjectDisposedException) { }
+            catch (Exception ex)
+            {
+                if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] saved-mode hold threw: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
@@ -304,10 +361,112 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
     }
 
+    // Read-only walk of the onboard lighting objects, run once per session while saving is on. Mirrors Web Hub:
+    // software mode, reads, hardware mode. Sends only mode sets, a property get and open(0D)/size(09)/read(08)/close(05);
+    // never 06/07 (write), 0B or 0C. Raw replies are logged so the open/size/read reply formats can be learned.
+    private void ProbeOnboardLocked(Slot slot)
+    {
+        slot.ProbeDone = true;
+        ServiceLog.Info($"[galleon-sd-onboard] probe begin serial={slot.Info.Serial}");
+        try
+        {
+            DrainInput(slot);
+            Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "onboard mode->software", ProbeReplyMs, log: true);
+            Exchange(slot, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "onboard get 6E", ProbeReplyMs, log: true);
+
+            var budget = GalleonSdOnboardProbe.MaxResources;
+            var registry = ReadResourceLocked(slot, GalleonSdOnboardProbe.RegistryResource, ref budget);
+            if (!GalleonSdOnboardProbe.TryParseRegistry(registry, out var profiles))
+            {
+                ServiceLog.Info("[galleon-sd-onboard] registry not recognized in reply");
+            }
+            else
+            {
+                ServiceLog.Info($"[galleon-sd-onboard] registry refs={FormatRefs(profiles)}");
+                for (var p = 0; p < Math.Min(profiles.Length, GalleonSdOnboardProbe.MaxProfiles) && budget > 0; p++)
+                {
+                    var profile = ReadResourceLocked(slot, profiles[p], ref budget);
+                    if (!GalleonSdOnboardProbe.TryParseProfileLayerList(profile, out var listRes))
+                    {
+                        ServiceLog.Info($"[galleon-sd-onboard] profile {profiles[p]:X4} layer list slot not recognized");
+                        continue;
+                    }
+                    ServiceLog.Info($"[galleon-sd-onboard] profile {profiles[p]:X4} layerList={listRes:X4}");
+                    if (budget <= 0) break;
+                    var list = ReadResourceLocked(slot, listRes, ref budget);
+                    if (!GalleonSdOnboardProbe.TryParseLayerList(list, out var layers))
+                    {
+                        ServiceLog.Info($"[galleon-sd-onboard] layer list {listRes:X4} not recognized");
+                        continue;
+                    }
+                    ServiceLog.Info($"[galleon-sd-onboard] layer list {listRes:X4} layers={FormatRefs(layers)}");
+                    for (var l = 0; l < Math.Min(layers.Length, GalleonSdOnboardProbe.MaxLayers) && budget > 0; l++)
+                    {
+                        ReadResourceLocked(slot, layers[l], ref budget);
+                    }
+                }
+            }
+        }
+        catch (ObjectDisposedException) { throw; }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[galleon-sd-onboard] probe threw: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try
+            {
+                Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "onboard mode->hardware", ProbeReplyMs, log: true);
+                slot.HardwareHeld = true;
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Warn($"[galleon-sd-onboard] hardware-mode restore threw: {ex.GetType().Name}");
+            }
+            ServiceLog.Info("[galleon-sd-onboard] probe end");
+        }
+    }
+
+    // open, size, two reads (Web Hub reads big objects twice), close; the first non-empty read reply is returned for parsing.
+    private byte[] ReadResourceLocked(Slot slot, ushort resource, ref int budget)
+    {
+        budget--;
+        const byte handle = 0;
+        var tag = $"onboard {resource:X4}";
+        var body = Array.Empty<byte>();
+        Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeReplyMs, log: true);
+        try
+        {
+            Exchange(slot, GalleonSdProtocol.ResourceSize(handle), $"{tag} size", ProbeReplyMs, log: true);
+            for (var i = 0; i < 2; i++)
+            {
+                Exchange(slot, GalleonSdProtocol.ResourceRead(handle), $"{tag} read {i}", ProbeReplyMs, log: true);
+                if (body.Length == 0 && slot.LastReplyLength > 0) body = slot.LastReply.AsSpan(0, slot.LastReplyLength).ToArray();
+            }
+        }
+        finally
+        {
+            Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"{tag} close", ProbeReplyMs, log: true);
+        }
+        return body;
+    }
+
+    private static string FormatRefs(ushort[] refs)
+    {
+        var sb = new StringBuilder(refs.Length * 5);
+        for (var i = 0; i < refs.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(refs[i].ToString("X4"));
+        }
+        return sb.ToString();
+    }
+
     private bool EnterSoftwareLocked(Slot slot)
     {
         var probe = !slot.SoftwareMode && slot.FramesSent < ProbeFrames;
         slot.ModeTouched = true;
+        slot.HardwareHeld = false;
         var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "mode->software", ProbeReplyMs, log: probe, check: true);
         if (!reply.IsOk && reply.Parsed) ServiceLog.Warn($"[galleon-sd] software-mode set answered status {reply.Status:X2}; continuing");
         slot.SoftwareMode = true;
@@ -415,6 +574,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
         var cmd = wire[GalleonSdProtocol.CommandIndex];
         slot.LastReplyHex = "";
+        slot.LastReplyLength = 0;
         var buf = new byte[InputBufferBytes];
         var deadline = _clock() + (long)(replyTimeoutMs * Stopwatch.Frequency / 1000.0);
         GalleonReply result = default;
@@ -427,6 +587,8 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             gotAny = true;
             slot.RepliesEver++;
             slot.LastReplyHex = Hex(buf.AsSpan(0, n));
+            slot.LastReplyLength = Math.Min(n, slot.LastReply.Length);
+            buf.AsSpan(0, slot.LastReplyLength).CopyTo(slot.LastReply);
             var reply = GalleonSdProtocol.ParseReply(cmd, buf.AsSpan(0, n));
             if (log) ServiceLog.Info($"[galleon-sd] IN  {label}: {Hex(buf.AsSpan(0, n))} parsed={reply.Parsed} status={reply.Status:X2}");
             if (reply.Parsed)

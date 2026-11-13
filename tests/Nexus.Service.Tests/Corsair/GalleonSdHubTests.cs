@@ -464,4 +464,161 @@ public class GalleonSdHubTests
         Assert.False(hub.WriteFrame(Frame));
         Assert.Empty(hid.Device.Writes);
     }
+
+    private static byte[] Reply(byte cmd, params byte[] body)
+    {
+        var r = new byte[128];
+        r[1] = 1;
+        r[3] = cmd;
+        body.CopyTo(r, 8);
+        return r;
+    }
+
+    private static readonly byte[] Registry = { 0x13, 0x00, 0x02, 0x00, 0x60, 0x6D, 0x65, 0x6D };
+    private static readonly byte[] Profile = { 0x1E, 0xF1, 1, 2, 3, 4, 0x66, 0x6D, 0x61, 0x6D, 0, 0, 0x62, 0x6D, 0x63, 0x6D, 0, 0 };
+    private static readonly byte[] LayerList = { 0x69, 0x6C, 0x02, 0x00, 0x08, 0x00, 0x6B, 0x6D, 0x08, 0x00, 0x6F, 0x6D };
+
+    // Replays the board's object store: reads answer with the object last opened.
+    private static Func<byte[], byte[]?> ObjectStore(List<ushort> opened)
+    {
+        ushort current = 0;
+        return wire =>
+        {
+            switch (wire[3])
+            {
+                case GalleonSdProtocol.CmdStartTx:
+                    current = (ushort)(wire[5] | (wire[6] << 8));
+                    opened.Add(current);
+                    return Reply(wire[3]);
+                case GalleonSdProtocol.CmdRead:
+                    return current switch
+                    {
+                        0x000F => Reply(wire[3], Registry),
+                        0x6D60 => Reply(wire[3], Profile),
+                        0x6D62 => Reply(wire[3], LayerList),
+                        _ => Reply(wire[3], 0x7E, 0x20),
+                    };
+                default:
+                    return Reply(wire[3]);
+            }
+        };
+    }
+
+    private static readonly byte[] ForbiddenCommands = { 0x06, 0x07, 0x0B, 0x0C };
+
+    [Fact]
+    public void Saved_mode_sends_no_direct_frames_and_holds_hardware_mode()
+    {
+        _clock = 5_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+        Assert.True(hub.WriteFrame(Frame));
+        hub.SetSavedToDevice(true);
+
+        Assert.True(hub.SavedToDevice);
+        Assert.DoesNotContain(Commands(hid.Device, GalleonSdProtocol.CmdStartTx), w => (w[5] | (w[6] << 8)) == GalleonSdProtocol.DirectResource);
+        Assert.DoesNotContain(hid.Device.Writes, w => w[3] is 0x06 or 0x07);
+        var modes = Commands(hid.Device, GalleonSdProtocol.CmdSet).Select(w => w[6]).ToArray();
+        Assert.Equal(GalleonSdProtocol.ModeHardware, modes[0]);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, modes[^1]);
+    }
+
+    [Fact]
+    public void Saved_mode_writes_software_mode_only_inside_the_probe_bracket()
+    {
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+        hub.SetSavedToDevice(true);
+
+        var sets = hid.Device.Writes.Select((w, i) => (w, i)).Where(x => x.w[3] == GalleonSdProtocol.CmdSet).ToList();
+        var software = sets.Where(x => x.w[6] == GalleonSdProtocol.ModeSoftware).ToList();
+        Assert.Single(software);
+        var bracketStart = software[0].i;
+        var bracketEnd = sets.Last(x => x.w[6] == GalleonSdProtocol.ModeHardware).i;
+        Assert.True(bracketEnd > bracketStart);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, sets[^1].w[6]);
+        Assert.Equal(1, hid.Device.Writes.Count(w => w[3] == GalleonSdProtocol.CmdGet && w[4] == 0x6E));
+    }
+
+    [Fact]
+    public void Probe_sends_only_read_commands_and_follows_registry_profile_layer_list_and_layers()
+    {
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        hid.Device.OnWrite = ObjectStore(opened);
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.DoesNotContain(hid.Device.Writes, w => ForbiddenCommands.Contains(w[3]));
+        var allowed = new byte[] { GalleonSdProtocol.CmdSet, GalleonSdProtocol.CmdGet, GalleonSdProtocol.CmdStartTx, GalleonSdProtocol.CmdSize, GalleonSdProtocol.CmdRead, GalleonSdProtocol.CmdStopTx };
+        Assert.All(hid.Device.Writes, w => Assert.Contains(w[3], allowed));
+        Assert.Equal(new ushort[] { 0x000F, 0x6D60, 0x6D62, 0x6D6B, 0x6D6F, 0x6D65 }, opened);
+    }
+
+    [Fact]
+    public void Probe_runs_once_per_session()
+    {
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        hid.Device.OnWrite = ObjectStore(opened);
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+
+        hub.SetSavedToDevice(true);
+        var after = opened.Count;
+        hub.SetSavedToDevice(false);
+        hub.SetSavedToDevice(true);
+
+        Assert.True(after > 0);
+        Assert.Equal(after, opened.Count);
+    }
+
+    [Fact]
+    public void Turning_saved_mode_off_resumes_the_live_stream_immediately()
+    {
+        _clock = 6_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.SetSavedToDevice(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(false);
+        Assert.False(hub.SavedToDevice);
+        Assert.True(hub.WriteFrame(Frame));
+
+        var w = hid.Device.Writes;
+        Assert.Equal(GalleonSdProtocol.CmdSet, w[0][3]);
+        Assert.Equal(GalleonSdProtocol.ModeSoftware, w[0][6]);
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdBlockFirst));
+    }
+
+    [Fact]
+    public void Saved_mode_after_streaming_hands_the_board_back_and_stops_frames()
+    {
+        _clock = 7_000_000_000;
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Frame);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+        _clock += 5_000_000_000;
+        hub.WriteFrame(Frame);
+
+        Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(hid.Device, GalleonSdProtocol.CmdSet).First()[6]);
+        Assert.DoesNotContain(hid.Device.Writes, w => w[3] is 0x06 or 0x07);
+    }
 }

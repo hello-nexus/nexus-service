@@ -43,11 +43,15 @@ public static class GalleonSdProtocol
     public const byte CmdSet = 0x01;
     public const byte CmdGet = 0x02;
     public const byte CmdStopTx = 0x05;
+    public const byte CmdRead = 0x08;
+    public const byte CmdSize = 0x09;
     public const byte CmdBlockFirst = 0x06;
     public const byte CmdBlockNext = 0x07;
     public const byte CmdStartTx = 0x0D;
 
     public const byte PropMode = 0x03;
+    /// <summary>Active onboard profile property (Web Hub sets it on a profile switch).</summary>
+    public const byte PropActiveProfile = 0x6E;
     public const byte ModeHardware = 0x01;
     public const byte ModeSoftware = 0x02;
 
@@ -99,6 +103,12 @@ public static class GalleonSdProtocol
 
     public static byte[] StartTransaction(byte handle, ushort resource) =>
         Command(CmdStartTx, stackalloc byte[] { handle, (byte)(resource & 0xFF), (byte)(resource >> 8) });
+
+    /// <summary>Size query on an open handle. Read-only; the reply format is what the onboard probe exists to learn.</summary>
+    public static byte[] ResourceSize(byte handle) => Command(CmdSize, stackalloc byte[] { handle });
+
+    /// <summary>Read on an open handle. Read-only.</summary>
+    public static byte[] ResourceRead(byte handle) => Command(CmdRead, stackalloc byte[] { handle });
 
     public static byte[] StopTransaction(byte handle) => Command(CmdStopTx, stackalloc byte[] { 0x01, handle });
 

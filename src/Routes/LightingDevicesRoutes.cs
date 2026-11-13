@@ -822,6 +822,36 @@ public static partial class DevicesRoutes
             bridge?.RequestTopologyRefresh();
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
+        // Per-device "Save colors to the keyboard" (Galleon 100 SD keyboard only). On keeps the board in
+        // hardware mode with no live frames; off returns to the live software-mode stream on the next
+        // writer tick. Keyed by the owning device id; broadcasts `lighting` so the card refetches.
+        app.MapPost("/devices/lighting-devices/save-to-device", (
+            SetLightingDeviceSaveToDeviceBody body,
+            Nexus.Service.Persistence.IConfigStore store,
+            FeatureGates gates,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            if (!Nexus.Service.Lighting.GalleonSdLightingDeviceProvider.IsKeyboardId(body.Id))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Device does not support saving colors."));
+            }
+            store.Update(s =>
+            {
+                var next = new List<string>(s.Devices.SaveToDeviceLightingDevices);
+                next.RemoveAll(x => x == body.Id);
+                if (body.Enabled)
+                {
+                    next.Add(body.Id);
+                }
+                s.Devices.SaveToDeviceLightingDevices = next;
+            });
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        });
         app.MapPost("/devices/lighting-devices/brightness", (SetLightingDeviceBrightness body, ILightingDeviceProvider ld, FeatureGates gates) =>
         {
             if (!gates.Lighting)
