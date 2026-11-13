@@ -3,11 +3,15 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Models.Panel;
 
-/// <summary>Accent and font remembered for one skin.</summary>
+/// <summary>Accent, font and background mode remembered for one skin.</summary>
 public sealed class PanelSkinOverride
 {
     public string? Accent { get; set; }
     public string? Font { get; set; }
+    /// <summary>"solid", "shader", "media" or "skin"; null = the skin's default.</summary>
+    public string? BackgroundMode { get; set; }
+    /// <summary>Shader effect key; only kept with BackgroundMode "shader".</summary>
+    public string? BackgroundEffect { get; set; }
 }
 
 /// <summary>One colour stop of a panel's gauge gradient.</summary>

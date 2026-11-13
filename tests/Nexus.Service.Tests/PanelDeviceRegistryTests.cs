@@ -360,6 +360,52 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_SkinOverrides_BackgroundModeAndEffectNormalizeAndRoundTrip()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        var map = new Dictionary<string, PanelSkinOverride>
+        {
+            ["neon"] = new() { BackgroundMode = " shader ", BackgroundEffect = "aurora" },
+            ["lcd"] = new() { BackgroundMode = "solid", BackgroundEffect = "plasma" },
+            ["crt"] = new() { BackgroundMode = " ", BackgroundEffect = "plasma" },
+            ["hud"] = new() { BackgroundMode = "media" },
+        };
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = map })!;
+
+        Assert.Equal(new[] { "hud", "lcd", "neon" }, patched.SkinOverrides!.Keys.Order());
+        Assert.Equal("shader", patched.SkinOverrides["neon"].BackgroundMode);
+        Assert.Equal("aurora", patched.SkinOverrides["neon"].BackgroundEffect);
+        Assert.Equal("solid", patched.SkinOverrides["lcd"].BackgroundMode);
+        Assert.Null(patched.SkinOverrides["lcd"].BackgroundEffect);
+        Assert.Equal("media", patched.SkinOverrides["hud"].BackgroundMode);
+
+        var stored = _registry.Get(record.Id)!;
+        var wire = System.Text.Json.JsonSerializer.Serialize(stored, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+        Assert.Contains("\"neon\":{\"backgroundMode\":\"shader\",\"backgroundEffect\":\"aurora\"}", wire);
+        var persisted = System.Text.Json.JsonSerializer.Serialize(stored, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+        var back = System.Text.Json.JsonSerializer.Deserialize(persisted, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord)!;
+        Assert.Equal("aurora", back.SkinOverrides!["neon"].BackgroundEffect);
+        var patch = System.Text.Json.JsonSerializer.Deserialize("{\"skinOverrides\":{\"lcd\":{\"backgroundMode\":\"solid\"}}}", Nexus.Service.Serialization.AppJsonContext.Default.PanelDevicePatch)!;
+        Assert.Equal("solid", patch.SkinOverrides!["lcd"].BackgroundMode);
+
+        var clone = PanelSkinOverrides.Clone(stored.SkinOverrides)!;
+        stored.SkinOverrides!["neon"].BackgroundEffect = "fire";
+        Assert.Equal("aurora", clone["neon"].BackgroundEffect);
+    }
+
+    [Theory]
+    [InlineData("gradient", null, "invalid_background")]
+    [InlineData("shader", "Bad Effect", "invalid_background")]
+    [InlineData("shader", "aurora", null)]
+    [InlineData("skin", null, null)]
+    [InlineData("", null, null)]
+    public void Validate_ChecksTheBackgroundModeAndEffect(string mode, string? effect, string? expected)
+    {
+        var map = new Dictionary<string, PanelSkinOverride> { ["neon"] = new() { BackgroundMode = mode, BackgroundEffect = effect } };
+        Assert.Equal(expected, PanelSkinOverrides.Validate(map));
+    }
+
+    [Fact]
     public void Patch_Font_RoundTripsAndSurvivesOmission()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
