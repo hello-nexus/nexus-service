@@ -1766,6 +1766,11 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     continue;
                 }
+                else if (State.MotherboardPwmPercent is not > 0)
+                {
+                    // Handing the fans back means the follow byte; with no live header signal that could stop them, so they keep their last duty.
+                    continue;
+                }
             }
             if (record.FanCount <= 0 && !manual)
             {
@@ -2746,7 +2751,10 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        var pwm = PwmTupleLocked(record);
+        // A HydroShift II unbind keeps the all-follow tuple it always carried.
+        var pwm = unbind && record.IsHydroShift
+            ? Slv3Protocol.BuildHydroShiftPwmTuple(DefaultDutyTargets, 0)
+            : PwmTupleLocked(record);
         var payload = unbind
             ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
             : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);

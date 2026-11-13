@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Xunit;
@@ -1160,15 +1161,16 @@ public partial class Slv3HubTests
         var follow = Slv3Protocol.PwmFollowMotherboard;
         Assert.Equal(new byte[] { follow, 127, follow, follow }, LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray());
 
+        net.HeaderPercent = 40;
         Assert.True(hub.SetPortDuty(mac, 1, null));
         Assert.True(hub.SetPortDuty(mac, 3, null));
         Assert.True(hub.DriveTick());
         Assert.All(LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray(), b => Assert.Equal(follow, b));
     }
 
-    // Like a regular chain, an unbind frame carries the duties the chain is currently driven at; only the pump slot stays the follow byte.
+    // origin/main behavior: a HydroShift II unbind frame is all follow bytes, whatever the fans were driven at.
     [Fact]
-    public void HydroShift_unbind_frame_carries_radiator_fan_duties_and_keeps_the_pump_slot_on_the_follow_byte()
+    public void HydroShift_unbind_frame_stays_all_follow_even_after_the_fans_were_driven()
     {
         var (hub, net, tx, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
@@ -1179,8 +1181,71 @@ public partial class Slv3HubTests
 
         Assert.True(ManualUnbind(hub, mac));
 
-        var follow = Slv3Protocol.PwmFollowMotherboard;
-        Assert.Equal(new byte[] { 127, follow, follow, follow }, LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray());
+        Assert.All(LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray(), b => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, b));
+    }
+
+    // The pump must be untouched: slot 3 is the follow byte in every frame and the 0x21 params frame
+    // is byte-identical to a run where no fan was ever driven, across drive, release, hand-back and unbind.
+    [Fact]
+    public void HydroShift_pump_slot_and_params_frame_never_change_across_drive_release_and_unbind()
+    {
+        List<byte[]> Run(bool driveFans, int headerPercent, out List<byte[]> binds)
+        {
+            var (hub, net, tx, _) = CreateConnectedHub();
+            net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+            hub.AioSensors = () => new Slv3AioSensors(55f, 12f, null, null);
+            Assert.True(hub.DriveTick());
+            var mac = Convert.ToHexString(FanMac);
+            Assert.True(hub.SetPumpDuty(mac, 50));
+            if (driveFans)
+            {
+                Assert.True(hub.SetPortDuty(mac, 0, 70));
+                Assert.True(hub.SetPortDuty(mac, 3, 90));
+            }
+            Assert.True(hub.DriveTick());
+            if (driveFans)
+            {
+                Assert.True(hub.SetPortDuty(mac, 0, null));
+                net.HeaderPercent = headerPercent;
+                Assert.True(hub.DriveTick());
+            }
+            Assert.True(ManualUnbind(hub, mac));
+            binds = tx.SentFrames
+                .Where(f => f.Length >= 25 && f[0] == Slv3Protocol.UsbSendRf && f[1] == 0 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfBind)
+                .ToList();
+            return RfFrames(tx, Slv3Protocol.RfAioParams).ToList();
+        }
+
+        var baseline = Run(false, 0, out _);
+        foreach (var header in new[] { 0, 40 })
+        {
+            var driven = Run(true, header, out var binds);
+            // Every params frame, from the first tick on, matches the pump-only run's.
+            Assert.All(driven, f => Assert.Equal(baseline[0], f));
+            Assert.NotEmpty(binds);
+            Assert.All(binds, f => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, f[24]));
+        }
+    }
+
+    // No live header signal: a hand-back would send the follow byte to fans that may then stop, so nothing is sent.
+    [Fact]
+    public void HydroShift_fan_hand_back_is_withheld_while_the_header_has_no_signal()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        Assert.True(hub.SetPortDuty(mac, 1, 50));
+        Assert.True(hub.DriveTick());
+        var sent = CountBindFrames(tx);
+        Assert.True(sent > 0);
+
+        net.HeaderPercent = 0;
+        Assert.True(hub.SetPortDuty(mac, 1, null));
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+
+        Assert.Equal(sent, CountBindFrames(tx));
     }
 
     [Fact]
@@ -3464,6 +3529,8 @@ public partial class Slv3HubTests
         public List<SimulatedFan> Fans { get; } = new();
         // Off = a chain that never echoes (drift / lost-command tests).
         public bool EchoPwm { get; set; } = true;
+        /// <summary>Motherboard header duty in the device-list header; 0 reports no signal.</summary>
+        public int HeaderPercent { get; set; }
         public bool EchoCmdSeq { get; set; } = true;
         // A hung TX: every write on any of its handles times out while the handle
         // stays open. The RX's UsbResetAnother restarts it.
@@ -3658,6 +3725,8 @@ public partial class Slv3HubTests
             var buf = new byte[Slv3Protocol.RecordHeaderLength + _net.Fans.Count * Slv3Protocol.RecordLength];
             buf[0] = Slv3Protocol.UsbSendRf;
             buf[1] = (byte)_net.Fans.Count;
+            buf[2] = (byte)(100 - _net.HeaderPercent);
+            buf[3] = (byte)_net.HeaderPercent;
             for (var i = 0; i < _net.Fans.Count; i++)
             {
                 var offset = Slv3Protocol.RecordHeaderLength + i * Slv3Protocol.RecordLength;
