@@ -387,11 +387,8 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
     public string? Font { get; set; }
-    /// <summary>Skin id (lowercase slug). Null is no skin; a patch of "" clears it.</summary>
     public string? Skin { get; set; }
-    /// <summary>Accent override for the active skin. Null follows the skin default; a patch of "" clears it.</summary>
     public string? SkinAccent { get; set; }
-    /// <summary>Font override for the active skin, same values as <see cref="Font"/>. Null follows the skin default; a patch of "" clears it.</summary>
     public string? SkinFont { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
