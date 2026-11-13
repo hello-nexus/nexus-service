@@ -3130,6 +3130,27 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void HydroShift_radiator_fan_duty_is_set_for_every_fan_slot_in_one_call_and_yields_one_frame()
+    {
+        var clock = new ManualClock();
+        var (hub, net, tx, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+
+        Assert.True(hub.SetRadiatorFanDuty(mac, 50));
+        for (var port = 0; port < 3; port++)
+        {
+            Assert.Equal(50, hub.GetPortDuty(mac, port));
+        }
+        Assert.Null(hub.GetPortDuty(mac, 3));
+        Assert.True(hub.DriveTick());
+
+        Assert.Equal(1, CountBindFrames(tx));
+        Assert.Equal(new byte[] { 127, 127, 127, Slv3Protocol.PwmFollowMotherboard }, LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray());
+    }
+
+    [Fact]
     public void HydroShift_fan_frame_is_not_repeated_once_the_echo_matches()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

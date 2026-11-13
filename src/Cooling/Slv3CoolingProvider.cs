@@ -204,14 +204,8 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         SetRadiatorFans(fan.Mac, null);
     }
 
-    // One duty for every radiator fan slot (the AIO applies a single duty to all three); the pump slot is never a target.
-    private void SetRadiatorFans(string macHex, int? percent)
-    {
-        for (var port = 0; port < Slv3Protocol.HydroShiftPumpPort; port++)
-        {
-            _hub.SetPortDuty(macHex, port, percent);
-        }
-    }
+    // One duty for every radiator fan slot (the AIO applies a single duty to all its fans), set in one hub call; the pump slot is never a target.
+    private void SetRadiatorFans(string macHex, int? percent) => _hub.SetRadiatorFanDuty(macHex, percent);
 
     private static int RadiatorRpm(Slv3FanInfo fan)
     {

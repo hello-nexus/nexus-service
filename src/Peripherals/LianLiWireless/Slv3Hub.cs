@@ -60,9 +60,10 @@ public sealed partial class Slv3Hub : IDisposable
     // null element means that port follows the motherboard PWM header. Read
     // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
-    // HydroShift IIs whose radiator fans Nexus has written, until the follow-motherboard hand-back is confirmed.
     private const int HydroShiftFanRetries = 2;
+    // The last fan tuple sent per HydroShift II with its send count, so a change goes out once plus bounded retries.
     private readonly Dictionary<string, (byte[] Pwm, long SentMs, int Sends)> _hydroShiftFanSends = new(StringComparer.Ordinal);
+    // HydroShift IIs whose radiator fans Nexus has written, until the follow-motherboard hand-back is confirmed.
     private readonly HashSet<string> _hydroShiftFansDriven = new(StringComparer.Ordinal);
 
     // HydroShift IIs under RF control (pump driven or screen saved), keyed by AIO
@@ -3611,6 +3612,33 @@ public sealed partial class Slv3Hub : IDisposable
                 _dutyTargets[key] = targets;
             }
             targets[port] = percent is null ? null : Math.Clamp(percent.Value, 0, 100);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Sets one duty for every radiator fan slot of a HydroShift II under a single lock, so a
+    /// poll never sees a partial tuple. Null follows the header. False for a malformed MAC.
+    /// </summary>
+    public bool SetRadiatorFanDuty(string macHex, int? percent)
+    {
+        if (IsWiredOnly(macHex) || !TryParseMac(macHex, out var mac))
+        {
+            return false;
+        }
+        lock (_lock)
+        {
+            var key = Convert.ToHexString(mac);
+            if (!_dutyTargets.TryGetValue(key, out var targets))
+            {
+                targets = new int?[Slv3Protocol.PortsPerRecord];
+                _dutyTargets[key] = targets;
+            }
+            var value = percent is null ? (int?)null : Math.Clamp(percent.Value, 0, 100);
+            for (var port = 0; port < Slv3Protocol.HydroShiftPumpPort; port++)
+            {
+                targets[port] = value;
+            }
         }
         return true;
     }
