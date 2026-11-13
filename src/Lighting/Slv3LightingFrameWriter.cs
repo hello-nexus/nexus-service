@@ -346,11 +346,18 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const double MinRenderPeriodMs = 150;
     // A round of uploads must finish within this much of one window's playback.
     private const double WindowCycleMs = 750;
-    private const int MaxWindowStretch = 6;
+    internal const int MaxWindowIntervalTicks = 6 * WindowIntervalTicks;
+    // Plans sit on a grid of this many ticks above the base, so a small change in chains or LEDs rarely moves the plan.
+    internal const int WindowIntervalStepTicks = 8;
+    // Time from a chain's upload start to its swap landing: the lock-held headers and data (measured up to about 90 ms
+    // for sixteen packets) plus one late-pass gap and clock-fit jitter.
+    internal const double WindowLandMs = 200;
     private const int HealthLogPeriodMs = 60_000;
     private const int HealthAirSampleMs = 250;
-    // A lower plan must hold this long, so a chain missing from one poll does not reset every chain.
-    private const int StretchDownHoldMs = 10_000;
+    // A changed plan resets every chain's window, so it must hold this long first. A lower plan waits longer, so a chain
+    // missing from one poll does not reset every chain; a higher one is only held back from a chain that toggles.
+    private const int PlanUpHoldMs = 2_000;
+    private const int PlanDownHoldMs = 10_000;
     // Live frames until a chain's brightness, prefs or power have settled, so a
     // window never bakes a change in late.
     private const int StateSettleMs = 300;
@@ -366,19 +373,19 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const double MaxClockResidualTicks = 64;
 
     // Last-frame margin: a chain goes live this many frames before its window would wrap.
-    private const int WindowWrapMarginFrames = 2;
+    internal const int WindowWrapMarginFrames = 2;
     // Render starts ahead of the request. An upload must wait until this first
     // frame is already playing: before that, the fan's loop index points at the
     // window's last (future) frames. Both margins are time, so they shrink in
-    // frames as the interval stretches and a render stays usable within its period.
+    // frames as the interval grows and a render stays usable within its period.
     private const double WindowLeadMs = 100;
     // Allow for clock-fit error at the boundary before replacing the old loop.
     private const double WindowStartSafetyMs = 66;
-    private const double BaseFrameMs = WindowIntervalTicks / 1.6;
-    internal static int LeadFramesFor(int stretch) => Math.Max(1, (int)Math.Round(WindowLeadMs / (BaseFrameMs * stretch)));
-    internal static int SafetyFramesFor(int stretch) => Math.Max(1, (int)Math.Ceiling(WindowStartSafetyMs / (BaseFrameMs * stretch)));
-    private int WindowLeadFrames => LeadFramesFor(_windowStretch);
-    private int WindowStartSafetyFrames => SafetyFramesFor(_windowStretch);
+    private const double RfTicksPerMs = 1.6;
+    internal static int LeadFramesFor(int intervalTicks) => Math.Max(1, (int)Math.Round(WindowLeadMs / (intervalTicks / RfTicksPerMs)));
+    internal static int SafetyFramesFor(int intervalTicks) => Math.Max(1, (int)Math.Ceiling(WindowStartSafetyMs / (intervalTicks / RfTicksPerMs)));
+    private int WindowLeadFrames => LeadFramesFor(_windowIntervalTicks);
+    private int WindowStartSafetyFrames => SafetyFramesFor(_windowIntervalTicks);
     // A clock sample off the fit counts as an outlier; this many in a row mean the clock itself moved.
     private const int ClockOutliersToReset = 3;
 
@@ -399,7 +406,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public bool Visited;
         public double LastUploadStartMs;
         public bool Joinable;
-        public int UploadStretch;
+        public int UploadIntervalTicks;
     }
 
     // One look-ahead render per window serves every chain: all chains play on
@@ -413,7 +420,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private long _windowFirstFrame;
     private long _windowId;
     private long _windowStartedId;
-    private int _windowStretch = 1;
+    private int _windowIntervalTicks = WindowIntervalTicks;
     private double _windowRequestPeriodMs = WindowPeriodMs;
     private readonly Dictionary<string, IReadOnlyList<ResolvedZone>> _liveZones = new();
     private readonly HashSet<string> _liveEqual = new();
@@ -426,7 +433,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private int _healthRenders;
     private int _healthUntaken;
     private double _healthNextAirMs;
-    private double _stretchDownSinceMs;
+    private double _planChangeSinceMs;
+    private int _planCandidateTicks;
     private int _healthAirMax;
     private long _healthTickMaxMs;
     private readonly HashSet<string> _rollingIds = new();
@@ -456,12 +464,29 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         return b > MinTicksPerMs && b < MaxTicksPerMs;
     }
 
-    /// <summary>Frame stretch and ms per round of uploads, so the round stays under the air budget and inside one window.</summary>
-    internal static (int Stretch, double CycleMs) WindowPlan(int chains, int leds)
+    /// <summary>
+    /// True when a chain re-uploaded <paramref name="cycleMs"/> after its last upload still swaps its window in before the
+    /// old one is within the wrap margin: the new upload starts the safety frames after its window's first frame, lands
+    /// <see cref="WindowLandMs"/> later, and the old window has this many frames of this interval to cover all of it.
+    /// </summary>
+    internal static bool RoundFitsWindow(double cycleMs, int intervalTicks)
+    {
+        var frameMs = intervalTicks / RfTicksPerMs;
+        return cycleMs + SafetyFramesFor(intervalTicks) * frameMs + WindowLandMs <= (WindowFrames - WindowWrapMarginFrames) * frameMs;
+    }
+
+    /// <summary>
+    /// Frame interval in RF ticks and ms per round of uploads: the smallest interval on the step grid where a round stays
+    /// inside the air budget (within <see cref="WindowCycleMs"/> of one window's playback) and <see cref="RoundFitsWindow"/> holds.
+    /// </summary>
+    internal static (int IntervalTicks, double CycleMs) WindowPlan(int chains, int leds)
     {
         var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * leds) * 1000 / WindowAirPerSecond;
         var cycleMs = Math.Max(Math.Max(WindowPeriodMs, airMs), MinRenderPeriodMs * chains);
-        return (Math.Clamp((int)Math.Ceiling(cycleMs / WindowCycleMs), 1, MaxWindowStretch), cycleMs);
+        var extra = Math.Max(0, cycleMs / WindowCycleMs * WindowIntervalTicks - WindowIntervalTicks);
+        var ticks = WindowIntervalTicks + WindowIntervalStepTicks * (int)Math.Ceiling(extra / WindowIntervalStepTicks);
+        while (ticks < MaxWindowIntervalTicks && !RoundFitsWindow(cycleMs, ticks)) ticks += WindowIntervalStepTicks;
+        return (Math.Min(ticks, MaxWindowIntervalTicks), cycleMs);
     }
 
     private void NotePlanned(DeviceStructure structure)
@@ -473,18 +498,24 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private void ApplyWindowPlan(double nowMs)
     {
         if (_planChains == 0) return;
-        var (stretch, cycleMs) = WindowPlan(_planChains, _planLeds);
+        var (intervalTicks, cycleMs) = WindowPlan(_planChains, _planLeds);
         _windowRequestPeriodMs = cycleMs / _planChains;
-        if (stretch >= _windowStretch) _stretchDownSinceMs = 0;
-        if (stretch == _windowStretch) return;
-        if (stretch < _windowStretch)
+        if (intervalTicks == _windowIntervalTicks)
         {
-            if (_stretchDownSinceMs == 0) _stretchDownSinceMs = nowMs;
-            if (nowMs - _stretchDownSinceMs < StretchDownHoldMs) return;
-            _stretchDownSinceMs = 0;
+            _planChangeSinceMs = 0;
+            return;
         }
-        ServiceLog.Info($"[lianli-wireless] plan stretch={stretch} cycleMs={cycleMs:F0} chains={_planChains} leds={_planLeds}");
-        _windowStretch = stretch;
+        // The hold restarts when the candidate plan changes, so only a plan that stays put is applied.
+        if (_planChangeSinceMs == 0 || intervalTicks != _planCandidateTicks)
+        {
+            _planCandidateTicks = intervalTicks;
+            _planChangeSinceMs = nowMs;
+            return;
+        }
+        if (nowMs - _planChangeSinceMs < (intervalTicks < _windowIntervalTicks ? PlanDownHoldMs : PlanUpHoldMs)) return;
+        _planChangeSinceMs = 0;
+        ServiceLog.Info($"[lianli-wireless] plan intervalTicks={intervalTicks} cycleMs={cycleMs:F0} chains={_planChains} leds={_planLeds}");
+        _windowIntervalTicks = intervalTicks;
         DropSharedWindow();
         // Frame numbers and coverage are in units of the old interval.
         foreach (var st in _rolling.Values) st.WindowFirstFrame = long.MinValue;
@@ -509,7 +540,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _healthTickMaxMs = 0;
     }
 
-    private double WindowInterval => WindowIntervalTicks * _windowStretch;
+    private double WindowInterval => _windowIntervalTicks;
 
     /// <summary>Wall-clock ms at the middle of each window frame, first frame <paramref name="firstFrame"/>.</summary>
     internal static long[] WindowTickTimes(double a, double b, long firstFrame, double intervalTicks = WindowIntervalTicks)
@@ -649,7 +680,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (ok)
         {
             _healthUploadsOk++;
-            st.WindowFirstFrame = st.UploadStretch == _windowStretch ? st.UploadFirstFrame : long.MinValue;
+            st.WindowFirstFrame = st.UploadIntervalTicks == _windowIntervalTicks ? st.UploadFirstFrame : long.MinValue;
             st.WindowPayload = st.UploadPayload;
             st.WindowLedCount = st.UploadLedCount;
             // The chain now plays the window, so the next live frame must go out even if it matches the last one sent.
@@ -733,7 +764,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadFirstFrame = _windowFirstFrame;
                 st.UploadPayload = payload;
                 st.UploadLedCount = ledCount;
-                st.UploadStretch = _windowStretch;
+                st.UploadIntervalTicks = _windowIntervalTicks;
                 var interval = WindowInterval;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
                 st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent));

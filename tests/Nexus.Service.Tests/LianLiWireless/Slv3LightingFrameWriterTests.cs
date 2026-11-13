@@ -495,23 +495,67 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Theory]
-    [InlineData(1, 132, 1, 450)]
-    [InlineData(8, 798, 3, 2195)]
-    public void WindowPlan_stretches_frames_only_when_a_round_of_uploads_outgrows_the_air(int chains, int leds, int stretch, int cycleMs)
+    [InlineData(1, 132, 53, 450)]
+    [InlineData(2, 252, 61, 672)]
+    [InlineData(4, 276, 69, 809)]
+    [InlineData(8, 798, 157, 2195)]
+    public void WindowPlan_picks_the_smallest_interval_whose_window_still_covers_a_round_of_uploads(int chains, int leds, int intervalTicks, int cycleMs)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
-        Assert.Equal(stretch, plan.Stretch);
+        Assert.Equal(intervalTicks, plan.IntervalTicks);
         Assert.Equal(cycleMs, plan.CycleMs, 0);
     }
 
-    [Theory]
-    [InlineData(1, 3, 2)]
-    [InlineData(2, 2, 1)]
-    [InlineData(3, 1, 1)]
-    public void Window_lead_and_safety_keep_their_time_as_the_interval_stretches(int stretch, int lead, int safety)
+    [Fact]
+    public void WindowPlan_for_four_chains_and_a_few_hundred_leds_covers_the_round_a_smaller_step_would_not()
     {
-        Assert.Equal(lead, Slv3LightingFrameWriter.LeadFramesFor(stretch));
-        Assert.Equal(safety, Slv3LightingFrameWriter.SafetyFramesFor(stretch));
+        var (ticks, cycleMs) = Slv3LightingFrameWriter.WindowPlan(4, 276);
+        var smaller = ticks - Slv3LightingFrameWriter.WindowIntervalStepTicks;
+        Assert.True(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
+        Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, smaller));
+    }
+
+    [Theory]
+    [InlineData(1, 132)]
+    [InlineData(2, 252)]
+    [InlineData(3, 400)]
+    [InlineData(4, 276)]
+    [InlineData(6, 600)]
+    [InlineData(8, 798)]
+    public void WindowPlan_sits_on_the_step_grid_and_is_minimal(int chains, int leds)
+    {
+        var (ticks, cycleMs) = Slv3LightingFrameWriter.WindowPlan(chains, leds);
+        var baseTicks = Slv3LightingFrameWriter.WindowIntervalTicks;
+        var step = Slv3LightingFrameWriter.WindowIntervalStepTicks;
+        Assert.Equal(0, (ticks - baseTicks) % step);
+        Assert.InRange(ticks, baseTicks, Slv3LightingFrameWriter.MaxWindowIntervalTicks);
+        Assert.True(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
+        if (ticks > baseTicks)
+        {
+            // One step lower must break either the coverage or the air budget (a round within the base window's budget share).
+            var lower = ticks - step;
+            var airOk = cycleMs / 750.0 * baseTicks <= lower;
+            Assert.False(airOk && Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, lower));
+        }
+    }
+
+    [Fact]
+    public void WindowPlan_clamps_to_the_largest_interval_when_no_interval_fits()
+    {
+        var (ticks, cycleMs) = Slv3LightingFrameWriter.WindowPlan(40, 4000);
+        Assert.Equal(Slv3LightingFrameWriter.MaxWindowIntervalTicks, ticks);
+        Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
+    }
+
+    [Theory]
+    [InlineData(53, 3, 2)]
+    [InlineData(61, 3, 2)]
+    [InlineData(106, 2, 1)]
+    [InlineData(159, 1, 1)]
+    public void Window_lead_and_safety_keep_their_time_as_the_interval_grows(int intervalTicks, int lead, int safety)
+    {
+        Assert.Equal(lead, Slv3LightingFrameWriter.LeadFramesFor(intervalTicks));
+        Assert.Equal(safety, Slv3LightingFrameWriter.SafetyFramesFor(intervalTicks));
     }
 
     [Fact]
