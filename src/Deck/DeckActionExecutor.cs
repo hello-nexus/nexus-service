@@ -770,8 +770,20 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         {
             return "F" + fn;
         }
+        if (tok.Length == 7 && tok.StartsWith("numpad", StringComparison.Ordinal) && tok[6] is >= '0' and <= '9')
+        {
+            return "Numpad" + tok[6];
+        }
         return tok switch
         {
+            "numlock" => "NumLock",
+            "numpadadd" => "NumpadAdd",
+            "numpadsubtract" => "NumpadSubtract",
+            "numpadmultiply" => "NumpadMultiply",
+            "numpaddivide" => "NumpadDivide",
+            "numpaddecimal" => "NumpadDecimal",
+            "numpadenter" => "NumpadEnter",
+            "numpadequal" => "NumpadEqual",
             "space" => "Space",
             "enter" => "Enter",
             "return" => "Enter",

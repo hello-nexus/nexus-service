@@ -1,0 +1,45 @@
+{
+ "Name": "",
+ "Icon": "",
+ "Controllers": [
+  {
+   "Type": "Keypad",
+   "Actions": {
+    "0,0": {
+     "UUID": "com.elgato.streamdeck.profile.backtoparent",
+     "Name": "Back to parent",
+     "Settings": {},
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "1,0": {
+     "UUID": "com.elgato.streamdeck.system.hotkey",
+     "Name": "Hotkey",
+     "Settings": {
+      "Hotkeys": [
+       {
+        "KeyModifiers": 16384,
+        "QTKeyCode": 48
+       },
+       {
+        "KeyModifiers": 0,
+        "QTKeyCode": 33554431
+       }
+      ]
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    }
+   }
+  },
+  {
+   "Type": "Encoder",
+   "Actions": {}
+  }
+ ],
+ "Routers": {}
+}

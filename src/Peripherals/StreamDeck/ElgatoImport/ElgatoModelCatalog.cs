@@ -18,6 +18,7 @@ public static class ElgatoModelCatalog
         ["20GAA9902"] = (5, 3, "Stream Deck"),
         ["20GBJ9901"] = (4, 2, "Stream Deck Neo"),
         ["20GBD9901"] = (4, 2, "Stream Deck +"),
+        ["GRETSCH"] = (3, 4, "Galleon K100 SD"),
     };
 
     private const string XlFamilyPrefix = "20GAT99";

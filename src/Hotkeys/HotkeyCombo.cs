@@ -18,6 +18,8 @@ public readonly record struct HotkeyCombo(bool Ctrl, bool Alt, bool Shift, bool 
         "space", "enter", "tab", "escape", "backspace", "delete", "insert", "home", "end",
         "pageup", "pagedown", "up", "down", "left", "right", "printscreen",
         ".", ",", "/", ";", "'", "[", "]", "\\", "-", "=", "`",
+        "numlock", "numpad0", "numpad1", "numpad2", "numpad3", "numpad4", "numpad5", "numpad6", "numpad7", "numpad8", "numpad9",
+        "numpadadd", "numpadsubtract", "numpadmultiply", "numpaddivide", "numpaddecimal", "numpadenter", "numpadequal",
     };
 
     /// <summary>
@@ -177,6 +179,10 @@ public readonly record struct HotkeyCombo(bool Ctrl, bool Alt, bool Shift, bool 
         ["f12"] = 0x6F, ["f15"] = 0x71, ["insert"] = 0x72, ["home"] = 0x73, ["pageup"] = 0x74,
         ["delete"] = 0x75, ["f4"] = 0x76, ["end"] = 0x77, ["f2"] = 0x78, ["pagedown"] = 0x79,
         ["f1"] = 0x7A, ["left"] = 0x7B, ["right"] = 0x7C, ["down"] = 0x7D, ["up"] = 0x7E,
+        ["numpad0"] = 0x52, ["numpad1"] = 0x53, ["numpad2"] = 0x54, ["numpad3"] = 0x55, ["numpad4"] = 0x56,
+        ["numpad5"] = 0x57, ["numpad6"] = 0x58, ["numpad7"] = 0x59, ["numpad8"] = 0x5B, ["numpad9"] = 0x5C,
+        ["numpaddecimal"] = 0x41, ["numpadmultiply"] = 0x43, ["numpadadd"] = 0x45, ["numpaddivide"] = 0x4B,
+        ["numpadenter"] = 0x4C, ["numpadsubtract"] = 0x4E, ["numpadequal"] = 0x51,
     };
 
     private static readonly Dictionary<string, int> WindowsKeyCodes = new(StringComparer.Ordinal)
@@ -187,5 +193,11 @@ public readonly record struct HotkeyCombo(bool Ctrl, bool Alt, bool Shift, bool 
         ["printscreen"] = 0x2C, ["insert"] = 0x2D, ["delete"] = 0x2E,
         [";"] = 0xBA, ["="] = 0xBB, [","] = 0xBC, ["-"] = 0xBD, ["."] = 0xBE, ["/"] = 0xBF,
         ["`"] = 0xC0, ["["] = 0xDB, ["\\"] = 0xDC, ["]"] = 0xDD, ["'"] = 0xDE,
+        ["numlock"] = 0x90, ["numpad0"] = 0x60, ["numpad1"] = 0x61, ["numpad2"] = 0x62, ["numpad3"] = 0x63,
+        ["numpad4"] = 0x64, ["numpad5"] = 0x65, ["numpad6"] = 0x66, ["numpad7"] = 0x67, ["numpad8"] = 0x68,
+        ["numpad9"] = 0x69, ["numpadmultiply"] = 0x6A, ["numpadadd"] = 0x6B, ["numpadsubtract"] = 0x6D,
+        ["numpaddecimal"] = 0x6E, ["numpaddivide"] = 0x6F,
+        // RegisterHotKey cannot tell keypad Enter from Enter, and Windows has no keypad equals key.
+        ["numpadenter"] = 0x0D, ["numpadequal"] = 0xBB,
     };
 }

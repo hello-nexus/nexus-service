@@ -154,6 +154,15 @@ public sealed class MacInputter : IInputterProvider
         ["Minus"] = 27, // kVK_ANSI_Minus
         ["Equal"] = 24, // kVK_ANSI_Equal
         ["Backquote"] = 50, // kVK_ANSI_Grave
+        ["Numpad0"] = 82, ["Numpad1"] = 83, ["Numpad2"] = 84, ["Numpad3"] = 85, ["Numpad4"] = 86,
+        ["Numpad5"] = 87, ["Numpad6"] = 88, ["Numpad7"] = 89, ["Numpad8"] = 91, ["Numpad9"] = 92, // kVK_ANSI_Keypad0..9
+        ["NumpadDecimal"] = 65,
+        ["NumpadMultiply"] = 67,
+        ["NumpadAdd"] = 69,
+        ["NumpadDivide"] = 75,
+        ["NumpadEnter"] = 76,
+        ["NumpadSubtract"] = 78,
+        ["NumpadEqual"] = 81,
         // No macOS CGKeyboardEvent mapping (skipped): Insert, NumLock,
         // ScrollLock, PrintScreen, Pause, ContextMenu, and the media keys.
     };

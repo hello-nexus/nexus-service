@@ -1,0 +1,170 @@
+{
+ "Name": "Apps",
+ "Icon": "",
+ "Controllers": [
+  {
+   "Type": "Keypad",
+   "Actions": {
+    "0,0": {
+     "UUID": "com.elgato.streamdeck.system.openapp",
+     "Name": "Open Application",
+     "Settings": {
+      "app_name": "Game",
+      "args": "",
+      "bring_to_front": true,
+      "bundle_path": "C:\\Games\\Game.exe",
+      "exec": "C:\\Games\\Game.exe",
+      "is_bundle": false,
+      "source": "C:\\Games\\Game.exe"
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "1,0": {
+     "UUID": "com.elgato.streamdeck.system.openapp",
+     "Name": "Open Application",
+     "Settings": {
+      "app_name": "Chat",
+      "args": "--processStart Chat.exe",
+      "bundle_path": "C:\\Chat\\Update.exe",
+      "exec": "C:\\Chat\\Update.exe",
+      "is_bundle": false,
+      "source": "C:\\Menu\\Chat.lnk"
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "2,0": {
+     "UUID": "com.elgato.streamdeck.system.openapp",
+     "Name": "Open Application",
+     "Settings": {
+      "app_name": "Store App",
+      "args": "",
+      "bundle_path": "C:\\Program Files\\WindowsApps\\Vendor.App_1.0",
+      "exec": "C:\\Program Files\\WindowsApps\\Vendor.App_1.0\\App.exe",
+      "is_bundle": true,
+      "source": "C:\\Program Files\\WindowsApps\\Vendor.App_1.0\\App.exe"
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "0,1": {
+     "UUID": "com.elgato.streamdeck.soundboard.playaudio",
+     "Name": "Play Audio",
+     "Settings": {
+      "path": "/home/user/sound.mp3",
+      "volume": 50
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "1,1": {
+     "UUID": "com.example.vitals.plugin",
+     "Name": "Vitals",
+     "Settings": {},
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "2,1": {
+     "UUID": "com.elgato.streamdeck.page.next",
+     "Name": "Next Page",
+     "Settings": {},
+     "State": 0,
+     "States": [
+      {}
+     ]
+    }
+   }
+  },
+  {
+   "Type": "Encoder",
+   "Actions": {
+    "0,0": {
+     "UUID": "com.elgato.streamdeck.keys.adaptor",
+     "Name": "Action Trigger",
+     "Settings": {},
+     "State": 0,
+     "States": [
+      {}
+     ],
+     "Actions": [
+      {
+       "UUID": "com.elgato.streamdeck.page.previous",
+       "Name": "Previous Page",
+       "Settings": {},
+       "State": 0,
+       "States": [
+        {}
+       ]
+      },
+      {
+       "UUID": "com.elgato.streamdeck.page.goto",
+       "Name": "Go to Page",
+       "Settings": {
+        "PageIndex": 1
+       },
+       "State": 0,
+       "States": [
+        {}
+       ]
+      },
+      {
+       "UUID": "com.elgato.streamdeck.page.next",
+       "Name": "Next Page",
+       "Settings": {},
+       "State": 0,
+       "States": [
+        {}
+       ]
+      }
+     ]
+    },
+    "1,0": {
+     "UUID": "com.elgato.volume-controller.output-device-control",
+     "Name": "Volume",
+     "Settings": {
+      "deviceId": "{0.0.0.00000000}.{00000000-0000-0000-0000-000000000001}",
+      "friendlyName": "",
+      "style": "vertical",
+      "volume": "50",
+      "volumeStep": "3"
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "1,1": {
+     "UUID": "com.elgato.spotify.multimedia",
+     "Name": "Spotify",
+     "Settings": {
+      "config": {},
+      "doublePress": "nextTrack",
+      "preferVolume": false,
+      "showArtwork": true,
+      "triplePress": "previousTrack",
+      "volumeStep": 5
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    }
+   }
+  }
+ ],
+ "Routers": {
+  "0,0": "0,0",
+  "1,0": "1,0"
+ }
+}

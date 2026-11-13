@@ -24,6 +24,10 @@ public class LinuxInputterTests
     [InlineData("ArrowUp", 103)]
     [InlineData("MediaPlayPause", 164)]
     [InlineData("AudioVolumeMute", 113)]
+    [InlineData("Numpad0", 82)]
+    [InlineData("Numpad7", 71)]
+    [InlineData("NumpadAdd", 78)]
+    [InlineData("NumpadEnter", 96)]
     public void ParseKey_MapsToLinuxKeyCode(string key, int code)
         => Assert.Equal(code, LinuxInputter.ParseKey(key));
 

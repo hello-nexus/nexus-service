@@ -1,0 +1,99 @@
+{
+ "Name": "",
+ "Icon": "",
+ "Controllers": [
+  {
+   "Type": "Keypad",
+   "Actions": {}
+  },
+  {
+   "Type": "Encoder",
+   "Actions": {
+    "0,0": {
+     "UUID": "com.elgato.streamdeck.keys.adaptor",
+     "Name": "Action Trigger",
+     "Settings": {},
+     "State": 0,
+     "States": [
+      {}
+     ],
+     "Actions": [
+      {
+       "UUID": "com.elgato.streamdeck.page.previous",
+       "Name": "Previous Page",
+       "Settings": {},
+       "State": 0,
+       "States": [
+        {}
+       ]
+      },
+      {
+       "UUID": "com.elgato.streamdeck.page.goto",
+       "Name": "Go to Page",
+       "Settings": {
+        "PageIndex": 1
+       },
+       "State": 0,
+       "States": [
+        {}
+       ]
+      },
+      {
+       "UUID": "com.elgato.streamdeck.page.next",
+       "Name": "Next Page",
+       "Settings": {},
+       "State": 0,
+       "States": [
+        {}
+       ]
+      }
+     ]
+    },
+    "0,1": {
+     "UUID": "com.elgato.weather.weather",
+     "Name": "Weather",
+     "Settings": {},
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "1,0": {
+     "UUID": "com.elgato.volume-controller.output-device-control",
+     "Name": "Volume",
+     "Settings": {
+      "deviceId": "default",
+      "friendlyName": "",
+      "style": "vertical",
+      "volume": "50",
+      "volumeStep": "3"
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    },
+    "1,1": {
+     "UUID": "com.elgato.spotify.multimedia",
+     "Name": "Spotify",
+     "Settings": {
+      "config": {},
+      "doublePress": "nextTrack",
+      "preferVolume": false,
+      "showArtwork": true,
+      "triplePress": "previousTrack",
+      "volumeStep": 5
+     },
+     "State": 0,
+     "States": [
+      {}
+     ]
+    }
+   }
+  }
+ ],
+ "Routers": {
+  "0,0": "0,0",
+  "1,0": "1,0"
+ }
+}

@@ -25,6 +25,9 @@ internal static class ElgatoActionTypes
     public const string PlayAudio = "com.elgato.streamdeck.soundboard.playaudio";
     public const string PageGoto = "com.elgato.streamdeck.page.goto";
     public const string KeyBrightness = "com.elgato.streamdeck.system.keybrightness";
+    public const string Sleep = "com.elgato.streamdeck.system.sleep";
+    /// <summary>Dial-only: Elgato's Spotify plugin dial; turn is volume, press is play/pause.</summary>
+    public const string SpotifyDial = "com.elgato.spotify.multimedia";
     /// <summary>Dial-only: a key action per input, Actions[] ordered rotate CCW, press, rotate CW.</summary>
     public const string KeysAdaptor = "com.elgato.streamdeck.keys.adaptor";
     /// <summary>Dial-only: Actions[] are dial actions, one shown at a time.</summary>
@@ -71,6 +74,8 @@ public sealed class ElgatoProfile
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string Model { get; set; } = "";
+    /// <summary>Lowercase id of the Default page (Pages.Default): it sits outside the page list and holds the dials every page falls back to; empty when absent.</summary>
+    public string DefaultPageId { get; set; } = "";
     public List<string> TopPageIds { get; } = new();
     public Dictionary<string, ElgatoPageData> PagesById { get; } = new(StringComparer.Ordinal);
     public int MaxColSeen { get; set; }
@@ -82,6 +87,10 @@ public sealed class ElgatoPageData
 {
     public Dictionary<(int Col, int Row), ElgatoActionData> Actions { get; } = new();
     public Dictionary<int, ElgatoActionData> Dials { get; } = new();
+    /// <summary>Every Encoder entry keyed (dial, stack row); a stacked dial has several rows, Dials holds row 0 only.</summary>
+    public Dictionary<(int Dial, int Row), ElgatoActionData> DialEntries { get; } = new();
+    /// <summary>Routers: dial to the stack row currently shown.</summary>
+    public Dictionary<int, int> DialRouters { get; } = new();
 }
 
 public sealed class ElgatoActionData
@@ -179,6 +188,11 @@ public static class ElgatoProfileReader
                 profile.Model = ElgatoJson.GetString(deviceEl, "Model") ?? "";
             }
 
+            if (root.TryGetProperty("Pages", out var defaultHolder) && defaultHolder.ValueKind == JsonValueKind.Object)
+            {
+                profile.DefaultPageId = ElgatoJson.GetString(defaultHolder, "Default")?.ToLowerInvariant() ?? "";
+            }
+
             if (root.TryGetProperty("Pages", out var pagesEl) && pagesEl.ValueKind == JsonValueKind.Object &&
                 pagesEl.TryGetProperty("Pages", out var pageListEl) && pageListEl.ValueKind == JsonValueKind.Array)
             {
@@ -202,6 +216,10 @@ public static class ElgatoProfileReader
             {
                 ResolvePageRecursive(topId, dirByLowerUuid, visited, profile);
             }
+            if (profile.DefaultPageId.Length > 0)
+            {
+                ResolvePageRecursive(profile.DefaultPageId, dirByLowerUuid, visited, profile);
+            }
             return profile;
         }
     }
@@ -219,6 +237,10 @@ public static class ElgatoProfileReader
         foreach (var topId in profile.TopPageIds)
         {
             total += CountPageKeys(profile, topId, visited);
+        }
+        if (profile.DefaultPageId.Length > 0)
+        {
+            total += CountPageKeys(profile, profile.DefaultPageId, visited);
         }
         return total;
     }
@@ -246,7 +268,7 @@ public static class ElgatoProfileReader
                 }
             }
         }
-        foreach (var dial in page.Dials.Values)
+        foreach (var dial in page.DialEntries.Values)
         {
             if (!ElgatoActionTypes.IsSkippable(dial.Uuid))
             {
@@ -356,13 +378,37 @@ public static class ElgatoProfileReader
                     {
                         page.Actions[(col, row)] = action;
                     }
-                    else if (row == 0)
+                    else
                     {
-                        page.Dials[col] = action;
+                        page.DialEntries[(col, row)] = action;
+                        if (row == 0)
+                        {
+                            page.Dials[col] = action;
+                        }
                     }
                 }
             }
+            ReadRouters(root, page);
             return page;
+        }
+    }
+
+    /// <summary>Routers maps "dial,0" to "dial,row", the stack row the dial currently shows.</summary>
+    private static void ReadRouters(JsonElement root, ElgatoPageData page)
+    {
+        if (!root.TryGetProperty("Routers", out var routersEl) || routersEl.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+        foreach (var prop in routersEl.EnumerateObject())
+        {
+            if (prop.Value.ValueKind == JsonValueKind.String &&
+                TryParseColRow(prop.Name, out var dial, out _) &&
+                TryParseColRow(prop.Value.GetString() ?? "", out var target, out var row) &&
+                target == dial)
+            {
+                page.DialRouters[dial] = row;
+            }
         }
     }
 
