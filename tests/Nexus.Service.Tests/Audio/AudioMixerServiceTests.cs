@@ -114,9 +114,10 @@ public sealed class AudioMixerServiceTests
     }
 
     [Fact]
-    public void SavingAPresetCapturesEveryRunningStripAndTheMaster()
+    public void SavingAPresetCapturesEverySavedRunningStripAndTheMaster()
     {
-        var (mixer, _, _) = Build(Strip("game", 0.7, name: "Game"), Strip("discord", 0.4, name: "Discord"));
+        var (mixer, _, store) = Build(Strip("game", 0.7, name: "Game"), Strip("discord", 0.4, name: "Discord"));
+        SeedLevels(store, "game", "discord");
 
         var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
 
@@ -131,11 +132,24 @@ public sealed class AudioMixerServiceTests
     {
         var offDefault = Strip("recorder", 0.5, name: "Recorder");
         offDefault.OnDefault = false;
-        var (mixer, _, _) = Build(Strip("game", 0.7, name: "Game"), offDefault);
+        var (mixer, _, store) = Build(Strip("game", 0.7, name: "Game"), offDefault);
+        SeedLevels(store, "game", "recorder");
 
         var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
 
         Assert.Equal("game", Assert.Single(preset.Apps).Id);
+    }
+
+    [Fact]
+    public void SavingAPresetSkipsARunningAppWithNoSavedLevel()
+    {
+        var (mixer, _, store) = Build(Strip("game", 0.7, name: "Game"), Strip("nvcontainer", 0.0, name: "NVIDIA"));
+        SeedLevels(store, "game");
+
+        var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
+
+        Assert.Equal("game", Assert.Single(preset.Apps).Id);
+        Assert.Equal(0.5, preset.MasterVolume);
     }
 
     [Fact]
@@ -233,6 +247,7 @@ public sealed class AudioMixerServiceTests
     public void PresetNamesAreCappedAndRenamedInPlace()
     {
         var (mixer, _, store) = Build(Strip("game", 0.7));
+        SeedLevels(store, "game");
         var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "A very long preset name" }).Preset!;
         Assert.Equal(AudioMixerService.MaxPresetNameLength, preset.Name.Length);
 
@@ -488,6 +503,12 @@ public sealed class AudioMixerServiceTests
         Assert.Equal(0.5, levels["discord"].Volume);
         Assert.False(levels["game"].Muted);
     }
+
+    private static void SeedLevels(InMemoryConfigStore store, params string[] ids) =>
+        store.Update(s =>
+        {
+            foreach (var id in ids) s.AudioMixer.Levels[id] = new AudioMixerLevelDto { Volume = 1 };
+        });
 
     private static AudioSessionDto Strip(string id, double volume, string? name = null) => new()
     {

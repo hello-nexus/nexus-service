@@ -337,9 +337,14 @@ public sealed class AudioMixerService : IDisposable
 
     private List<AudioMixerPresetEntryDto> CaptureRunningApps()
     {
+        // Only apps the user has set a level for: a strip they never touched
+        // would otherwise get its live Windows state frozen into the preset.
+        HashSet<string> saved;
+        lock (_lock) { saved = new HashSet<string>(_store.Load().AudioMixer.Levels.Keys, StringComparer.OrdinalIgnoreCase); }
         var apps = new List<AudioMixerPresetEntryDto>();
         foreach (var s in DefaultOutputSessions(_sessions.GetSessions()))
         {
+            if (!saved.Contains(s.Id)) continue;
             apps.Add(new AudioMixerPresetEntryDto
             {
                 Id = s.Id,
