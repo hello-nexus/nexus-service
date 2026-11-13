@@ -122,12 +122,10 @@ public class GalleonSdWriterAndWorkerTests
         Assert.DoesNotContain(rig.Hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdBlockNext);
         Assert.DoesNotContain(Commands(rig.Hid.Device, GalleonSdProtocol.CmdStartTx), w => (w[5] | (w[6] << 8)) == GalleonSdProtocol.DirectResource);
         Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
-        Assert.True(rig.Hub.SavedToDevice);
 
         rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string>());
         rig.Writer.Tick();
 
-        Assert.False(rig.Hub.SavedToDevice);
         Assert.Single(Commands(rig.Hid.Device, GalleonSdProtocol.CmdBlockFirst));
         Assert.Equal(GalleonSdProtocol.ModeSoftware, Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
         rig.Hub.Dispose();
@@ -141,7 +139,6 @@ public class GalleonSdWriterAndWorkerTests
 
         rig.Writer.Tick();
 
-        Assert.True(rig.Hub.SavedToDevice);
         Assert.Contains(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet), w => w[6] == GalleonSdProtocol.ModeHardware);
         Assert.Empty(Commands(rig.Hid.Device, GalleonSdProtocol.CmdBlockFirst));
         rig.Hub.Dispose();

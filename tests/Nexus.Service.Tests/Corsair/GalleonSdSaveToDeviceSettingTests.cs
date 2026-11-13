@@ -69,6 +69,11 @@ public class GalleonSdSaveToDeviceSettingTests : IDisposable
         Assert.True(GalleonSdOnboardProbe.TryParseLayerList(layers, out var ids));
         Assert.Equal(new ushort[] { 0x6D6B, 0x6D6F }, ids);
 
+        // The status byte (index 4) is not part of any object: a registry-looking status and count must not match.
+        var statusOnly = new byte[128];
+        new byte[] { 0x13, 0x00, 0x02, 0x00 }.CopyTo(statusOnly, GalleonSdProtocol.ArgsIndex);
+        Assert.False(GalleonSdOnboardProbe.TryParseRegistry(statusOnly, out _));
+
         Assert.False(GalleonSdOnboardProbe.TryParseRegistry(new byte[128], out _));
         Assert.False(GalleonSdOnboardProbe.TryParseLayerList(new byte[128], out _));
     }

@@ -21,6 +21,9 @@ public static class GalleonSdOnboardProbe
 
     private const int ProfileSlotsOffset = 6;
 
+    // Past the command echo and the status byte, so a status value can never pose as a signature.
+    private const int ScanStart = GalleonSdProtocol.ArgsIndex + 1;
+
     public static ReadOnlySpan<byte> Strip(ReadOnlySpan<byte> reply) =>
         reply.Length == GalleonSdProtocol.WireLength + 1 && reply[0] == 0 ? reply[1..] : reply;
 
@@ -29,7 +32,7 @@ public static class GalleonSdOnboardProbe
     {
         refs = Array.Empty<ushort>();
         var r = Strip(reply);
-        for (var i = GalleonSdProtocol.ArgsIndex; i + 4 <= r.Length; i++)
+        for (var i = ScanStart; i + 4 <= r.Length; i++)
         {
             if (r[i] != 0x13 || r[i + 1] != 0x00) continue;
             var count = r[i + 2] | (r[i + 3] << 8);
@@ -45,7 +48,7 @@ public static class GalleonSdOnboardProbe
     {
         layerList = 0;
         var r = Strip(reply);
-        for (var i = GalleonSdProtocol.ArgsIndex; i + 2 <= r.Length; i++)
+        for (var i = ScanStart; i + 2 <= r.Length; i++)
         {
             if (r[i] != 0x1E || r[i + 1] != 0xF1) continue;
             var at = i + ProfileSlotsOffset + (LayerListSlot * 2);
@@ -63,7 +66,7 @@ public static class GalleonSdOnboardProbe
     {
         layers = Array.Empty<ushort>();
         var r = Strip(reply);
-        for (var i = GalleonSdProtocol.ArgsIndex; i + 4 <= r.Length; i++)
+        for (var i = ScanStart; i + 4 <= r.Length; i++)
         {
             if (r[i] != 0x69 || r[i + 1] != 0x6C) continue;
             var count = r[i + 2] | (r[i + 3] << 8);

@@ -238,7 +238,7 @@ public class LightingDevice
     /// <summary>True when the device can hold its colors in onboard memory (Galleon 100 SD keyboard). The web shows the "Save colors to the keyboard" toggle only then; omitted from the wire otherwise.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool SaveToDeviceSupported { get; set; }
-    /// <summary>True while the toggle is on: the board stays in hardware mode, Nexus streams no live frames, and only static colors apply. Omitted when false.</summary>
+    /// <summary>True while the toggle is on: the board stays in hardware mode and Nexus streams no live frames. Phase 1 applies no colors and saves nothing to the board, so it shows its own onboard profile; omitted when false.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool SavedToDevice { get; set; }
     public int Brightness { get; set; }

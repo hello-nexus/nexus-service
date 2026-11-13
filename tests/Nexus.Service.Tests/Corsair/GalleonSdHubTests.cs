@@ -519,7 +519,6 @@ public class GalleonSdHubTests
         Assert.True(hub.WriteFrame(Frame));
         hub.SetSavedToDevice(true);
 
-        Assert.True(hub.SavedToDevice);
         Assert.DoesNotContain(Commands(hid.Device, GalleonSdProtocol.CmdStartTx), w => (w[5] | (w[6] << 8)) == GalleonSdProtocol.DirectResource);
         Assert.DoesNotContain(hid.Device.Writes, w => w[3] is 0x06 or 0x07);
         var modes = Commands(hid.Device, GalleonSdProtocol.CmdSet).Select(w => w[6]).ToArray();
@@ -595,7 +594,6 @@ public class GalleonSdHubTests
         hid.Device.Writes.Clear();
 
         hub.SetSavedToDevice(false);
-        Assert.False(hub.SavedToDevice);
         Assert.True(hub.WriteFrame(Frame));
 
         var w = hid.Device.Writes;
@@ -620,5 +618,144 @@ public class GalleonSdHubTests
 
         Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(hid.Device, GalleonSdProtocol.CmdSet).First()[6]);
         Assert.DoesNotContain(hid.Device.Writes, w => w[3] is 0x06 or 0x07);
+    }
+
+    [Fact]
+    public void Refused_open_is_followed_by_no_size_read_or_close_and_hardware_is_restored()
+    {
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.OnWrite = wire =>
+        {
+            var r = Reply(wire[3]);
+            if (wire[3] == GalleonSdProtocol.CmdStartTx) r[4] = 3;
+            return r;
+        };
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
+        Assert.DoesNotContain(hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdSize or GalleonSdProtocol.CmdRead or GalleonSdProtocol.CmdStopTx);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
+    }
+
+    [Fact]
+    public void Unanswered_open_stops_the_probe_without_a_close()
+    {
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
+        Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
+    }
+
+    [Fact]
+    public void Every_open_has_a_matching_close_in_order()
+    {
+        var hid = new ScriptedHid();
+        hid.Device.OnWrite = ObjectStore(new List<ushort>());
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        var txn = hid.Device.Writes.Where(w => w[3] is GalleonSdProtocol.CmdStartTx or GalleonSdProtocol.CmdStopTx).Select(w => w[3]).ToArray();
+        Assert.NotEmpty(txn);
+        for (var i = 0; i < txn.Length; i++)
+        {
+            Assert.Equal(i % 2 == 0 ? GalleonSdProtocol.CmdStartTx : GalleonSdProtocol.CmdStopTx, txn[i]);
+        }
+        Assert.Equal(0, txn.Length % 2);
+    }
+
+    [Fact]
+    public void Unsolicited_input_report_during_a_read_is_not_used_as_the_body()
+    {
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        var store = ObjectStore(opened);
+        hid.Device.OnWrite = wire =>
+        {
+            if (wire[3] == GalleonSdProtocol.CmdRead)
+            {
+                var noise = Reply(0x77, Registry);
+                hid.Device.Replies.Enqueue(noise);
+                return Reply(wire[3]);
+            }
+            return store(wire);
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Equal(new ushort[] { 0x000F }, opened);
+    }
+
+    [Fact]
+    public void A_failed_hardware_restore_is_retried_and_release_still_writes_hardware_mode()
+    {
+        var hid = new ScriptedHid();
+        var store = ObjectStore(new List<ushort>());
+        hid.Device.OnWrite = wire =>
+        {
+            var reply = store(wire);
+            if (wire[3] == GalleonSdProtocol.CmdStopTx) hid.Device.FailWrites = true;
+            return reply;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+        var modesAfterProbe = Commands(hid.Device, GalleonSdProtocol.CmdSet).Select(w => w[6]).ToArray();
+        Assert.Equal(GalleonSdProtocol.ModeSoftware, modesAfterProbe[^1]);
+
+        hid.Device.FailWrites = false;
+        hub.ReleaseToHardware();
+
+        Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
+    }
+
+    [Fact]
+    public void A_failing_interface_in_saved_mode_is_dropped_instead_of_retried_forever()
+    {
+        var hid = new ScriptedHid();
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.FailWrites = true;
+
+        for (var i = 0; i < 10; i++) hub.SetSavedToDevice(true);
+
+        Assert.Null(hub.Attached);
+    }
+
+    [Fact]
+    public void Probe_is_skipped_when_the_direct_resource_was_contended()
+    {
+        _clock = 8_000_000_000;
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        hid.Device.OnWrite = wire =>
+        {
+            var r = ObjectStore(opened)(wire);
+            if (r is not null && wire[3] == GalleonSdProtocol.CmdStartTx) r[4] = 3;
+            return r;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hub.WriteFrame(Frame);
+        opened.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Empty(opened);
     }
 }
