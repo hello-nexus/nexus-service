@@ -26,6 +26,7 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private bool _wasStreaming;
+    private bool? _lastSaved;
     private RgbColor[][] _buffers = Array.Empty<RgbColor[]>();
 
     public GalleonSdLightingFrameWriter(LightingEngine engine, GalleonSdHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
@@ -82,15 +83,24 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         if (unit is null)
         {
             _wasStreaming = false;
+            _lastSaved = null;
             return;
         }
 
         var settings = _store.Load();
         var wanted = settings.Devices.SaveToDeviceLightingDevices.Contains(unit.DeviceId);
-        if (!wanted) _hub.SetSavedToDevice(false);
+        if (!wanted)
+        {
+            NoteSaved(false, "setting off");
+            _hub.SetSavedToDevice(false);
+        }
         // Onboard writes cannot run (foreign host, gave up, cap): stream live instead of leaving the board on its own defaults.
         var blocked = wanted && _hub.SavedBlockedReason is not null;
-        if (blocked) _hub.FallBackToLive();
+        if (blocked)
+        {
+            NoteSaved(false, $"blocked: {_hub.SavedBlockedReason}");
+            _hub.FallBackToLive();
+        }
         var saved = wanted && !blocked;
 
         if (!saved && _engine.CurrentEffectName == "none")
@@ -112,6 +122,7 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
         {
             _wasStreaming = false;
+            NoteSaved(false, "device uncontrolled");
             _hub.SetSavedToDevice(false, undo: false);
             _hub.ReleaseToHardware();
             return;
@@ -126,6 +137,7 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
             var frame = _engine.CurrentEffectName != "none" && devices.Length > 0
                 ? Compose(structure, zones, devices, settings, uncontrolled)
                 : null;
+            NoteSaved(true, "setting on");
             _hub.SetSavedToDevice(true, frame is null ? default : frame);
             return;
         }
@@ -133,6 +145,13 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
 
         var live = Compose(structure, zones, devices, settings, uncontrolled);
         if (live is not null) _hub.WriteFrame(live);
+    }
+
+    private void NoteSaved(bool saved, string cause)
+    {
+        if (_lastSaved == saved) return;
+        _lastSaved = saved;
+        ServiceLog.Info($"[galleon-sd-onboard] saved mode -> {(saved ? "on" : "off")} ({cause})");
     }
 
     private RgbColor[]? Compose(
