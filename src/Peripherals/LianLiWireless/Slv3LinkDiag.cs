@@ -65,6 +65,7 @@ internal sealed class Slv3LinkDiag : IDisposable
     private const long Gap10Ms = 10_000;
     internal const long ReplyWindowMs = 60_000;
     private const int MaxQueuedLines = 4000;
+    private const int MaxQueuedDumps = 8;
     private const int RawDumpCount = 3;
 
     private readonly object _gate = new();
@@ -81,6 +82,10 @@ internal sealed class Slv3LinkDiag : IDisposable
     private readonly ConcurrentQueue<Item> _lines = new();
     private int _queued;
     private int _droppedLines;
+    private int _queuedDumps;
+    private int _droppedDumps;
+    private Reply? _replyClone;
+    private long _replyCloneSeq = -1;
     private readonly ConcurrentQueue<string> _parentRequests = new();
     private Func<string, string?>? _parentResolver;
     private string? _lastParent;
@@ -404,23 +409,20 @@ internal sealed class Slv3LinkDiag : IDisposable
     private void StartStallLocked(long nowMs)
     {
         var id = ++_dumpId;
-        var live = _chains.Values.Where(x => !x.Dropped).ToList();
+        // A chain already in its own episode has its dump; it is left out here and keeps that episode.
+        var live = _chains.Values.Where(x => !x.Dropped && !x.InEpisode).ToList();
         _stall = new Stall(id, nowMs, _lastKind);
         var header = string.Create(CultureInfo.InvariantCulture, $"DUMP {id} chain=* reason=stall kind={KindName(_lastKind)} chains={live.Count}");
         var p = "D" + id.ToString(CultureInfo.InvariantCulture) + " ";
         var chains = new List<(Chain Snap, string Head)>(live.Count);
         foreach (var c in live)
         {
-            // A chain already in its own episode keeps it, so its end line is written once and it never dumps again.
-            if (!c.InEpisode)
-            {
-                c.InEpisode = true;
-                c.Covered = true;
-                c.EpisodeStartMs = nowMs;
-            }
+            c.InEpisode = true;
+            c.Covered = true;
+            c.EpisodeStartMs = nowMs;
             chains.Add((c.Clone(), string.Create(CultureInfo.InvariantCulture, $"{p}chain={c.Key} unseen={nowMs - c.LastSeenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, nowMs - c.LastSeenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}")));
         }
-        var replies = _replies.Clone();
+        var replies = RepliesSnapshotLocked();
         Enqueue(emit =>
         {
             emit(header);
@@ -444,6 +446,7 @@ internal sealed class Slv3LinkDiag : IDisposable
             {
                 c.Covered = false;
                 c.InEpisode = false;
+                c.ResetWindow();
             }
         }
         Emit(string.Create(CultureInfo.InvariantCulture,
@@ -462,6 +465,17 @@ internal sealed class Slv3LinkDiag : IDisposable
             $"EPISODE {c.Key} ended={how} duration={nowMs - c.EpisodeStartMs}ms polls={c.EpisodePolls}"));
     }
 
+    // One copy per poll is shared by every dump that poll produces.
+    private Reply RepliesSnapshotLocked()
+    {
+        if (_replyClone is null || _replyCloneSeq != _pollSeq)
+        {
+            _replyClone = _replies.Clone();
+            _replyCloneSeq = _pollSeq;
+        }
+        return _replyClone;
+    }
+
     // Rings are copied under the gate; the hex and text formatting runs later on the writer thread.
     private void DumpLocked(Chain c, long nowMs, string reason, long unseenMs)
     {
@@ -469,7 +483,7 @@ internal sealed class Slv3LinkDiag : IDisposable
         var p = "D" + id.ToString(CultureInfo.InvariantCulture) + " ";
         var header = string.Create(CultureInfo.InvariantCulture, $"DUMP {id} chain={c.Key} reason={reason} unseen={unseenMs}ms win polls={c.PolledSeen}/{c.PolledTotal} maxgap={Math.Max(c.MaxGapMs, unseenMs)}ms g2={c.Gaps2} g5={c.Gaps5} g10={c.Gaps10}");
         var snap = c.Clone();
-        var replies = _replies.Clone();
+        var replies = RepliesSnapshotLocked();
         Enqueue(emit =>
         {
             emit(header);
@@ -613,7 +627,17 @@ internal sealed class Slv3LinkDiag : IDisposable
         {
             return;
         }
-        if (Interlocked.Increment(ref _queued) > MaxQueuedLines)
+        // A dump item renders hundreds of lines and holds ring copies, so it has its own small cap.
+        if (render is not null)
+        {
+            if (Interlocked.Increment(ref _queuedDumps) > MaxQueuedDumps)
+            {
+                Interlocked.Decrement(ref _queuedDumps);
+                Interlocked.Increment(ref _droppedDumps);
+                return;
+            }
+        }
+        else if (Interlocked.Increment(ref _queued) > MaxQueuedLines)
         {
             Interlocked.Decrement(ref _queued);
             Interlocked.Increment(ref _droppedLines);
@@ -651,26 +675,40 @@ internal sealed class Slv3LinkDiag : IDisposable
         var count = 0;
         while (_lines.TryDequeue(out var item))
         {
-            Interlocked.Decrement(ref _queued);
             var stamp = Stamp(item.At);
             if (item.Body is not null)
             {
+                Interlocked.Decrement(ref _queued);
                 sink(stamp + " " + item.Body);
                 count++;
             }
             else
             {
-                item.Render!(line =>
+                Interlocked.Decrement(ref _queuedDumps);
+                try
                 {
-                    sink(stamp + " " + line);
-                    count++;
-                });
+                    item.Render!(line =>
+                    {
+                        sink(stamp + " " + line);
+                        count++;
+                    });
+                }
+                catch
+                {
+                    // diagnostics must never throw
+                }
             }
         }
         var dropped = Interlocked.Exchange(ref _droppedLines, 0);
         if (dropped > 0)
         {
             sink(Stamp(DateTime.UtcNow) + " EVT dropped-lines " + dropped.ToString(CultureInfo.InvariantCulture));
+            count++;
+        }
+        var droppedDumps = Interlocked.Exchange(ref _droppedDumps, 0);
+        if (droppedDumps > 0)
+        {
+            sink(Stamp(DateTime.UtcNow) + " EVT dropped-dumps " + droppedDumps.ToString(CultureInfo.InvariantCulture));
             count++;
         }
         return count;
@@ -747,8 +785,10 @@ internal sealed class Slv3LinkDiag : IDisposable
     {
         _stop = true;
         Wake();
-        _writer?.Join(2000);
-        _wake?.Dispose();
+        if (_writer?.Join(2000) != false)
+        {
+            _wake?.Dispose();
+        }
     }
 
     // ---- ring storage ----

@@ -907,7 +907,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>The system resumed: no TX port cycle until it has had time to re-enumerate on its own.</summary>
     public void OnSystemResumed()
     {
-        Diag.EventWhileLinked("resume");
+        Diag.Event("resume");
         Volatile.Write(ref _powerQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
     }
 
@@ -1150,6 +1150,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
         if (_rx is not { IsOpen: true })
         {
+            Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
             AgeChainsLocked(nowMs);
             return true;
         }
@@ -2465,7 +2466,6 @@ public sealed partial class Slv3Hub : IDisposable
     {
         _blindSinceMs ??= nowMs;
         _pollRecords = new List<Slv3DeviceRecord>();
-        Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
         Diag.EndPoll(nowMs, gotList: false);
         ExpireChainsLocked(nowMs);
         PublishFansLocked(nowMs);
@@ -3658,7 +3658,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public Task OnSystemSuspending()
     {
-        Diag.EventWhileLinked("suspend");
+        Diag.Event("suspend");
         Volatile.Write(ref _powerQuietUntilMs, long.MaxValue);
         if (_disposed || !IsConnected)
         {

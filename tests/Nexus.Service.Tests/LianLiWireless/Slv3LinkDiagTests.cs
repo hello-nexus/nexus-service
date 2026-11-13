@@ -475,4 +475,49 @@ public class Slv3LinkDiagTests
         Assert.Contains(lines, l => l.Contains(" DUMP ") && l.Contains("kind=nohandle"));
         Assert.Contains(lines, l => l.Contains(" RX ") && l.Contains(" nohandle "));
     }
+
+    [Fact]
+    public void Stall_dump_leaves_out_a_chain_that_already_has_its_own_episode()
+    {
+        var d = Up();
+        const string b = "AABBCCDDEEFF";
+        d.OnReply(0, Reply, 3, Slv3ReplyKind.Ok, 2);
+        d.OnSeen(Key, 0, Record, 4, 8);
+        d.OnSeen(b, 0, Record, 5, 9);
+        d.EndPoll(0, gotList: true);
+        var lines = new List<string>();
+        for (long t = 1_000; t <= 7_000; t += 1_000)
+        {
+            d.OnReply(t, Reply, 3, Slv3ReplyKind.Ok, 1);
+            d.OnSeen(b, t, Record, 5, 9);
+            d.EndPoll(t, gotList: true);
+        }
+        for (long t = 8_000; t <= 20_000; t += 1_000)
+        {
+            d.OnReply(t, Reply, 2, Slv3ReplyKind.NoData, 0);
+            d.EndPoll(t, gotList: true);
+        }
+        lines.AddRange(Drain(d));
+
+        var stall = Assert.Single(lines, l => l.Contains("reason=stall"));
+        Assert.Contains("chains=1", stall);
+        Assert.DoesNotContain(lines, l => l.Contains(" D2 chain=" + Key));
+    }
+
+    [Fact]
+    public void Queued_dumps_are_capped_separately_and_the_drop_is_reported()
+    {
+        var d = Up();
+        Poll(d, 0, true);
+        for (var i = 0; i < 40; i++)
+        {
+            var key = "A0000000" + i.ToString("X4");
+            d.OnSeen(key, 0, Record, 1, 1);
+            d.OnDropped(key, 31_000);
+        }
+
+        var lines = Drain(d);
+        Assert.Equal(8, lines.Count(l => l.Contains(" DUMP ")));
+        Assert.Single(lines, l => l.Contains("EVT dropped-dumps 32"));
+    }
 }

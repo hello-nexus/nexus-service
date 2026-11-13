@@ -65,6 +65,30 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void LinkDiag_a_failed_poll_is_recorded_once_with_its_real_reply_kind()
+    {
+        var clock = new ManualClock();
+        var (hub, net, _, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        DrainDiag(hub);
+
+        rx.FailReads = true;
+        for (var i = 0; i < 4; i++)
+        {
+            clock.AdvanceMs(1_500);
+            Assert.True(hub.DriveTick());
+        }
+
+        var lines = DrainDiag(hub);
+        var header = Assert.Single(lines, l => l.Contains(" DUMP ") && l.Contains("reason=stall"));
+        Assert.Contains("kind=timeout", header);
+        Assert.DoesNotContain(lines, l => l.Contains("nohandle"));
+        var rxLine = Assert.Single(lines, l => l.Contains(" RX ") && l.Contains(" timeout "));
+        Assert.Contains(" x4 ", rxLine);
+    }
+
+    [Fact]
     public void LinkDiag_records_usb_presence_and_lock_events()
     {
         var lockState = new Nexus.Service.Lighting.LcdLockState();
