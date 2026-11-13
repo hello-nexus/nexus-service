@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using Nexus.Service.Platform;
@@ -50,6 +51,17 @@ public sealed class NzxtFanControllerHub
     private readonly LogBackoff _cycleLog = new();
     private long _connectedAtMs;
 
+    // Diagnostics: poll-miss log pacing and the last 67 02 state logged per channel. Worker thread only.
+    private const int UnthrottledMissLogs = 200;
+    private const long ThrottledMissLogGapMs = 1000;
+    private const int RawReportsLogged = 3;
+    private int _totalMisses;
+    private int _missLogCount;
+    private long _lastMissLogMs;
+    private int _rawReportsLogged;
+    private string _firstStatusRaw = "";
+    private NzxtFanReading[]? _lastLoggedStatus;
+
     public NzxtFanControllerHub(MultiplexHub? ws = null)
     {
         _ws = ws;
@@ -89,6 +101,11 @@ public sealed class NzxtFanControllerHub
         _openedAtMs = Environment.TickCount64;
         ResetDiagnostics();
         _initResends = 0;
+        _totalMisses = 0;
+        _rawReportsLogged = 0;
+        _firstStatusRaw = "";
+        _lastLoggedStatus = null;
+        NzxtFanDiagnostics.OpenWindow();
     }
 
     /// <summary>
@@ -121,16 +138,18 @@ public sealed class NzxtFanControllerHub
             {
                 _initResends++;
             }
+            ServiceLog.Info($"[nzxt-fan-controller] init sent 60 02 + 60 03 window={window} msSinceOpen={Environment.TickCount64 - _openedAtMs}");
             if (ReadStatus(device))
             {
                 Interlocked.Increment(ref _generation);
                 Volatile.Write(ref _missedPolls, 0);
                 _isConnected = true;
                 _connectedAtMs = Clock();
+                NzxtFanDiagnostics.OpenWindow();
                 LogConnectionCycle = _cycleLog.ShouldLog();
                 if (LogConnectionCycle)
                 {
-                    ServiceLog.Info($"[nzxt-fan-controller] first status {Environment.TickCount64 - _openedAtMs} ms after open, {_initResends} init resend(s)");
+                    ServiceLog.Info($"[nzxt-fan-controller] first status {Environment.TickCount64 - _openedAtMs} ms after open, {_initResends} init resend(s); mode bytes {string.Join(' ', _fans.Select(f => f.Mode.ToString("X2")))}; first 67 02 raw {_firstStatusRaw}");
                 }
                 if (_ws != null)
                 {
@@ -203,25 +222,50 @@ public sealed class NzxtFanControllerHub
             Volatile.Write(ref _missedPolls, 0);
             return true;
         }
-        Interlocked.Increment(ref _missedPolls);
+        int consecutive = Interlocked.Increment(ref _missedPolls);
+        _totalMisses++;
+        NzxtFanDiagnostics.OpenWindow();
         if (_readErrors > 0)
         {
+            LogPollMiss(consecutive, "read error, no resend");
             // A failing handle will not recover by re-sending; let the worker detach and reopen.
             Volatile.Write(ref _missedPolls, MaxMissedPolls);
             return false;
         }
+        bool? intervalOk = null;
+        bool? startOk = null;
         lock (_writeLock)
         {
             if (_device == device)
             {
-                if (device != null
-                    && device.Write(NzxtFanControllerProtocol.EncodeSetStatusInterval()))
+                if (device != null)
                 {
-                    device.Write(NzxtFanControllerProtocol.EncodeStartReporting());
+                    intervalOk = device.Write(NzxtFanControllerProtocol.EncodeSetStatusInterval());
+                    if (intervalOk == true)
+                    {
+                        startOk = device.Write(NzxtFanControllerProtocol.EncodeStartReporting());
+                    }
                 }
             }
         }
+        LogPollMiss(consecutive, $"resend 60 02 ok={Describe(intervalOk)}, 60 03 ok={Describe(startOk)}");
         return false;
+    }
+
+    private static string Describe(bool? ok) => ok is bool b ? (b ? "true" : "false") : "not sent";
+
+    // Every miss logs; past the first 200 a line is skipped only when it would land within a second of the last.
+    private void LogPollMiss(int consecutive, string action)
+    {
+        long now = Environment.TickCount64;
+        if (_missLogCount >= UnthrottledMissLogs && now - _lastMissLogMs < ThrottledMissLogGapMs)
+        {
+            return;
+        }
+        _missLogCount++;
+        _lastMissLogMs = now;
+        long sinceStatus = _lastStatusMs == 0 ? -1 : now - _lastStatusMs;
+        ServiceLog.Info($"[nzxt-fan-controller] poll miss consecutive={consecutive} total={_totalMisses} sinceLast6702Ms={(sinceStatus < 0 ? "none" : sinceStatus.ToString())}; {action}");
     }
 
     public void Detach()
@@ -257,17 +301,56 @@ public sealed class NzxtFanControllerHub
         }
     }
 
-    public bool SetFanDuty(int channel, int dutyPercent)
+    public bool SetFanDuty(int channel, int dutyPercent, string? caller = null)
     {
         if ((uint)channel >= NzxtFanControllerProtocol.FanChannelCount)
         {
             return false;
+        }
+        caller ??= NzxtFanDiagnostics.Caller;
+        // Curve engine writes are frequent, so they log only inside the diagnostic window; any other caller always logs.
+        if (NzxtFanDiagnostics.InWindow || caller != NzxtFanCallers.CurveEngine)
+        {
+            ServiceLog.Info($"[nzxt-fan-controller] 62 01 write ch={channel} duty={Math.Clamp(dutyPercent, 0, 100)} caller={caller}");
         }
         lock (_writeLock)
         {
             return _device != null
                 && _device.Write(NzxtFanControllerProtocol.EncodeFixedDuty(channel, dutyPercent));
         }
+    }
+
+    private void LogStatus(byte[] buf, int n, NzxtFanReading[] fans)
+    {
+        if (_rawReportsLogged < RawReportsLogged)
+        {
+            _rawReportsLogged++;
+            var hex = Convert.ToHexString(buf.AsSpan(0, n));
+            if (_rawReportsLogged == 1)
+            {
+                _firstStatusRaw = hex;
+            }
+            ServiceLog.Info($"[nzxt-fan-controller] 67 02 raw #{_rawReportsLogged}: {hex}");
+        }
+        if (!NzxtFanDiagnostics.InWindow)
+        {
+            _lastLoggedStatus = fans;
+            return;
+        }
+        var previous = _lastLoggedStatus;
+        for (int i = 0; i < fans.Length; i++)
+        {
+            bool changed = previous == null
+                || i >= previous.Length
+                || previous[i].Mode != fans[i].Mode
+                || previous[i].DutyPercent != fans[i].DutyPercent
+                || previous[i].Rpm / 50 != fans[i].Rpm / 50;
+            if (changed)
+            {
+                ServiceLog.Info($"[nzxt-fan-controller] 67 02 ch={i} mode={fans[i].Mode:X2} rpm={fans[i].Rpm} duty={fans[i].DutyPercent}");
+            }
+        }
+        _lastLoggedStatus = fans;
     }
 
     private bool ReadStatus(IHidDevice device)
@@ -293,6 +376,7 @@ public sealed class NzxtFanControllerHub
             }
             if (NzxtFanControllerProtocol.TryDecodeStatus(buf.AsSpan(0, n), out var fans))
             {
+                LogStatus(buf, n, fans);
                 _fans = fans;
                 _lastStatusMs = Environment.TickCount64;
                 ResetDiagnostics();

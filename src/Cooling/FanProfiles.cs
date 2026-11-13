@@ -371,7 +371,10 @@ public static class FanProfiles
             {
                 if (fanIds.Contains(fanId))
                 {
-                    fans.SetFanSpeed(fanId, duty);
+                    using (Nexus.Service.Peripherals.Nzxt.NzxtFanDiagnostics.BeginCaller(Nexus.Service.Peripherals.Nzxt.NzxtFanCallers.Restore))
+                    {
+                        fans.SetFanSpeed(fanId, duty);
+                    }
                 }
             }
         }

@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Peripherals.Nzxt;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Serialization;
@@ -399,6 +400,8 @@ public sealed class CurveEngine : BackgroundService
         // Mixed reads other curves' output and Sync reads a channel another
         // curve may drive, so evaluate in dependency order.
         var rawByCurve = new Dictionary<string, double>(StringComparer.Ordinal);
+        var nzxtNotes = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var activePresetCurveId = $"preset-{settings.Cooling.ActivePreset}";
 
         foreach (var curveDoc in CurveOrdering.Sort(snapshot))
         {
@@ -415,6 +418,7 @@ public sealed class CurveEngine : BackgroundService
                 }
                 if (temp is null && NeedsTemperature(curveDoc.Type))
                 {
+                    NoteNzxtOutputs(nzxtNotes, curveDoc, activePresetCurveId, $"skipped, input sensor '{curveDoc.Input.Id}' reads null");
                     continue;
                 }
 
@@ -431,6 +435,7 @@ public sealed class CurveEngine : BackgroundService
                 };
                 if (rawSpeed is null)
                 {
+                    NoteNzxtOutputs(nzxtNotes, curveDoc, activePresetCurveId, "skipped, no value this tick");
                     continue;
                 }
 
@@ -464,6 +469,14 @@ public sealed class CurveEngine : BackgroundService
                         appliedSpeed = g;
                     }
                     channelDuty[output.Id] = appliedSpeed;
+                    if (NzxtFanControllerCoolingProvider.IsNzxtFanControllerId(output.Id))
+                    {
+                        NoteNzxt(nzxtNotes, output.Id, curveDoc.Id, activePresetCurveId,
+                            !present.Contains(output.Id) ? "skipped, channel absent from present"
+                                : guarded is null ? "skipped, guard forbids the write"
+                                : "drives");
+                        LogNzxtComputedSpeed(output.Id, curveDoc.Id, appliedSpeed);
+                    }
                     if (present.Contains(output.Id))
                     {
                         if (guarded is not null && TryReserveWrite(output.Id, appliedSpeed, nowMs))
@@ -503,6 +516,8 @@ public sealed class CurveEngine : BackgroundService
                 Console.Error.WriteLine($"[curve-engine] curve '{curveDoc.Id}' failed: {ex.Message}");
             }
         }
+
+        LogNzxtStates(nzxtNotes, present, settings.Cooling.ActivePreset);
 
         Isolated("guard orphan pass", () => ApplyGuardToOrphanOutputs(activePlan, manualSnapshot, present, owned, drivenChannels));
 
@@ -597,8 +612,69 @@ public sealed class CurveEngine : BackgroundService
         catch (Exception ex) { Console.Error.WriteLine($"[curve-engine] {what} failed: {ex.Message}"); }
     }
 
+    // NZXT diagnostics: last state line and last logged computed speed per channel.
+    private const int NzxtSpeedLogDelta = 5;
+    private readonly Dictionary<string, string> _nzxtLoggedState = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _nzxtLoggedSpeed = new(StringComparer.Ordinal);
+
+    private static void NoteNzxt(Dictionary<string, List<string>> notes, string channelId, string curveId, string activePresetCurveId, string what)
+    {
+        if (!notes.TryGetValue(channelId, out var list))
+        {
+            notes[channelId] = list = new List<string>();
+        }
+        var ownership = curveId == activePresetCurveId ? "active preset's curve" : "not the active preset's curve";
+        list.Add($"curve '{curveId}' ({ownership}) {what}");
+    }
+
+    private static void NoteNzxtOutputs(Dictionary<string, List<string>> notes, CurveDocument curve, string activePresetCurveId, string what)
+    {
+        foreach (var output in curve.Outputs)
+        {
+            if (NzxtFanControllerCoolingProvider.IsNzxtFanControllerId(output.Id))
+            {
+                NoteNzxt(notes, output.Id, curve.Id, activePresetCurveId, what);
+            }
+        }
+    }
+
+    private void LogNzxtComputedSpeed(string channelId, string curveId, int speed)
+    {
+        var hadPrevious = _nzxtLoggedSpeed.TryGetValue(channelId, out var previous);
+        if (hadPrevious && Math.Abs(previous - speed) < NzxtSpeedLogDelta)
+        {
+            return;
+        }
+        _nzxtLoggedSpeed[channelId] = speed;
+        // The write that follows should be visible in the log.
+        NzxtFanDiagnostics.OpenWindow();
+        ServiceLog.Info($"[curve-engine] nzxt channel {channelId} computed speed {speed}% (curve '{curveId}', was {(hadPrevious ? previous + "%" : "unset")})");
+    }
+
+    // Once per change of state, not per tick.
+    private void LogNzxtStates(Dictionary<string, List<string>> notes, HashSet<string> present, string activePreset)
+    {
+        foreach (var id in present)
+        {
+            if (NzxtFanControllerCoolingProvider.IsNzxtFanControllerId(id) && !notes.ContainsKey(id))
+            {
+                notes[id] = new List<string> { "no curve drives it" };
+            }
+        }
+        foreach (var (id, list) in notes)
+        {
+            var state = $"activePreset={activePreset}; {string.Join("; ", list)}";
+            if (_nzxtLoggedState.TryGetValue(id, out var last) && last == state)
+            {
+                continue;
+            }
+            _nzxtLoggedState[id] = state;
+            ServiceLog.Info($"[curve-engine] nzxt channel {id} state changed: {state}");
+        }
+    }
+
     // A failed write leaves no dedup record, so the next tick retries it.
-    private void SafeDrive(string channelId, int duty)
+    private void SafeDrive(string channelId, int duty, string caller = NzxtFanCallers.CurveEngine)
     {
         if (_noWrites || _guard.WatchdogLatched)
         {
@@ -608,7 +684,10 @@ public sealed class CurveEngine : BackgroundService
         }
         try
         {
-            _fans.DriveFanSpeed(channelId, duty);
+            using (NzxtFanDiagnostics.BeginCaller(caller))
+            {
+                _fans.DriveFanSpeed(channelId, duty);
+            }
             lock (_driveErrors)
             {
                 _driveErrors.Remove(channelId);
@@ -733,13 +812,13 @@ public sealed class CurveEngine : BackgroundService
                 _guardOverriddenManual.Add(id);
                 if (TryReserveWrite(id, desired.Value, nowMs))
                 {
-                    SafeDrive(id, desired.Value);
+                    SafeDrive(id, desired.Value, NzxtFanCallers.ThermalGuard);
                 }
             }
             else if (_guardOverriddenManual.Remove(id))
             {
                 ForgetWrite(id);
-                SafeDrive(id, saved);
+                SafeDrive(id, saved, NzxtFanCallers.Restore);
             }
         }
     }
@@ -786,7 +865,7 @@ public sealed class CurveEngine : BackgroundService
                 _guardDrivenOrphans.Add(id);
                 if (TryReserveWrite(id, d, nowMs))
                 {
-                    SafeDrive(id, d);
+                    SafeDrive(id, d, NzxtFanCallers.ThermalGuard);
                 }
             }
         }
@@ -814,7 +893,7 @@ public sealed class CurveEngine : BackgroundService
                 _guardDrivenHardware.Add(id);
                 if (TryReserveWrite(id, 100, nowMs))
                 {
-                    SafeDrive(id, 100);
+                    SafeDrive(id, 100, NzxtFanCallers.ThermalGuard);
                 }
             }
         }
@@ -1223,7 +1302,10 @@ public sealed class CurveEngine : BackgroundService
         }
         foreach (var (id, duty) in toApply)
         {
-            _fans.SetFanSpeed(id, duty);
+            using (NzxtFanDiagnostics.BeginCaller(NzxtFanCallers.Restore))
+            {
+                _fans.SetFanSpeed(id, duty);
+            }
             ServiceLog.Info($"[curve-engine] manual duty restored: {id} -> {duty}%");
         }
     }

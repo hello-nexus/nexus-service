@@ -399,7 +399,13 @@ public sealed class ThermalGuardController
         {
             return;
         }
-        try { _fans.DriveFansToFull(ids); }
+        try
+        {
+            using (Nexus.Service.Peripherals.Nzxt.NzxtFanDiagnostics.BeginCaller(Nexus.Service.Peripherals.Nzxt.NzxtFanCallers.ThermalGuard))
+            {
+                _fans.DriveFansToFull(ids);
+            }
+        }
         catch (Exception ex) { Console.Error.WriteLine($"[thermal-guard] cooling-mode write failed: {ex.Message}"); }
         lock (_gate)
         {

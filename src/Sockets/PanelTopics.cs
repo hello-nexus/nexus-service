@@ -235,6 +235,8 @@ public static class PanelTopics
 
     public static void BroadcastCooling(MultiplexHub hub)
     {
+        // Every route-side preset, curve, mode or speed change lands here; the NZXT diagnostics follow it.
+        Nexus.Service.Peripherals.Nzxt.NzxtFanDiagnostics.OpenWindow();
         if (!hub.TopicHasSubscribers(Cooling))
             return;
         var frame = new CoolingChangedFrame { Revision = Now() };

@@ -196,7 +196,7 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
                         _offTarget[i] = 0;
                         _resends[i]++;
                         resend = true;
-                        resendFailed = !_hub.SetFanDuty(i, want);
+                        resendFailed = !_hub.SetFanDuty(i, want, NzxtFanCallers.Reassert);
                     }
                 }
             }
@@ -224,6 +224,10 @@ public sealed class NzxtFanControllerCoolingProvider : IFanControlProvider, ICoo
             return;
         }
         SyncGeneration();
+        if (NzxtFanDiagnostics.Caller is NzxtFanCallers.Manual or NzxtFanCallers.Restore or NzxtFanCallers.Other)
+        {
+            NzxtFanDiagnostics.OpenWindow();
+        }
         lock (_ctrlLock)
         {
             _softwareControlled[channel] = true;

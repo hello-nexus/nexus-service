@@ -249,7 +249,11 @@ public static class CoolingRoutes
             // manual choice) and the active-preset derivation would still
             // count this fan as on the shared preset, leaving the chip lit.
             FanProfiles.DetachFanFromCurves(id, store);
-            var actual = f.SetFanSpeed(id, body.Speed);
+            int actual;
+            using (Nexus.Service.Peripherals.Nzxt.NzxtFanDiagnostics.BeginCaller(Nexus.Service.Peripherals.Nzxt.NzxtFanCallers.Manual))
+            {
+                actual = f.SetFanSpeed(id, body.Speed);
+            }
             store.Update(s => s.Cooling.ManualSpeeds[id] = actual);
             var derivedAfterSpeed = FanProfiles.DerivePresetFromCurves(store, f);
             store.Update(s => s.Cooling.ActivePreset = derivedAfterSpeed);
