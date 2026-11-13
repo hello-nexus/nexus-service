@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.Ryujin;
 
@@ -22,6 +23,7 @@ public sealed class RyujinCoolingHub : IDisposable
 {
     private const int ReplyTimeoutMs = 200;
     private const int MaxRepliesPerRequest = 4;
+    private const long ParseLogIntervalMs = 60_000;
 
     /// <summary>Status older than this many keepalive cycles no longer counts as a live reading.</summary>
     private const int StatusStaleCycles = 3;
@@ -31,7 +33,19 @@ public sealed class RyujinCoolingHub : IDisposable
     private volatile bool _connected;
     private volatile RyujinSnapshot _snapshot = RyujinSnapshot.Empty;
     private long _statusAtMs;
-    private (int Pump, int Fan)? _pending;
+    private int? _wantPump;
+    private int? _wantFan;
+    private string? _wantReason;
+    private bool _dutySeen;
+    private bool _statusSeen;
+    private bool _fallback;
+    private int _pollsWithoutDuty;
+    private long _lastParseLogMs = long.MinValue;
+
+    public const string KeepaliveReason = "keepalive";
+
+    internal Action<string> Info { get; set; } = ServiceLog.Info;
+    internal Action<string> Warn { get; set; } = ServiceLog.Warn;
 
     /// <summary>Released when a duty is waiting to be written, so the worker sends it at once.</summary>
     public SemaphoreSlim Wake { get; } = new(0);
@@ -64,9 +78,20 @@ public sealed class RyujinCoolingHub : IDisposable
             _device?.Dispose();
             _device = device;
             _snapshot = RyujinSnapshot.Empty;
-            _pending = null;
+            ResetSession();
             _connected = true;
         }
+    }
+
+    private void ResetSession()
+    {
+        _wantPump = null;
+        _wantFan = null;
+        _wantReason = null;
+        _dutySeen = false;
+        _statusSeen = false;
+        _fallback = false;
+        _pollsWithoutDuty = 0;
     }
 
     public void Detach()
@@ -75,58 +100,100 @@ public sealed class RyujinCoolingHub : IDisposable
         {
             _connected = false;
             _snapshot = RyujinSnapshot.Empty;
-            _pending = null;
+            ResetSession();
             _device?.Dispose();
             _device = null;
         }
     }
 
-    /// <summary>Records both duties for the worker to write; the cooler takes no single-channel form. False while disconnected.</summary>
-    public bool SetDuty(int pumpPercent, int fanPercent)
+    /// <summary>
+    /// Records the duty wanted for the channels given; a channel left null keeps the duty the
+    /// cooler last reported or was last sent. False while disconnected.
+    /// </summary>
+    public bool Request(int? pumpPercent, int? fanPercent, string reason)
     {
-        int pump = RyujinCoolingProtocol.ClampPump(pumpPercent);
-        int fan = RyujinCoolingProtocol.ClampFan(fanPercent);
         lock (_stateLock)
         {
             if (_device is null)
             {
                 return false;
             }
-            _pending = (pump, fan);
-            _snapshot = _snapshot with { PumpDuty = pump, FanDuty = fan };
+            if (pumpPercent is { } p)
+            {
+                _wantPump = RyujinCoolingProtocol.ClampPump(p);
+            }
+            if (fanPercent is { } f)
+            {
+                _wantFan = RyujinCoolingProtocol.ClampFan(f);
+            }
+            if (_wantReason is null || reason != KeepaliveReason)
+            {
+                _wantReason = reason;
+            }
         }
         Wake.Release();
         return true;
     }
 
-    /// <summary>Writes the recorded duty if one is waiting. Worker thread only.</summary>
+    /// <summary>
+    /// Writes the wanted duty if one is waiting and both channels are known. A channel nobody is
+    /// driving and the cooler has not reported waits for its first duty reply; the safe duty is
+    /// never written for it. Worker thread only.
+    /// </summary>
     public bool Flush()
     {
         IHidDevice? device;
-        (int Pump, int Fan) duty;
+        int pump;
+        int fan;
+        int? oldPump;
+        int? oldFan;
+        string reason;
         lock (_stateLock)
         {
             if (_device is null)
             {
                 return false;
             }
-            if (_pending is not { } pending)
+            if (_wantPump is null && _wantFan is null)
             {
                 return true;
             }
+            var snap = _snapshot;
+            int? knownPump = snap.PumpDuty >= 0 ? snap.PumpDuty : _fallback ? RyujinCoolingProtocol.FallbackDuty : null;
+            int? knownFan = snap.FanDuty >= 0 ? snap.FanDuty : _fallback ? RyujinCoolingProtocol.FallbackDuty : null;
+            if ((_wantPump ?? knownPump) is not { } p || (_wantFan ?? knownFan) is not { } f)
+            {
+                return true;
+            }
+            pump = p;
+            fan = f;
+            oldPump = snap.PumpDuty >= 0 ? snap.PumpDuty : null;
+            oldFan = snap.FanDuty >= 0 ? snap.FanDuty : null;
+            reason = _wantReason ?? KeepaliveReason;
             device = _device;
-            duty = pending;
-            _pending = null;
+            _wantPump = null;
+            _wantFan = null;
+            _wantReason = null;
         }
-        if (WriteGated(device, RyujinCoolingProtocol.EncodeSetDuty(duty.Pump, duty.Fan)))
+        if (!WriteGated(device, RyujinCoolingProtocol.EncodeSetDuty(pump, fan)))
         {
-            return true;
+            lock (_stateLock)
+            {
+                _wantPump ??= pump;
+                _wantFan ??= fan;
+                _wantReason ??= reason;
+            }
+            return false;
         }
         lock (_stateLock)
         {
-            _pending ??= duty;
+            _snapshot = _snapshot with { PumpDuty = pump, FanDuty = fan };
         }
-        return false;
+        if (oldPump != pump || oldFan != fan)
+        {
+            Info($"[asus-ryujin-cooling] duty pump {Show(oldPump)} -> {pump}, fan {Show(oldFan)} -> {fan} ({reason})");
+        }
+        return true;
     }
 
     /// <summary>
@@ -145,11 +212,25 @@ public sealed class RyujinCoolingHub : IDisposable
         {
             return false;
         }
-        return WriteGated(device, RyujinCoolingProtocol.EncodeStatusRequest())
-            && ReadReplies(device, status: true)
-            && WriteGated(device, RyujinCoolingProtocol.EncodeDutyRequest())
-            && ReadReplies(device, status: false);
+        if (!WriteGated(device, RyujinCoolingProtocol.EncodeStatusRequest())
+            || !ReadReplies(device, status: true)
+            || !WriteGated(device, RyujinCoolingProtocol.EncodeDutyRequest())
+            || !ReadReplies(device, status: false))
+        {
+            return false;
+        }
+        lock (_stateLock)
+        {
+            if (!_dutySeen && !_fallback && ++_pollsWithoutDuty >= RyujinCoolingProtocol.DutyReplyGraceCycles)
+            {
+                _fallback = true;
+                Warn($"[asus-ryujin-cooling] no duty reply parsed in {_pollsWithoutDuty} polls; an undriven channel will ride at {RyujinCoolingProtocol.FallbackDuty}%");
+            }
+        }
+        return true;
     }
+
+    private static string Show(int? duty) => duty?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "?";
 
     private bool ReadReplies(IHidDevice device, bool status)
     {
@@ -168,28 +249,67 @@ public sealed class RyujinCoolingHub : IDisposable
             var report = buffer[..n];
             if (status && RyujinCoolingProtocol.TryParseStatus(report, out var temp, out var pump, out var fan))
             {
+                bool first;
                 lock (_stateLock)
                 {
                     _snapshot = _snapshot with { LiquidTempC = temp, PumpRpm = pump, FanRpm = fan, StatusFresh = true };
                     _statusAtMs = NowMs();
+                    first = !_statusSeen;
+                    _statusSeen = true;
+                }
+                if (first)
+                {
+                    Info($"[asus-ryujin-cooling] first status reply: liquid {temp:0.0} C, pump {pump} rpm, fan {fan} rpm, raw {Hex(report)}");
                 }
                 return true;
             }
             if (!status && RyujinCoolingProtocol.TryParseDuty(report, out var pumpDuty, out var fanDuty))
             {
+                bool first;
                 lock (_stateLock)
                 {
                     // A duty waiting to be written is newer than what the cooler still reports.
-                    if (_pending is null)
+                    if (_wantPump is null && _wantFan is null)
                     {
                         _snapshot = _snapshot with { PumpDuty = pumpDuty, FanDuty = fanDuty };
                     }
+                    else
+                    {
+                        _snapshot = _snapshot with
+                        {
+                            PumpDuty = _snapshot.PumpDuty >= 0 ? _snapshot.PumpDuty : pumpDuty,
+                            FanDuty = _snapshot.FanDuty >= 0 ? _snapshot.FanDuty : fanDuty,
+                        };
+                    }
+                    first = !_dutySeen;
+                    _dutySeen = true;
+                }
+                if (first)
+                {
+                    Info($"[asus-ryujin-cooling] first duty reply: pump {pumpDuty}%, fan {fanDuty}%, raw {Hex(report)}");
                 }
                 return true;
             }
+            LogUnparsed(report, status);
         }
         return true;
     }
+
+    private void LogUnparsed(ReadOnlySpan<byte> report, bool status)
+    {
+        long now = NowMs();
+        lock (_stateLock)
+        {
+            if (_lastParseLogMs != long.MinValue && now - _lastParseLogMs < ParseLogIntervalMs)
+            {
+                return;
+            }
+            _lastParseLogMs = now;
+        }
+        Warn($"[asus-ryujin-cooling] unparsed {(status ? "status" : "duty")} reply, raw {Hex(report)}");
+    }
+
+    private static string Hex(ReadOnlySpan<byte> report) => Convert.ToHexString(report[..Math.Min(report.Length, 24)]);
 
     private static bool WriteGated(IHidDevice device, byte[] report)
     {

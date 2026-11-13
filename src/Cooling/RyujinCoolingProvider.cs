@@ -26,6 +26,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
     private readonly object _ctrlLock = new();
     // Commanded duties live apart from the snapshot, which carries what the cooler reports.
     private bool _pumpSw;
+    private bool _pumpWritten;
     private bool _fanSw;
     private int _pumpCommanded = RyujinCoolingProtocol.PumpDutyFloor;
     private int _fanCommanded;
@@ -63,7 +64,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             {
                 Id = PumpChannelId,
                 Name = "Ryujin III Pump",
-                DutyPercent = snap.PumpDuty >= 0 ? snap.PumpDuty : pumpSw ? pumpWant : RyujinCoolingProtocol.SafeDuty,
+                DutyPercent = snap.PumpDuty >= 0 ? snap.PumpDuty : pumpSw ? pumpWant : 0,
                 Rpm = fresh ? snap.PumpRpm : 0,
                 RpmUnavailable = !fresh,
                 Mode = pumpSw ? FanModes.Manual : FanModes.Auto,
@@ -77,7 +78,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             {
                 Id = FanChannelId,
                 Name = "Ryujin III Fan",
-                DutyPercent = snap.FanDuty >= 0 ? snap.FanDuty : fanSw ? fanWant : RyujinCoolingProtocol.SafeDuty,
+                DutyPercent = snap.FanDuty >= 0 ? snap.FanDuty : fanSw ? fanWant : 0,
                 Rpm = fresh ? snap.FanRpm : 0,
                 RpmUnavailable = !fresh,
                 Mode = fanSw ? FanModes.Manual : FanModes.Auto,
@@ -120,29 +121,32 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
         return _hub.StatusFresh && snap.LiquidTempC > 0 ? (float)snap.LiquidTempC : null;
     }
 
-    public int SetFanSpeed(string channelId, int dutyPercent)
+    public int SetFanSpeed(string channelId, int dutyPercent) => Write(channelId, dutyPercent, "route");
+
+    public void DriveFanSpeed(string channelId, int dutyPercent) => Write(channelId, dutyPercent, "engine");
+
+    private int Write(string channelId, int dutyPercent, string reason)
     {
         if (channelId == PumpChannelId)
         {
             int clamped = RyujinCoolingProtocol.ClampPump(dutyPercent);
-            Apply(pump: clamped, fan: null);
+            Apply(pump: clamped, fan: null, reason);
             return clamped;
         }
         if (channelId == FanChannelId)
         {
             int clamped = RyujinCoolingProtocol.ClampFan(dutyPercent);
-            Apply(pump: null, fan: clamped);
+            Apply(pump: null, fan: clamped, reason);
             return clamped;
         }
         return dutyPercent;
     }
 
-    public void DriveFanSpeed(string channelId, int dutyPercent) => SetFanSpeed(channelId, dutyPercent);
-
     /// <summary>
-    /// The cooler has no firmware curve to hand back to. A released pump returns to Armoury Crate's
-    /// default duty so it is never left slow; a released fan keeps its duty, as the Kraken and
-    /// Galahad do, so the Off preset never makes it louder.
+    /// A mode, preset or profile change releases and then re-drives channels; writing on release
+    /// would put a burst on the pump in between. The cooler has no firmware curve to hand back
+    /// to, so a release only stops Nexus resending and the last duty stays, as with the Kraken
+    /// and Galahad. The pump's safe duty is written by <see cref="ReleaseForDisconnect"/> alone.
     /// </summary>
     public void ReleaseFan(string channelId)
     {
@@ -154,6 +158,27 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
     }
 
     public void ReleaseAll() => Release(pump: true, fan: true);
+
+    /// <summary>
+    /// Called when Nexus Control goes off, the cooler goes away or the service stops: a pump Nexus
+    /// wrote to is left at the safe duty rather than at whatever a low setting last put on it.
+    /// </summary>
+    public void ReleaseForDisconnect()
+    {
+        bool pumpWritten;
+        lock (_ctrlLock)
+        {
+            pumpWritten = _pumpWritten;
+            _pumpWritten = false;
+            _pumpSw = false;
+            _fanSw = false;
+        }
+        if (!pumpWritten || !_hub.IsConnected)
+        {
+            return;
+        }
+        _hub.Request(RyujinCoolingProtocol.SafeDuty, null, "disconnect");
+    }
 
     // A ramp to 0% would stall the pump, so neither channel is calibrated.
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
@@ -194,35 +219,35 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
         {
             return;
         }
-        bool pumpSw;
-        bool fanSw;
+        int? pump;
+        int? fan;
         lock (_ctrlLock)
         {
-            pumpSw = _pumpSw;
-            fanSw = _fanSw;
+            pump = _pumpSw ? _pumpCommanded : null;
+            fan = _fanSw ? _fanCommanded : null;
         }
-        if (!pumpSw && !fanSw)
+        if (pump is null && fan is null)
         {
             return;
         }
-        if (!WriteDuties())
-        {
-            ServiceLog.Warn("[asus-ryujin-cooling] keepalive duty write returned false");
-        }
+        _hub.Request(pump, fan, RyujinCoolingHub.KeepaliveReason);
     }
 
-    private void Apply(int? pump, int? fan)
+    private void Apply(int? pump, int? fan, string reason)
     {
         if (!_hub.IsConnected)
         {
             ServiceLog.Warn("[asus-ryujin-cooling] duty write dropped: cooler not connected");
             return;
         }
+        int? pumpOut;
+        int? fanOut;
         lock (_ctrlLock)
         {
             if (pump is { } p)
             {
                 _pumpSw = true;
+                _pumpWritten = true;
                 _pumpCommanded = p;
             }
             if (fan is { } f)
@@ -230,58 +255,32 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
                 _fanSw = true;
                 _fanCommanded = f;
             }
+            pumpOut = _pumpSw ? _pumpCommanded : null;
+            fanOut = _fanSw ? _fanCommanded : null;
         }
-        if (!WriteDuties())
-        {
-            ServiceLog.Warn("[asus-ryujin-cooling] duty write returned false");
-        }
+        _hub.Request(pumpOut, fanOut, reason);
     }
 
     private void Release(bool pump, bool fan)
     {
-        bool releasePump;
-        bool releaseFan;
+        bool releasedPump;
+        bool releasedFan;
         lock (_ctrlLock)
         {
-            releasePump = pump && _pumpSw;
-            releaseFan = fan && _fanSw;
-            if (releasePump)
+            releasedPump = pump && _pumpSw;
+            releasedFan = fan && _fanSw;
+            if (releasedPump)
             {
                 _pumpSw = false;
-                _pumpCommanded = RyujinCoolingProtocol.SafeDuty;
             }
-            if (releaseFan)
+            if (releasedFan)
             {
                 _fanSw = false;
             }
         }
-        if (!releasePump || !_hub.IsConnected)
+        if (releasedPump || releasedFan)
         {
-            return;
+            ServiceLog.Info($"[asus-ryujin-cooling] release {(releasedPump ? "pump " : "")}{(releasedFan ? "fan" : "")}".TrimEnd() + ": no write, duty stays");
         }
-        if (!WriteDuties(releasePump))
-        {
-            ServiceLog.Warn("[asus-ryujin-cooling] safe duty write on release returned false");
-        }
-    }
-
-    /// <summary>
-    /// The report carries both channels, so the one Nexus is not driving rides at what the cooler
-    /// last reported, or the safe duty before it has reported anything.
-    /// </summary>
-    private bool WriteDuties(bool releasePump = false)
-    {
-        var snap = _hub.Snapshot;
-        int pump;
-        int fan;
-        lock (_ctrlLock)
-        {
-            pump = releasePump ? RyujinCoolingProtocol.SafeDuty
-                : _pumpSw ? _pumpCommanded
-                : snap.PumpDuty >= 0 ? snap.PumpDuty : RyujinCoolingProtocol.SafeDuty;
-            fan = _fanSw ? _fanCommanded
-                : snap.FanDuty >= 0 ? snap.FanDuty : RyujinCoolingProtocol.SafeDuty;
-        }
-        return _hub.SetDuty(pump, fan);
     }
 }

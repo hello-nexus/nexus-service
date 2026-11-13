@@ -40,6 +40,15 @@ internal static class RyujinCoolingProtocol
     /// <summary>Armoury Crate's default duty, handed back for a channel Nexus lets go of.</summary>
     public const int SafeDuty = 100;
 
+    /// <summary>
+    /// Stands in for a channel Nexus is not driving when the cooler never answers a duty request,
+    /// so a write for the other channel still goes out without ever sending the safe duty to it.
+    /// </summary>
+    public const int FallbackDuty = 50;
+
+    /// <summary>Polls without a parsed duty reply before the fallback applies.</summary>
+    public const int DutyReplyGraceCycles = 3;
+
     public static byte[] EncodeSetDuty(int pumpPercent, int fanPercent)
     {
         var report = new byte[ReportLength];

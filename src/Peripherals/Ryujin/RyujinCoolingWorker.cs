@@ -98,7 +98,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
                     // Best effort: a driven pump goes back to the safe duty before the handle closes.
                     try
                     {
-                        _cooling.ReleaseAll();
+                        _cooling.ReleaseForDisconnect();
                         _hub.Flush();
                     }
                     catch (Exception ex) { ServiceLog.Warn($"[asus-ryujin-cooling] release on disconnect failed: {ex.Message}"); }
