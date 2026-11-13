@@ -524,7 +524,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
             var value = Hold.Resolve(key, LhmWalkWatch.Shared.Read(s.Value), now, out var missed);
-            if (missed && isGpu)
+            if (missed && isGpu && !LhmWalkWatch.Shared.IsStale)
             {
                 var hwKey = hw.Identifier.ToString();
                 var count = Hold.NoteMiss(hwKey, now);

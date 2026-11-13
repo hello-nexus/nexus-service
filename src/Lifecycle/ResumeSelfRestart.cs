@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lifecycle;
@@ -30,7 +31,8 @@ public sealed class ResumeSelfRestart
     internal bool TryRestart(string context)
     {
         var now = _utcNow();
-        if (ReadStamp() is { } last && now - last < LoopGuard)
+        // A stamp dated after now (the clock stepped back) is expired, or it would block restarts until the clock catches up.
+        if (ReadStamp() is { } last && now >= last && now - last < LoopGuard)
         {
             ServiceLog.Warn($"[resume] service self-restart skipped: one already ran {(now - last).TotalMinutes:F0} min ago ({context})");
             return false;
@@ -109,5 +111,39 @@ public sealed class ResumeSelfRestart
         catch (IOException)
         {
         }
+    }
+
+    /// <summary>
+    /// The restart action behind <see cref="TryRestart"/>: refuses during a firmware flash or an update, holds the update gate
+    /// so no install starts meanwhile, claims the finalizer, then stops the host. Every refusal leaves nothing claimed.
+    /// </summary>
+    internal static bool Perform(Func<bool> isFlashing, Func<bool> tryHoldInstallGate, Action releaseInstallGate, Func<bool> beginRestart, Action stopApplication)
+    {
+        if (isFlashing())
+        {
+            return false;
+        }
+        if (!tryHoldInstallGate())
+        {
+            return false;
+        }
+        bool begun;
+        try
+        {
+            begun = beginRestart();
+        }
+        catch
+        {
+            releaseInstallGate();
+            throw;
+        }
+        if (!begun)
+        {
+            releaseInstallGate();
+            return false;
+        }
+        // The gate stays held: the process is stopping and an install must not begin in it.
+        _ = Task.Run(stopApplication);
+        return true;
     }
 }

@@ -6,46 +6,63 @@ namespace Nexus.Service.Tests.Common;
 internal sealed class FakeOneShot : IOneShot
 {
     private readonly Action _fire;
+    private readonly object _lock = new();
+    private bool _armed;
+    private TimeSpan _due;
+    private int _armCount;
+    private bool _disposed;
 
     internal FakeOneShot(Action fire) => _fire = fire;
 
-    internal bool Armed { get; private set; }
+    internal bool Armed { get { lock (_lock) { return _armed; } } }
 
-    internal TimeSpan Due { get; private set; }
+    internal TimeSpan Due { get { lock (_lock) { return _due; } } }
 
-    internal int ArmCount { get; private set; }
+    internal int ArmCount { get { lock (_lock) { return _armCount; } } }
 
-    internal bool Disposed { get; private set; }
+    internal bool Disposed { get { lock (_lock) { return _disposed; } } }
 
     public void Arm(TimeSpan due)
     {
-        Armed = true;
-        Due = due;
-        ArmCount++;
+        lock (_lock)
+        {
+            _armed = true;
+            _due = due;
+            _armCount++;
+        }
     }
 
-    public void Disarm() => Armed = false;
+    public void Disarm()
+    {
+        lock (_lock) { _armed = false; }
+    }
 
-    public void Dispose() => Disposed = true;
+    public void Dispose()
+    {
+        lock (_lock) { _disposed = true; }
+    }
 
     /// <summary>What the timer does at the deadline: it is no longer armed, then the callback runs.</summary>
     internal void Fire()
     {
-        Armed = false;
+        lock (_lock) { _armed = false; }
         _fire();
     }
 
     /// <summary>A factory that hands out one fake per call and remembers each.</summary>
     internal sealed class Factory
     {
-        internal List<FakeOneShot> Created { get; } = new();
+        private readonly object _lock = new();
+        private readonly List<FakeOneShot> _created = new();
 
-        internal FakeOneShot? Single => Created.Count == 1 ? Created[0] : null;
+        internal IReadOnlyList<FakeOneShot> Created { get { lock (_lock) { return _created.ToArray(); } } }
+
+        internal FakeOneShot? Single { get { lock (_lock) { return _created.Count == 1 ? _created[0] : null; } } }
 
         internal IOneShot Create(Action fire)
         {
             var one = new FakeOneShot(fire);
-            Created.Add(one);
+            lock (_lock) { _created.Add(one); }
             return one;
         }
     }

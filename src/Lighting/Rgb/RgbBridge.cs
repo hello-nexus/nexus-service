@@ -141,6 +141,13 @@ public sealed class RgbBridge : IDisposable
     private long _heldDiagResume;
     private long _quiesceProbeResume;
     private int _selfRestartDeciding;
+    private int _bounceCount;
+
+    /// <summary>Daemon restarts decided so far; tests read it to prove a refusal without waiting.</summary>
+    internal int BounceCount => Volatile.Read(ref _bounceCount);
+
+    /// <summary>The settle-stall recovery needs the SMBus mutex, which exists only on Windows; elsewhere restarts behave as before it.</summary>
+    internal bool SettleStallEnabled { get; set; } = OperatingSystem.IsWindows();
     internal bool SelfRestartDeciding => Volatile.Read(ref _selfRestartDeciding) != 0;
     /// <summary>Restarts the service; the argument names what triggered it. Null where self-restart is not wired.</summary>
     internal Func<string, bool>? SelfRestart { get; set; }
@@ -1112,7 +1119,7 @@ public sealed class RgbBridge : IDisposable
             }
             _loggedResizeOutcomes.Clear();
         }
-        if (reason is "system-resume" or "watchdog" or "settle-stall")
+        if (SettleStallEnabled && reason is "system-resume" or "watchdog" or "settle-stall")
         {
             // Only restarts that must bring the same devices back arm the stall check; a manual-device or
             // detector change can legitimately list fewer, down to none.
@@ -1128,6 +1135,7 @@ public sealed class RgbBridge : IDisposable
                 Volatile.Write(ref _settleStallBounces, 0);
             }
         }
+        Interlocked.Increment(ref _bounceCount);
         ServiceLog.Info($"[rgb-bridge] bouncing subprocess ({reason})");
         Volatile.Write(ref _detectionStartedSeen, 0);
         MarkDetectionActivity();
@@ -1319,8 +1327,7 @@ public sealed class RgbBridge : IDisposable
     private bool MutexHeldForWindow(long resume)
     {
         var walkAtStart = LhmWalkSummary(WalkWatch);
-        // One wait, not samples: the daemon's detection is itself a queued waiter on this mutex and never got in across many restarts,
-        // and a released mutex goes to the first waiter, so a holder with gaps would have let it in. A timeout means a continuous hold.
+        // One wait: a released mutex goes to its first waiter, so a holder with gaps would let the daemon's detection in. A timeout means a continuous hold.
         var state = SmbusMutexWait(SelfRestartMutexWindow);
         var walkAtEnd = LhmWalkSummary(WalkWatch);
         var held = state == "held";
@@ -1339,18 +1346,21 @@ public sealed class RgbBridge : IDisposable
     /// <summary>Pauses our own DIMM reads, waits for the walk to leave its memory item, and samples once: free means our reads held it, held means another process does.</summary>
     private void ProbeHolderByQuiesce()
     {
-        WalkWatch.QuiesceSpdFor(SelfRestartQuiesceWait + TimeSpan.FromSeconds(7));
+        WalkWatch.QuiesceSpdFor(SelfRestartQuiesceWait + QuiesceExpiryMargin);
         var started = Stopwatch.GetTimestamp();
         var left = WalkWatch.WaitUntilOutsideSmbusItem(SelfRestartQuiesceWait);
         var waited = Stopwatch.GetElapsedTime(started);
         var state = SmbusMutexProbe();
         HolderProbeResult = left
-            ? $"{state}; holder is {(state == "held" ? "not our DIMM reads" : "our DIMM reads or a transient")}"
+            ? $"{state}; {(state == "held" ? "still held with our DIMM reads paused, so not our DIMM reads" : "free once our DIMM reads paused, or the hold ended on its own")}"
             : $"{state}; inconclusive, the walk was still inside {WalkWatch.CurrentItem?.Item ?? "a memory item"} after {waited.TotalSeconds:F1}s";
         ServiceLog.Info($"[resume] smbus mutex after pausing our DIMM reads: {HolderProbeResult}");
     }
 
     internal string? HolderProbeResult { get; private set; }
+
+    /// <summary>How much longer than the wait our DIMM reads stay paused, so a restart that refuses cannot leave them paused for long.</summary>
+    private static readonly TimeSpan QuiesceExpiryMargin = TimeSpan.FromSeconds(7);
 
     internal TimeSpan SelfRestartQuiesceWait { get; set; } = TimeSpan.FromSeconds(3);
 
@@ -1561,10 +1571,13 @@ public sealed class RgbBridge : IDisposable
         return _controller.IsConnected && Interlocked.Exchange(ref _settleWaitsForConnect, 0) == 1 ? TimeSpan.Zero : null;
     }
 
+    /// <summary>Added to a computed look time so the look lands just after the condition it waits for.</summary>
+    private static readonly TimeSpan SettleDeadlineSlack = TimeSpan.FromMilliseconds(10);
+
     /// <summary>When the settle check can next be due: the spawn timeout, or the end of the detection quiet window.</summary>
     private TimeSpan SettleRecheckDelay(TimeSpan sinceSpawn)
     {
-        var slack = TimeSpan.FromMilliseconds(10);
+        var slack = SettleDeadlineSlack;
         if (sinceSpawn < SettleStallTimeout)
         {
             return SettleStallTimeout - sinceSpawn + slack;
@@ -1644,7 +1657,7 @@ public sealed class RgbBridge : IDisposable
         return last == 0 || TimeSpan.FromTicks(NowTicks() - last) >= DetectionQuietWindow;
     }
 
-    /// <summary>Who holds the SMBus mutex the daemon's DIMM detection waits on without a timeout: held (by another process or thread), free, or n/a.</summary>
+    /// <summary>One non-blocking look at the SMBus mutex: held (unavailable to this thread), free, abandoned, absent, or n/a.</summary>
     internal static string ProbeSmbusMutex() => SmbusMutexReader.Wait(TimeSpan.Zero);
 
     /// <summary>True while the daemon is detecting. Exposed via /lighting/status for the rescan spinner.</summary>

@@ -251,7 +251,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
-    private static readonly TimeSpan CloseWalkWait = TimeSpan.FromSeconds(2);
+    // Fan defaults are handed back by CurveEngine's shutdown ReleaseAll before this runs, so skipping Close loses only LHM's own driver teardown.
+    private static readonly TimeSpan CloseWalkWait = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SpdDisposeBudget = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromMilliseconds(750);
 
@@ -344,7 +345,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     public Task OpenTask => _openTask;
 
     /// <summary>
-    /// Update all hardware sensors. Thread-safe - concurrent callers are serialized.
+    /// Update all hardware sensors. Walks are serialized, and a Normal reader that finds a walk
+    /// running returns the values the previous walk cached instead of waiting for it.
     /// Capped at one hardware walk per second, which collapses the redundant
     /// updates from multiple callers (MonitoringBroadcaster, CurveEngine, HTTP
     /// handlers) into a single iteration; callers inside that window read the

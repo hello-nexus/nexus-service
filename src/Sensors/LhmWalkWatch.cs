@@ -13,6 +13,9 @@ internal sealed class LhmWalkWatch
     /// <summary>Well above a forced walk that wakes a spun-down drive; a walk past this is wedged in a driver or bus wait.</summary>
     internal static readonly TimeSpan StallLimit = TimeSpan.FromSeconds(45);
 
+    /// <summary>Added to a deadline so it fires just past the limit it checks, never just short of it.</summary>
+    internal static readonly TimeSpan DeadlineSlack = TimeSpan.FromMilliseconds(1);
+
     /// <summary>The process-wide instance; LhmComputer is a singleton, so the bridge and power listener read the same one.</summary>
     internal static LhmWalkWatch Shared { get; } = new();
 
@@ -29,7 +32,8 @@ internal sealed class LhmWalkWatch
 
     internal LhmWalkWatch(Func<long>? nowMs = null, Func<Action, IOneShot>? oneShotFactory = null)
     {
-        _nowMs = nowMs ?? (() => Environment.TickCount64);
+        // Unbiased time: a suspend does not count toward a walk's age.
+        _nowMs = nowMs ?? (() => Nexus.Service.Cooling.ThermalGuardController.AwakeMs());
         _oneShotFactory = oneShotFactory ?? (fire => new TimerOneShot(fire));
     }
 
@@ -128,16 +132,13 @@ internal sealed class LhmWalkWatch
 
     internal bool SpdQuiesced => _nowMs() < Interlocked.Read(ref _spdQuiescedUntilMs);
 
-    /// <summary>True while the running walk is inside a memory item or the SPD gate rebuild: the only places our own code takes the SMBus mutex.</summary>
-    internal bool InSmbusItem() => CurrentWalkAge is not null && Volatile.Read(ref _item) is { } at && IsSmbusItem(at.Item);
-
     internal void BeginWalk()
     {
         lock (_transition)
         {
             Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
             // One deadline per walk, created on the first walk; a walk that ends in time disarms it, so nothing wakes while readings are healthy.
-            (_stallTimer ??= _oneShotFactory(OnStallDeadline)).Arm(StallLimit + TimeSpan.FromMilliseconds(1));
+            (_stallTimer ??= _oneShotFactory(OnStallDeadline)).Arm(StallLimit + DeadlineSlack);
         }
     }
 
@@ -169,7 +170,7 @@ internal sealed class LhmWalkWatch
             {
                 if (!IsStale)
                 {
-                    _stallTimer?.Arm(StallLimit - age + TimeSpan.FromMilliseconds(1));
+                    _stallTimer?.Arm(StallLimit - age + DeadlineSlack);
                 }
                 return;
             }
