@@ -209,7 +209,7 @@ public class VolumeTargetResolverTests
         public FakeSessions(IEnumerable<AudioSessionDto> sessions) => _sessions = new List<AudioSessionDto>(sessions);
         public bool Supported => true;
         public IReadOnlyList<AudioSessionDto> GetSessions() => _sessions;
-        public void SetVolume(string id, double volume) { }
+        public void SetVolume(string id, double volume, bool defaultOnly = false) { }
         public void SetMuted(string id, bool muted) { }
         public void StartStreaming() { }
         public void StopStreaming() { }
