@@ -601,6 +601,7 @@ public sealed partial class Slv3Hub : IDisposable
         _blindSinceMs = null;
         _blindTotalMs = 0;
         _unconfirmedPwm.Clear();
+        _hydroShiftFansDriven.Clear();
         foreach (var control in _aioControl.Values)
         {
             control.Switched = false;
@@ -1737,8 +1738,8 @@ public sealed partial class Slv3Hub : IDisposable
     // control pass. L-Connect skips a chain that enumerates no fans; here such
     // a chain is still driven once the user sets a port duty on it (the cooling
     // provider exposes its ports), and left alone on the mobo-sync default.
-    // A Strimer has no fan ports at all and is never re-bound from here, nor is
-    // a HydroShift II, whose fourth PWM slot drives its pump.
+    // A Strimer has no fan ports at all and is never re-bound from here. A HydroShift II
+    // is synced only for its radiator fans, and only after Nexus drove one.
     private void SyncPwmLocked()
     {
         foreach (var record in _lastFanRecords)
@@ -2443,6 +2444,7 @@ public sealed partial class Slv3Hub : IDisposable
                 _ownedSlotSightings.Remove(key);
                 _bindingLogs.Remove(key);
                 _unconfirmedPwm.Remove(key);
+                _hydroShiftFansDriven.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -2774,13 +2776,17 @@ public sealed partial class Slv3Hub : IDisposable
             : Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
     }
 
-    // The AIO's pump slot reports its own duty, so drift is judged on the radiator fans alone.
-    private static int[] ReportedForSync(Slv3DeviceRecord record, byte[] pwm)
+    // The pump slot and slots past the fan count report their own values, so a HydroShift II's
+    // drift is judged on its radiator fan slots alone and an odd echo elsewhere never forces a resend.
+    internal static int[] ReportedForSync(Slv3DeviceRecord record, byte[] pwm)
     {
         var reported = (int[])record.Pwm.Clone();
-        if (record.IsHydroShift && reported.Length > Slv3Protocol.HydroShiftPumpPort)
+        if (record.IsHydroShift)
         {
-            reported[Slv3Protocol.HydroShiftPumpPort] = pwm[Slv3Protocol.HydroShiftPumpPort];
+            for (var port = Math.Max(0, Math.Min(record.FanCount, Slv3Protocol.HydroShiftPumpPort)); port < reported.Length && port < pwm.Length; port++)
+            {
+                reported[port] = pwm[port];
+            }
         }
         return reported;
     }

@@ -171,6 +171,38 @@ public class Slv3CoolingProviderTests
         Assert.Null(hub.GetPortDuty(Mac, 2));
     }
 
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(35, false)]
+    public void Shutdown_hands_hydroshift_radiator_fans_back_only_while_the_header_has_a_signal(int headerPercent, bool fansKeepLastDuty)
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.MotherboardPwmPercent = headerPercent;
+        hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3 } };
+        var provider = new Slv3CoolingProvider(hub);
+        provider.SetFanSpeed($"lianli-wireless:{Mac}:pump", 60);
+        provider.SetFanSpeed($"lianli-wireless:{Mac}:port1", 40);
+
+        provider.ReleaseAllKeepingDrivenPorts();
+
+        Assert.Null(hub.GetPumpDuty(Mac));
+        Assert.Equal(fansKeepLastDuty ? 40 : (int?)null, hub.GetPortDuty(Mac, 1));
+    }
+
+    [Fact]
+    public void ReleaseAll_hands_every_hydroshift_fan_back_whatever_the_header_reads()
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.MotherboardPwmPercent = 0;
+        hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3 } };
+        var provider = new Slv3CoolingProvider(hub);
+        provider.SetFanSpeed($"lianli-wireless:{Mac}:port2", 40);
+
+        provider.ReleaseAll();
+
+        Assert.Null(hub.GetPortDuty(Mac, 2));
+    }
+
     [Fact]
     public void A_driven_hydroshift_pump_reports_rpm_liquid_temperature_and_its_duty()
     {

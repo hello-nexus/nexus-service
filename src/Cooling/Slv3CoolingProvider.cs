@@ -187,9 +187,10 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     }
 
     // The pump and the radiator fans all go back to L-Connect defaults together.
-    private void ReleaseHydroShift(Slv3FanInfo fan)
+    private void ReleaseHydroShift(Slv3FanInfo fan, bool releaseFans = true)
     {
         _hub.SetPumpDuty(fan.Mac, null);
+        if (!releaseFans) return;
         for (var port = 0; port < Slv3Protocol.HydroShiftPumpPort; port++)
         {
             _hub.SetPortDuty(fan.Mac, port, null);
@@ -229,7 +230,8 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         {
             if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
             {
-                ReleaseHydroShift(fan);
+                // Radiator fans follow the same header rule as any chain; the pump is always released.
+                ReleaseHydroShift(fan, releaseFans: headerLive);
                 continue;
             }
             if (!headerLive || !HasFanPorts(fan)) continue;

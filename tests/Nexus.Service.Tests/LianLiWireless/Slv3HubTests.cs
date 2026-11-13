@@ -1166,8 +1166,25 @@ public partial class Slv3HubTests
         Assert.All(LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray(), b => Assert.Equal(follow, b));
     }
 
+    // Like a regular chain, an unbind frame carries the duties the chain is currently driven at; only the pump slot stays the follow byte.
     [Fact]
-    public void HydroShift_unbind_frame_never_carries_a_port_duty()
+    public void HydroShift_unbind_frame_carries_radiator_fan_duties_and_keeps_the_pump_slot_on_the_follow_byte()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        Assert.True(hub.SetPortDuty(mac, 0, 50));
+        Assert.True(hub.SetPortDuty(mac, 3, 90));
+
+        Assert.True(ManualUnbind(hub, mac));
+
+        var follow = Slv3Protocol.PwmFollowMotherboard;
+        Assert.Equal(new byte[] { 127, follow, follow, follow }, LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray());
+    }
+
+    [Fact]
+    public void HydroShift_unbind_frame_never_carries_a_pump_slot_target_on_a_zero_fan_record()
     {
         var (hub, net, tx, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 0 });
@@ -1176,8 +1193,63 @@ public partial class Slv3HubTests
 
         Assert.True(ManualUnbind(hub, Convert.ToHexString(FanMac)));
 
-        var frame = LastBindFrame(tx, FanMac);
-        Assert.All(frame.AsSpan(21, 4).ToArray(), b => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, b));
+        Assert.All(LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray(), b => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, b));
+    }
+
+    [Fact]
+    public void HydroShift_sync_ignores_the_echo_of_empty_slots_and_the_pump_slot()
+    {
+        var follow = (int)Slv3Protocol.PwmFollowMotherboard;
+        var record = new Slv3DeviceRecord(
+            new byte[6], new byte[6], 8, 1, 10, FanCount: 2, false, new byte[4], new byte[4],
+            new int[4], new[] { 127, follow, 200, 99 }, 0);
+        var tuple = Slv3Protocol.BuildHydroShiftPwmTuple(new int?[] { 50, null, null, null }, 2);
+
+        Assert.False(Slv3Protocol.NeedSyncPwm(Slv3Hub.ReportedForSync(record, tuple), tuple));
+        var drifted = record with { Pwm = new[] { 200, follow, 200, 99 } };
+        Assert.True(Slv3Protocol.NeedSyncPwm(Slv3Hub.ReportedForSync(drifted, tuple), tuple));
+    }
+
+    [Fact]
+    public void An_untouched_hydroshift_gets_no_bind_frame_when_the_fans_are_released()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+
+        for (var port = 0; port < 3; port++)
+        {
+            Assert.True(hub.SetPortDuty(mac, port, null));
+        }
+        Assert.True(hub.SetPumpDuty(mac, null));
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.Empty(RfFrames(tx, Slv3Protocol.RfAioParams));
+    }
+
+    [Fact]
+    public void Driving_radiator_fans_leaves_the_pump_params_frame_unchanged()
+    {
+        byte[] ParamsWith(bool fansDriven)
+        {
+            var (hub, net, tx, _) = CreateConnectedHub();
+            net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+            hub.AioSensors = () => new Slv3AioSensors(55f, 12f, null, null);
+            Assert.True(hub.DriveTick());
+            var mac = Convert.ToHexString(FanMac);
+            Assert.True(hub.SetPumpDuty(mac, 50));
+            if (fansDriven)
+            {
+                Assert.True(hub.SetPortDuty(mac, 0, 70));
+            }
+            Assert.True(hub.DriveTick());
+            return RfFrames(tx, Slv3Protocol.RfAioParams)[^1];
+        }
+
+        Assert.Equal(ParamsWith(false), ParamsWith(true));
     }
 
     [Fact]
