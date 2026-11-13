@@ -276,6 +276,8 @@ public sealed class PanelDeviceRegistryTests : IDisposable
 
     [Theory]
     [InlineData("Bad Key", "#fff", null, "invalid_skin")]
+    [InlineData(" arcade", "#fff", null, "invalid_skin")]
+    [InlineData("", "#fff", null, "invalid_skin")]
     [InlineData("lcd", "#fff", "system:bad;family", "invalid_font")]
     [InlineData("lcd", "#fff", "jura", null)]
     public void Validate_ReportsTheRouteErrorCode(string skin, string? accent, string? font, string? expected)
@@ -307,6 +309,36 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Equal("jura", presets.SkinOverrides!["arcade"].Font);
         _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", "#123456", null)) });
         Assert.Equal("jura", _store.Load().PanelDevices[record.Id].Presets!.Single().SkinOverrides!["arcade"].Font);
+    }
+
+    [Fact]
+    public void SkinOverrides_NullEntryFromDiskIsToleratedByCloneAndPatch()
+    {
+        var disk = System.Text.Json.JsonSerializer.Deserialize("{\"skinOverrides\":{\"arcade\":null,\"lcd\":{\"font\":\"jura\"}}}", Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord)!;
+        Assert.Null(disk.SkinOverrides!["arcade"]);
+
+        var clone = PanelSkinOverrides.Clone(disk.SkinOverrides)!;
+        Assert.Equal(new[] { "lcd" }, clone.Keys);
+
+        var to = new PanelDeviceRecord();
+        PanelProfileData.CopyLook(disk, to);
+        Assert.Equal(new[] { "lcd" }, to.SkinOverrides!.Keys);
+
+        Assert.True(PanelSkinOverrides.TryNormalize(disk.SkinOverrides, out var normalized));
+        Assert.Equal(new[] { "lcd" }, normalized!.Keys);
+    }
+
+    [Fact]
+    public void SkinOverrides_ProfileCopyLookCarriesTheMapAsADeepCopy()
+    {
+        var from = new PanelDeviceRecord { SkinOverrides = Overrides(("arcade", "#ff8800", "jura")) };
+        var to = new PanelDeviceRecord();
+
+        PanelProfileData.CopyLook(from, to);
+        from.SkinOverrides["arcade"].Accent = "#000000";
+
+        Assert.Equal("#ff8800", to.SkinOverrides!["arcade"].Accent);
+        Assert.Equal("jura", to.SkinOverrides["arcade"].Font);
     }
 
     [Fact]
