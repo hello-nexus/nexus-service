@@ -10,22 +10,24 @@ namespace Nexus.Service.Diagnostics.SystemInfo;
 /// Non-Windows host facts behind the Memory and System health tiles.
 /// <see cref="Supported"/> is false off Linux (macOS): both tiles then report
 /// no health source. On Linux, <see cref="FailedUnits"/> are failed system
-/// scope systemd units, <see cref="HardwareCorruptedKb"/> is the kernel's
-/// poisoned-page total and <see cref="EdacErrorCount"/> sums the corrected and
+/// scope systemd units (null when systemctl could not be read, which is not
+/// the same as none failed), <see cref="HardwareCorruptedKb"/> is the kernel's
+/// poisoned-page total and the two EDAC counts sum the corrected and
 /// uncorrected memory controller error counters.
 /// </summary>
 public sealed record HostHealthSnapshot(
     bool Supported,
-    IReadOnlyList<string> FailedUnits,
+    IReadOnlyList<string>? FailedUnits,
     long HardwareCorruptedKb,
-    long EdacErrorCount)
+    long EdacCorrected,
+    long EdacUncorrected)
 {
-    public static readonly HostHealthSnapshot Unsupported = new(false, Array.Empty<string>(), 0, 0);
+    public static readonly HostHealthSnapshot Unsupported = new(false, null, 0, 0, 0);
 }
 
 /// <summary>
 /// Reads systemd failed units, /proc/meminfo HardwareCorrupted and EDAC counters
-/// on Linux. Cached for five minutes like the Windows pnp scan, so the health
+/// on Linux. Cached like the Windows pnp scan, so the health
 /// page never spawns systemctl per request. Kernel taint is deliberately not
 /// read: a proprietary GPU driver sets it on healthy machines.
 /// </summary>
@@ -76,22 +78,7 @@ public sealed class HostHealthProbe
 
     private static HostHealthSnapshot ScanLinux()
     {
-        var failed = Array.Empty<string>();
-        try
-        {
-            // --system keeps user-session autostart failures out; they are
-            // noise on a Wayland desktop and not the machine's health.
-            var result = DiagnosticsShell.Run(
-                "systemctl", SystemctlTimeoutMs, "--system", "--failed", "--no-legend", "--plain", "--no-pager");
-            if (result.ExitCode == 0)
-            {
-                failed = ParseFailedUnits(result.Stdout).ToArray();
-            }
-        }
-        catch
-        {
-            // best-effort: no systemctl means no failed-unit signal
-        }
+        var failed = ReadFailedUnits(args => DiagnosticsShell.Run("systemctl", SystemctlTimeoutMs, args));
 
         long corrupted = 0;
         try
@@ -103,7 +90,28 @@ public sealed class HostHealthProbe
             // unreadable meminfo reads as no signal
         }
 
-        return new HostHealthSnapshot(true, failed, corrupted, ReadEdacErrors("/sys/devices/system/edac/mc"));
+        var (corrected, uncorrected) = ReadEdacErrors("/sys/devices/system/edac/mc");
+        return new HostHealthSnapshot(true, failed, corrupted, corrected, uncorrected);
+    }
+
+    /// <summary>
+    /// Failed system units, or null when systemctl is missing, times out or
+    /// exits non-zero (the shell helper reports a spawn failure or timeout as
+    /// exit -1): an unreadable source must never read as "none failed".
+    /// --system keeps user-session autostart failures out; they are noise on a
+    /// Wayland desktop and not the machine's health.
+    /// </summary>
+    internal static IReadOnlyList<string>? ReadFailedUnits(Func<string[], ShellResult> run)
+    {
+        try
+        {
+            var result = run(new[] { "--system", "--failed", "--no-legend", "--plain", "--no-pager" });
+            return result.ExitCode == 0 ? ParseFailedUnits(result.Stdout) : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Unit names from <c>systemctl --failed --no-legend --plain</c> output.</summary>
@@ -124,10 +132,15 @@ public sealed class HostHealthProbe
             {
                 continue;
             }
-            units.Add(first);
+            units.Add(Unescape(first));
         }
         return units;
     }
+
+    /// <summary>Reverses systemd's \xNN escaping in a unit name (a dash arrives as the four characters backslash x 2 d).</summary>
+    internal static string Unescape(string unit) =>
+        System.Text.RegularExpressions.Regex.Replace(
+            unit, @"\\x([0-9a-fA-F]{2})", m => ((char)Convert.ToInt32(m.Groups[1].Value, 16)).ToString());
 
     /// <summary>The HardwareCorrupted kB value, 0 when the line is absent.</summary>
     internal static long ParseHardwareCorruptedKb(string meminfo)
@@ -144,15 +157,16 @@ public sealed class HostHealthProbe
         return 0;
     }
 
-    /// <summary>Sum of every mc*/ce_count and mc*/ue_count under the EDAC root; 0 when none exist.</summary>
-    internal static long ReadEdacErrors(string edacRoot)
+    /// <summary>Summed mc*/ce_count and mc*/ue_count under the EDAC root; zeros when none exist.</summary>
+    internal static (long Corrected, long Uncorrected) ReadEdacErrors(string edacRoot)
     {
-        long total = 0;
+        long corrected = 0;
+        long uncorrected = 0;
         try
         {
             if (!Directory.Exists(edacRoot))
             {
-                return 0;
+                return (0, 0);
             }
             foreach (var mc in Directory.EnumerateDirectories(edacRoot, "mc*"))
             {
@@ -162,7 +176,14 @@ public sealed class HostHealthProbe
                     if (File.Exists(path)
                         && long.TryParse(File.ReadAllText(path).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var n))
                     {
-                        total += n;
+                        if (file == "ce_count")
+                        {
+                            corrected += n;
+                        }
+                        else
+                        {
+                            uncorrected += n;
+                        }
                     }
                 }
             }
@@ -171,6 +192,6 @@ public sealed class HostHealthProbe
         {
             // best-effort
         }
-        return total;
+        return (corrected, uncorrected);
     }
 }

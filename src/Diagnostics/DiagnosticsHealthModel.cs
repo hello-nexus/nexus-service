@@ -298,8 +298,8 @@ public sealed class DiagnosticsHealthModel
         {
             AddGpuComponents(components, gpu, knownGpuModels);
         }
-        // Memory and system/pnp have no non-Windows data source and their
-        // Add* helpers do not self-guard, so keep them Windows-only.
+        // The Windows memory test and pnp scan exist only on Windows and their
+        // Add* helpers do not self-guard, so they stay Windows-only.
         if (windowsSupported)
         {
             AddMemoryComponent(components, lastMemoryTest);
@@ -321,10 +321,11 @@ public sealed class DiagnosticsHealthModel
         AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
 
         // Windows always reports the grid (its per-domain scanners exist even
-        // when a domain is empty). Elsewhere the grid is meaningful only when
-        // a working sub-domain (SMART, GPU, cooling) produced a component -
-        // otherwise the tab is hidden client-side. Counted before the ignore
-        // filter: ignoring every device is still a working grid.
+        // when a domain is empty). Elsewhere the host Memory and System tiles
+        // keep it populated; without a host snapshot it is meaningful only
+        // when a working sub-domain (SMART, GPU, cooling) produced a component.
+        // Counted before the ignore filter: ignoring every device is still a
+        // working grid.
         var supported = windowsSupported || components.Count > 0;
 
         // User-ignored devices drop out here, after every module has run, so
@@ -594,12 +595,20 @@ public sealed class DiagnosticsHealthModel
                 $"/proc/meminfo reports HardwareCorrupted={host.HardwareCorruptedKb} kB.",
                 new Dictionary<string, string> { ["kb"] = ReasonParams.Num(host.HardwareCorruptedKb) }));
         }
-        if (host.Supported && host.EdacErrorCount > 0)
+        if (host.Supported && (host.EdacUncorrected > 0 || host.EdacCorrected > 0))
         {
-            reasons.Add(new HealthComponentReason("memory.edacErrors", HealthStatuses.Act,
-                "The memory controller has logged errors",
-                $"EDAC reports count={host.EdacErrorCount} corrected and uncorrected memory errors.",
-                new Dictionary<string, string> { ["count"] = ReasonParams.Num(host.EdacErrorCount) }));
+            var uncorrected = host.EdacUncorrected > 0;
+            reasons.Add(new HealthComponentReason("memory.edacErrors",
+                uncorrected ? HealthStatuses.Act : HealthStatuses.Watch,
+                uncorrected
+                    ? "The memory controller has logged uncorrectable errors"
+                    : "The memory controller has corrected errors",
+                $"EDAC reports corrected={host.EdacCorrected} uncorrected={host.EdacUncorrected} memory errors.",
+                new Dictionary<string, string>
+                {
+                    ["corrected"] = ReasonParams.Num(host.EdacCorrected),
+                    ["uncorrected"] = ReasonParams.Num(host.EdacUncorrected),
+                }));
         }
         if (reasons.Count == 0)
         {
@@ -607,7 +616,7 @@ public sealed class DiagnosticsHealthModel
             // RAM here, so "healthy" is not something this tile can claim.
             reasons.Add(new HealthComponentReason("memory.noHealthSource", HealthStatuses.Unknown,
                 "Memory health cannot be read on this system",
-                "Windows runs a memory diagnostic and ECC servers expose error counters. This system exposes neither, so memory reports no health signal either way."));
+                "This system exposes no memory error counters (they need ECC memory), so memory reports no health signal either way."));
         }
 
         components.Add(new HealthComponent
@@ -627,21 +636,26 @@ public sealed class DiagnosticsHealthModel
         var reasons = new List<HealthComponentReason>();
         var status = HealthStatuses.Unknown;
 
-        if (!host.Supported)
+        if (!host.Supported || host.FailedUnits is null)
         {
             reasons.Add(new HealthComponentReason("system.noHealthSource", HealthStatuses.Unknown,
                 "System health cannot be read on this system",
-                "Windows reports device faults through Device Manager. This system has no equivalent source, so System reports no health signal either way."));
+                "Windows reports device faults through Device Manager. This system has no readable equivalent, so System reports no health signal either way."));
         }
         else
         {
             status = HealthStatuses.Ok;
             if (host.FailedUnits.Count > 0)
             {
-                var names = string.Join(", ", host.FailedUnits);
+                const int MaxListed = 5;
+                var listed = host.FailedUnits.Take(MaxListed).ToList();
+                var names = string.Join(", ", listed);
+                var detailNames = host.FailedUnits.Count > MaxListed
+                    ? $"{names} and {host.FailedUnits.Count - MaxListed} more"
+                    : names;
                 reasons.Add(new HealthComponentReason("system.failedUnits", HealthStatuses.Watch,
-                    $"{host.FailedUnits.Count} system service(s) failed",
-                    $"systemd reports failed system units: {names}.",
+                    host.FailedUnits.Count == 1 ? "1 system service failed" : $"{host.FailedUnits.Count} system services failed",
+                    $"systemd reports failed system units: {detailNames}.",
                     new Dictionary<string, string>
                     {
                         ["count"] = ReasonParams.Num(host.FailedUnits.Count),

@@ -38,7 +38,7 @@ public class HostHealthTests
     {
         var units = HostHealthProbe.ParseFailedUnits(FailedOutput + "garbage line\nplain.service loaded failed failed X\n");
         Assert.Equal(
-            new[] { "logrotate.service", "app-nvidia\\x2dsettings\\x2dload@autostart.service", "plain.service" },
+            new[] { "logrotate.service", "app-nvidia-settings-load@autostart.service", "plain.service" },
             units);
     }
 
@@ -63,13 +63,13 @@ public class HostHealthTests
         var root = Path.Combine(Path.GetTempPath(), "edac-" + Guid.NewGuid().ToString("N"));
         try
         {
-            Assert.Equal(0, HostHealthProbe.ReadEdacErrors(root));
+            Assert.Equal((0L, 0L), HostHealthProbe.ReadEdacErrors(root));
             Directory.CreateDirectory(Path.Combine(root, "mc0"));
             Directory.CreateDirectory(Path.Combine(root, "mc1"));
             File.WriteAllText(Path.Combine(root, "mc0", "ce_count"), "3\n");
-            File.WriteAllText(Path.Combine(root, "mc0", "ue_count"), "0\n");
+            File.WriteAllText(Path.Combine(root, "mc0", "ue_count"), "1\n");
             File.WriteAllText(Path.Combine(root, "mc1", "ce_count"), "2\n");
-            Assert.Equal(5, HostHealthProbe.ReadEdacErrors(root));
+            Assert.Equal((5L, 1L), HostHealthProbe.ReadEdacErrors(root));
         }
         finally
         {
@@ -83,7 +83,7 @@ public class HostHealthTests
     [Fact]
     public void Linux_NoFailedUnits_SystemIsHealthy_MemoryIsUnknownWithReason()
     {
-        var host = new HostHealthSnapshot(true, Array.Empty<string>(), 0, 0);
+        var host = new HostHealthSnapshot(true, Array.Empty<string>(), 0, 0, 0);
         var system = Component(host, "system");
         var memory = Component(host, "memory");
 
@@ -96,7 +96,7 @@ public class HostHealthTests
     [Fact]
     public void Linux_FailedUnit_WarnsAndNamesTheUnit()
     {
-        var host = new HostHealthSnapshot(true, new[] { "logrotate.service" }, 0, 0);
+        var host = new HostHealthSnapshot(true, new[] { "logrotate.service" }, 0, 0, 0);
         var system = Component(host, "system");
 
         Assert.Equal(HealthStatuses.Watch, system.Status);
@@ -107,14 +107,49 @@ public class HostHealthTests
     }
 
     [Theory]
-    [InlineData(4, 0, "memory.hardwareCorrupted")]
-    [InlineData(0, 2, "memory.edacErrors")]
-    public void Linux_MemoryErrors_Warn(long corruptedKb, long edac, string code)
+    [InlineData(4, 0, 0, "memory.hardwareCorrupted", HealthStatuses.Act)]
+    [InlineData(0, 0, 2, "memory.edacErrors", HealthStatuses.Act)]
+    [InlineData(0, 3, 0, "memory.edacErrors", HealthStatuses.Watch)]
+    public void Linux_MemoryErrors_GradeBySeverity(long corruptedKb, long corrected, long uncorrected, string code, string severity)
     {
-        var memory = Component(new HostHealthSnapshot(true, Array.Empty<string>(), corruptedKb, edac), "memory");
+        var memory = Component(new HostHealthSnapshot(true, Array.Empty<string>(), corruptedKb, corrected, uncorrected), "memory");
 
-        Assert.Equal(HealthStatuses.Act, memory.Status);
+        Assert.Equal(severity, memory.Status);
         Assert.Equal(code, Assert.Single(memory.Reasons).Code);
+    }
+
+    [Fact]
+    public void Linux_UnreadableSystemctl_IsUnknownNeverOk()
+    {
+        var system = Component(new HostHealthSnapshot(true, null, 0, 0, 0), "system");
+
+        Assert.Equal(HealthStatuses.Unknown, system.Status);
+        Assert.Equal("system.noHealthSource", Assert.Single(system.Reasons).Code);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(1)]
+    [InlineData(127)]
+    public void ReadFailedUnits_NonZeroExitOrMissingBinary_IsNull(int exitCode)
+    {
+        Assert.Null(HostHealthProbe.ReadFailedUnits(_ => new ShellResult(exitCode, "x.service loaded failed failed X", "")));
+        Assert.Null(HostHealthProbe.ReadFailedUnits(_ => throw new InvalidOperationException()));
+        Assert.Empty(HostHealthProbe.ReadFailedUnits(_ => new ShellResult(0, "", ""))!);
+    }
+
+    [Fact]
+    public void FailedUnits_SingularSummary_AndListCappedWithCount()
+    {
+        var one = Assert.Single(Component(new HostHealthSnapshot(true, new[] { "a.service" }, 0, 0, 0), "system").Reasons);
+        Assert.Equal("1 system service failed", one.Summary);
+
+        var many = Enumerable.Range(1, 8).Select(i => $"u{i}.service").ToArray();
+        var reason = Assert.Single(Component(new HostHealthSnapshot(true, many, 0, 0, 0), "system").Reasons);
+        Assert.Equal("8 system services failed", reason.Summary);
+        Assert.Equal("8", reason.Params!["count"]);
+        Assert.Equal("u1.service, u2.service, u3.service, u4.service, u5.service", reason.Params["units"]);
+        Assert.EndsWith("and 3 more.", reason.Detail);
     }
 
     [Fact]
@@ -132,7 +167,7 @@ public class HostHealthTests
     [Fact]
     public void Windows_IgnoresTheHostSnapshot()
     {
-        var host = new HostHealthSnapshot(true, new[] { "x.service" }, 9, 9);
+        var host = new HostHealthSnapshot(true, new[] { "x.service" }, 9, 9, 9);
         var memory = Component(host, "memory", windows: true);
         var system = Component(host, "system", windows: true);
 

@@ -93,7 +93,7 @@ public sealed class DiagnosticsToolsTests : IDisposable
         new PnpProblemScanner(),
         new McpTestHarness.StubSensorProvider(),
         store,
-        host: new HostHealthProbe(() => new HostHealthSnapshot(true, Array.Empty<string>(), 0, 0)));
+        host: new HostHealthProbe(() => new HostHealthSnapshot(true, Array.Empty<string>(), 0, 0, 0)));
 
     /// <summary>All seven real tools, wired the same way AddNexusMcp wires them
     /// in production - used by the registry test and reused across the
