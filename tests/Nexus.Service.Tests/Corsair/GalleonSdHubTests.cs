@@ -642,7 +642,7 @@ public class GalleonSdHubTests
     }
 
     [Fact]
-    public void Unanswered_open_stops_the_probe_without_a_close()
+    public void Unanswered_open_gets_one_close_in_case_it_opened_late_and_stops_the_probe()
     {
         var hid = new ScriptedHid();
         using var hub = NewHub(hid);
@@ -652,7 +652,8 @@ public class GalleonSdHubTests
         hub.SetSavedToDevice(true);
 
         Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
-        Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
+        Assert.DoesNotContain(hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdSize or GalleonSdProtocol.CmdRead);
     }
 
     [Fact]
@@ -757,5 +758,108 @@ public class GalleonSdHubTests
         hub.SetSavedToDevice(true);
 
         Assert.Empty(opened);
+    }
+
+    [Fact]
+    public void Error_status_to_the_saved_mode_hold_is_counted_and_the_interface_dropped_not_resent_forever()
+    {
+        var hid = new ScriptedHid();
+        hid.Device.OnWrite = wire =>
+        {
+            var r = Reply(wire[3]);
+            if (wire[3] == GalleonSdProtocol.CmdSet) r[4] = 3;
+            return r;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        for (var i = 0; i < 20; i++) hub.SetSavedToDevice(true);
+
+        Assert.Null(hub.Attached);
+        Assert.True(Commands(hid.Device, GalleonSdProtocol.CmdSet).Count() <= 6);
+        Assert.Empty(Commands(hid.Device, GalleonSdProtocol.CmdStartTx));
+    }
+
+    [Fact]
+    public void Probe_never_starts_on_an_unconfirmed_restore_and_a_retry_that_also_errors_is_bounded()
+    {
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        var store = ObjectStore(opened);
+        var bracket = false;
+        hid.Device.OnWrite = wire =>
+        {
+            var r = store(wire);
+            if (wire[3] == GalleonSdProtocol.CmdSet && wire[6] == GalleonSdProtocol.ModeSoftware) bracket = true;
+            else if (wire[3] == GalleonSdProtocol.CmdSet && bracket && r is not null) r[4] = 3;
+            return r;
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        for (var i = 0; i < 20; i++) hub.SetSavedToDevice(true);
+
+        Assert.Equal(1, opened.Count(r => r == 0x000F));
+        Assert.Equal(1, Commands(hid.Device, GalleonSdProtocol.CmdSet).Count(w => w[6] == GalleonSdProtocol.ModeSoftware));
+        Assert.Null(hub.Attached);
+        Assert.True(Commands(hid.Device, GalleonSdProtocol.CmdSet).Count(w => w[6] == GalleonSdProtocol.ModeHardware) <= 12);
+    }
+
+    [Fact]
+    public void Disconnect_between_resources_stops_the_walk_and_writes_hardware_mode_once()
+    {
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        var store = ObjectStore(opened);
+        GalleonSdHub? hubRef = null;
+        var fired = false;
+        hid.Device.OnWrite = wire =>
+        {
+            var r = store(wire);
+            if (wire[3] == GalleonSdProtocol.CmdStopTx && !fired)
+            {
+                fired = true;
+                hubRef!.Disconnect();
+            }
+            return r;
+        };
+        using var hub = NewHub(hid);
+        hubRef = hub;
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Equal(new ushort[] { 0x000F }, opened);
+        Assert.Null(hub.Attached);
+        var afterClose = hid.Device.Writes.SkipWhile(w => w[3] != GalleonSdProtocol.CmdStopTx).Where(w => w[3] == GalleonSdProtocol.CmdSet).ToList();
+        Assert.Single(afterClose);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, afterClose[0][6]);
+    }
+
+    [Fact]
+    public void Probe_stops_at_its_time_budget_and_still_closes_and_restores()
+    {
+        _clock = 9_000_000_000;
+        var hid = new ScriptedHid();
+        var opened = new List<ushort>();
+        var store = ObjectStore(opened);
+        hid.Device.OnWrite = wire =>
+        {
+            _clock += System.Diagnostics.Stopwatch.Frequency * 4 / 10;
+            return store(wire);
+        };
+        using var hub = NewHub(hid);
+        hub.Reconcile(true);
+        hid.Device.Writes.Clear();
+
+        hub.SetSavedToDevice(true);
+
+        Assert.Equal(new ushort[] { 0x000F }, opened);
+        Assert.Single(Commands(hid.Device, GalleonSdProtocol.CmdStopTx));
+        Assert.DoesNotContain(hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdSize or GalleonSdProtocol.CmdRead);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
     }
 }

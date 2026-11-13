@@ -84,7 +84,9 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private const double KeepAliveMs = 10_000;
     private const double ModeReassertMs = 30_000;
     private const double StatsWindowSec = 30;
-    private const double ProbeBudgetMs = 1500;
+    private const double ProbeBudgetMs = 1200;
+    private const int OpenReplyMs = 300;
+    private const int MinProbeWaitMs = 20;
     private const int ProbeReplyMs = 100;
     private const int FrameReplyMs = 20;
     private const int FirstPacketReplyMs = 5;
@@ -273,13 +275,19 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                 }
                 if (slot.ModeTouched)
                 {
-                    ReleaseLocked(slot);
-                    slot.HardwareHeld = !slot.ModeTouched;
+                    slot.HardwareHeld = ReleaseLocked(slot);
+                    // ReleaseLocked counts each unconfirmed attempt; at the threshold the interface is dropped like a failing stream.
+                    if (!slot.HardwareHeld && slot.Failures >= ConsecutiveWriteFailureThreshold) RecordFailureLocked(slot, "saved-hold");
                 }
                 else if (!slot.HardwareHeld)
                 {
-                    var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware (saved)", ProbeReplyMs, log: true);
+                    var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware (saved)", ProbeReplyMs, log: slot.ErrorLogs < MaxErrorLogs);
                     slot.HardwareHeld = RestoreConfirmed(reply);
+                    if (!slot.HardwareHeld)
+                    {
+                        if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] saved-mode hardware hold answered status {reply.Status:X2}");
+                        RecordFailureLocked(slot, "saved-hold");
+                    }
                 }
                 if (!slot.ProbeDone && slot.HardwareHeld)
                 {
@@ -340,23 +348,26 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         return true;
     }
 
-    private void ReleaseLocked(Slot slot)
+    // True when the board is in hardware mode afterwards (or nothing was taken). An error-status reply counts like a throw:
+    // ModeTouched stays armed so the next release retries, until the failure threshold gives up.
+    private bool ReleaseLocked(Slot slot)
     {
-        if (!slot.ModeTouched) return;
-        slot.ModeTouched = false;
+        if (!slot.ModeTouched) return true;
         slot.SoftwareMode = false;
         slot.HasLast = false;
+        var confirmed = false;
         try
         {
             var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware", ProbeReplyMs, log: true);
-            if (!reply.IsOk && slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode handback not confirmed (parsed={reply.Parsed} status={reply.Status:X2})");
+            confirmed = RestoreConfirmed(reply);
+            if (!confirmed && slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode handback not confirmed (parsed={reply.Parsed} status={reply.Status:X2})");
         }
         catch (Exception ex)
         {
-            // Re-arm so the next release retries, until the failure threshold gives up.
-            if (++slot.Failures < ConsecutiveWriteFailureThreshold) slot.ModeTouched = true;
             if (slot.ErrorLogs++ < MaxErrorLogs) ServiceLog.Warn($"[galleon-sd] hardware-mode handback threw: {ex.GetType().Name}");
         }
+        if (confirmed || ++slot.Failures >= ConsecutiveWriteFailureThreshold) slot.ModeTouched = false;
+        return confirmed;
     }
 
     // Read-only property gets (OpenRGB identity reads, plus the one Web Hub polls) so a support bundle shows how the board answers.
@@ -454,6 +465,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                 else
                 {
                     ServiceLog.Warn($"[galleon-sd-onboard] hardware-mode restore answered status {reply.Status:X2}; will retry");
+                    RecordFailureLocked(slot, "probe-restore");
                 }
             }
             catch (Exception ex)
@@ -464,12 +476,12 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
     }
 
-    // Runs one probe step under the I/O lock; false when the slot was released, replaced or taken off saved mode meanwhile.
+    // Runs one probe step under the I/O lock; false when the slot was released or replaced meanwhile. Saved mode cannot change underneath: only the writer thread that runs the probe toggles it.
     private bool WithSlot(Slot slot, Action<Slot> step)
     {
         lock (_io)
         {
-            if (_disposed || _slot != slot || !slot.SavedMode) return false;
+            if (_disposed || _slot != slot) return false;
             step(slot);
             return true;
         }
@@ -486,30 +498,47 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
         budget--;
         var completed = false;
-        var held = WithSlot(slot, s => completed = ReadResourceLocked(s, resource, out read));
+        var held = WithSlot(slot, s => completed = ReadResourceLocked(s, resource, deadline, out read));
         body = read;
         return held && completed;
     }
 
-    // open, size, two reads (Web Hub reads big objects twice), close. False, with nothing else sent, when the open is not acknowledged OK.
-    // The body is the first read reply that parses as an OK 08 reply; unsolicited input reports never count.
-    private bool ReadResourceLocked(Slot slot, ushort resource, out byte[] body)
+    // Reply wait for a step: the usual window, clamped to what is left of the probe budget (never below a small floor).
+    private int ProbeWait(long deadline, int maxMs)
+    {
+        var left = (int)Math.Min(int.MaxValue, (deadline - _clock()) * 1000.0 / Stopwatch.Frequency);
+        return Math.Clamp(left, MinProbeWaitMs, maxMs);
+    }
+
+    // open, size, two reads (Web Hub reads big objects twice), close. The body is the first read reply that parses as an OK 08 reply.
+    // Open outcomes: OK proceeds; an explicit refusal (parsed, non-OK) sends nothing more because no handle exists; silence is
+    // treated as a possibly late OK, so a close for handle 0 is sent (this probe only runs when no other host was seen contending,
+    // so a stray close can only hit a handle this probe itself opened). Steps past the deadline are skipped; the close never is.
+    private bool ReadResourceLocked(Slot slot, ushort resource, long deadline, out byte[] body)
     {
         const byte handle = 0;
         var tag = $"onboard {resource:X4}";
         body = Array.Empty<byte>();
-        var open = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeReplyMs, log: true);
+        var open = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeWait(deadline, OpenReplyMs), log: true);
         if (!open.IsOk)
         {
-            ServiceLog.Info($"[galleon-sd-onboard] {tag} open not acknowledged (parsed={open.Parsed} status={open.Status:X2}); probe stops");
+            if (open.Parsed)
+            {
+                ServiceLog.Info($"[galleon-sd-onboard] {tag} open refused (status={open.Status:X2}); probe stops");
+            }
+            else
+            {
+                ServiceLog.Info($"[galleon-sd-onboard] {tag} open unanswered; closing handle in case it opened late, probe stops");
+                Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"{tag} close (unanswered open)", ProbeReplyMs, log: true);
+            }
             return false;
         }
         try
         {
-            Exchange(slot, GalleonSdProtocol.ResourceSize(handle), $"{tag} size", ProbeReplyMs, log: true);
-            for (var i = 0; i < 2; i++)
+            if (_clock() < deadline) Exchange(slot, GalleonSdProtocol.ResourceSize(handle), $"{tag} size", ProbeWait(deadline, ProbeReplyMs), log: true);
+            for (var i = 0; i < 2 && _clock() < deadline; i++)
             {
-                var read = Exchange(slot, GalleonSdProtocol.ResourceRead(handle), $"{tag} read {i}", ProbeReplyMs, log: true);
+                var read = Exchange(slot, GalleonSdProtocol.ResourceRead(handle), $"{tag} read {i}", ProbeWait(deadline, ProbeReplyMs), log: true);
                 if (body.Length == 0 && read.IsOk && slot.ParsedReplyLength > 0) body = slot.ParsedReply.AsSpan(0, slot.ParsedReplyLength).ToArray();
             }
         }
