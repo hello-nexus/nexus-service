@@ -92,7 +92,8 @@ public sealed class DiagnosticsToolsTests : IDisposable
         new MemoryDiagnosticOrchestrator(),
         new PnpProblemScanner(),
         new McpTestHarness.StubSensorProvider(),
-        store);
+        store,
+        host: new HostHealthProbe(() => new HostHealthSnapshot(true, Array.Empty<string>(), 0, 0, 0)));
 
     /// <summary>All seven real tools, wired the same way AddNexusMcp wires them
     /// in production - used by the registry test and reused across the
@@ -124,10 +125,13 @@ public sealed class DiagnosticsToolsTests : IDisposable
 
         Assert.False(result.IsError);
         using var doc = JsonDocument.Parse(result.Text);
-        // Fresh monitors fed no data on a non-Windows host: every component
-        // self-guards on Supported/windowsSupported and contributes nothing.
-        Assert.Equal("ok", doc.RootElement.GetProperty("overall").GetString());
-        Assert.Empty(doc.RootElement.GetProperty("components").EnumerateArray());
+        // Fresh monitors fed no data on a non-Windows host: only the host
+        // System and Memory tiles exist (Memory unknown, System ok on Linux,
+        // unknown on macOS where the probe has no source).
+        var ids = doc.RootElement.GetProperty("components").EnumerateArray()
+            .Select(c => c.GetProperty("id").GetString()).OrderBy(i => i, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { "memory", "system" }, ids);
+        Assert.Contains(doc.RootElement.GetProperty("overall").GetString(), new[] { "ok", "unknown" });
     }
 
     // ── get_storage_health ──────────────────────────────────────────────────
