@@ -419,6 +419,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public double LastUploadStartMs;
         public bool Joinable;
         public int UploadIntervalTicks;
+        // DIAG-SLV3-STUTTER
+        public bool DiagWatching;
+        public double DiagStartMs;
+        public string DiagEchoBefore = "";
     }
 
     // One look-ahead render per window serves every chain: all chains play on
@@ -446,6 +450,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private int _healthUntaken;
     private double _healthNextAirMs;
     private readonly PlanHold _planHold = new();
+    private double _diagNextReadMs;
+    private int _diagTicks;
     private int _healthAirMax;
     private long _healthTickMaxMs;
     private readonly HashSet<string> _rollingIds = new();
@@ -577,6 +583,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             return;
         }
         var (intervalTicks, cycleMs) = WindowPlan(_planChains, _planLeds);
+        // DIAG-SLV3-STUTTER: force an interval from a file to exercise plans a one-chain box cannot reach.
+        if (nowMs >= _diagNextReadMs)
+        {
+            _diagNextReadMs = nowMs + 2000;
+            try { _diagTicks = int.TryParse(System.IO.File.ReadAllText(@"C:\ProgramData\Nexus\slv3-ticks.txt").Trim(), out var t) ? t : 0; } catch { _diagTicks = 0; }
+        }
+        if (_diagTicks > 0) intervalTicks = _diagTicks;
         _windowRequestPeriodMs = cycleMs / _planChains;
         var independent = true;
         foreach (var st in _rolling.Values)
@@ -793,6 +806,20 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         st.Visited = true;
         CollectUpload(macHex, st);
+        if (st.DiagWatching)
+        {
+            var echo = FindConfirmedEffectIndex(macHex);
+            if (echo.Length > 0 && echo != st.DiagEchoBefore)
+            {
+                ServiceLog.Info($"[slv3-diag] echo mac={macHex} landedAfterMs={nowMs - st.DiagStartMs:F0}");
+                st.DiagWatching = false;
+            }
+            else if (nowMs - st.DiagStartMs > 2000)
+            {
+                ServiceLog.Info($"[slv3-diag] echo mac={macHex} NOT-LANDED within 2000 ms (echo={echo})");
+                st.DiagWatching = false;
+            }
+        }
         var ids = new List<string>(zones.Count);
         foreach (var z in zones)
         {
@@ -842,6 +869,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadLedCount = ledCount;
                 st.UploadIntervalTicks = _windowIntervalTicks;
                 var interval = WindowInterval;
+                DiagUploadStart(macHex, st, payload, ledCount, joinFrame, nowMs);
                 // Off the writer thread, so other chains keep streaming while the upload runs.
                 st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent));
                 return true;
@@ -851,6 +879,38 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && TryCurrentFrame(nowMs, out var current)
             && current >= st.WindowFirstFrame
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
+    }
+
+    // DIAG-SLV3-STUTTER: seam between the playing window and the one being uploaded, and echo watch.
+    private void DiagUploadStart(string macHex, ChainRolling st, byte[] payload, int ledCount, long joinFrame, double nowMs)
+    {
+        var oldPayload = st.WindowPayload;
+        var overlap = 0;
+        double sum = 0;
+        var max = 0;
+        long lo = 0, hi = 0;
+        if (oldPayload is not null && st.WindowFirstFrame != long.MinValue && st.WindowLedCount == ledCount)
+        {
+            lo = Math.Max(Math.Max(st.WindowFirstFrame, _windowFirstFrame), joinFrame);
+            hi = Math.Min(st.WindowFirstFrame, _windowFirstFrame) + WindowFrames - WindowWrapMarginFrames;
+            for (var f = lo; f < hi; f++)
+            {
+                var o = WindowSlot(f) * ledCount * 3;
+                for (var i = 0; i < ledCount * 3; i++)
+                {
+                    var d = Math.Abs(oldPayload[o + i] - payload[o + i]);
+                    sum += d;
+                    if (d > max) max = d;
+                }
+                overlap++;
+            }
+        }
+        double phase = 0;
+        if (TryFitClock(_clock, out var a, out var b)) phase = (a + b * nowMs) / WindowInterval - Math.Floor((a + b * nowMs) / WindowInterval);
+        ServiceLog.Info($"[slv3-diag] start mac={macHex} leds={ledCount} intervalTicks={_windowIntervalTicks} sinceLastStartMs={nowMs - st.DiagStartMs:F0} joinFrameInWindow={joinFrame - _windowFirstFrame} phase={phase:F2} seamFrames={overlap} seamMeanAbs={(overlap > 0 ? sum / (overlap * ledCount * 3) : 0):F2} seamMaxAbs={max}");
+        st.DiagWatching = true;
+        st.DiagStartMs = nowMs;
+        st.DiagEchoBefore = FindConfirmedEffectIndex(macHex);
     }
 
     private bool IsNextToUpload(ChainRolling chain)

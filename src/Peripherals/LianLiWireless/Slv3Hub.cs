@@ -3271,10 +3271,14 @@ public sealed partial class Slv3Hub : IDisposable
             return false;
         }
         BeginUpload();
+        // DIAG-SLV3-STUTTER
+        var dgSw = System.Diagnostics.Stopwatch.StartNew();
+        double dgLockedAt = 0, dgHeadersDone = 0, dgDataDone = 0;
         try
         {
             lock (_lock)
             {
+                dgLockedAt = dgSw.Elapsed.TotalMilliseconds;
                 if (_tx is null)
                 {
                     return false;
@@ -3286,6 +3290,7 @@ public sealed partial class Slv3Hub : IDisposable
                         return false;
                     }
                 }
+                dgHeadersDone = dgSw.Elapsed.TotalMilliseconds;
                 for (var pass = 0; pass < WindowDataPasses; pass++)
                 {
                     for (var p = 1; p < packets.Length; p++)
@@ -3296,6 +3301,7 @@ public sealed partial class Slv3Hub : IDisposable
                         }
                     }
                 }
+                dgDataDone = dgSw.Elapsed.TotalMilliseconds;
                 NoteConfigChangedLocked();
             }
             // The late passes' cost is booked at decision time so a concurrent
@@ -3329,6 +3335,7 @@ public sealed partial class Slv3Hub : IDisposable
                     }
                 }
             }
+            ServiceLog.Info($"[slv3-diag] upload mac={macHex} packets={packets.Length} lockWaitMs={dgLockedAt:F1} headersMs={dgHeadersDone - dgLockedAt:F1} dataMs={dgDataDone - dgHeadersDone:F1} lateMs={dgSw.Elapsed.TotalMilliseconds - dgDataDone:F1} totalMs={dgSw.Elapsed.TotalMilliseconds:F1} latePasses={latePasses}");
             return true;
         }
         finally
