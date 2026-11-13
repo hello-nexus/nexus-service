@@ -2258,8 +2258,7 @@ public sealed class KrakenHub : IDisposable
                 int turns = _snapshot.LcdOrientationQuarterTurns;
                 int rawBytes = _lcdWidth * _lcdHeight * 3;
                 EnsureLcdScratch(Math.Max(rawBytes, Q565Encoder.MaxEncodedLength(_lcdWidth, _lcdHeight)));
-                // The vendor app sends one Q565 payload per frame; raw BGR888 only when
-                // Q565 would not be smaller.
+                // The vendor app streams this panel as Q565 (format 0x08), direct and bucketless.
                 format = KrakenProtocol.BulkFormatQ565;
                 encoded = Q565Encoder.Encode(bgra, _lcdWidth, _lcdHeight, turns, _lcdScratch, sourceIsBgra: true);
                 if (encoded >= rawBytes)
@@ -2274,7 +2273,7 @@ public sealed class KrakenHub : IDisposable
             }
 
             if (!WriteBulkPayload(
-                    lcd, format, scratch.AsSpan(0, encoded), format == KrakenProtocol.BulkFormatQ565 ? encoded : DirectChunkBytes))
+                    lcd, format, scratch.AsSpan(0, encoded), DirectChunkBytes))
             {
                 lock (_lock) { _streamReady = false; }
                 return false;
