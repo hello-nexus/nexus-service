@@ -62,7 +62,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             {
                 Id = PumpChannelId,
                 Name = "Ryujin III Pump",
-                DutyPercent = snap.PumpDuty >= 0 ? snap.PumpDuty : pumpSw ? pumpWant : 0,
+                DutyPercent = snap.PumpDuty >= 0 ? snap.PumpDuty : pumpSw ? pumpWant : RyujinCoolingProtocol.SafeDuty,
                 Rpm = snap.PumpRpm,
                 Mode = pumpSw ? FanModes.Manual : FanModes.Auto,
                 Kind = FanKinds.Pump,
@@ -75,7 +75,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             {
                 Id = FanChannelId,
                 Name = "Ryujin III Fan",
-                DutyPercent = snap.FanDuty >= 0 ? snap.FanDuty : fanSw ? fanWant : 0,
+                DutyPercent = snap.FanDuty >= 0 ? snap.FanDuty : fanSw ? fanWant : RyujinCoolingProtocol.SafeDuty,
                 Rpm = snap.FanRpm,
                 Mode = fanSw ? FanModes.Manual : FanModes.Auto,
                 Kind = FanKinds.Fan,
@@ -114,7 +114,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             return null;
         }
         var snap = _hub.Snapshot;
-        return snap.StatusFresh && snap.LiquidTempC > 0 ? (float)snap.LiquidTempC : null;
+        return _hub.StatusFresh && snap.LiquidTempC > 0 ? (float)snap.LiquidTempC : null;
     }
 
     public int SetFanSpeed(string channelId, int dutyPercent)
@@ -136,7 +136,11 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
 
     public void DriveFanSpeed(string channelId, int dutyPercent) => SetFanSpeed(channelId, dutyPercent);
 
-    /// <summary>The cooler has no firmware curve to hand back to, so a released channel returns to Armoury Crate's default duty.</summary>
+    /// <summary>
+    /// The cooler has no firmware curve to hand back to. A released pump returns to Armoury Crate's
+    /// default duty so it is never left slow; a released fan keeps its duty, as the Kraken and
+    /// Galahad do, so the Off preset never makes it louder.
+    /// </summary>
     public void ReleaseFan(string channelId)
     {
         if (!IsRyujinId(channelId))
@@ -246,14 +250,13 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             if (releaseFan)
             {
                 _fanSw = false;
-                _fanCommanded = RyujinCoolingProtocol.SafeDuty;
             }
         }
-        if ((!releasePump && !releaseFan) || !_hub.IsConnected)
+        if (!releasePump || !_hub.IsConnected)
         {
             return;
         }
-        if (!WriteDuties(releasePump, releaseFan))
+        if (!WriteDuties(releasePump))
         {
             ServiceLog.Warn("[asus-ryujin-cooling] safe duty write on release returned false");
         }
@@ -263,7 +266,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
     /// The report carries both channels, so the one Nexus is not driving rides at what the cooler
     /// last reported, or the safe duty before it has reported anything.
     /// </summary>
-    private bool WriteDuties(bool releasePump = false, bool releaseFan = false)
+    private bool WriteDuties(bool releasePump = false)
     {
         var snap = _hub.Snapshot;
         int pump;
@@ -273,8 +276,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
             pump = releasePump ? RyujinCoolingProtocol.SafeDuty
                 : _pumpSw ? _pumpCommanded
                 : snap.PumpDuty >= 0 ? snap.PumpDuty : RyujinCoolingProtocol.SafeDuty;
-            fan = releaseFan ? RyujinCoolingProtocol.SafeDuty
-                : _fanSw ? _fanCommanded
+            fan = _fanSw ? _fanCommanded
                 : snap.FanDuty >= 0 ? snap.FanDuty : RyujinCoolingProtocol.SafeDuty;
         }
         return _hub.SetDuty(pump, fan);

@@ -34,6 +34,14 @@ public sealed class RyujinCoolingWorker : BackgroundService
         _cooling = cooling;
         _gate = gate;
         _presence = presence;
+        // A control change stops the writes at once instead of on the next keepalive.
+        _gate.Changed += (handler, _) =>
+        {
+            if (string.Equals(handler, RyujinCoolingProtocol.HandlerId, StringComparison.OrdinalIgnoreCase))
+            {
+                _hub.Wake.Release();
+            }
+        };
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -61,24 +69,38 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 try
                 {
                     int failures = 0;
+                    long nextCycle = 0;
                     while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(RyujinCoolingProtocol.HandlerId))
                     {
-                        _cooling.ReassertControl();
-                        if (_hub.Poll())
+                        if (Environment.TickCount64 >= nextCycle)
                         {
-                            failures = 0;
+                            _cooling.ReassertControl();
+                            nextCycle = Environment.TickCount64 + RyujinCoolingProtocol.KeepaliveMs;
+                            if (_hub.Flush() && _hub.Poll())
+                            {
+                                failures = 0;
+                            }
+                            else if (++failures >= MaxConsecutiveFailures)
+                            {
+                                break;
+                            }
                         }
-                        else if (++failures >= MaxConsecutiveFailures)
+                        else if (!_hub.Flush() && ++failures >= MaxConsecutiveFailures)
                         {
                             break;
                         }
-                        await Task.Delay(RyujinCoolingProtocol.KeepaliveMs, stoppingToken).ConfigureAwait(false);
+                        int wait = (int)Math.Max(1, nextCycle - Environment.TickCount64);
+                        await _hub.Wake.WaitAsync(wait, stoppingToken).ConfigureAwait(false);
                     }
                 }
                 finally
                 {
-                    // Best effort: a held channel goes back to the safe duty before the handle closes.
-                    try { _cooling.ReleaseAll(); }
+                    // Best effort: a driven pump goes back to the safe duty before the handle closes.
+                    try
+                    {
+                        _cooling.ReleaseAll();
+                        _hub.Flush();
+                    }
                     catch (Exception ex) { ServiceLog.Warn($"[asus-ryujin-cooling] release on disconnect failed: {ex.Message}"); }
                     _hub.Detach();
                     ServiceLog.Info("[asus-ryujin-cooling] disconnected");

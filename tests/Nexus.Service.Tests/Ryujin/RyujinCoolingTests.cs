@@ -266,10 +266,12 @@ public class RyujinCoolingTests
     [InlineData(100, 100)]
     public void Pump_writes_are_clamped_and_never_reach_zero(int request, int expected)
     {
-        var (_, provider, fake) = Connected();
+        var (hub, provider, fake) = Connected();
 
         int result = provider.SetFanSpeed("asus-ryujin-lcd:pump", request);
+        hub.Flush();
         provider.DriveFanSpeed("asus-ryujin-lcd:pump", request);
+        hub.Flush();
 
         Assert.Equal(expected, result);
         Assert.All(fake.Writes, w => Assert.Equal((byte)expected, w[3]));
@@ -285,6 +287,7 @@ public class RyujinCoolingTests
         fake.Writes.Clear();
 
         provider.SetFanSpeed("asus-ryujin-lcd:fan", 40);
+        hub.Flush();
 
         Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 64, 40 }, fake.Writes[0][0..5]);
     }
@@ -292,9 +295,10 @@ public class RyujinCoolingTests
     [Fact]
     public void Before_any_reply_the_undriven_channel_rides_at_the_safe_duty()
     {
-        var (_, provider, fake) = Connected();
+        var (hub, provider, fake) = Connected();
 
         provider.SetFanSpeed("asus-ryujin-lcd:pump", 55);
+        hub.Flush();
 
         Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 55, 100 }, fake.Writes[0][0..5]);
     }
@@ -320,15 +324,19 @@ public class RyujinCoolingTests
     [Fact]
     public void Reassert_resends_the_commanded_duty_and_is_silent_when_nothing_is_driven()
     {
-        var (_, provider, fake) = Connected();
+        var (hub, provider, fake) = Connected();
 
         provider.ReassertControl();
+        hub.Flush();
         Assert.Empty(fake.Writes);
 
         provider.SetFanSpeed("asus-ryujin-lcd:pump", 55);
+        hub.Flush();
         fake.Writes.Clear();
         provider.ReassertControl();
+        hub.Flush();
         provider.ReassertControl();
+        hub.Flush();
 
         Assert.Equal(2, fake.Writes.Count);
         Assert.All(fake.Writes, w => Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 55 }, w[0..4]));
@@ -344,12 +352,15 @@ public class RyujinCoolingTests
         fake.QueueReply(DutyReply(60, 30));
         hub.Poll();
         provider.SetFanSpeed("asus-ryujin-lcd:pump", 40);
+        hub.Flush();
         fake.Writes.Clear();
 
         provider.ReleaseFan("asus-ryujin-lcd:pump");
+        hub.Flush();
 
         Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 100, 30 }, fake.Writes[0][0..5]);
         provider.ReassertControl();
+        hub.Flush();
         Assert.Single(fake.Writes);
         Assert.All(provider.GetFanChannels(), c => Assert.Equal(FanModes.Auto, c.Mode));
     }
@@ -357,25 +368,75 @@ public class RyujinCoolingTests
     [Fact]
     public void Release_all_writes_nothing_when_nothing_was_driven()
     {
-        var (_, provider, fake) = Connected();
+        var (hub, provider, fake) = Connected();
 
         provider.ReleaseAll();
+        hub.Flush();
 
         Assert.Empty(fake.Writes);
     }
 
     [Fact]
-    public void Release_all_restores_both_channels_in_one_report()
+    public void Release_all_raises_the_pump_and_leaves_the_fan_at_its_duty()
     {
-        var (_, provider, fake) = Connected();
+        var (hub, provider, fake) = Connected();
         provider.SetFanSpeed("asus-ryujin-lcd:pump", 40);
         provider.SetFanSpeed("asus-ryujin-lcd:fan", 25);
+        hub.Flush();
         fake.Writes.Clear();
 
         provider.ReleaseAll();
+        hub.Flush();
 
         Assert.Single(fake.Writes);
-        Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 100, 100 }, fake.Writes[0][0..5]);
+        Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 100, 25 }, fake.Writes[0][0..5]);
+    }
+
+    [Fact]
+    public void Releasing_the_fan_alone_writes_nothing_so_off_is_never_louder()
+    {
+        var (hub, provider, fake) = Connected();
+        provider.SetFanSpeed("asus-ryujin-lcd:fan", 25);
+        hub.Flush();
+        fake.Writes.Clear();
+
+        provider.ReleaseFan("asus-ryujin-lcd:fan");
+        hub.Flush();
+
+        Assert.Empty(fake.Writes);
+        Assert.All(provider.GetFanChannels(), c => Assert.Equal(FanModes.Auto, c.Mode));
+    }
+
+    [Fact]
+    public void Liquid_temperature_expires_when_the_status_stops_arriving()
+    {
+        long now = 1000;
+        var (hub, provider, fake) = Connected();
+        hub.NowMs = () => now;
+        fake.QueueReply(StatusReply(30, 0, 2000, 800));
+        fake.QueueReply(DutyReply(60, 30));
+        hub.Poll();
+        Assert.NotNull(provider.ReadTemperature("asus-ryujin-lcd:liquid"));
+
+        now += 3L * RyujinCoolingProtocol.KeepaliveMs + 1;
+
+        Assert.Null(provider.ReadTemperature("asus-ryujin-lcd:liquid"));
+        Assert.Empty(provider.GetTemperatureSources());
+    }
+
+    [Fact]
+    public void Implausible_liquid_temperature_is_rejected()
+    {
+        Assert.False(RyujinCoolingProtocol.TryParseStatus(StatusReply(101, 0, 1000, 1000), out _, out _, out _));
+        Assert.True(RyujinCoolingProtocol.TryParseStatus(StatusReply(100, 0, 1000, 1000), out _, out _, out _));
+    }
+
+    [Fact]
+    public void Undriven_channels_show_the_safe_duty_before_any_reply()
+    {
+        var (_, provider, _) = Connected();
+
+        Assert.All(provider.GetFanChannels(), c => Assert.Equal(100, c.DutyPercent));
     }
 
     [Fact]
@@ -397,6 +458,7 @@ public class RyujinCoolingTests
         var cooling = new RyujinDeviceFake { OnWrite = _ => order.Enqueue("duty") };
         var hub = new RyujinCoolingHub();
         hub.Attach(cooling);
+        Assert.True(hub.SetDuty(55, 40));
         var driver = new RyujinPanelDriver();
         var lcdHid = new RyujinDeviceFake { OnWrite = _ => order.Enqueue("commit") };
         var pipe = new SlowPipe(order);
@@ -404,13 +466,18 @@ public class RyujinCoolingTests
 
         var upload = Task.Run(() => driver.SendFrame(pipe, lcdHid, frame));
         Assert.True(pipe.UploadStarted.Wait(5000));
-        var duty = Task.Run(() => hub.SetDuty(55, 40));
-        await Task.Delay(150);
+        var flusher = new Thread(() => hub.Flush());
+        flusher.Start();
+        // Blocked on the write gate the upload still holds.
+        while (!flusher.ThreadState.HasFlag(System.Threading.ThreadState.WaitSleepJoin))
+        {
+            Thread.Yield();
+        }
         Assert.Empty(cooling.Writes);
         pipe.Release.Set();
 
         Assert.True(await upload);
-        Assert.True(await duty);
+        flusher.Join();
         var sequence = order.ToArray();
         Assert.Equal("commit", sequence[^2]);
         Assert.Equal("duty", sequence[^1]);
@@ -418,11 +485,28 @@ public class RyujinCoolingTests
     }
 
     [Fact]
+    public void Setting_a_duty_never_waits_on_the_lcd_write_gate()
+    {
+        var (hub, provider, _) = Connected();
+        bool done;
+        lock (RyujinProtocol.HidWriteGate)
+        {
+            var caller = new Thread(() => provider.SetFanSpeed("asus-ryujin-lcd:pump", 60));
+            caller.Start();
+            done = caller.Join(5000);
+        }
+
+        Assert.True(done);
+        Assert.True(hub.Wake.Wait(0));
+    }
+
+    [Fact]
     public void Pump_and_fan_work_with_no_lcd_attached()
     {
-        var (_, provider, fake) = Connected();
+        var (hub, provider, fake) = Connected();
 
         provider.SetFanSpeed("asus-ryujin-lcd:pump", 60);
+        hub.Flush();
 
         Assert.Single(fake.Writes);
     }

@@ -26,6 +26,7 @@ internal static class RyujinCoolingProtocol
     private const byte RequestDuty = 0x9A;
     private const byte ResponseDuty = 0x1A;
 
+    private const double MaxPlausibleTempC = 100;
     private const int TempOffset = 5;
     private const int PumpRpmOffset = 7;
     private const int FanRpmOffset = 10;
@@ -68,7 +69,12 @@ internal static class RyujinCoolingProtocol
         {
             return false;
         }
-        liquidTempC = report[TempOffset] + report[TempOffset + 1] / 10.0;
+        double temp = report[TempOffset] + report[TempOffset + 1] / 10.0;
+        if (temp > MaxPlausibleTempC)
+        {
+            return false;
+        }
+        liquidTempC = temp;
         pumpRpm = report[PumpRpmOffset] | (report[PumpRpmOffset + 1] << 8);
         fanRpm = report[FanRpmOffset] | (report[FanRpmOffset + 1] << 8);
         return true;
