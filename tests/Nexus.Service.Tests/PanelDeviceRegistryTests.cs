@@ -232,6 +232,26 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_SkinOverrides_RoundTripClearAndSurviveOmission()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        Assert.Null(record.SkinAccent);
+
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = " #ff8800 ", SkinFont = "jura", SkinMode = "light" });
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal("#ff8800", patched!.SkinAccent);
+        Assert.Equal("jura", patched.SkinFont);
+        Assert.Equal("light", patched.SkinMode);
+
+        Assert.Equal("#ff8800", _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = "bad\nvalue" })!.SkinAccent);
+
+        var cleared = _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = "", SkinFont = " ", SkinMode = "" });
+        Assert.Null(cleared!.SkinAccent);
+        Assert.Null(cleared.SkinFont);
+        Assert.Null(cleared.SkinMode);
+    }
+
+    [Fact]
     public void Patch_Font_RoundTripsAndSurvivesOmission()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
@@ -617,6 +637,9 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             Font = "tektur",
             Skin = "lcd",
             SkinVariant = "green",
+            SkinAccent = "#ff8800",
+            SkinFont = "jura",
+            SkinMode = "light",
             ThemeSyncWithDesktop = false,
             AccentSyncWithDesktop = false,
         });
@@ -656,6 +679,9 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.Font);
         Assert.Null(reset.Skin);
         Assert.Null(reset.SkinVariant);
+        Assert.Null(reset.SkinAccent);
+        Assert.Null(reset.SkinFont);
+        Assert.Null(reset.SkinMode);
         Assert.Null(reset.ThemeSyncWithDesktop);
         Assert.Null(reset.AccentSyncWithDesktop);
         Assert.Null(_registry.Get(record.Id)!.Layout);

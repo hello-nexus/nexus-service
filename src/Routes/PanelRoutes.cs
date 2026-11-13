@@ -393,7 +393,10 @@ public static class PanelRoutes
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
             if ((body.Skin is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.Skin, out _))
-                || (body.SkinVariant is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.SkinVariant, out _)))
+                || (body.SkinVariant is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.SkinVariant, out _))
+                || (body.SkinAccent is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.SkinAccent, out _))
+                || (body.SkinFont is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.SkinFont, out _))
+                || (body.SkinMode is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.SkinMode, out _)))
             {
                 return Results.Json(ApiResponse.Fail("invalid_skin"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }

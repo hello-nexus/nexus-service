@@ -98,6 +98,12 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public string? Skin { get; set; }
     /// <summary>Variant id within the skin. Null is the skin default; a patch of "" clears it.</summary>
     public string? SkinVariant { get; set; }
+    /// <summary>Accent the user picked while this skin is active (a hex colour). Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinAccent { get; set; }
+    /// <summary>Font the user picked while this skin is active. Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinFont { get; set; }
+    /// <summary>Mode (dark or light) the user picked while this skin is active. Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinMode { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -331,6 +337,9 @@ public interface IPanelPersonalization
     string? Font { get; set; }
     string? Skin { get; set; }
     string? SkinVariant { get; set; }
+    string? SkinAccent { get; set; }
+    string? SkinFont { get; set; }
+    string? SkinMode { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
@@ -388,6 +397,12 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public string? Skin { get; set; }
     /// <summary>Variant id within the skin. Null is the skin default; a patch of "" clears it.</summary>
     public string? SkinVariant { get; set; }
+    /// <summary>Accent the user picked while this skin is active (a hex colour). Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinAccent { get; set; }
+    /// <summary>Font the user picked while this skin is active. Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinFont { get; set; }
+    /// <summary>Mode (dark or light) the user picked while this skin is active. Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinMode { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
@@ -524,6 +539,12 @@ public sealed class PanelDevicePatch
     public string? Skin { get; set; }
     /// <summary>Variant id within the skin. Null is the skin default; a patch of "" clears it.</summary>
     public string? SkinVariant { get; set; }
+    /// <summary>Accent the user picked while this skin is active (a hex colour). Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinAccent { get; set; }
+    /// <summary>Font the user picked while this skin is active. Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinFont { get; set; }
+    /// <summary>Mode (dark or light) the user picked while this skin is active. Null follows the skin default; a patch of "" clears it. Cleared by the web whenever the skin changes.</summary>
+    public string? SkinMode { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
