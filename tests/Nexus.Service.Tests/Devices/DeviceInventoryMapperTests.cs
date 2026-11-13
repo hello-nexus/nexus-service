@@ -331,6 +331,18 @@ public class DeviceInventoryMapperTests
         Assert.Null(DeviceInventoryMapper.FromRyujin("other", true, 0x0B05, 0x1AA2, null));
     }
 
+    [Theory]
+    [InlineData(0x1AA2, "asus:ryujin-lcd", "ROG Ryujin LCD", "asus-ryujin-lcd:1aa2")]
+    [InlineData(0x1BCB, "asus:ryujin-3-extreme-lcd", "ROG Ryujin III Extreme", "asus-ryujin-lcd:1bcb")]
+    public void Ryujin_labels_the_attached_product_id(int pid, string modelKey, string model, string key)
+    {
+        var row = DeviceInventoryMapper.FromRyujin("asus-ryujin-lcd", true, 0x0B05, pid, null)!;
+        Assert.Equal(modelKey, row.ModelKey);
+        Assert.Equal(model, row.Model);
+        Assert.Equal(key, row.Key);
+        Assert.Equal(pid, row.Pid);
+    }
+
     [Fact]
     public void Response_serializes_camel_case_and_omits_unknown_fields()
     {

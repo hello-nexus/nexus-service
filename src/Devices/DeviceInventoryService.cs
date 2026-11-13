@@ -130,7 +130,7 @@ public sealed class DeviceInventoryService
                     }
                     continue;
                 }
-                AddClaimed(driver.HandlerId, DeviceInventoryMapper.FromRyujin(driver.HandlerId, hub.IsConnected, driver.VendorId, driver.ProductIds.Count > 0 ? driver.ProductIds[0] : 0, hub.Serial));
+                AddClaimed(driver.HandlerId, DeviceInventoryMapper.FromRyujin(driver.HandlerId, hub.IsConnected, driver.VendorId, hub.ProductId != 0 ? hub.ProductId : driver.ProductIds.Count > 0 ? driver.ProductIds[0] : 0, hub.Serial));
             }
         }
 

@@ -139,6 +139,25 @@ public class BulkPanelDriverTests
     // ── Ryujin: bulk pixels, HID commit ──
 
     [Fact]
+    public void Ryujin_binds_the_360_and_the_extreme()
+    {
+        Assert.Equal(new[] { 0x1AA2, 0x1BCB }, new RyujinPanelDriver().ProductIds);
+    }
+
+    [Theory]
+    [InlineData(0x1AA2)]
+    [InlineData(0x1BCB)]
+    public void Ryujin_hub_reports_the_attached_product_id(int pid)
+    {
+        using var hub = new BulkPanelHub(new RyujinPanelDriver());
+        Assert.Equal(0, hub.ProductId);
+
+        Assert.True(hub.Attach(new FakeBulkPipe(), new FakeHid { Pid = pid }));
+
+        Assert.Equal(pid, hub.ProductId);
+    }
+
+    [Fact]
     public void Ryujin_needs_its_hid_channel_to_connect_at_all()
     {
         var driver = new RyujinPanelDriver();
@@ -440,7 +459,8 @@ public class BulkPanelDriverTests
         public bool FailWrites { get; set; }
 
         public int VendorId => 0x0B05;
-        public int ProductId => RyujinProtocol.ProductIdWithLcd;
+        public int Pid { get; set; } = RyujinProtocol.ProductIdWithLcd;
+        public int ProductId => Pid;
         public string Path => "/dev/fake-ryujin";
         public string? Serial => "FAKE";
         public int UsagePage => 0xFF01;

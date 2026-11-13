@@ -9,12 +9,13 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// animation. Reconstructed from third-party documentation of the Ryujin II, which shares
 /// the controller; no unit has been run against it.
 ///
-/// Only product id 0x1AA2 carries the screen; the other documented Ryujin ids are the same
-/// controller without one.
+/// Product ids 0x1AA2 (Ryujin III 360) and 0x1BCB (Ryujin III Extreme) carry the screen; the
+/// other documented Ryujin ids are the same controller without one.
 /// </summary>
 public static class RyujinProtocol
 {
     public const int ProductIdWithLcd = 0x1AA2;
+    public const int ProductIdExtreme = 0x1BCB;
     public const int Width = 320;
     public const int Height = 240;
 

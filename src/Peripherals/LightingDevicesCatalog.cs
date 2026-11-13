@@ -361,6 +361,7 @@ public static class LightingDevicesCatalog
         // where Windows has bound WinUSB, and likewise untested.
         Native("Thermalright", "Vision LCD",        "aio",      "0x87AD", "0x70DB", screen: true, rgb: false),
         Native("ASUS",       "Ryujin LCD",          "aio",      "0x0B05", "0x1AA2", screen: true, rgb: false),
+        Native("ASUS",       "ROG Ryujin III Extreme LCD", "aio", "0x0B05", "0x1BCB", screen: true, rgb: false),
         Native("Lian Li",    "Universal Screen 8.8","light",    "0x1CBE", "0xA088", screen: true, rgb: false),
         Native("ASUS",       "ROG Crosshair X870E Glacial LCD", "light", "0x0B05", "0x1D93", screen: true, rgb: false),
         Native("DeepCool",   "Mystique",            "aio",      "0x3633", "0x0009", screen: true, rgb: false),

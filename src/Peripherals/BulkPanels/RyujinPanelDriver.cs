@@ -20,10 +20,10 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public int VendorId => 0x0B05;
 
     /// <summary>
-    /// Only this product id carries a screen. Other Ryujin controllers share the VID and
+    /// Only these product ids carry a screen. Other Ryujin controllers share the VID and
     /// have no panel at all.
     /// </summary>
-    public IReadOnlyList<int> ProductIds { get; } = new[] { RyujinProtocol.ProductIdWithLcd };
+    public IReadOnlyList<int> ProductIds { get; } = new[] { RyujinProtocol.ProductIdWithLcd, RyujinProtocol.ProductIdExtreme };
 
     public string Surface => Models.Panel.PanelSurfaces.LcdSquare;
     public int Fps => 20;

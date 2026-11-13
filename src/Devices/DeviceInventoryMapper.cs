@@ -65,6 +65,7 @@ namespace Nexus.Service.Devices;
 /// asrock:lcd                    ASRock LCD
 /// asus:rog-strix-slc4-lcd       ROG Strix SLC IV LCD
 /// asus:ryujin-lcd               ROG Ryujin LCD
+/// asus:ryujin-3-extreme-lcd     ROG Ryujin III Extreme
 /// lianli:uni-fan-tl-lcd         Uni Fan TL LCD screens (wired, USB 04FC:7393)
 /// lianli:tl-lcd-wireless        TL-LCD Wireless fan screen from the catalog (USB 1CBE:0006)
 /// lianli-wl:strimer-N           wireless Strimer cable, N is the dev type (lighting)
@@ -446,13 +447,14 @@ public static class DeviceInventoryMapper
         {
             return null;
         }
+        var extreme = productId == RyujinProtocol.ProductIdExtreme;
         return new SystemDeviceDto
         {
             Key = handlerId + ":" + (string.IsNullOrEmpty(serial) ? productId.ToString("x4", CultureInfo.InvariantCulture) : serial),
-            ModelKey = "asus:ryujin-lcd",
+            ModelKey = extreme ? "asus:ryujin-3-extreme-lcd" : "asus:ryujin-lcd",
             Category = SystemDeviceCategories.Cooler,
             Vendor = "ASUS",
-            Model = "ROG Ryujin LCD",
+            Model = extreme ? "ROG Ryujin III Extreme" : "ROG Ryujin LCD",
             Vid = vendorId,
             Pid = productId,
         };
