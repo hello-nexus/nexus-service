@@ -139,7 +139,7 @@ public class Slv3CoolingProviderTests
     }
 
     [Fact]
-    public void A_bound_hydroshift_lists_one_channel_per_radiator_fan_beside_the_pump()
+    public void A_bound_hydroshift_lists_one_shared_radiator_fan_channel_beside_the_pump()
     {
         var (hub, _, _) = Slv3TestHub.CreateConnected();
         hub.State.Fans = new[]
@@ -147,28 +147,62 @@ public class Slv3CoolingProviderTests
             new Slv3FanInfo
             {
                 Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3,
-                Rpm = new[] { 1200, 1210, 1190, 2085 },
-                Pwm = new[] { Slv3Protocol.PwmFollowMotherboard, 127, Slv3Protocol.PwmFollowMotherboard, 0 },
+                Rpm = new[] { 1200, 1210, 0, 2085 },
             },
         };
         var provider = new Slv3CoolingProvider(hub);
 
         var channels = provider.GetFanChannels();
-        Assert.Equal(4, channels.Count);
+        Assert.Equal(2, channels.Count);
         Assert.Single(channels, c => c.Kind == FanKinds.Pump && c.Id == $"lianli-wireless:{Mac}:pump");
-        var fans = channels.Where(c => c.Id.Contains(":port", StringComparison.Ordinal)).ToList();
-        Assert.Equal(3, fans.Count);
-        Assert.Equal(1210, fans[1].Rpm);
-        Assert.Equal(FanModes.Manual, fans[1].Mode);
-        Assert.Equal(FanModes.Auto, fans[0].Mode);
-        Assert.All(fans, c => Assert.Equal($"lianli-wireless:{Mac}", c.DeviceId));
-        Assert.Equal(4, Assert.Single(provider.GetAll()).Devices.Count);
+        var fans = Assert.Single(channels, c => c.Id == $"lianli-wireless:{Mac}:fans");
+        Assert.Equal(1205, fans.Rpm);
+        Assert.Equal(FanModes.Auto, fans.Mode);
+        Assert.Equal($"lianli-wireless:{Mac}", fans.DeviceId);
+        Assert.Equal(2, Assert.Single(provider.GetAll()).Devices.Count);
 
-        provider.SetFanSpeed(fans[2].Id, 40);
-        Assert.Equal(40, hub.GetPortDuty(Mac, 2));
+        Assert.Equal(40, provider.SetFanSpeed(fans.Id, 40));
+        for (var port = 0; port < 3; port++)
+        {
+            Assert.Equal(40, hub.GetPortDuty(Mac, port));
+        }
         Assert.Null(hub.GetPortDuty(Mac, 3));
-        provider.ReleaseAll();
-        Assert.Null(hub.GetPortDuty(Mac, 2));
+        Assert.Null(hub.GetPumpDuty(Mac));
+        var driven = Assert.Single(provider.GetFanChannels(), c => c.Id == fans.Id);
+        Assert.Equal(FanModes.Manual, driven.Mode);
+        Assert.Equal(40, driven.DutyPercent);
+        Assert.True(provider.ReleaseRestoresHardwareControl(fans.Id));
+
+        provider.ReleaseFan(fans.Id);
+        for (var port = 0; port < 3; port++)
+        {
+            Assert.Null(hub.GetPortDuty(Mac, port));
+        }
+    }
+
+    [Fact]
+    public void Writing_the_radiator_fans_leaves_the_pump_channel_exactly_as_it_was()
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3, Rpm = new[] { 900, 900, 900, 2085 } } };
+        var provider = new Slv3CoolingProvider(hub);
+        var pumpBefore = Assert.Single(provider.GetFanChannels(), c => c.Kind == FanKinds.Pump);
+
+        provider.SetFanSpeed($"lianli-wireless:{Mac}:fans", 70);
+        provider.ReleaseFan($"lianli-wireless:{Mac}:fans");
+
+        var pumpAfter = Assert.Single(provider.GetFanChannels(), c => c.Kind == FanKinds.Pump);
+        Assert.Equal((pumpBefore.Id, pumpBefore.Mode, pumpBefore.DutyPercent, pumpBefore.Rpm), (pumpAfter.Id, pumpAfter.Mode, pumpAfter.DutyPercent, pumpAfter.Rpm));
+        Assert.Null(hub.GetPumpDuty(Mac));
+    }
+
+    [Fact]
+    public void A_hydroshift_with_no_reported_fans_has_no_radiator_fan_channel()
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 0 } };
+
+        Assert.Equal($"lianli-wireless:{Mac}:pump", Assert.Single(new Slv3CoolingProvider(hub).GetFanChannels()).Id);
     }
 
     [Theory]
@@ -181,7 +215,7 @@ public class Slv3CoolingProviderTests
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3 } };
         var provider = new Slv3CoolingProvider(hub);
         provider.SetFanSpeed($"lianli-wireless:{Mac}:pump", 60);
-        provider.SetFanSpeed($"lianli-wireless:{Mac}:port1", 40);
+        provider.SetFanSpeed($"lianli-wireless:{Mac}:fans", 40);
 
         provider.ReleaseAllKeepingDrivenPorts();
 
@@ -196,7 +230,7 @@ public class Slv3CoolingProviderTests
         hub.State.MotherboardPwmPercent = 0;
         hub.State.Fans = new[] { new Slv3FanInfo { Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3 } };
         var provider = new Slv3CoolingProvider(hub);
-        provider.SetFanSpeed($"lianli-wireless:{Mac}:port2", 40);
+        provider.SetFanSpeed($"lianli-wireless:{Mac}:fans", 40);
 
         provider.ReleaseAll();
 
