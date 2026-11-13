@@ -1408,6 +1408,7 @@ public sealed class RgbBridge : IDisposable
     internal Task? LastSettleDeadlineCheck { get; private set; }
     private int _settleLooks;
     internal int SettleLookCount => Volatile.Read(ref _settleLooks);
+    internal bool RefreshInFlight => _refreshSemaphore.CurrentCount == 0;
 
     /// <summary>Creates the deadline timers; replaceable so tests fire them by hand.</summary>
     internal Func<Action, IOneShot> OneShotFactory { get; set; } = fire => new TimerOneShot(fire);
