@@ -18,6 +18,7 @@ internal static class RyujinMonitorProtocol
 
     public const int DefaultBrightness = 0x28;
     public const int MinBrightness = 10;
+    public const int MaxBrightness = 100;
 
     /// <summary>The screen pauses after the reset before it takes more.</summary>
     public const int ResetGapMs = 500;
@@ -35,7 +36,7 @@ internal static class RyujinMonitorProtocol
 
     private const string DegreeCelsius = "℃";
 
-    /// <summary>Armoury Crate's glyph for rpm, a private-use style character in the arrows block.</summary>
+    /// <summary>The glyph Armoury Crate appends to an rpm value (U+218C).</summary>
     private const string RpmGlyph = "↌";
 
     public static byte[] EncodeReset() => Simple(0xD0);
@@ -147,8 +148,12 @@ internal static class RyujinMonitorProtocol
         };
     }
 
-    /// <summary>The startup run once on attach, in the order Armoury Crate sends it.</summary>
-    public static byte[][] EncodeStartup(DateTime local)
+    /// <summary>
+    /// The startup run once on attach, in the order Armoury Crate sends it, then the stored
+    /// brightness and rotation, which the reset may have cleared and a change made while the
+    /// cooler was away never reached.
+    /// </summary>
+    public static byte[][] EncodeStartup(DateTime local, int rotationDegrees, int brightnessPercent)
     {
         var select = EncodeSelectMonitorLayout();
         return new[]
@@ -160,11 +165,15 @@ internal static class RyujinMonitorProtocol
             EncodeColors(),
             select[0],
             select[1],
+            EncodeDc(),
+            EncodeDisplay(rotationDegrees, brightnessPercent),
+            EncodeDc(),
+            EncodeDc(),
             EncodeFirmwareQuery(),
         };
     }
 
-    /// <summary>Report index after which Armoury Crate waits, and for how long.</summary>
+    /// <summary>How long Armoury Crate waits after a report with this header.</summary>
     public static int GapAfterMs(byte header) => header switch
     {
         0xD0 => ResetGapMs,

@@ -23,7 +23,7 @@ public sealed record RyujinSnapshot(double LiquidTempC, int PumpRpm, int FanRpm,
 public sealed class RyujinCoolingHub : IDisposable
 {
     private const int ReplyTimeoutMs = 200;
-    private const int MaxRepliesPerRequest = 4;
+    private const int MaxReadsPerRequest = 16;
     private const int MaxDrainedReports = 16;
     private const long ParseLogIntervalMs = 60_000;
 
@@ -41,6 +41,7 @@ public sealed class RyujinCoolingHub : IDisposable
     private bool _dutySeen;
     private bool _statusSeen;
     private bool _fallback;
+    private bool _pumpMoved;
     private int _pollsWithoutDuty;
     private long _lastParseLogMs = long.MinValue;
 
@@ -55,6 +56,9 @@ public sealed class RyujinCoolingHub : IDisposable
     internal Func<long> NowMs { get; set; } = () => Environment.TickCount64;
 
     public bool IsConnected => _connected;
+
+    /// <summary>True once a write has moved the pump off the duty the cooler held, so a release knows to restore it.</summary>
+    public bool PumpMoved { get { lock (_stateLock) { return _pumpMoved; } } }
 
     /// <summary>USB serial of the attached cooler, or null.</summary>
     public string? Serial { get { lock (_stateLock) { return _device?.Serial; } } }
@@ -96,6 +100,7 @@ public sealed class RyujinCoolingHub : IDisposable
         _dutySeen = false;
         _statusSeen = false;
         _fallback = false;
+        _pumpMoved = false;
         _pollsWithoutDuty = 0;
     }
 
@@ -193,6 +198,8 @@ public sealed class RyujinCoolingHub : IDisposable
         lock (_stateLock)
         {
             _snapshot = _snapshot with { PumpDuty = pump, FanDuty = fan };
+            // Any write that changes the pump from what the cooler held counts, a fallback included.
+            _pumpMoved |= oldPump != pump;
         }
         if (oldPump != pump || oldFan != fan)
         {
@@ -284,7 +291,7 @@ public sealed class RyujinCoolingHub : IDisposable
     private bool ReadReplies(IHidDevice device, bool status)
     {
         Span<byte> buffer = stackalloc byte[RyujinCoolingProtocol.ReportLength];
-        for (int i = 0; i < MaxRepliesPerRequest; i++)
+        for (int i = 0; i < MaxReadsPerRequest; i++)
         {
             int n = device.Read(buffer, ReplyTimeoutMs);
             if (n < 0)
@@ -296,6 +303,11 @@ public sealed class RyujinCoolingHub : IDisposable
                 return true;
             }
             var report = buffer[..n];
+            // A reply to something else (a sensor text slot, say) is skipped without a mention.
+            if (!RyujinCoolingProtocol.IsReplyTo(report, status))
+            {
+                continue;
+            }
             if (status && RyujinCoolingProtocol.TryParseStatus(report, out var temp, out var pump, out var fan))
             {
                 bool first;
@@ -340,6 +352,7 @@ public sealed class RyujinCoolingHub : IDisposable
                 return true;
             }
             LogUnparsed(report, status);
+            return true;
         }
         return true;
     }

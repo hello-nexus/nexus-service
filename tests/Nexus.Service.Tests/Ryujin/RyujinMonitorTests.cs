@@ -99,11 +99,12 @@ public class RyujinMonitorTests
     }
 
     [Fact]
-    public void Startup_is_reset_dc_dc_clock_colors_layout_then_the_firmware_query()
+    public void Startup_is_reset_dc_dc_clock_colors_layout_the_stored_display_then_the_firmware_query()
     {
-        var startup = RyujinMonitorProtocol.EncodeStartup(new DateTime(2026, 11, 13, 17, 43, 7));
+        var startup = RyujinMonitorProtocol.EncodeStartup(new DateTime(2026, 11, 13, 17, 43, 7), 90, 70);
 
-        Assert.Equal(new byte[] { 0xD0, 0xDC, 0xDC, 0x11, 0x5E, 0x5D, 0x51, 0x82 }, startup.Select(f => f[1]).ToArray());
+        Assert.Equal(new byte[] { 0xD0, 0xDC, 0xDC, 0x11, 0x5E, 0x5D, 0x51, 0xDC, 0x5C, 0xDC, 0xDC, 0x82 }, startup.Select(f => f[1]).ToArray());
+        Assert.Equal(RyujinMonitorProtocol.EncodeDisplay(90, 70), startup[8]);
         Assert.All(startup, f => Assert.Equal(0xEC, f[0]));
         Assert.Equal(RyujinMonitorProtocol.ResetGapMs, RyujinMonitorProtocol.GapAfterMs(0xD0));
     }
@@ -152,7 +153,7 @@ public class RyujinMonitorTests
         var (worker, gate, _) = BuildWorker(enumerator);
 
         await worker.StartAsync(CancellationToken.None);
-        await Task.Delay(300);
+        Assert.True(SpinWait.SpinUntil(() => worker.GateChecks >= 1, 8000));
         await worker.StopAsync(CancellationToken.None);
 
         Assert.False(gate.IsEnabled("asus-ryujin-extreme"));
@@ -165,23 +166,44 @@ public class RyujinMonitorTests
     {
         var fake = new RyujinDeviceFake();
         var enumerator = new FakeEnumerator(fake);
-        var (worker, gate, _) = BuildWorker(enumerator);
+        var (worker, gate, hub) = BuildWorker(enumerator);
         gate.SetEnabled("asus-ryujin-extreme", true);
 
         await worker.StartAsync(CancellationToken.None);
-        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x51), 8000));
+        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x82), 8000));
         Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x99), 8000));
 
         gate.SetEnabled("asus-ryujin-extreme", false);
-        await Task.Delay(300);
+        // The session detaches last, after any release write, so nothing can follow it.
+        Assert.True(SpinWait.SpinUntil(() => !hub.IsConnected, 8000));
         int after = fake.Writes.Count;
-        await Task.Delay(700);
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(after, fake.Writes.Count);
         var order = fake.Writes.ToArray().Select(w => w[1]).ToArray();
         Assert.Equal(0xD0, order[0]);
-        Assert.All(order, h => Assert.Contains(h, new byte[] { 0xD0, 0xDC, 0x11, 0x5E, 0x5D, 0x51, 0x82, 0x99, 0x5F, 0x9A, 0x1A }));
+        Assert.All(order, h => Assert.Contains(h, new byte[] { 0xD0, 0xDC, 0x11, 0x5E, 0x5D, 0x51, 0x5C, 0x82, 0x99, 0x5F, 0x9A, 0x1A }));
+    }
+
+    [Fact]
+    public async Task The_stored_display_settings_are_sent_at_startup_even_when_changed_while_away()
+    {
+        var fake = new RyujinDeviceFake();
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Devices.RyujinDisplay.Brightness = 70;
+            s.Devices.RyujinDisplay.Rotation = 90;
+        });
+        var (worker, gate, _) = BuildWorker(new FakeEnumerator(fake), store);
+        gate.SetEnabled("asus-ryujin-extreme", true);
+
+        await worker.StartAsync(CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x82), 8000));
+        await worker.StopAsync(CancellationToken.None);
+
+        var display = fake.Writes.ToArray().Single(w => w[1] == 0x5C);
+        Assert.Equal(RyujinMonitorProtocol.EncodeDisplay(90, 70), display);
     }
 
     [Fact]
@@ -193,21 +215,21 @@ public class RyujinMonitorTests
         gate.SetEnabled("asus-ryujin-extreme", true);
         await worker.StartAsync(CancellationToken.None);
         Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x82), 8000));
-        Assert.DoesNotContain(fake.Writes.ToArray(), w => w[1] == 0x5C);
+        Assert.Single(fake.Writes.ToArray(), w => w[1] == 0x5C);
 
         store.Update(s => s.Devices.RyujinDisplay.Brightness = 100);
         hub.Wake.Release();
-        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5C) == 3, 5000));
+        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5C) == 4, 5000));
         Assert.Equal(0x64, fake.Writes.ToArray().Last(w => w[1] == 0x5C)[5]);
         Assert.Equal(0x28, fake.Writes.ToArray().First(w => w[1] == 0x5C)[5]);
 
         store.Update(s => s.Devices.RyujinDisplay.Rotation = 90);
         hub.Wake.Release();
-        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5C) == 4, 5000));
+        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5C) == 5, 5000));
         await worker.StopAsync(CancellationToken.None);
 
         Assert.Equal(0x5A, fake.Writes.ToArray().Last(w => w[1] == 0x5C)[3]);
-        Assert.Equal(3, fake.Writes.ToArray().Count(w => w[1] == 0x5C && w[3] == 0x00));
+        Assert.Equal(4, fake.Writes.ToArray().Count(w => w[1] == 0x5C && w[3] == 0x00));
     }
 
     private static (RyujinCoolingWorker worker, DeviceControlGate gate, RyujinCoolingHub hub) BuildWorker(FakeEnumerator enumerator, InMemoryConfigStore? existing = null)

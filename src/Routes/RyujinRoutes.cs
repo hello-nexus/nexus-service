@@ -15,9 +15,9 @@ public static partial class DevicesRoutes
 
         app.MapPut("/devices/asus-ryujin-extreme/display", (RyujinDisplayRequest body, IConfigStore store, RyujinCoolingHub hub) =>
         {
-            if (body.Brightness is int brightness && (brightness < 10 || brightness > 100))
+            if (body.Brightness is int brightness && (brightness < RyujinMonitorProtocol.MinBrightness || brightness > RyujinMonitorProtocol.MaxBrightness))
             {
-                return Results.BadRequest(ApiResponse.Fail("brightness must be 10 to 100"));
+                return Results.BadRequest(ApiResponse.Fail($"brightness must be {RyujinMonitorProtocol.MinBrightness} to {RyujinMonitorProtocol.MaxBrightness}"));
             }
             if (body.Rotation is int rotation && rotation is not (0 or 90))
             {

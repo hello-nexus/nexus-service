@@ -2431,16 +2431,17 @@ public sealed class GlacialLcdSettings
     }
 }
 
-/// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
+/// <summary>What the ROG Ryujin III Extreme's screen is set to, as Nexus last sent it.</summary>
 public sealed class RyujinDisplaySettings
 {
     /// <summary>Armoury Crate's default, and the value assumed until the user changes it.</summary>
-    public int Brightness { get; set; } = 40;
+    public int Brightness { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorProtocol.DefaultBrightness;
 
     /// <summary>0 or 90, the two values Armoury Crate sends.</summary>
     public int Rotation { get; set; }
 }
 
+/// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
 public sealed class DeepCoolMystiqueMediaItem
 {
     public const string KindPicture = "picture";

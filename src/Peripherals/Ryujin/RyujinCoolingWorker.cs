@@ -35,6 +35,11 @@ public sealed class RyujinCoolingWorker : BackgroundService
     private int _appliedBrightness;
     private int _appliedRotation;
 
+    /// <summary>Gate decisions made so far; a test waits on it instead of sleeping.</summary>
+    internal int GateChecks => Volatile.Read(ref _gateChecks);
+
+    private int _gateChecks;
+
     internal Func<DateTime> Now { get; set; } = () => DateTime.Now;
 
     public RyujinCoolingWorker(
@@ -64,6 +69,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         {
             try
             {
+                Interlocked.Increment(ref _gateChecks);
                 if (!_gate.IsEnabled(RyujinCoolingProtocol.HandlerId)
                     || !_presence.UsbPresent(RyujinCoolingProtocol.VendorId, RyujinCoolingProtocol.ProductId))
                 {
@@ -114,7 +120,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         var display = _store.Load().Devices.RyujinDisplay;
         _appliedBrightness = display.Brightness;
         _appliedRotation = display.Rotation;
-        if (!_hub.Send(RyujinMonitorProtocol.EncodeStartup(Now())))
+        if (!_hub.Send(RyujinMonitorProtocol.EncodeStartup(Now(), display.Rotation, display.Brightness)))
         {
             ServiceLog.Warn("[asus-ryujin-cooling] startup sequence write failed");
             return;
@@ -148,7 +154,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         }
     }
 
-    /// <summary>Sends the settings the user changed since the last send: a rotation change re-selects the layout, a brightness change is the three-report burst.</summary>
+    /// <summary>Sends the settings the user changed since the last send: a rotation change re-selects the layout, a brightness change is the burst of three settings reports, each behind a DC.</summary>
     private void ApplyDisplayChange()
     {
         var wanted = _store.Load().Devices.RyujinDisplay;

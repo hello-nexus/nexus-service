@@ -95,6 +95,10 @@ internal static class RyujinCoolingProtocol
         return true;
     }
 
+    /// <summary>True when the report carries the header of the reply to a status or a duty request.</summary>
+    public static bool IsReplyTo(ReadOnlySpan<byte> report, bool status) =>
+        report.Length >= 2 && report[0] == ReportId && report[1] == (status ? ResponseStatus : ResponseDuty);
+
     public static bool TryParseDuty(ReadOnlySpan<byte> report, out int pumpPercent, out int fanPercent)
     {
         pumpPercent = 0;

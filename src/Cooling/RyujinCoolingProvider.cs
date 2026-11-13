@@ -168,7 +168,7 @@ public sealed class RyujinCoolingProvider : IFanControlProvider, ICoolingProvide
         bool pumpWritten;
         lock (_ctrlLock)
         {
-            pumpWritten = _pumpWritten;
+            pumpWritten = _pumpWritten || _hub.PumpMoved;
             _pumpWritten = false;
             _pumpSw = false;
             _fanSw = false;

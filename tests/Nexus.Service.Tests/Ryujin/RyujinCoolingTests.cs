@@ -626,6 +626,48 @@ public class RyujinCoolingTests
     }
 
     [Fact]
+    public void Replies_to_other_requests_are_skipped_silently_and_do_not_use_up_the_read_budget()
+    {
+        var (hub, _, fake) = Connected();
+        var warnings = new List<string>();
+        hub.Warn = warnings.Add;
+        var other = new byte[65];
+        other[0] = 0xEC;
+        other[1] = 0x5F;
+        fake.QueueReply(StatusReply(30, 0, 2000, 800));
+        for (int i = 0; i < 6; i++)
+        {
+            fake.QueueReply(other);
+        }
+        fake.QueueReply(DutyReply(60, 30));
+
+        hub.Poll();
+
+        Assert.Equal(60, hub.Snapshot.PumpDuty);
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
+    public void A_fallback_write_that_moves_the_pump_is_restored_on_disconnect()
+    {
+        var (hub, provider, fake) = Connected();
+        provider.SetFanSpeed("asus-ryujin-lcd:fan", 30);
+        for (int i = 0; i < RyujinCoolingProtocol.DutyReplyGraceCycles; i++)
+        {
+            hub.Flush();
+            hub.Poll();
+        }
+        hub.Flush();
+        Assert.True(hub.PumpMoved);
+        fake.Writes.Clear();
+
+        provider.ReleaseForDisconnect();
+        hub.Flush();
+
+        Assert.Equal(new byte[] { 0xEC, 0x1A, 0x01, 100, 30 }, Assert.Single(DutyWrites(fake))[0..5]);
+    }
+
+    [Fact]
     public void Unparsed_replies_are_logged_at_most_once_a_minute()
     {
         long now = 1000;
@@ -633,9 +675,7 @@ public class RyujinCoolingTests
         hub.NowMs = () => now;
         var warnings = new List<string>();
         hub.Warn = warnings.Add;
-        var junk = new byte[65];
-        junk[0] = 0xEC;
-        junk[1] = 0x77;
+        var junk = StatusReply(101, 0, 1000, 1000);
 
         for (int i = 0; i < 4; i++)
         {
