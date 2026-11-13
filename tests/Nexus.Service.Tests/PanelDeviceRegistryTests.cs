@@ -406,6 +406,32 @@ public sealed class PanelDeviceRegistryTests : IDisposable
     }
 
     [Fact]
+    public void Patch_SkinOverrides_EffectWithNullModeIsDroppedAndTheAccentEntryKept()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        var map = new Dictionary<string, PanelSkinOverride> { ["neon"] = new() { Accent = "#ff8800", BackgroundEffect = "aurora" } };
+
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = map })!;
+
+        Assert.Equal("#ff8800", patched.SkinOverrides!["neon"].Accent);
+        Assert.Null(patched.SkinOverrides["neon"].BackgroundMode);
+        Assert.Null(patched.SkinOverrides["neon"].BackgroundEffect);
+    }
+
+    [Fact]
+    public void Patch_SkinOverrides_InvalidEffectOnANonShaderModeIsAcceptedAndDropped()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        var map = new Dictionary<string, PanelSkinOverride> { ["neon"] = new() { BackgroundMode = "solid", BackgroundEffect = "Bad Effect" } };
+
+        Assert.Null(PanelSkinOverrides.Validate(map));
+        var patched = _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = map })!;
+
+        Assert.Equal("solid", patched.SkinOverrides!["neon"].BackgroundMode);
+        Assert.Null(patched.SkinOverrides["neon"].BackgroundEffect);
+    }
+
+    [Fact]
     public void Patch_Font_RoundTripsAndSurvivesOmission()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));

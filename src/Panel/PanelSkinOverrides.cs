@@ -48,13 +48,9 @@ public static class PanelSkinOverrides
                 return false;
             }
         }
-        if (value.BackgroundEffect is not null && !PanelSkinValue.TryNormalize(value.BackgroundEffect, out effect))
+        if (mode == "shader" && value.BackgroundEffect is not null && !PanelSkinValue.TryNormalize(value.BackgroundEffect, out effect))
         {
             return false;
-        }
-        if (mode != "shader")
-        {
-            effect = null;
         }
         return true;
     }
