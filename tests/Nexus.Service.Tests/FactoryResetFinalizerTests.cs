@@ -33,8 +33,8 @@ public class FactoryResetFinalizerTests
 
     private readonly List<string> _log = new();
 
-    private bool Ensure(FakeProcess? process, int pid = 42) =>
-        FactoryReset.EnsureParentGone(pid, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15), _ => process, _log.Add);
+    private bool Ensure(FakeProcess? process, int pid = 42, bool ours = true) =>
+        FactoryReset.EnsureParentGone(pid, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15), _ => process, _ => ours, _log.Add);
 
     [Fact]
     public void A_parent_that_exits_in_time_is_not_killed()
@@ -102,7 +102,7 @@ public class FactoryResetFinalizerTests
     [Fact]
     public void An_open_that_throws_is_logged_and_never_escapes()
     {
-        var ok = FactoryReset.EnsureParentGone(42, TimeSpan.Zero, TimeSpan.Zero, _ => throw new InvalidOperationException("nope"), _log.Add);
+        var ok = FactoryReset.EnsureParentGone(42, TimeSpan.Zero, TimeSpan.Zero, _ => throw new InvalidOperationException("nope"), _ => true, _log.Add);
 
         Assert.False(ok);
         Assert.Contains(_log, l => l.Contains("nope"));
@@ -137,5 +137,39 @@ public class FactoryResetFinalizerTests
     public void The_start_bound_outlasts_the_old_five_second_one()
     {
         Assert.True(FactoryReset.StartAttempts * 500 >= 30_000);
+    }
+
+    [Fact]
+    public void A_process_whose_image_is_not_this_service_is_never_killed()
+    {
+        var process = new FakeProcess();
+
+        Assert.False(Ensure(process, ours: false));
+
+        Assert.False(process.Killed);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(30) }, process.Waits);
+        Assert.Contains(_log, l => l.Contains("not killing it"));
+        Assert.True(process.Disposed);
+    }
+
+    [Fact]
+    public void The_image_check_is_not_asked_when_the_parent_exits_by_itself()
+    {
+        var asked = false;
+        var process = new FakeProcess { ExitsByItself = true };
+
+        FactoryReset.EnsureParentGone(42, TimeSpan.Zero, TimeSpan.Zero, _ => process, _ =>
+        {
+            asked = true;
+            return true;
+        }, _log.Add);
+
+        Assert.False(asked);
+    }
+
+    [Fact]
+    public void A_pid_that_cannot_be_read_is_not_this_services_image()
+    {
+        Assert.False(FactoryReset.IsOurImage(int.MaxValue));
     }
 }
