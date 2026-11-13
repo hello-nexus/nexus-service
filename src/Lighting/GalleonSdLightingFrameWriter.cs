@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -112,23 +113,36 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        // Saved to the keyboard: the board stays in hardware mode and no live frame is sent.
+        // Saved to the keyboard: the board stays in hardware mode and no live frame is sent. The composed frame
+        // goes to the hub, which writes it into onboard layers once it holds still. No effect means no frame, so
+        // whatever the keyboard already holds is left alone.
         if (saved)
         {
             _wasStreaming = false;
-            _hub.SetSavedToDevice(true);
+            var frame = _engine.CurrentEffectName != "none" && devices.Length > 0
+                ? Compose(structure, zones, devices, settings, uncontrolled)
+                : null;
+            _hub.SetSavedToDevice(true, frame is null ? default : frame);
             return;
         }
         _wasStreaming = true;
 
+        var live = Compose(structure, zones, devices, settings, uncontrolled);
+        if (live is not null) _hub.WriteFrame(live);
+    }
+
+    private RgbColor[]? Compose(
+        DeviceStructure structure,
+        IReadOnlyList<ResolvedZone> zones,
+        IReadOnlyList<DeviceFrame> devices,
+        NexusSettings settings,
+        IReadOnlyList<string> uncontrolled)
+    {
         SegmentFrameComposer.EnsureBuffers(structure, ref _buffers);
         var touched = SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
             settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
             DateTime.UtcNow.Ticks, _identify, _buffers, _engine.Live);
-        if (touched[GalleonSdLightingDeviceProvider.LedsSegment])
-        {
-            _hub.WriteFrame(_buffers[GalleonSdLightingDeviceProvider.LedsSegment]);
-        }
+        return touched[GalleonSdLightingDeviceProvider.LedsSegment] ? _buffers[GalleonSdLightingDeviceProvider.LedsSegment] : null;
     }
 }

@@ -1603,6 +1603,8 @@ public sealed class DevicesSettings
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Device ids (the owning device, for example the Galleon 100 SD keyboard) whose colors are saved to the hardware rather than streamed live. Absent is off, so the default streams as before and no migration is needed.</summary>
     public List<string> SaveToDeviceLightingDevices { get; set; } = new();
+    /// <summary>Onboard lighting state Nexus keeps per Galleon 100 SD serial while saved colors are on: the raw backup taken before the first write and the layers Nexus owns. Replaced whole on every change, never mutated in place.</summary>
+    public Dictionary<string, GalleonOnboardRecord> GalleonOnboard { get; set; } = new();
     /// <summary>Per-card sampling mode by card id ("nearest", "rows" or "columns"); only non-default entries are stored, a card absent here reads the plain spot ("led").</summary>
     public Dictionary<string, string> SamplingModes { get; set; } = new();
     /// <summary>Per-card color sampling by card id ("vivid" or "ignore-black"); only non-default entries are stored, a card absent here combines pixels with the plain mean ("standard"). Independent of <see cref="SamplingModes"/>.</summary>

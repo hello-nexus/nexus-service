@@ -31,7 +31,7 @@ public sealed class GalleonSdAttached
 /// lighting resource is ever opened; onboard layer and profile resources are
 /// never touched. Handle IO is serialised on <c>_io</c>.
 /// </summary>
-public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
+public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
 {
     private sealed class Slot
     {
@@ -54,6 +54,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
         public bool HardwareHeld { get; set; }
         public bool ProbeDone { get; set; }
         public bool ForeignHandle { get; set; }
+        public OnboardState Ob { get; } = new();
         public byte[] ParsedReply { get; } = new byte[GalleonSdProtocol.WireLength + 1];
         public int ParsedReplyLength { get; set; }
         public byte Handle { get; set; }
@@ -109,8 +110,10 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
     private readonly bool _matchOnLinux;
 
     /// <param name="matchOnLinux">Lets the interface match run on Linux. Off in production; tests turn it on so the sequencing is exercised on every OS.</param>
-    public GalleonSdHub(IHidEnumerator hid, Func<long>? clock = null, bool matchOnLinux = false)
+    /// <param name="store">Where the onboard backup and owned layer ids persist per serial; null keeps them in memory only.</param>
+    public GalleonSdHub(IHidEnumerator hid, Func<long>? clock = null, bool matchOnLinux = false, Nexus.Service.Persistence.IConfigStore? store = null)
     {
+        _onboard = new GalleonOnboardStore(store);
         _matchOnLinux = matchOnLinux;
         _hid = hid;
         _clock = clock ?? Stopwatch.GetTimestamp;
@@ -250,11 +253,13 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
 
     /// <summary>
     /// Applies the per-device "save colors to the keyboard" toggle. On: stop live frames, hand the
-    /// board back to hardware mode (keys work) and hold it there; the read-only onboard probe runs
-    /// once per session. Off: live streaming resumes through <see cref="WriteFrame"/> on its next call.
+    /// board back to hardware mode (keys work) and hold it there. With a <paramref name="frame"/> (in
+    /// <see cref="GalleonSdProtocol.KeyIds"/> order) the settled frame is written into onboard layers
+    /// (see GalleonSdHub.Onboard.cs); without one the read-only onboard probe runs once per session.
+    /// Off: Nexus-owned layers are undone, then live streaming resumes through <see cref="WriteFrame"/>.
     /// Idempotent, safe to call every writer tick.
     /// </summary>
-    public void SetSavedToDevice(bool saved)
+    public void SetSavedToDevice(bool saved, ReadOnlySpan<RgbColor> frame = default)
     {
         Slot? probe = null;
         lock (_io)
@@ -264,6 +269,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
             if (!saved)
             {
                 slot.SavedMode = false;
+                UndoOnboardIfNeededLocked(slot);
                 return;
             }
             try
@@ -275,6 +281,7 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                     slot.SavedMode = true;
                     slot.HasLast = false;
                     slot.HandleSettled = false;
+                    slot.Ob.BeginSaved();
                 }
                 if (slot.ModeTouched)
                 {
@@ -303,11 +310,12 @@ public sealed class GalleonSdHub : IGalleonLightingHub, IDisposable
                     {
                         ServiceLog.Info($"[galleon-sd-onboard] probe skipped: another host holds the command interface (negotiationFailures={slot.NegotiationFailures} foreignHandle={slot.ForeignHandle})");
                     }
-                    else
+                    else if (frame.IsEmpty)
                     {
                         probe = slot;
                     }
                 }
+                if (!frame.IsEmpty && slot.HardwareHeld) ServiceOnboardLocked(slot, frame);
             }
             catch (ObjectDisposedException) { return; }
             catch (Exception ex)
