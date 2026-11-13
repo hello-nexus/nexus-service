@@ -60,6 +60,8 @@ public sealed partial class Slv3Hub : IDisposable
     // null element means that port follows the motherboard PWM header. Read
     // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
+    // HydroShift IIs whose radiator fans Nexus has written, until the follow-motherboard hand-back is confirmed.
+    private readonly HashSet<string> _hydroShiftFansDriven = new(StringComparer.Ordinal);
 
     // HydroShift IIs under RF control (pump driven or screen saved), keyed by AIO
     // MAC hex. An AIO without an entry is sent no params.
@@ -1741,7 +1743,7 @@ public sealed partial class Slv3Hub : IDisposable
     {
         foreach (var record in _lastFanRecords)
         {
-            if (!IsBoundToUsLocked(record) || record.IsStrimer || record.IsHydroShift)
+            if (!IsBoundToUsLocked(record) || record.IsStrimer)
             {
                 continue;
             }
@@ -1751,14 +1753,31 @@ public sealed partial class Slv3Hub : IDisposable
                 continue;
             }
             var targets = DutyTargetsLocked(record.Mac);
-            if (record.FanCount <= 0 && !HasManualTarget(targets))
+            var manual = record.IsHydroShift ? HasRadiatorFanTarget(targets, record.FanCount) : HasManualTarget(targets);
+            if (record.IsHydroShift)
+            {
+                // Only radiator fans Nexus drove (or is handing back) get a tuple; an untouched AIO is left alone.
+                if (manual)
+                {
+                    _hydroShiftFansDriven.Add(key);
+                }
+                else if (!_hydroShiftFansDriven.Contains(key))
+                {
+                    continue;
+                }
+            }
+            if (record.FanCount <= 0 && !manual)
             {
                 continue;
             }
-            var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
-            if (!Slv3Protocol.NeedSyncPwm(record.Pwm, pwm))
+            var pwm = PwmTupleLocked(record);
+            if (!Slv3Protocol.NeedSyncPwm(ReportedForSync(record, pwm), pwm))
             {
                 _unconfirmedPwm.Remove(key);
+                if (record.IsHydroShift && !manual)
+                {
+                    _hydroShiftFansDriven.Remove(key);
+                }
                 continue;
             }
             var confirmable = _blindSinceMs is null && _knownChains.TryGetValue(key, out var chain) && chain.Poll == _devicePolls;
@@ -2025,6 +2044,18 @@ public sealed partial class Slv3Hub : IDisposable
             ServiceLog.Warn($"[lianli-wireless] AIO sensor read failed: {ex.Message}");
             return default;
         }
+    }
+
+    private static bool HasRadiatorFanTarget(int?[] targets, int fanCount)
+    {
+        for (var port = 0; port < Math.Min(fanCount, Slv3Protocol.HydroShiftPumpPort); port++)
+        {
+            if (targets[port] is not null)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static bool HasManualTarget(int?[] targets)
@@ -2713,9 +2744,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        // A duty set on a HydroShift II through the cooling route would land in its pump slot.
-        var targets = record.IsHydroShift ? DefaultDutyTargets : DutyTargetsLocked(record.Mac);
-        var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
+        var pwm = PwmTupleLocked(record);
         var payload = unbind
             ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
             : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);
@@ -2734,6 +2763,26 @@ public sealed partial class Slv3Hub : IDisposable
             : rfCmd is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme ? FlexLcdOrdinalLocked(record) : (byte)0;
         var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg, data);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
+    }
+
+    // A HydroShift II tuple drives its radiator fans only; its pump slot is never taken from a port target.
+    private byte[] PwmTupleLocked(Slv3DeviceRecord record)
+    {
+        var targets = DutyTargetsLocked(record.Mac);
+        return record.IsHydroShift
+            ? Slv3Protocol.BuildHydroShiftPwmTuple(targets, record.FanCount)
+            : Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
+    }
+
+    // The AIO's pump slot reports its own duty, so drift is judged on the radiator fans alone.
+    private static int[] ReportedForSync(Slv3DeviceRecord record, byte[] pwm)
+    {
+        var reported = (int[])record.Pwm.Clone();
+        if (record.IsHydroShift && reported.Length > Slv3Protocol.HydroShiftPumpPort)
+        {
+            reported[Slv3Protocol.HydroShiftPumpPort] = pwm[Slv3Protocol.HydroShiftPumpPort];
+        }
+        return reported;
     }
 
     // Caller holds _lock.

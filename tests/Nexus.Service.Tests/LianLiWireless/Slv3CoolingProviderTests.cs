@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Nexus.Service.Cooling;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.LianLiWireless;
@@ -135,6 +136,39 @@ public class Slv3CoolingProviderTests
         Assert.Equal(2, channels.Count);
         Assert.Contains(channels, c => c.Id == $"lianli-wireless:{Mac}:pump" && c.Kind == FanKinds.Pump);
         Assert.DoesNotContain(channels, c => c.Id.StartsWith($"lianli-wireless:{Mac}:port", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_bound_hydroshift_lists_one_channel_per_radiator_fan_beside_the_pump()
+    {
+        var (hub, _, _) = Slv3TestHub.CreateConnected();
+        hub.State.Fans = new[]
+        {
+            new Slv3FanInfo
+            {
+                Mac = Mac, BoundToUs = true, DevType = 10, FanCount = 3,
+                Rpm = new[] { 1200, 1210, 1190, 2085 },
+                Pwm = new[] { Slv3Protocol.PwmFollowMotherboard, 127, Slv3Protocol.PwmFollowMotherboard, 0 },
+            },
+        };
+        var provider = new Slv3CoolingProvider(hub);
+
+        var channels = provider.GetFanChannels();
+        Assert.Equal(4, channels.Count);
+        Assert.Single(channels, c => c.Kind == FanKinds.Pump && c.Id == $"lianli-wireless:{Mac}:pump");
+        var fans = channels.Where(c => c.Id.Contains(":port", StringComparison.Ordinal)).ToList();
+        Assert.Equal(3, fans.Count);
+        Assert.Equal(1210, fans[1].Rpm);
+        Assert.Equal(FanModes.Manual, fans[1].Mode);
+        Assert.Equal(FanModes.Auto, fans[0].Mode);
+        Assert.All(fans, c => Assert.Equal($"lianli-wireless:{Mac}", c.DeviceId));
+        Assert.Equal(4, Assert.Single(provider.GetAll()).Devices.Count);
+
+        provider.SetFanSpeed(fans[2].Id, 40);
+        Assert.Equal(40, hub.GetPortDuty(Mac, 2));
+        Assert.Null(hub.GetPortDuty(Mac, 3));
+        provider.ReleaseAll();
+        Assert.Null(hub.GetPortDuty(Mac, 2));
     }
 
     [Fact]

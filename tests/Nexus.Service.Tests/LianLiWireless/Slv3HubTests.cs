@@ -1144,6 +1144,29 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void HydroShift_radiator_fan_duty_rides_the_pwm_tuple_and_the_pump_slot_stays_on_the_follow_byte()
+    {
+        var (hub, net, tx, _) = CreateConnectedHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, DevType = 10, FanCount = 3 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.DriveTick());
+        Assert.Equal(0, CountBindFrames(tx));
+        var mac = Convert.ToHexString(FanMac);
+
+        Assert.True(hub.SetPortDuty(mac, 1, 50));
+        Assert.True(hub.SetPortDuty(mac, 3, 80));
+        Assert.True(hub.DriveTick());
+
+        var follow = Slv3Protocol.PwmFollowMotherboard;
+        Assert.Equal(new byte[] { follow, 127, follow, follow }, LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray());
+
+        Assert.True(hub.SetPortDuty(mac, 1, null));
+        Assert.True(hub.SetPortDuty(mac, 3, null));
+        Assert.True(hub.DriveTick());
+        Assert.All(LastBindFrame(tx, FanMac).AsSpan(21, 4).ToArray(), b => Assert.Equal(follow, b));
+    }
+
+    [Fact]
     public void HydroShift_unbind_frame_never_carries_a_port_duty()
     {
         var (hub, net, tx, _) = CreateConnectedHub();

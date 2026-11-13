@@ -611,6 +611,32 @@ public static class Slv3Protocol
         return pwm;
     }
 
+    /// <summary>Smallest nonzero radiator fan duty the HydroShift II accepts (lian-li-linux min_duty_percent, WaterBlock).</summary>
+    public const int HydroShiftFanMinDuty = 10;
+
+    /// <summary>
+    /// Duty tuple for a HydroShift II (lian-li-linux fan_speed.rs build_pwm_packet: the same 0x10 frame
+    /// with duties at [17..20], slots below fan_count are the radiator fans, slot 3 is the pump slot).
+    /// A fan with no target follows the motherboard header; the pump slot always stays on the
+    /// follow byte, as Nexus has sent it all along, because the pump runs from the param block timer.
+    /// </summary>
+    public static byte[] BuildHydroShiftPwmTuple(IReadOnlyList<int?> targets, int fanCount)
+    {
+        var pwm = new byte[PortsPerRecord];
+        Array.Fill(pwm, PwmFollowMotherboard);
+        var fans = Math.Min(fanCount, HydroShiftPumpPort);
+        for (var port = 0; port < fans && port < targets.Count; port++)
+        {
+            if (targets[port] is not { } percent)
+            {
+                continue;
+            }
+            var clamped = Math.Clamp(percent, 0, 100);
+            pwm[port] = EncodeDuty(clamped > 0 && clamped < HydroShiftFanMinDuty ? HydroShiftFanMinDuty : clamped);
+        }
+        return pwm;
+    }
+
     /// <summary>
     /// RF_Bind payload that releases a fan (L-Connect RfDevice.unBind): master
     /// MAC all-zero, targetRx 0, slot 0, the current duty tuple at [17..20].
