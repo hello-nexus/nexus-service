@@ -495,10 +495,10 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Theory]
-    [InlineData(1, 132, 53, 450)]
-    [InlineData(2, 252, 61, 672)]
-    [InlineData(4, 276, 69, 809)]
-    [InlineData(8, 798, 157, 2195)]
+    [InlineData(1, 132, 61, 450)]
+    [InlineData(2, 252, 93, 672)]
+    [InlineData(4, 276, 93, 809)]
+    [InlineData(8, 798, 181, 2195)]
     public void WindowPlan_picks_the_smallest_interval_whose_window_still_covers_a_round_of_uploads(int chains, int leds, int intervalTicks, int cycleMs)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
@@ -511,8 +511,9 @@ public class Slv3LightingFrameWriterTests
     {
         var (ticks, cycleMs) = Slv3LightingFrameWriter.WindowPlan(4, 276);
         var smaller = ticks - Slv3LightingFrameWriter.WindowIntervalStepTicks;
-        Assert.True(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
-        Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, smaller));
+        var land = Slv3LightingFrameWriter.LandMsFor(4, 276);
+        Assert.True(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks, land));
+        Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, smaller, land));
     }
 
     [Theory]
@@ -529,13 +530,14 @@ public class Slv3LightingFrameWriterTests
         var step = Slv3LightingFrameWriter.WindowIntervalStepTicks;
         Assert.Equal(0, (ticks - baseTicks) % step);
         Assert.InRange(ticks, baseTicks, Slv3LightingFrameWriter.MaxWindowIntervalTicks);
-        Assert.True(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
+        var land = Slv3LightingFrameWriter.LandMsFor(chains, leds);
+        Assert.True(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks, land));
         if (ticks > baseTicks)
         {
             // One step lower must break either the coverage or the air budget (a round within the base window's budget share).
             var lower = ticks - step;
             var airOk = cycleMs / Slv3LightingFrameWriter.WindowCycleMs * baseTicks <= lower;
-            Assert.False(airOk && Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, lower));
+            Assert.False(airOk && Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, lower, land));
         }
     }
 
@@ -544,7 +546,36 @@ public class Slv3LightingFrameWriterTests
     {
         var (ticks, cycleMs) = Slv3LightingFrameWriter.WindowPlan(40, 4000);
         Assert.Equal(Slv3LightingFrameWriter.MaxWindowIntervalTicks, ticks);
-        Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks));
+        Assert.False(Slv3LightingFrameWriter.RoundFitsWindow(cycleMs, ticks, Slv3LightingFrameWriter.LandMsFor(40, 4000)));
+    }
+
+    [Fact]
+    public void LandMsFor_charges_a_queued_lock_held_block_only_when_chains_share_the_hub_lock()
+    {
+        Assert.Equal(Slv3LightingFrameWriter.WindowLandBaseMs, Slv3LightingFrameWriter.LandMsFor(1, 500));
+        Assert.True(Slv3LightingFrameWriter.LandMsFor(4, 276) > Slv3LightingFrameWriter.WindowLandBaseMs);
+        Assert.True(Slv3LightingFrameWriter.LandMsFor(4, 600) > Slv3LightingFrameWriter.LandMsFor(4, 276));
+    }
+
+    [Theory]
+    [InlineData(0, 5000, 450, 5450)]
+    [InlineData(1000, 1000, 450, 1450)]
+    [InlineData(1000, 1030, 450, 1450)]
+    [InlineData(1000, 1449, 450, 1450)]
+    [InlineData(1000, 1450, 450, 1900)]
+    [InlineData(1000, 3000, 450, 3450)]
+    public void NextRequestDueMs_steps_from_the_due_time_and_reanchors_after_a_stall(double due, double now, double period, double expected)
+    {
+        Assert.Equal(expected, Slv3LightingFrameWriter.NextRequestDueMs(due, now, period));
+    }
+
+    [Fact]
+    public void DependsOnInterval_counts_a_window_or_any_upload_even_a_finished_one()
+    {
+        Assert.False(Slv3LightingFrameWriter.DependsOnInterval(long.MinValue, null));
+        Assert.True(Slv3LightingFrameWriter.DependsOnInterval(12, null));
+        Assert.True(Slv3LightingFrameWriter.DependsOnInterval(long.MinValue, Task.FromResult(true)));
+        Assert.True(Slv3LightingFrameWriter.DependsOnInterval(long.MinValue, new TaskCompletionSource<bool>().Task));
     }
 
     private static int Hold(Slv3LightingFrameWriter.PlanHold hold, double nowMs, int target, int current = 53, bool independent = false) =>

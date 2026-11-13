@@ -153,6 +153,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (!_hub.IsConnected)
         {
             _planHold.Reset();
+            // Windows from before the disconnect are gone with the link.
+            foreach (var st in _rolling.Values) st.WindowFirstFrame = long.MinValue;
             _lastSent.Clear();
             _lastPushTicks.Clear();
             _clock.Clear();
@@ -355,9 +357,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     internal const int MaxWindowIntervalTicks = 6 * WindowIntervalTicks;
     // Plans sit on a grid of this many ticks above the base, so a small change in chains or LEDs rarely moves the plan.
     internal const int WindowIntervalStepTicks = 8;
-    // Upper bound on the time from a chain's upload start until the chain swaps to the new window: the lock-held headers
-    // and data of the largest upload, one late-pass gap and clock-fit jitter.
-    internal const double WindowLandMs = 200;
+    // Bound on the time from a chain's upload start until the chain holds the new window: the whole upload, late passes
+    // included, since a part lost in the first pass is only recovered by a late one (the longest upload seen).
+    internal const double WindowLandBaseMs = 300;
+    // Upper bound on one RF send under the hub lock, for the lock-held block of another chain's upload that queues ahead.
+    internal const double WindowLockSendMs = 3;
+    // Longest a writer tick ran past its period (the compose of a whole window is part of the tick that starts an upload).
+    internal const double WindowTickOverrunMs = 110;
     private const int HealthLogPeriodMs = 60_000;
     private const int HealthAirSampleMs = 250;
     // A changed plan resets every chain's window, so it must hold this long first. A lower plan waits longer, so a chain
@@ -470,22 +476,41 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// True when a chain re-uploaded <paramref name="cycleMs"/> after its last upload still swaps its window in before the
-    /// old one is within the wrap margin: the new upload starts the safety frames after its window's first frame, up to
-    /// one frame and one writer tick later when it waits for a frame boundary and a tick, lands
-    /// <see cref="WindowLandMs"/> after that, and the old window has this many frames of this interval to cover all of it.
+    /// Upload start to the chain holding the new window: the upload itself plus, with several chains, the lock-held block
+    /// of one other chain's upload queued ahead (the air budget keeps a chain's block shorter than the spacing between
+    /// uploads, so at most one is ahead).
     /// </summary>
-    internal static bool RoundFitsWindow(double cycleMs, int intervalTicks)
+    internal static double LandMsFor(int chains, int leds)
     {
-        var frameMs = intervalTicks / RfTicksPerMs;
-        return cycleMs + (SafetyFramesFor(intervalTicks) + 1) * frameMs + TickPeriodMs + WindowLandMs
-            <= (WindowFrames - WindowWrapMarginFrames) * frameMs;
+        var queued = chains > 1 ? (WindowHeaderCost + WindowPartsPerLed * leds / chains) * WindowLockSendMs : 0;
+        return WindowLandBaseMs + queued;
     }
 
     /// <summary>
+    /// True when a chain re-uploaded <paramref name="cycleMs"/> after its last upload still swaps its window in before the
+    /// old one is within the wrap margin: the new upload starts the safety frames after its window's first frame, up to
+    /// one frame and two writer ticks later (the render request and the upload start each wait for a tick, one of them
+    /// overrunning), lands <paramref name="landMs"/> after that, and the old window has this many frames of this interval
+    /// to cover all of it.
+    /// </summary>
+    internal static bool RoundFitsWindow(double cycleMs, int intervalTicks, double landMs)
+    {
+        var frameMs = intervalTicks / RfTicksPerMs;
+        return cycleMs + (SafetyFramesFor(intervalTicks) + 1) * frameMs + 2 * TickPeriodMs + WindowTickOverrunMs + landMs
+            <= (WindowFrames - WindowWrapMarginFrames) * frameMs;
+    }
+
+    /// <summary>Next render due time: stepping from the due time keeps the period from drifting by each late tick; a stall re-anchors.</summary>
+    internal static double NextRequestDueMs(double dueMs, double nowMs, double periodMs) =>
+        dueMs > 0 && nowMs - dueMs < periodMs ? dueMs + periodMs : nowMs + periodMs;
+
+    /// <summary>A chain whose window or upload still counts on the current interval.</summary>
+    internal static bool DependsOnInterval(long windowFirstFrame, Task? upload) => windowFirstFrame != long.MinValue || upload is not null;
+
+    /// <summary>
     /// Debounces plan changes: a changed plan applies only after it has held, and applies at once when no chain depends
-    /// on the current interval. While the same direction persists the hold keeps the most conservative candidate and never
-    /// restarts, so a plan that flips between two values still arrives.
+    /// on the current interval. While the same direction persists the hold keeps the largest candidate seen and never
+    /// restarts, so a plan that flips between two values still arrives; that candidate may have been seen only briefly.
     /// </summary>
     internal sealed class PlanHold
     {
@@ -533,7 +558,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var cycleMs = Math.Max(Math.Max(WindowPeriodMs, airMs), MinRenderPeriodMs * chains);
         var extra = Math.Max(0, cycleMs / WindowCycleMs * WindowIntervalTicks - WindowIntervalTicks);
         var ticks = WindowIntervalTicks + WindowIntervalStepTicks * (int)Math.Ceiling(extra / WindowIntervalStepTicks);
-        while (ticks < MaxWindowIntervalTicks && !RoundFitsWindow(cycleMs, ticks)) ticks += WindowIntervalStepTicks;
+        var landMs = LandMsFor(chains, leds);
+        while (ticks < MaxWindowIntervalTicks && !RoundFitsWindow(cycleMs, ticks, landMs)) ticks += WindowIntervalStepTicks;
         return (Math.Min(ticks, MaxWindowIntervalTicks), cycleMs);
     }
 
@@ -555,7 +581,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var independent = true;
         foreach (var st in _rolling.Values)
         {
-            if (st.WindowFirstFrame != long.MinValue || st.Upload is { IsCompleted: false })
+            if (DependsOnInterval(st.WindowFirstFrame, st.Upload))
             {
                 independent = false;
                 break;
@@ -708,10 +734,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (_windowFrames is not null && _windowStartedId != _windowId) _healthUntaken++;
         _windowPendingFirstFrame = (long)Math.Floor((a + b * nowMs) / WindowInterval) + WindowLeadFrames;
         _windowRequestedAtMs = nowMs;
-        // Stepping from the due time keeps the period from drifting by each late writer tick; a long stall re-anchors.
-        _nextWindowRequestMs = _nextWindowRequestMs > 0 && nowMs - _nextWindowRequestMs < _windowRequestPeriodMs
-            ? _nextWindowRequestMs + _windowRequestPeriodMs
-            : nowMs + _windowRequestPeriodMs;
+        _nextWindowRequestMs = NextRequestDueMs(_nextWindowRequestMs, nowMs, _windowRequestPeriodMs);
         var ids = new string[_rollingIds.Count];
         _rollingIds.CopyTo(ids);
         _windowPending = _engine.RequestAhead(ids, WindowTickTimes(a, b, _windowPendingFirstFrame, WindowInterval));
