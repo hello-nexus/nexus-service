@@ -16,6 +16,8 @@ public interface IY70Provider
     void ApplyEffectiveOrientation();
     int GetBrightness();
     void SetBrightness(int brightness);
+    /// <summary>Re-applies the stored slider through the brightness schedule multiplier without persisting anything.</summary>
+    void ReapplyBrightness() { }
     bool GetToggle();
     void SetToggle(bool toggle);
     /// <summary>Drives screen power without persisting; false restores the stored preference.</summary>

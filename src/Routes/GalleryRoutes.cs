@@ -63,8 +63,22 @@ public static class GalleryRoutes
                 Items = e.Items,
                 Truncated = e.Truncated,
                 Playlists = lib.ListPlaylists(),
+                Sort = e.Sort,
             };
         }).AllowPanel();
+
+        // Desktop-tier: one setting orders every surface's list, read back on
+        // /gallery/items. The broadcast makes open widgets refetch in the new order.
+        app.MapPut("/gallery/sort", (GallerySort body, GalleryLibrary lib, MultiplexHub hub) =>
+        {
+            if (!lib.SetSort(body))
+            {
+                return Results.BadRequest(new GallerySortMutationResponse { Error = true, Msg = "unknown sort key or direction" });
+            }
+
+            PanelTopics.BroadcastGallery(hub);
+            return Results.Ok(new GallerySortMutationResponse { Sort = lib.GetSort() });
+        });
 
         // Playlist management is desktop-tier like source management. Reads
         // ride on /gallery/items, so no playlist route needs panel reach.

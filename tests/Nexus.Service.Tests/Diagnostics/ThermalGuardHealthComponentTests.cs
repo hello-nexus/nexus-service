@@ -75,4 +75,32 @@ public class ThermalGuardHealthComponentTests
 
         Assert.DoesNotContain(result.Components, c => c.Id == "cooling:thermal-guard");
     }
+
+    [Fact]
+    public void TheThermalGuardReason_CarriesInvariantParamsMirroringTheDetailKeys()
+    {
+        var at = Ms(Now.AddMinutes(-5));
+        var reason = ReasonFor(new ThermalGuardTripRecord { AtUtcMs = at, PeakC = 99.4, Reason = "limit", Escalated = true });
+
+        var p = Assert.IsType<Dictionary<string, string>>(reason.Params);
+        Assert.Equal("CPU reached its temperature limit", p["cause"]);
+        Assert.Equal("true", p["active"]);
+        Assert.Equal("limit", p["reason"]);
+        Assert.Equal("99.4", p["peakC"]);
+        Assert.Equal("true", p["escalated"]);
+        Assert.Equal(at.ToString(System.Globalization.CultureInfo.InvariantCulture), p["at"]);
+    }
+
+    [Fact]
+    public void Params_serialize_as_camelCase_params_and_are_omitted_when_null()
+    {
+        var withParams = System.Text.Json.JsonSerializer.Serialize(
+            new HealthComponentReason("c", "watch", "s", "d", new Dictionary<string, string> { ["k"] = "v" }),
+            Nexus.Service.Serialization.AppJsonContext.Default.HealthComponentReason);
+        var without = System.Text.Json.JsonSerializer.Serialize(
+            new HealthComponentReason("c", "watch", "s", "d"),
+            Nexus.Service.Serialization.AppJsonContext.Default.HealthComponentReason);
+        Assert.Contains("\"params\":{\"k\":\"v\"}", withParams);
+        Assert.DoesNotContain("params", without);
+    }
 }

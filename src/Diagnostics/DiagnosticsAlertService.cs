@@ -14,8 +14,8 @@ namespace Nexus.Service.Diagnostics;
 /// needs attention. Consumed the same way as
 /// <see cref="Nexus.Service.Transfer.TransferAttentionNotice"/>: platform
 /// bootstraps subscribe and surface a tray balloon / native banner.</summary>
-/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to.</summary>
-public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null);
+/// <summary>ActionId names the countdown a Cancel button on the notice applies to. Kind is the component kind ("storage", "gpu", "memory", "system", "cooling") or "thermalGuard" for a thermal guard trip, which is also the diagnostics tab slug the alert deep-links to. Urgent notices pass a focus-mode hold in <see cref="Nexus.Service.Notifications.NotificationGate"/> and wait only for onboarding. Severity ("watch" or "act") picks the toast icon, null keeps the plain info icon.</summary>
+public sealed record DiagnosticsAlertNotice(string Title, string Text, string Kind, long? ActionId = null, bool Urgent = false, string? Severity = null);
 
 /// <summary>
 /// Polls <see cref="DiagnosticsHealthModel"/> every 5 minutes (first check 2
@@ -41,6 +41,10 @@ public sealed class DiagnosticsAlertService : BackgroundService
     private readonly HashSet<string> _alerted = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _lastNotifiedUtc = new(StringComparer.Ordinal);
     private readonly FeatureGates _gates;
+    private readonly TimeProvider _time;
+
+    // An urgent notice must not sit out the full user cooldown after one earlier toast: a limit that keeps being crossed would otherwise stay silent for the whole window.
+    private static readonly TimeSpan UrgentCooldown = TimeSpan.FromMinutes(5);
 
     /// <summary>Raised when a component needs attention and the user's
     /// notification settings allow it. Platform bootstraps subscribe to
@@ -48,8 +52,9 @@ public sealed class DiagnosticsAlertService : BackgroundService
     /// Linux notify-send).</summary>
     public event Action<DiagnosticsAlertNotice>? AlertNeedsAttention;
 
-    public DiagnosticsAlertService(DiagnosticsHealthModel health, IConfigStore store, FeatureGates? gates = null)
+    public DiagnosticsAlertService(DiagnosticsHealthModel health, IConfigStore store, FeatureGates? gates = null, TimeProvider? time = null)
     {
+        _time = time ?? TimeProvider.System;
         _health = health;
         _store = store;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -70,6 +75,32 @@ public sealed class DiagnosticsAlertService : BackgroundService
         {
             ServiceLog.Warn($"[diagnostics-alert] notify subscriber failed: {ex.Message}");
         }
+    }
+
+    /// <summary>Raises a notice under the same gate as the health-poll notices: the master switch plus the shared cooldown, tracked per <paramref name="key"/> in the same table. The caller owns the category toggle.</summary>
+    public void RaiseCooled(string key, DiagnosticsAlertNotice notice)
+    {
+        var notifications = _store.Load().Diagnostics.Notifications;
+        if (!notifications.Enabled)
+        {
+            return;
+        }
+        var now = _time.GetUtcNow().UtcDateTime;
+        var cooldown = TimeSpan.FromMinutes(notifications.CooldownMinutes);
+        if (notice.Urgent && cooldown > UrgentCooldown)
+        {
+            cooldown = UrgentCooldown;
+        }
+        lock (_lastNotifiedUtc)
+        {
+            if (_lastNotifiedUtc.TryGetValue(key, out var last) && now - last < cooldown)
+            {
+                ServiceLog.Info($"[diagnostics-alert] {key} notice held back by cooldown");
+                return;
+            }
+            _lastNotifiedUtc[key] = now;
+        }
+        Raise(notice);
     }
 
 #if DEV_TOOLS
@@ -139,7 +170,12 @@ public sealed class DiagnosticsAlertService : BackgroundService
             ServiceLog.Warn($"[diagnostics-alert] {component.Kind} issue: {component.Name} - {summary}");
         }
 
-        foreach (var notice in EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now))
+        IReadOnlyList<DiagnosticsAlertNotice> due;
+        lock (_lastNotifiedUtc)
+        {
+            due = EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now);
+        }
+        foreach (var notice in due)
         {
             try
             {
@@ -178,6 +214,11 @@ public sealed class DiagnosticsAlertService : BackgroundService
             {
                 continue;
             }
+            // Failed Linux services are a status-card finding only; they never toast.
+            if (component.Reasons.Count > 0 && component.Reasons.All(r => r.Code == "system.failedUnits"))
+            {
+                continue;
+            }
             if (CategoryFor(component) is not { } category || !CategoryEnabled(notifications, category))
             {
                 continue;
@@ -204,6 +245,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
         "system" => "/system/diagnostics/system",
         // GPU throttling is reported on the cooling tab.
         "cooling" or "gpu" or "thermalGuard" => "/system/diagnostics/cooling",
+        "sensorAlert" => "/system/diagnostics/sensors",
         "astral" or "astralCountdown" => "/system/device/curated-asus-astral",
         _ => null,
     };
@@ -211,21 +253,20 @@ public sealed class DiagnosticsAlertService : BackgroundService
     /// <summary>Maps a component to the notification category it belongs to.
     /// The "cooling" kind is split by id: per-device stall components
     /// (id "cooling:&lt;deviceId&gt;") are the cooling category, while the
-    /// aggregate (id "cooling") carries only sustained-high-temp reasons and
-    /// maps to highTemp.</summary>
+    /// aggregate (id "cooling") carries no reasons and maps to none. Sensor
+    /// alerts (kind "alerts") notify through the sensor alert engine.</summary>
     private static string? CategoryFor(HealthComponent component) => component.Kind switch
     {
         "storage" => "storageHealth",
         "gpu" => "gpuThrottle",
         "memory" => "memoryTest",
         "system" => "systemDevices",
-        "cooling" => component.Id == "cooling" ? "highTemp" : "cooling",
+        "cooling" => component.Id == "cooling" ? null : "cooling",
         _ => null,
     };
 
     private static bool CategoryEnabled(DiagnosticsNotifications notifications, string category) => category switch
     {
-        "highTemp" => notifications.HighTemp,
         "storageHealth" => notifications.StorageHealth,
         "cooling" => notifications.Cooling,
         "memoryTest" => notifications.MemoryTest,

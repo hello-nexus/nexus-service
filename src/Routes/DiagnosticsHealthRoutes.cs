@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Activity.Storage;
 using Nexus.Service.Auth;
 using Nexus.Service.Diagnostics;
+using Nexus.Service.Diagnostics.Alerts;
 using Nexus.Service.Diagnostics.Cooling;
 using Nexus.Service.Diagnostics.EventLog;
 using Nexus.Service.Diagnostics.Gpu;
@@ -19,6 +20,7 @@ using Nexus.Service.Lifecycle;
 using Nexus.Service.Lighting;
 using Nexus.Service.Models;
 using Nexus.Service.Monitoring.History;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
 #if WINDOWS
@@ -58,6 +60,8 @@ public static class DiagnosticsHealthRoutes
 
     public static void MapDiagnosticsHealthEndpoints(this WebApplication app)
     {
+        app.MapDiagnosticsAlertEndpoints();
+
         app.MapGet("/diagnostics/health", (string? refresh, DiagnosticsHealthModel model, FeatureGates gates) =>
             gates.Diagnostics
                 ? model.BuildHealth(IsRefresh(refresh))
@@ -110,13 +114,13 @@ public static class DiagnosticsHealthRoutes
 
         // date (yyyy-MM-dd, service host's local calendar day) takes priority
         // over hours when both are present.
-        app.MapGet("/diagnostics/temperatures", (int? hours, string? date, IMetricsHistoryStore tempStore) =>
+        app.MapGet("/diagnostics/temperatures", (int? hours, string? date, IMetricsHistoryStore tempStore, IConfigStore store) =>
         {
             if (!TryResolveTemperatureWindow(hours, date, out var fromUtcMs, out var toUtcMs, out var tierWidthMinutes, out var error))
             {
                 return Results.BadRequest(ApiResponse.Fail(error!));
             }
-            return QueryTemperatures(tempStore, fromUtcMs, toUtcMs, tierWidthMinutes);
+            return QueryTemperatures(tempStore, fromUtcMs, toUtcMs, tierWidthMinutes, BuiltInLimits(store));
         }).AllowPanel();
 
         // App-usage overlay for the temperature chart: dominant foreground app
@@ -197,6 +201,7 @@ public static class DiagnosticsHealthRoutes
             {
                 ServiceLog.Warn($"[support-bundle] fan channels unavailable: {ex.Message}");
             }
+            var pcSetup = TryLoadPcSetup(() => sp.GetService<Nexus.Service.Lighting.Scene.LightingSceneStore>()?.Setup.Load());
             var zipBytes = SupportBundleBuilder.Build(new SupportBundleBuilder.Sources
             {
                 LogsDirectory = ServiceLog.LogsDirectory,
@@ -234,6 +239,7 @@ public static class DiagnosticsHealthRoutes
                 Fans = fanChannels,
                 System = BuildSystemResponse(pnp, events),
                 UsbTopology = UsbTopology.Collect((vid, pid) => SupportBundleExtras.IsKnownUsbId(handlers, vid, pid)),
+                PcSetup = pcSetup,
                 UserNames = identity.UserNames,
                 AccountNames = identity.AccountNames,
                 OtherHostNames = identity.HostNames,
@@ -336,6 +342,20 @@ public static class DiagnosticsHealthRoutes
     // Shared window resolution for the temperatures + app-usage endpoints so
     // both sit on the same [from, to] range and tier width, keeping the app
     // bands aligned to the temperature buckets.
+    /// <summary>The saved PC setup for the support bundle; a failing or missing store just leaves pc-setup.json out.</summary>
+    internal static Nexus.Service.Models.Lighting.PcSetupResponse? TryLoadPcSetup(Func<Nexus.Service.Lighting.Scene.PcSetupFile?> load)
+    {
+        try
+        {
+            return load() is { } file ? new Nexus.Service.Models.Lighting.PcSetupResponse { Rev = file.Rev, Setup = file.Setup } : null;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[support-bundle] pc setup unavailable: {ex.Message}");
+            return null;
+        }
+    }
+
     private static bool TryResolveTemperatureWindow(
         int? hours, string? date,
         out long fromUtcMs, out long toUtcMs, out int tierWidthMinutes, out string? error)
@@ -380,13 +400,39 @@ public static class DiagnosticsHealthRoutes
         }
     }
 
+    /// <summary>The limits of the built-in temperature rules keyed by history kind, so the chart bands follow the user's limits.</summary>
+    internal static Dictionary<string, double> BuiltInLimits(IConfigStore store)
+    {
+        var limits = new Dictionary<string, double>(StringComparer.Ordinal);
+        store.Read(s =>
+        {
+            foreach (var rule in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
+            {
+                var kind = rule.BuiltIn switch
+                {
+                    BuiltInSensorRules.CpuTemp => "cpu",
+                    BuiltInSensorRules.GpuTemp => "gpu",
+                    BuiltInSensorRules.StorageTemp => "storage",
+                    BuiltInSensorRules.RamTemp => "ram",
+                    _ => null,
+                };
+                // Devices of a kind share its band, so the most sensitive enabled limit wins.
+                if (kind is not null && !BuiltInSensorRules.IsTemplate(rule) && rule is { Enabled: true, High: { } high })
+                {
+                    limits[kind] = limits.TryGetValue(kind, out var lowest) ? Math.Min(lowest, high) : high;
+                }
+            }
+        });
+        return limits;
+    }
+
     private static IResult QueryTemperatures(
-        IMetricsHistoryStore tempStore, long fromUtcMs, long toUtcMs, int tierWidthMinutes)
+        IMetricsHistoryStore tempStore, long fromUtcMs, long toUtcMs, int tierWidthMinutes, IReadOnlyDictionary<string, double> limits)
     {
         try
         {
             var rows = tempStore.QueryTemperatureBuckets(fromUtcMs, toUtcMs);
-            return Results.Ok(BuildTemperatureResponse(rows, tierWidthMinutes));
+            return Results.Ok(BuildTemperatureResponse(rows, tierWidthMinutes, limits));
         }
         catch (Exception ex)
         {
@@ -396,7 +442,7 @@ public static class DiagnosticsHealthRoutes
     }
 
     internal static TemperatureHistoryResponse BuildTemperatureResponse(
-        IReadOnlyList<TemperatureBucketRow> rows, int tierWidthMinutes)
+        IReadOnlyList<TemperatureBucketRow> rows, int tierWidthMinutes, IReadOnlyDictionary<string, double>? limits = null)
     {
         var widthMs = tierWidthMinutes * 60_000L;
         var series = rows
@@ -419,7 +465,7 @@ public static class DiagnosticsHealthRoutes
             .OrderBy(s => s.Id, StringComparer.Ordinal)
             .ToList();
 
-        var episodes = TemperatureInsights.DetectEpisodes(rows)
+        var episodes = TemperatureInsights.DetectEpisodes(rows, limits)
             .Select(e => e with { PeakC = Math.Round(e.PeakC, 1) })
             .ToList();
 

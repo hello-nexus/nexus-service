@@ -54,6 +54,10 @@ public static class SummarySensors
             ? VramUsagePercent(gpuSensors)
             : Pick(cpuSensors, gpuSensors, memorySensors, kind)?.Value;
 
+    /// <summary>The CPU temperature sensor itself (not a clone), so a caller can read its stale flag.</summary>
+    internal static HardwareSensor? PickCpuTemp(IReadOnlyList<HardwareSensor> cpuSensors)
+        => Pick(cpuSensors, Array.Empty<HardwareSensor>(), Array.Empty<HardwareSensor>(), SummarySensorKind.CpuTemp);
+
     /// <summary>Same derivation as <see cref="Build(ISensorProvider)"/>, applied to sensor
     /// lists a caller already fetched, so a caller that has already read cpu/gpu/memory
     /// sensors this tick does not trigger a second underlying read for the summary set.</summary>

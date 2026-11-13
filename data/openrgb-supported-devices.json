@@ -1,5 +1,5 @@
 {
-  "count": 2034,
+  "count": 2051,
   "devices": [
     {
       "name": "Bloody B820R",
@@ -112,6 +112,14 @@
       "controller": "ASRockPolychromeUSBController",
       "kind": "hid",
       "type": "motherboard"
+    },
+    {
+      "name": "ASRock Intel Arc B580 Steel Legend 12GB OC",
+      "vid": null,
+      "pid": null,
+      "controller": "ASRockSMBusController",
+      "kind": "i2c",
+      "type": "gpu"
     },
     {
       "name": "ASRock Motherboard SMBus Controllers",
@@ -288,6 +296,22 @@
       "controller": "ArcticController",
       "kind": "generic",
       "type": "ledstrip"
+    },
+    {
+      "name": "Redragon M901P-KS",
+      "vid": "0x25A7",
+      "pid": "0xFA08",
+      "controller": "AresonController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
+      "name": "Redragon M901P-KS (Wireless)",
+      "vid": "0x25A7",
+      "pid": "0xFA07",
+      "controller": "AresonController",
+      "kind": "hid",
+      "type": "mouse"
     },
     {
       "name": "Redragon M914 NIX",
@@ -2810,14 +2834,6 @@
       "type": null
     },
     {
-      "name": "Corsair K65 Mini",
-      "vid": "0x1B1C",
-      "pid": "0x1BAF",
-      "controller": "CorsairPeripheralController",
-      "kind": "hid",
-      "type": "keyboard"
-    },
-    {
       "name": "Corsair K65 RGB",
       "vid": "0x1B1C",
       "pid": "0x1B17",
@@ -3186,6 +3202,14 @@
       "type": "keyboard"
     },
     {
+      "name": "Corsair K65 Mini",
+      "vid": "0x1B1C",
+      "pid": "0x1BAF",
+      "controller": "CorsairPeripheralV2Controller",
+      "kind": "hid",
+      "type": "keyboard"
+    },
+    {
       "name": "Corsair K70 Core RGB",
       "vid": "0x1B1C",
       "pid": "0x1BFD",
@@ -3376,6 +3400,38 @@
       "controller": "CorsairVengeanceController",
       "kind": "i2c",
       "type": "dram"
+    },
+    {
+      "name": "Corsair Void Pro USB",
+      "vid": "0x1B1C",
+      "pid": "0x0A17",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
+    },
+    {
+      "name": "Corsair Void Pro USB",
+      "vid": "0x1B1C",
+      "pid": "0x0A1D",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
+    },
+    {
+      "name": "Corsair Void Pro Wireless",
+      "vid": "0x1B1C",
+      "pid": "0x0A14",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
+    },
+    {
+      "name": "Corsair Void Pro Wireless",
+      "vid": "0x1B1C",
+      "pid": "0x0A1A",
+      "controller": "CorsairVoidController",
+      "kind": "hid",
+      "type": "headset"
     },
     {
       "name": "Cougar 700K EVO Gaming Keyboard",
@@ -8202,6 +8258,14 @@
       "type": "dram"
     },
     {
+      "name": "Klipsch ProMedia Lumina",
+      "vid": "0x18B5",
+      "pid": "0x0070",
+      "controller": "KlipschLuminaController",
+      "kind": "hid",
+      "type": "speaker"
+    },
+    {
       "name": "LED Strip",
       "vid": null,
       "pid": null,
@@ -9778,7 +9842,31 @@
       "type": "gpu"
     },
     {
+      "name": "MSI GeForce RTX 5060 Ti Gaming Trio OC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5060 Ti VANGUARD SOC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "MSI GeForce RTX 5070 Gaming Trio",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5070 Ti 16G SHADOW 3X",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -9794,7 +9882,23 @@
       "type": "gpu"
     },
     {
+      "name": "MSI GeForce RTX 5070 Ti MLG Edition",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
       "name": "MSI GeForce RTX 5070 Ti VANGUARD SOC",
+      "vid": null,
+      "pid": null,
+      "controller": "MSIGPUController",
+      "kind": "i2c",
+      "type": "gpu"
+    },
+    {
+      "name": "MSI GeForce RTX 5070 VANGUARD SOC",
       "vid": null,
       "pid": null,
       "controller": "MSIGPUController",
@@ -13050,6 +13154,14 @@
       "type": "ledstrip"
     },
     {
+      "name": "Razer Chroma Wireless ARGB Controller",
+      "vid": "0x1532",
+      "pid": "0x0F2C",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "ledstrip"
+    },
+    {
       "name": "Razer Cobra",
       "vid": "0x1532",
       "pid": "0x00A3",
@@ -13381,6 +13493,14 @@
       "name": "Razer Huntsman V3 Pro",
       "vid": "0x1532",
       "pid": "0x02A6",
+      "controller": "RazerController",
+      "kind": "hid",
+      "type": "keyboard"
+    },
+    {
+      "name": "Razer Huntsman V3 Pro TKL 8KHz",
+      "vid": "0x1532",
+      "pid": "0x02D0",
       "controller": "RazerController",
       "kind": "hid",
       "type": "keyboard"
@@ -14082,6 +14202,14 @@
       "type": "mouse"
     },
     {
+      "name": "Redragon M901-K-2 Perdition",
+      "vid": "0x04D9",
+      "pid": "0xFC5E",
+      "controller": "RedragonController",
+      "kind": "hid",
+      "type": "mouse"
+    },
+    {
       "name": "Redragon M908 Impact",
       "vid": "0x04D9",
       "pid": "0xFC4D",
@@ -14104,6 +14232,14 @@
       "controller": "RedragonController",
       "kind": "hid",
       "type": "mouse"
+    },
+    {
+      "name": "Retroid/AYN RGB",
+      "vid": null,
+      "pid": null,
+      "controller": "RetroidAYNController",
+      "kind": "generic",
+      "type": "gamepad"
     },
     {
       "name": "Robobloq Monitor Light Strip",

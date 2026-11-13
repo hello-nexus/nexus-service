@@ -57,6 +57,9 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
     // EntityRegistry.RegisterOrGet/TempComponentRegistry.RegisterOrGet.
     private const int EntityCapacity = 32;
 
+    /// <summary>Days of per-second tracked-sensor rows kept (see SensorSeriesRingStore).</summary>
+    internal const int SensorSeriesRawDays = 2;
+
     // TempBucketStore's registry spans three domains in one namespace: the
     // single fixed "cpu" key, up to EntityCapacity gpus, and up to
     // EntityCapacity storage/ram components.
@@ -70,6 +73,8 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
     private readonly GpuRingStore _gpus;
     private readonly FanRingStore _fans;
     private readonly TempComponentRingStore _tempComponents;
+    private readonly SensorSeriesRingStore _sensorSeries;
+    private readonly Dictionary<string, long> _sensorSeriesDeletedAt = new(StringComparer.Ordinal);
     private readonly TempBucketStore _tempBuckets;
     private readonly AppUsageStore _apps;
     private readonly PrivacyLog _privacy;
@@ -105,6 +110,11 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
         _gpus = new GpuRingStore(Path.Combine(dbDir, "gpu"), secondCapacity, minuteCapacity, EntityCapacity, _superBlock.PruneFloorSec);
         _fans = new FanRingStore(Path.Combine(dbDir, "fan"), secondCapacity, minuteCapacity, EntityCapacity, _superBlock.PruneFloorSec);
         _tempComponents = new TempComponentRingStore(Path.Combine(dbDir, "tempcomponent"), secondCapacity, minuteCapacity, EntityCapacity, _superBlock.PruneFloorSec);
+        // The raw tier only has to back narrow-step queries (a step under a
+        // minute only arises for windows of about a day or less), so it keeps
+        // two days; the minute tier keeps TempRetentionDays.
+        _sensorSeries = new SensorSeriesRingStore(
+            Path.Combine(dbDir, "sensorseries"), SensorSeriesRawDays * 86_400L, MetricsHistory.TempRetentionDays * 1440L, _superBlock.PruneFloorSec);
         _tempBuckets = new TempBucketStore(
             Path.Combine(dbDir, "tempbucket"), tempBucketCapacity, TempBucketEntityCapacity, ComputeTempBucketFloorSec(_superBlock.PruneFloorSec));
         _apps = new AppUsageStore(Path.Combine(dbDir, "apps"), gpuId => _gpus.TryGetIndex(gpuId));
@@ -148,6 +158,7 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
                 _gpus.Append(samples);
                 _fans.Append(samples);
                 _tempComponents.Append(samples);
+                _sensorSeries.Append(DropDeletedSensorReadings(samples));
 
                 var touchedMinutes = new HashSet<long>();
                 foreach (var s in samples)
@@ -175,6 +186,7 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
                 changed |= _gpus.RaisePruneFloor(cutoff);
                 changed |= _fans.RaisePruneFloor(cutoff);
                 changed |= _tempComponents.RaisePruneFloor(cutoff);
+                changed |= _sensorSeries.RaisePruneFloor(cutoff);
 
                 var newSourceFloor = Math.Max(_sourceFloorSec ?? long.MinValue, cutoff);
                 var sourceFloorChanged = newSourceFloor != _sourceFloorSec;
@@ -187,6 +199,57 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
                     _superBlock.Persist(cutoff, _sourceFloorSec);
                 }
             }
+        }
+    }
+
+    // Readings for a rule deleted (or re-pointed) after they were sampled must
+    // not reach the rings: a flush can be mid-flight when the delete lands.
+    private IReadOnlyList<MetricSample> DropDeletedSensorReadings(IReadOnlyList<MetricSample> samples)
+    {
+        if (_sensorSeriesDeletedAt.Count == 0 || samples.Count == 0)
+        {
+            return samples;
+        }
+        // The buffer never holds a sample older than its retention cap, so a tombstone older than that can no longer match one.
+        ExpireDeletedSensorSeries(samples.Max(s => s.TsSec));
+        if (_sensorSeriesDeletedAt.Count == 0)
+        {
+            return samples;
+        }
+        return samples
+            .Select(s => s.SensorReadings.Count == 0
+                ? s
+                : s with { SensorReadings = s.SensorReadings.Where(r => !_sensorSeriesDeletedAt.TryGetValue(r.Id, out var at) || s.TsSec > at).ToList() })
+            .ToList();
+    }
+
+    private void ExpireDeletedSensorSeries(long newestSec)
+    {
+        var floor = newestSec - MetricsSampleBuffer.FailureRetentionCapSeconds;
+        foreach (var id in _sensorSeriesDeletedAt.Where(kv => kv.Value < floor).Select(kv => kv.Key).ToList())
+        {
+            _sensorSeriesDeletedAt.Remove(id);
+        }
+    }
+
+    public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds, IReadOnlySet<string>? seriesIds = null) =>
+        _sensorSeries.QueryDecimated(fromSec, toSec, stepSeconds, seriesIds);
+
+    public void DeleteSensorSeries(string seriesId, long nowSec)
+    {
+        lock (_resetLock)
+        {
+            ExpireDeletedSensorSeries(nowSec);
+            _sensorSeriesDeletedAt[seriesId] = nowSec;
+            _sensorSeries.Delete(seriesId);
+        }
+    }
+
+    public void PruneSensorSeries(IReadOnlySet<string> liveIds)
+    {
+        lock (_resetLock)
+        {
+            _sensorSeries.PruneExcept(liveIds);
         }
     }
 
@@ -423,6 +486,7 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
             count += _gpus.Clear();
             count += _fans.Clear();
             count += _tempComponents.Clear();
+            count += _sensorSeries.Clear();
             count += _tempBuckets.Clear();
             count += _apps.ClearAll();
             return count;
@@ -501,6 +565,7 @@ public sealed class BinaryMetricsHistoryStore : IMetricsHistoryStore, IAppUsageH
         _gpus.Dispose();
         _fans.Dispose();
         _tempComponents.Dispose();
+        _sensorSeries.Dispose();
         _tempBuckets.Dispose();
         _apps.Dispose();
         _superBlock.Dispose();

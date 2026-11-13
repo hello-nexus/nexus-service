@@ -545,7 +545,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         if (paced)
         {
             var nowMs = NowMs();
-            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs) return;
+            if (nowMs - _lastCustomFrameMs < SlInfinityFrameIntervalMs(ports) - PacingSlackMs)
+            {
+                // No frame goes out on a paced tick, so the last one stays on show.
+                HoldLive(_engine.Live, _customZones, uncontrolled);
+                return;
+            }
             _lastCustomFrameMs = nowMs;
         }
 
@@ -562,7 +567,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             }
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live);
 
             for (var seg = 0; seg < structure.Segments.Count; seg++)
             {
@@ -598,6 +603,22 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             // roughly 1 Hz once a fan is moved to a second port.
             _hub.SendFrameSync();
             if (!paced) Settle();
+        }
+    }
+
+    // A group handed back to firmware shows nothing; the rest keep their last frame on show.
+    internal static void HoldLive(LiveLedSink live, IReadOnlyList<IReadOnlyList<ResolvedZone>> groups, IReadOnlyList<string> uncontrolled)
+    {
+        foreach (var held in groups)
+        {
+            if (ZoneResolution.IsFullyUncontrolled(held, uncontrolled))
+            {
+                live.ReportNoneZones(held);
+            }
+            else
+            {
+                live.TouchZones(held);
+            }
         }
     }
 

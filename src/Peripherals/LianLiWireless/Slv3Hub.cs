@@ -60,6 +60,11 @@ public sealed partial class Slv3Hub : IDisposable
     // null element means that port follows the motherboard PWM header. Read
     // by the PWM sync, written by SetPortDuty; both hold _lock.
     private readonly Dictionary<string, int?[]> _dutyTargets = new(StringComparer.Ordinal);
+    private const int HydroShiftFanRetries = 2;
+    // The last fan tuple sent per HydroShift II with its send count, so a change goes out once plus bounded retries.
+    private readonly Dictionary<string, (byte[] Pwm, long SentMs, int Sends)> _hydroShiftFanSends = new(StringComparer.Ordinal);
+    // HydroShift IIs whose radiator fans Nexus has written, until the follow-motherboard hand-back is confirmed.
+    private readonly HashSet<string> _hydroShiftFansDriven = new(StringComparer.Ordinal);
 
     // HydroShift IIs under RF control (pump driven or screen saved), keyed by AIO
     // MAC hex. An AIO without an entry is sent no params.
@@ -73,6 +78,13 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>Radio MAC hex of the HydroShift II on the USB link, or null; read once per tick, outside the hub lock.</summary>
     public Func<string?>? UsbAioMac { get; set; }
     private volatile string? _usbAioMac;
+
+    /// <summary>A HydroShift II is enumerated on USB, opened or not; read once per tick, outside the hub lock.</summary>
+    public Func<bool>? UsbAioPresent { get; set; }
+    private volatile bool _usbAioPresent;
+
+    // With several unbound HydroShift IIs listed, the USB one cannot be told apart by MAC.
+    private bool _soleUnboundHydroShift;
 
     /// <summary>Tells whether a MAC belongs to a fan that is plugged in over USB and driven by its own handler; the radio never binds, steers or writes to it.</summary>
     public Func<string, bool>? WiredOwned { get; set; }
@@ -119,6 +131,9 @@ public sealed partial class Slv3Hub : IDisposable
 
     /// <summary>Saved HydroShift II screens by AIO MAC hex; read once per <see cref="DriveTick"/>, outside the hub lock.</summary>
     public Func<IReadOnlyDictionary<string, Slv3AioScreen>>? AioScreens { get; set; }
+
+    /// <summary>Brightness schedule: the level for a screen's MAC key and stored slider. The slider stays the user's; only the byte on the wire is scaled. Called outside the hub lock.</summary>
+    public Func<string, int, int>? ScheduleScale { get; set; }
 
     /// <summary>
     /// Raised under the hub lock with an AIO's MAC hex when it acknowledges RF control.
@@ -589,6 +604,8 @@ public sealed partial class Slv3Hub : IDisposable
         _blindSinceMs = null;
         _blindTotalMs = 0;
         _unconfirmedPwm.Clear();
+        _hydroShiftFansDriven.Clear();
+        _hydroShiftFanSends.Clear();
         foreach (var control in _aioControl.Values)
         {
             control.Switched = false;
@@ -989,6 +1006,7 @@ public sealed partial class Slv3Hub : IDisposable
     public bool PollTick()
     {
         _usbAioMac = ReadUsbAioMac();
+        _usbAioPresent = ReadUsbAioPresent();
         RefreshLockSetting();
         EnsureOwnedLoaded();
         try
@@ -1013,15 +1031,18 @@ public sealed partial class Slv3Hub : IDisposable
     public bool DriveTick()
     {
         _usbAioMac = ReadUsbAioMac();
+        _usbAioPresent = ReadUsbAioPresent();
         RefreshLockSetting();
         var aio = _anyAioControlled || _anyAioBound;
         var aioSensors = aio ? ReadAioSensors() : default;
         var aioScreens = aio ? ReadAioScreens() : null;
+        // The schedule cap reads settings, so it is resolved here for every bound AIO, never under the hub lock.
+        var aioScaled = aio ? ScaleAios(BoundAioKeys(aioScreens), aioScreens) : null;
         var flexLcd = ReadFlexLcd();
         EnsureOwnedLoaded();
         try
         {
-            return DriveLocked(aioSensors, aioScreens, flexLcd);
+            return DriveLocked(aioSensors, aioScreens, aioScaled, flexLcd);
         }
         finally
         {
@@ -1029,7 +1050,36 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, Slv3FlexLcdFrame? flexLcd)
+    // The AIOs SyncAioLocked drives: bound to us, with pump control or a saved screen.
+    private List<string> BoundAioKeys(IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        lock (_lock)
+        {
+            return _lastFanRecords
+                .Where(r => r.IsHydroShift && IsBoundToUsLocked(r))
+                .Select(r => Convert.ToHexString(r.Mac))
+                .Where(k => _aioControl.ContainsKey(k) || screens?.ContainsKey(k) == true)
+                .ToList();
+        }
+    }
+
+    /// <summary>The schedule-scaled screen brightness per bound AIO; one with no saved screen scales the default.</summary>
+    internal Dictionary<string, int>? ScaleAios(IReadOnlyList<string> boundKeys, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    {
+        if (ScheduleScale is not { } scale || boundKeys.Count == 0)
+        {
+            return null;
+        }
+        var scaled = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var key in boundKeys)
+        {
+            var slider = screens is not null && screens.TryGetValue(key, out var screen) ? screen.Brightness : Slv3AioScreen.Default.Brightness;
+            scaled[key] = scale(key, slider);
+        }
+        return scaled;
+    }
+
+    private bool DriveLocked(Slv3AioSensors aioSensors, IReadOnlyDictionary<string, Slv3AioScreen>? aioScreens, IReadOnlyDictionary<string, int>? aioScaled, Slv3FlexLcdFrame? flexLcd)
     {
         lock (_lock)
         {
@@ -1044,7 +1094,7 @@ public sealed partial class Slv3Hub : IDisposable
                     return true;
                 }
                 SyncPwmLocked();
-                SyncAioLocked(aioSensors, aioScreens);
+                SyncAioLocked(aioSensors, aioScreens, aioScaled);
                 RefreshMasterMacLocked();
                 SendClockHeartbeatLocked(SyncFlexLcdLocked(flexLcd, _nowMs()));
                 RunSaveCfgScheduleLocked();
@@ -1692,13 +1742,13 @@ public sealed partial class Slv3Hub : IDisposable
     // control pass. L-Connect skips a chain that enumerates no fans; here such
     // a chain is still driven once the user sets a port duty on it (the cooling
     // provider exposes its ports), and left alone on the mobo-sync default.
-    // A Strimer has no fan ports at all and is never re-bound from here, nor is
-    // a HydroShift II, whose fourth PWM slot drives its pump.
+    // A Strimer has no fan ports at all and is never re-bound from here. A HydroShift II
+    // is synced only for its radiator fans, and only after Nexus drove one.
     private void SyncPwmLocked()
     {
         foreach (var record in _lastFanRecords)
         {
-            if (!IsBoundToUsLocked(record) || record.IsStrimer || record.IsHydroShift)
+            if (!IsBoundToUsLocked(record) || record.IsStrimer)
             {
                 continue;
             }
@@ -1708,14 +1758,41 @@ public sealed partial class Slv3Hub : IDisposable
                 continue;
             }
             var targets = DutyTargetsLocked(record.Mac);
-            if (record.FanCount <= 0 && !HasManualTarget(targets))
+            var manual = record.IsHydroShift ? HasRadiatorFanTarget(targets, record.FanCount) : HasManualTarget(targets);
+            if (record.IsHydroShift)
+            {
+                // Only radiator fans Nexus drove (or is handing back) get a tuple; an untouched AIO is left alone.
+                if (manual)
+                {
+                    _hydroShiftFansDriven.Add(key);
+                }
+                else if (!_hydroShiftFansDriven.Contains(key))
+                {
+                    continue;
+                }
+                else if (State.MotherboardPwmPercent is not > 0)
+                {
+                    // Handing the fans back means the follow byte; with no live header signal that could stop them, so they keep their last duty.
+                    continue;
+                }
+            }
+            if (record.FanCount <= 0 && !manual)
             {
                 continue;
             }
-            var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
-            if (!Slv3Protocol.NeedSyncPwm(record.Pwm, pwm))
+            var pwm = PwmTupleLocked(record);
+            if (!Slv3Protocol.NeedSyncPwm(ReportedForSync(record, pwm), pwm))
             {
                 _unconfirmedPwm.Remove(key);
+                _hydroShiftFanSends.Remove(key);
+                if (record.IsHydroShift && !manual)
+                {
+                    _hydroShiftFansDriven.Remove(key);
+                }
+                continue;
+            }
+            if (record.IsHydroShift && !HydroShiftFanSendDue(key, pwm))
+            {
                 continue;
             }
             var confirmable = _blindSinceMs is null && _knownChains.TryGetValue(key, out var chain) && chain.Poll == _devicePolls;
@@ -1742,7 +1819,7 @@ public sealed partial class Slv3Hub : IDisposable
     // echoes its cmdSeq, and the param block (pump timer plus LCD settings and
     // readings) goes out every DriveTick. The block always carries a pump timer,
     // so a screen-only AIO gets the default pump speed.
-    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens)
+    private void SyncAioLocked(Slv3AioSensors sensors, IReadOnlyDictionary<string, Slv3AioScreen>? screens, IReadOnlyDictionary<string, int>? scaled)
     {
         if (_aioControl.Count == 0 && (screens is null || screens.Count == 0))
         {
@@ -1806,8 +1883,11 @@ public sealed partial class Slv3Hub : IDisposable
             // With the AIO's USB cable connected and Nexus widgets on, the streamed panel owns the
             // glass and the panel record's own setting is the only one that applies; this byte
             // stays at the user's value then, the same condition the web uses to hide this toggle.
-            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !UsbPanelOwnsGlass(key, shown.NexusWidgets);
-            shown = shown with { Brightness = AioLockBrightness(key, shown.Brightness, sleeping) };
+            var panelOwnsGlass = UsbPanelOwnsGlass(key, shown.NexusWidgets);
+            var sleeping = _lockSleep is not null && _lockSleep.IsSleeping(key, () => shown.SleepWhenLocked) && !panelOwnsGlass;
+            // One screen can carry two schedule keys (this one and its streamed panel's); the panel's applies while it owns the glass.
+            var level = !panelOwnsGlass && scaled is not null && scaled.TryGetValue(key, out var capped) ? (byte)capped : shown.Brightness;
+            shown = shown with { Brightness = AioLockBrightness(key, level, sleeping) };
             var block = Slv3Protocol.BuildAioParamBlock(
                 sensors, Slv3Protocol.HydroShiftPumpTimer(rpm, record.DevType),
                 shown,
@@ -1928,6 +2008,19 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
+    private bool ReadUsbAioPresent()
+    {
+        try
+        {
+            return UsbAioPresent?.Invoke() == true;
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] USB AIO presence check failed: {ex.Message}");
+            return false;
+        }
+    }
+
     private IReadOnlyDictionary<string, Slv3AioScreen>? ReadAioScreens()
     {
         try
@@ -1966,6 +2059,18 @@ public sealed partial class Slv3Hub : IDisposable
             ServiceLog.Warn($"[lianli-wireless] AIO sensor read failed: {ex.Message}");
             return default;
         }
+    }
+
+    private static bool HasRadiatorFanTarget(int?[] targets, int fanCount)
+    {
+        for (var port = 0; port < Math.Min(fanCount, Slv3Protocol.HydroShiftPumpPort); port++)
+        {
+            if (targets[port] is not null)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static bool HasManualTarget(int?[] targets)
@@ -2353,6 +2458,8 @@ public sealed partial class Slv3Hub : IDisposable
                 _ownedSlotSightings.Remove(key);
                 _bindingLogs.Remove(key);
                 _unconfirmedPwm.Remove(key);
+                _hydroShiftFansDriven.Remove(key);
+                _hydroShiftFanSends.Remove(key);
                 if (_aioControl.TryGetValue(key, out var control))
                 {
                     control.Switched = false;
@@ -2377,6 +2484,12 @@ public sealed partial class Slv3Hub : IDisposable
     {
         var records = new List<Slv3DeviceRecord>(_knownChains.Count);
         var fans = new List<Slv3FanInfo>(_knownChains.Count);
+        var unboundHydroShifts = 0;
+        foreach (var chain in _knownChains.Values)
+        {
+            unboundHydroShifts += chain.Record.IsHydroShift && !IsBoundToUsLocked(chain.Record) ? 1 : 0;
+        }
+        _soleUnboundHydroShift = unboundHydroShifts == 1;
         foreach (var key in SortedChainKeysLocked())
         {
             var chain = _knownChains[key];
@@ -2591,6 +2704,7 @@ public sealed partial class Slv3Hub : IDisposable
         UsbConnected = (record.IsHydroShift && _usbAioMac is { } usbMac
             && string.Equals(usbMac, Convert.ToHexString(record.Mac), StringComparison.OrdinalIgnoreCase))
             || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
+        UsbPresent = record.IsHydroShift && !IsBoundToUsLocked(record) && _soleUnboundHydroShift && _usbAioMac is null && _usbAioPresent,
         WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
         RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,
@@ -2647,9 +2761,10 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
-        // A duty set on a HydroShift II through the cooling route would land in its pump slot.
-        var targets = record.IsHydroShift ? DefaultDutyTargets : DutyTargetsLocked(record.Mac);
-        var pwm = Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
+        // A HydroShift II unbind keeps the all-follow tuple it always carried.
+        var pwm = unbind && record.IsHydroShift
+            ? Slv3Protocol.BuildHydroShiftPwmTuple(DefaultDutyTargets, 0)
+            : PwmTupleLocked(record);
         var payload = unbind
             ? Slv3Protocol.BuildUnbind(record.Mac, _channel, pwm)
             : Slv3Protocol.BuildBind(record.Mac, _masterMac, targetRx: targetSlot, targetChannel: _channel, slot: BindOrdinalLocked(record.Mac), pwm);
@@ -2668,6 +2783,49 @@ public sealed partial class Slv3Hub : IDisposable
             : rfCmd is Slv3Protocol.RfSendColors or Slv3Protocol.RfSwitchWirelessTheme ? FlexLcdOrdinalLocked(record) : (byte)0;
         var payload = Slv3Protocol.BuildSequencedCommand(rfCmd, record.Mac, _masterMac, record.RxType, record.Channel, cmdSeq, slot, arg, data);
         return SendRfPayloadLocked(record.Channel, record.RxType, payload);
+    }
+
+    // A HydroShift II tuple drives its radiator fans only; its pump slot is never taken from a port target.
+    private byte[] PwmTupleLocked(Slv3DeviceRecord record)
+    {
+        var targets = DutyTargetsLocked(record.Mac);
+        return record.IsHydroShift
+            ? Slv3Protocol.BuildHydroShiftPwmTuple(targets, record.FanCount)
+            : Slv3Protocol.BuildPwmTuple(targets, record.FanCount, record.Family);
+    }
+
+    // A HydroShift II's fan frame goes out when its tuple changes, then at most HydroShiftFanRetries more
+    // times a resend interval apart while the echo still differs: a frame per poll would starve the AIO's USB
+    // stream, which stalls whenever the unit is busy on RF. Caller holds _lock.
+    private bool HydroShiftFanSendDue(string key, byte[] pwm)
+    {
+        var nowMs = _nowMs();
+        if (_hydroShiftFanSends.TryGetValue(key, out var last) && last.Pwm.AsSpan().SequenceEqual(pwm))
+        {
+            if (last.Sends > HydroShiftFanRetries || nowMs - last.SentMs < UnconfirmedPwmResendMs)
+            {
+                return false;
+            }
+            _hydroShiftFanSends[key] = (pwm, nowMs, last.Sends + 1);
+            return true;
+        }
+        _hydroShiftFanSends[key] = (pwm, nowMs, 1);
+        return true;
+    }
+
+    // The pump slot and slots past the fan count report their own values, so a HydroShift II's
+    // drift is judged on its radiator fan slots alone and an odd echo elsewhere never forces a resend.
+    internal static int[] ReportedForSync(Slv3DeviceRecord record, byte[] pwm)
+    {
+        var reported = (int[])record.Pwm.Clone();
+        if (record.IsHydroShift)
+        {
+            for (var port = Math.Max(0, Math.Min(record.FanCount, Slv3Protocol.HydroShiftPumpPort)); port < reported.Length && port < pwm.Length; port++)
+            {
+                reported[port] = pwm[port];
+            }
+        }
+        return reported;
     }
 
     // Caller holds _lock.
@@ -3454,6 +3612,33 @@ public sealed partial class Slv3Hub : IDisposable
                 _dutyTargets[key] = targets;
             }
             targets[port] = percent is null ? null : Math.Clamp(percent.Value, 0, 100);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Sets one duty for every radiator fan slot of a HydroShift II under a single lock, so a
+    /// poll never sees a partial tuple. Null follows the header. False for a malformed MAC.
+    /// </summary>
+    public bool SetRadiatorFanDuty(string macHex, int? percent)
+    {
+        if (IsWiredOnly(macHex) || !TryParseMac(macHex, out var mac))
+        {
+            return false;
+        }
+        lock (_lock)
+        {
+            var key = Convert.ToHexString(mac);
+            if (!_dutyTargets.TryGetValue(key, out var targets))
+            {
+                targets = new int?[Slv3Protocol.PortsPerRecord];
+                _dutyTargets[key] = targets;
+            }
+            var value = percent is null ? (int?)null : Math.Clamp(percent.Value, 0, 100);
+            for (var port = 0; port < Slv3Protocol.HydroShiftPumpPort; port++)
+            {
+                targets[port] = value;
+            }
         }
         return true;
     }
