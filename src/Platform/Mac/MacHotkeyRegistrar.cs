@@ -131,6 +131,7 @@ internal sealed class MacHotkeyRegistrar : IHotkeyRegistrar
     {
         if (HotkeyCombo.MacKeyCode(reg.Combo.Key) is not { } keyCode)
         {
+            ServiceLog.Info($"[hotkeys] mac register skipped id={reg.Id} combo={reg.Combo} reason=key has no macOS key code");
             return false;
         }
         var id = _nextId++;

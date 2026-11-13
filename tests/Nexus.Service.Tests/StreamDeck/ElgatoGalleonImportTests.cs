@@ -1,8 +1,11 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
+using Nexus.Service.Activity;
 using Nexus.Service.Deck;
 using Nexus.Service.Hotkeys;
+using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Peripherals.StreamDeck;
 using Nexus.Service.Peripherals.StreamDeck.ElgatoImport;
 using Xunit;
@@ -142,21 +145,21 @@ public sealed class ElgatoGalleonImportTests : IDisposable
     }
 
     [Theory]
-    [InlineData("numpad0")]
-    [InlineData("numpad9")]
-    [InlineData("numpadadd")]
-    [InlineData("numpadsubtract")]
-    [InlineData("numpadmultiply")]
-    [InlineData("numpaddivide")]
-    [InlineData("numpaddecimal")]
-    [InlineData("numpadenter")]
-    [InlineData("numpadequal")]
-    [InlineData("numlock")]
-    public void KeypadTokens_ParseAsDistinctKeys(string token)
+    [InlineData("numpad0", "0")]
+    [InlineData("numpad9", "9")]
+    [InlineData("numpadadd", "=")]
+    [InlineData("numpadsubtract", "-")]
+    [InlineData("numpadmultiply", "8")]
+    [InlineData("numpaddivide", "/")]
+    [InlineData("numpaddecimal", ".")]
+    [InlineData("numpadenter", "enter")]
+    [InlineData("numpadequal", "=")]
+    [InlineData("numlock", "0")]
+    public void KeypadTokens_ParseAsDistinctKeys(string token, string mainRowEquivalent)
     {
         var parsed = DeckActionExecutor.ParseHotkey("ctrl+" + token);
         Assert.NotNull(parsed);
-        Assert.NotEqual(DeckActionExecutor.ParseHotkey("ctrl+0")!.Value.Key, parsed!.Value.Key);
+        Assert.NotEqual(DeckActionExecutor.ParseHotkey("ctrl+" + mainRowEquivalent)!.Value.Key, parsed!.Value.Key);
         Assert.NotNull(HotkeyCombo.TryParse("ctrl+" + token));
     }
 
@@ -167,4 +170,109 @@ public sealed class ElgatoGalleonImportTests : IDisposable
     [InlineData("ctrl+numpadenter", "NumpadEnter")]
     public void ParseHotkey_UsesKeyboardEventCodes(string keys, string code) =>
         Assert.Equal(code, DeckActionExecutor.ParseHotkey(keys)!.Value.Key);
+
+    private static JsonElement Json(string raw)
+    {
+        using var doc = JsonDocument.Parse(raw);
+        return doc.RootElement.Clone();
+    }
+
+    private static ElgatoActionData VolumeDial(string deviceId) => new()
+    {
+        Uuid = ElgatoActionTypes.VolumeOutput,
+        Name = "Output",
+        Settings = Json("{\"deviceId\":\"" + deviceId + "\"}"),
+    };
+
+    [Fact]
+    public void PartialDialOverride_ReplacesTheWholeDefaultStackAtThatPosition()
+    {
+        var profile = ElgatoProfileReader.ReadBundle(BundleDir)!;
+        var page = profile.PagesById[profile.TopPageIds[0]];
+        page.DialEntries[(1, 0)] = VolumeDial("default");
+        var (config, _) = _translator.Translate(profile);
+
+        var dials = config.Pages[0].Dials!;
+        Assert.Null(dials[1].Stack);
+        Assert.Equal(DeckDialTypes.Volume, dials[1].Action!.Type);
+        Assert.Equal(DeckDialTypes.Custom, dials[0].Action!.Type);
+    }
+
+    [Fact]
+    public void DefaultDials_AreReportedOnlyWhenAKeptPageInheritsThem()
+    {
+        var profile = ElgatoProfileReader.ReadBundle(BundleDir)!;
+        foreach (var id in profile.TopPageIds)
+        {
+            var page = profile.PagesById[id];
+            page.DialEntries[(0, 0)] = VolumeDial("default");
+            page.DialEntries[(1, 0)] = VolumeDial("default");
+        }
+        var (_, report) = _translator.Translate(profile);
+        Assert.DoesNotContain(report.Unmapped, e => e.Page == 0);
+    }
+
+    [Fact]
+    public void PageWithOnlyInheritedDials_IsKept()
+    {
+        var profile = ElgatoProfileReader.ReadBundle(BundleDir)!;
+        var (baseline, _) = _translator.Translate(profile);
+        var page = profile.PagesById[profile.TopPageIds[0]];
+        page.Actions.Clear();
+        page.Dials.Clear();
+        page.DialEntries.Clear();
+        var (config, _) = _translator.Translate(profile);
+        Assert.Equal(baseline.Pages.Count, config.Pages.Count);
+        Assert.NotNull(config.Pages[0].Dials);
+    }
+
+    [Theory]
+    [InlineData("\\\\server\\share\\a.exe")]
+    [InlineData("\\\\?\\C:\\a.exe")]
+    [InlineData("\\\\.\\pipe\\x")]
+    [InlineData("relative\\a.exe")]
+    [InlineData("a.exe")]
+    [InlineData("//server/share/a.exe")]
+    public void OpenApp_RejectsRemoteDeviceAndRelativePaths(string path)
+    {
+        var profile = ElgatoProfileReader.ReadBundle(BundleDir)!;
+        var action = profile.PagesById[profile.TopPageIds[1]].Actions[(0, 0)];
+        action.Settings = Json(JsonSerializer.Serialize(new System.Collections.Generic.Dictionary<string, string> { ["exec"] = path, ["bundle_path"] = path, ["args"] = "" }));
+        var (config, report) = _translator.Translate(profile);
+        Assert.Null(Slot(config, 1, 0, 0).Action);
+        Assert.Contains(report.Unmapped, e => e.Uuid == ElgatoActionTypes.OpenApp && e.Reason == "unsupported");
+    }
+
+    private sealed class FakeDevices(params string[] outputs) : IAudioDeviceProvider
+    {
+        public AudioDeviceList ListDevices()
+        {
+            var list = new AudioDeviceList();
+            list.Outputs.AddRange(outputs.Select(id => new AudioDevice { Id = id }));
+            return list;
+        }
+
+        public bool SetDefaultOutput(string deviceId) => false;
+        public bool SetDefaultInput(string deviceId) => false;
+        public bool SetSpatial(string deviceId, string formatId) => false;
+    }
+
+    [Theory]
+    [InlineData("{0.0.0.00000000}.{00000000-0000-0000-0000-000000000001}", true)]
+    [InlineData("{0.0.0.00000000}.{00000000-0000-0000-0000-000000000009}", false)]
+    public void VolumeDial_KeepsAnIdThisMachineListsAndFallsBackToDefaultOtherwise(string known, bool kept)
+    {
+        var translator = new ElgatoProfileTranslator(new DeckImageStore(_imagesDir), new FakeDevices(known));
+        var profile = ElgatoProfileReader.ReadBundle(BundleDir)!;
+        var (config, _) = translator.Translate(profile);
+        var deviceId = config.Pages[1].Dials![1].Stack![0].Action!.DeviceId;
+        if (kept)
+        {
+            Assert.Equal(known, deviceId);
+        }
+        else
+        {
+            Assert.Null(deviceId);
+        }
+    }
 }

@@ -93,6 +93,7 @@ public sealed class HotkeyComboTests
     [Theory]
     [InlineData("f21")]
     [InlineData("printscreen")]
+    [InlineData("numlock")]
     public void Keys_without_a_mac_code_report_null(string key)
     {
         Assert.Null(HotkeyCombo.MacKeyCode(key));
@@ -111,6 +112,44 @@ public sealed class HotkeyComboTests
     public void Windows_virtual_keys(string key, int expected)
     {
         Assert.Equal(expected, HotkeyCombo.WindowsVirtualKey(key));
+    }
+
+    [Theory]
+    [InlineData("numpad0", 0x52)]
+    [InlineData("numpad9", 0x5C)]
+    [InlineData("numpadadd", 0x45)]
+    [InlineData("numpadsubtract", 0x4E)]
+    [InlineData("numpadmultiply", 0x43)]
+    [InlineData("numpaddivide", 0x4B)]
+    [InlineData("numpaddecimal", 0x41)]
+    [InlineData("numpadenter", 0x4C)]
+    [InlineData("numpadequal", 0x51)]
+    public void Mac_numpad_key_codes(string key, int expected)
+    {
+        Assert.Equal(expected, HotkeyCombo.MacKeyCode(key));
+    }
+
+    [Theory]
+    [InlineData("numpad0", 0x60)]
+    [InlineData("numpad9", 0x69)]
+    [InlineData("numpadadd", 0x6B)]
+    [InlineData("numpadsubtract", 0x6D)]
+    [InlineData("numpadmultiply", 0x6A)]
+    [InlineData("numpaddivide", 0x6F)]
+    [InlineData("numpaddecimal", 0x6E)]
+    [InlineData("numlock", 0x90)]
+    public void Windows_numpad_virtual_keys(string key, int expected)
+    {
+        Assert.Equal(expected, HotkeyCombo.WindowsVirtualKey(key));
+    }
+
+    [Theory]
+    [InlineData("numpadenter")]
+    [InlineData("numpadequal")]
+    public void Keys_RegisterHotKey_cannot_tell_apart_report_null_but_still_parse(string key)
+    {
+        Assert.Null(HotkeyCombo.WindowsVirtualKey(key));
+        Assert.NotNull(HotkeyCombo.TryParse("ctrl+" + key));
     }
 
     [Fact]

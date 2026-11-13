@@ -37,7 +37,11 @@ public sealed class MacInputter : IInputterProvider
         foreach (var stroke in body.Strokes)
         {
             var vk = ParseKey(stroke.Key);
-            if (vk == 0xFFFF) continue;
+            if (vk == 0xFFFF)
+            {
+                ServiceLog.Warn($"[inputter-mac] key {stroke.Key} has no macOS key code, stroke skipped");
+                continue;
+            }
 
             ulong flags = 0;
             if (stroke.Ctrl) flags |= kCGEventFlagMaskControl;

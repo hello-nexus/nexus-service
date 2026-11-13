@@ -238,10 +238,6 @@ public static class ElgatoProfileReader
         {
             total += CountPageKeys(profile, topId, visited);
         }
-        if (profile.DefaultPageId.Length > 0)
-        {
-            total += CountPageKeys(profile, profile.DefaultPageId, visited);
-        }
         return total;
     }
 

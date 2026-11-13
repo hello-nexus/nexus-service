@@ -176,6 +176,7 @@ public sealed class GlobalHotkeys : IDisposable
             var vk = HotkeyCombo.WindowsVirtualKey(reg.Combo.Key);
             if (vk is null)
             {
+                Platform.HelperLog.Warn($"[hotkeys] RegisterHotKey skipped id={reg.Id} combo={reg.Combo} reason=key cannot be registered as a global hotkey");
                 results[reg.Id] = false;
                 continue;
             }

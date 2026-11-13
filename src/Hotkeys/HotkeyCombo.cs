@@ -134,11 +134,11 @@ public readonly record struct HotkeyCombo(bool Ctrl, bool Alt, bool Shift, bool 
 
     /// <summary>
     /// macOS virtual key code (ANSI layout, Carbon kVK_*) for <paramref name="key"/>, or
-    /// null when the key has no mac equivalent (f21 to f24, printscreen).
+    /// null when the key has no mac equivalent (f21 to f24, printscreen, numlock).
     /// </summary>
     public static int? MacKeyCode(string key) => MacKeyCodes.TryGetValue(key, out var code) ? code : null;
 
-    /// <summary>Windows virtual key code for <paramref name="key"/>, or null for an unknown token.</summary>
+    /// <summary>Windows virtual key code for <paramref name="key"/>, or null for an unknown token or one RegisterHotKey cannot address (numpadenter, numpadequal).</summary>
     public static int? WindowsVirtualKey(string key)
     {
         if (key.Length == 1 && char.IsAsciiLetterLower(key[0]))
@@ -197,7 +197,6 @@ public readonly record struct HotkeyCombo(bool Ctrl, bool Alt, bool Shift, bool 
         ["numpad4"] = 0x64, ["numpad5"] = 0x65, ["numpad6"] = 0x66, ["numpad7"] = 0x67, ["numpad8"] = 0x68,
         ["numpad9"] = 0x69, ["numpadmultiply"] = 0x6A, ["numpadadd"] = 0x6B, ["numpadsubtract"] = 0x6D,
         ["numpaddecimal"] = 0x6E, ["numpaddivide"] = 0x6F,
-        // RegisterHotKey cannot tell keypad Enter from Enter, and Windows has no keypad equals key.
-        ["numpadenter"] = 0x0D, ["numpadequal"] = 0xBB,
+        // numpadenter and numpadequal are deliberately absent: RegisterHotKey cannot tell keypad Enter from Enter and Windows has no keypad equals key, so registering would grab a different physical key.
     };
 }
