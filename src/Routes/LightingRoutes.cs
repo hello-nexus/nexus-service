@@ -74,6 +74,7 @@ public static class LightingRoutes
         return new Models.Lighting.BrightnessScheduleBody
         {
             Enabled = schedule.Enabled,
+            LightingFollows = schedule.LightingFollowsOn,
             Points = schedule.Points ?? new(),
             Defaults = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule(),
             SunShift = schedule.SunShiftOn,
@@ -82,6 +83,73 @@ public static class LightingRoutes
             Location = schedule.SunLocation is null ? null : ToDto(schedule.SunLocation),
             Sun = sun,
         };
+    }
+
+    private const int MaxScheduleFollowing = 64;
+
+    private static bool IsKnownFollowKey(string key, Nexus.Service.Persistence.NexusSettings settings,
+        Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow, Nexus.Service.Platform.Displays.DisplayBrightnessController displays,
+        Nexus.Service.Panel.PanelDeviceRegistry registry)
+    {
+        const string slv3 = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix;
+        const string panel = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix;
+        if (key is Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70
+            or Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd
+            or Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd)
+        {
+            return true;
+        }
+        if (key.StartsWith(slv3, StringComparison.Ordinal))
+        {
+            return settings.Devices.LianLiWireless.AioScreens.ContainsKey(key.Substring(slv3.Length)) || follow.TrackedKeys.Contains(key);
+        }
+        if (key.StartsWith(panel, StringComparison.Ordinal))
+        {
+            return registry.Get(key.Substring(panel.Length)) is not null;
+        }
+        return follow.TrackedKeys.Contains(key)
+            || registry.List().Any(r => string.Equals(r.DisplayId, key, StringComparison.Ordinal))
+            || displays.ListDisplays().Displays.Any(d => string.Equals(d.Id, key, StringComparison.Ordinal));
+    }
+
+    private static Models.Lighting.ScheduleFollowDevicesResponse BuildFollowDevices(
+        Nexus.Service.Persistence.NexusSettings settings, Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
+        Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
+    {
+        var keys = new List<string>(follow.TrackedKeys);
+        foreach (var key in settings.Devices.ScheduleFollowing)
+        {
+            if (!keys.Contains(key))
+            {
+                keys.Add(key);
+            }
+        }
+        var response = new Models.Lighting.ScheduleFollowDevicesResponse();
+        foreach (var key in keys)
+        {
+            int? slider = key switch
+            {
+                Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Y70 => settings.Y70.Brightness,
+                Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd => settings.Devices.Corsair.LcdBrightness,
+                Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd => kraken is { IsConnected: true, HasLcd: true } ? kraken.Snapshot.LcdBrightness : null,
+                _ when key.StartsWith(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix, StringComparison.Ordinal) =>
+                    panels?.Slider(key.Substring(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.PanelLcdPrefix.Length)),
+                _ when key.StartsWith(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix, StringComparison.Ordinal) =>
+                    settings.Devices.LianLiWireless.AioScreens.TryGetValue(key.Substring(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix.Length), out var aio) ? aio.Brightness : null,
+                _ => settings.Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
+            };
+            var multiplier = follow.Multiplier(key);
+            var follows = follow.Follows(settings, key);
+            response.Devices.Add(new Models.Lighting.ScheduleFollowDeviceDto
+            {
+                Key = key,
+                Follows = follows,
+                CapPercent = follows && settings.Lighting.BrightnessSchedule is { Enabled: true } ? (int)Math.Round(multiplier * 100) : null,
+                LevelPercent = (int)Math.Round(multiplier * 100),
+                AppliedPercent = slider is { } sl ? Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowMath.Scale(sl, multiplier) : null,
+            });
+        }
+        return response;
     }
 
     private static Models.Lighting.SunLocationDto ToDto(Nexus.Service.Persistence.WeatherSavedLocation l) =>
@@ -418,6 +486,7 @@ public static class LightingRoutes
                 s.Lighting.BrightnessSchedule = new()
                 {
                     Enabled = body.Enabled,
+                    LightingFollows = body.LightingFollows ?? current?.LightingFollows,
                     Points = points,
                     SunShift = sunShift,
                     SunNight = savedNight,
@@ -432,6 +501,56 @@ public static class LightingRoutes
             var saved = store.Load().Lighting.BrightnessSchedule;
             PanelTopics.BroadcastLighting(hub);
             return Results.Ok(BuildBrightnessScheduleBody(saved, sunResolver, forceResolve: changed));
+        }).AllowPanel();
+        // Which devices follow the schedule, with the cap each wears now. A
+        // device follows only once the user opted it in (the default is off);
+        // the master switch above must be on for any following to happen.
+        app.MapGet("/lighting/brightness-schedule/devices", (Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
+            Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels,
+            Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken) =>
+            Results.Json(BuildFollowDevices(store.Load(), follow, panels, kraken), AppJsonContext.Default.ScheduleFollowDevicesResponse)).AllowPanel();
+        app.MapPost("/lighting/brightness-schedule/devices", (Models.Lighting.ScheduleFollowSetBody body,
+            Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub,
+            Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState follow,
+            Nexus.Service.Panel.Streams.StreamedPanelCoordinator? panels,
+            Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken,
+            Nexus.Service.Platform.Displays.DisplayBrightnessController displays,
+            Nexus.Service.Panel.PanelDeviceRegistry registry) =>
+        {
+            var key = (body.Key ?? "").Trim();
+            if (key.Length == 0 || key.Length > 200)
+            {
+                return Results.BadRequest(ApiResponse.Fail("key is required"));
+            }
+            // Un-following is always allowed, so a stale entry can be cleaned up.
+            if (body.Follows && !IsKnownFollowKey(key, store.Load(), follow, displays, registry))
+            {
+                return Results.BadRequest(ApiResponse.Fail("unknown device key"));
+            }
+            var tooMany = false;
+            store.Update(s =>
+            {
+                var list = s.Devices.ScheduleFollowing;
+                list.RemoveAll(x => string.Equals(x, key, StringComparison.Ordinal));
+                if (body.Follows)
+                {
+                    if (list.Count >= MaxScheduleFollowing)
+                    {
+                        tooMany = true;
+                        return;
+                    }
+                    list.Add(key);
+                }
+            });
+            if (tooMany)
+            {
+                return Results.BadRequest(ApiResponse.Fail("too many followed devices"));
+            }
+            PanelTopics.BroadcastLighting(hub);
+            var device = BuildFollowDevices(store.Load(), follow, panels, kraken).Devices.FirstOrDefault(d => d.Key == key)
+                ?? new Models.Lighting.ScheduleFollowDeviceDto { Key = key, Follows = body.Follows };
+            return Results.Json(device, AppJsonContext.Default.ScheduleFollowDeviceDto);
         }).AllowPanel();
         // Dim to a user-set level while the PC is idle. The controller picks the
         // change up from the store, so a POST applies at once (a dimmed room

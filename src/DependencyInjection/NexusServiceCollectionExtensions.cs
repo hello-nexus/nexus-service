@@ -117,7 +117,7 @@ public static class NexusServiceCollectionExtensions
 #error No ISensorProvider for this target - wire one when adding a platform.
 #endif
         // Idle until a lighting shader reads a sensor uniform; see SensorFeed.
-        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>()));
+        services.AddSingleton(sp => new Nexus.Service.Lighting.Engine.SensorFeed(sp.GetRequiredService<ISensorProvider>(), () => sp.GetService<IFanControlProvider>()));
         services.AddSingleton<ProcessMonitor>();
         services.AddHostedService(sp => sp.GetRequiredService<ProcessMonitor>());
         services.AddSingleton<Nexus.Service.Activity.GpuProcessMonitor>();
@@ -475,6 +475,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Diagnostics.Gpu.GpuHealthMonitor>();
         services.AddSingleton<Nexus.Service.Diagnostics.Memory.MemoryDiagnosticOrchestrator>();
         services.AddSingleton<Nexus.Service.Diagnostics.SystemInfo.PnpProblemScanner>();
+        services.AddSingleton<Nexus.Service.Diagnostics.SystemInfo.HostHealthProbe>();
 
         services.AddSingleton<Nexus.Service.Diagnostics.Cooling.CoolingStallDetector>();
         services.AddSingleton<Nexus.Service.Diagnostics.Cooling.CoolingStallFeeder>();
@@ -491,7 +492,26 @@ public static class NexusServiceCollectionExtensions
             sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.SmartHealthMonitor>());
 
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsHealthModel>();
+        services.AddSingleton(sp =>
+        {
+            var engine = new Nexus.Service.Diagnostics.Alerts.SensorAlertEngine(
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
+                sp.GetRequiredService<Nexus.Service.Diagnostics.Storage.ISmartHealthSource>(),
+                sp.GetService<Nexus.Service.Cooling.IFanControlProvider>());
+            // Resolved at raise time: the alert service sits behind the health model, which reads this engine.
+            engine.NoticeSink = (notice, key) =>
+                sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>().RaiseCooled(key, notice);
+            engine.MobileSink = (notice, key) =>
+                _ = sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>().Raise(key, notice);
+            return engine;
+        });
+        // The sampler records every enabled rule's reading as a tracked-sensor series.
+        services.AddSingleton<Nexus.Service.Monitoring.History.ISensorSeriesSource>(
+            sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>());
+        services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
         services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
+        services.AddSingleton<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());
 
         services.AddSingleton<Nexus.Service.Routes.SteamGameLibraryCache>();
@@ -520,11 +540,24 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(_ =>
+        services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>
         {
             try
             {
-                return new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                var store = new Nexus.Service.Monitoring.History.Binary.BinaryMetricsHistoryStore();
+                // Tracked-sensor series left by a deleted rule (a crash, or an older build) would otherwise count toward the series cap forever.
+                try
+                {
+                    var ruleIds = new HashSet<string>(StringComparer.Ordinal);
+                    sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Read(
+                        s => ruleIds.UnionWith((s.Diagnostics.SensorAlerts ?? new()).Where(r => r.BuiltIn is null).Select(r => r.Id)));
+                    store.PruneSensorSeries(ruleIds);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[metrics-history-store] sensor series prune skipped: {ex.Message}");
+                }
+                return store;
             }
             catch (Exception ex)
             {
@@ -662,6 +695,7 @@ public static class NexusServiceCollectionExtensions
             engine.SetStackSlots(areaSettings.Lighting.DeviceStacks);
             var modeStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
             engine.SamplingModeSource = () => modeStore.Load().Devices.SamplingModes;
+            engine.ColorSamplingModeSource = () => modeStore.Load().Devices.ColorSamplingModes;
             return engine;
         });
         services.AddSingleton<Nexus.Service.Lighting.Scene.LightingSceneStore>(sp =>
@@ -815,6 +849,15 @@ public static class NexusServiceCollectionExtensions
     private static Nexus.Service.Peripherals.Nzxt.KrakenHub BindKrakenLock(IServiceProvider sp, Nexus.Service.Peripherals.Nzxt.KrakenHub hub)
     {
         var store = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        if (sp.GetService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>() is { } follow)
+        {
+            const string key = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.KrakenLcd;
+            hub.BindSchedule(
+                slider => follow.Scale(key, slider),
+                () => store.Load().Devices.DisplaySliderBrightness.TryGetValue(key, out var v) ? v : null,
+                level => store.Update(st => st.Devices.DisplaySliderBrightness[key] = level),
+                () => follow.Follows(store.Load(), key) || follow.NeedsRestore(key));
+        }
         if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
         {
             hub.BindLockSleep(
@@ -1268,6 +1311,15 @@ public static class NexusServiceCollectionExtensions
             hub.FlexLcd = () => Nexus.Service.Routes.Slv3FlexLcdRoutes.BuildFrame(
                 store,
                 kind => Nexus.Service.Sensors.SummarySensors.Value(sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(), kind));
+            if (sp.GetService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>() is { } aioFollow)
+            {
+                hub.ScheduleScale = (mac, slider) =>
+                {
+                    var aioKey = Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.Slv3AioPrefix + mac;
+                    aioFollow.Track(aioKey);
+                    return aioFollow.Scale(aioKey, slider);
+                };
+            }
             hub.AioScreens = () =>
             {
                 var screens = new Dictionary<string, Nexus.Service.Peripherals.LianLiWireless.Slv3AioScreen>(StringComparer.Ordinal);
@@ -1288,6 +1340,11 @@ public static class NexusServiceCollectionExtensions
             var usbAio = new Lazy<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio?>(
                 () => sp.GetService<Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio>());
             hub.UsbAioMac = () => usbAio.Value?.Params?.Mac;
+            var presence = sp.GetService<Nexus.Service.Devices.Detection.HardwarePresence>();
+            hub.UsbAioPresent = () => presence?.UsbPresent(
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.VendorId,
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.ProductIdSquare,
+                Nexus.Service.Peripherals.BulkPanels.HydroShift2Protocol.ProductIdCircle) == true;
             return new Nexus.Service.Cooling.Slv3CoolingProvider(hub);
         });
         services.AddHostedService<Nexus.Service.Peripherals.LianLiWireless.Slv3ConnectionWorker>();
@@ -1590,7 +1647,13 @@ public static class NexusServiceCollectionExtensions
                     listedWhileWithheld: bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver);
             });
             services.AddSingleton<IDeviceHandler>(
-                _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(bulkPanelHub));
+                _ => new Nexus.Service.Devices.Handlers.BulkPanelHandler(
+                    bulkPanelHub,
+                    bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver
+                        ? new[] { new Nexus.Service.Devices.UsbId(
+                            Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveProtocol.BoardVendorId,
+                            Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveProtocol.BoardProductId) }
+                        : null));
             if (bulkPanelDriver is Nexus.Service.Peripherals.BulkPanels.HydroShift2LcdDriver hydroShift2)
             {
                 AddHydroShift2Aio(services, bulkPanelHub, hydroShift2);
@@ -1850,6 +1913,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NollieHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.AsiahorseUmbraHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.TryxHandler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LogitechSpeakerHandler>();
         // Registered as itself (not just IDeviceHandler) - StreamDeckRoutes.cs
         // injects the concrete type directly for GetWarning's detectedDevices.
         services.AddSingleton<Nexus.Service.Devices.Handlers.StreamDeckHandler>();
@@ -2018,7 +2082,8 @@ public static class NexusServiceCollectionExtensions
 #endif
                 sp.GetRequiredService<Nexus.Service.Sensors.ISensorProvider>(),
                 sp.GetRequiredService<Nexus.Service.Fps.IFpsProvider>(),
-                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>())));
+                sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+                () => sp.GetService<IFanControlProvider>())));
         services.AddSingleton<Nexus.Service.Cooling.TryxCoolingProvider>();
         services.AddSingleton<Nexus.Service.Peripherals.Tryx.Panorama.TryxPanoramaHeartbeatWorker>();
         services.AddHostedService(sp =>
@@ -2120,6 +2185,17 @@ public static class NexusServiceCollectionExtensions
             // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
             // closes, since the frames and the connect handshake wipe what an earlier one drew.
             wireless.AioSwitched += _ => aio.ClearScreenOverlay();
+            // The USB link survives a lock sleep, so the firmware redraws its own layer over the stream until a push wipes it.
+            if (sp.GetService<Nexus.Service.Lighting.LcdLockState>() is { } lockState)
+            {
+                lockState.Changed += locked =>
+                {
+                    if (!locked)
+                    {
+                        aio.ClearScreenOverlay(Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio.WakeOverlaySettleMs);
+                    }
+                };
+            }
             aio.ScreenOwnerChanged += (mac, ownScreen) =>
             {
                 sp.GetService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()?.Wake();
@@ -2163,6 +2239,23 @@ public static class NexusServiceCollectionExtensions
             return player;
         });
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurvePlayer>());
+        services.AddSingleton(sp => new Nexus.Service.Peripherals.BulkPanels.DesktopModeExit(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(),
+            sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+            () =>
+            {
+                var detector = sp.GetRequiredService<Nexus.Service.Conflicts.IConflictDetector>();
+                var running = detector.IsAppRunning("lian-li-l-connect");
+                return detector.DetectionReady ? running : null;
+            },
+            handler =>
+            {
+                var gate = sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>();
+                return gate.IsChosenOn(handler) || gate.HeldForMonitor(handler);
+            },
+            Nexus.Service.Peripherals.BulkPanels.DesktopModeExit.DescribeParents,
+            exited: _ => driver.RequestReboot()));
+        services.AddHostedService<Nexus.Service.Peripherals.BulkPanels.DesktopModeExitWorker>();
         services.AddSingleton<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveBoard>());
         services.AddSingleton<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>();
@@ -2328,6 +2421,21 @@ public static class NexusServiceCollectionExtensions
 #endif
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.DisplayBrightnessController>(),
+            store: sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            registry: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            state: sp.GetRequiredService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>()));
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.XeneonScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.Corsair.XeneonEdge.XeneonEdgeOrientationWorker>(),
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>()));
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.KrakenScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Peripherals.Nzxt.KrakenHub>()));
+        services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.PanelLcdScheduleSurface(
+            sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>()));
+        services.AddHostedService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowWorker>();
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayTopologyService>();
         services.AddSingleton<Nexus.Service.Platform.Displays.TouchRoutingStatus>();
         return services;
@@ -2566,10 +2674,7 @@ public static class NexusServiceCollectionExtensions
         // escape the proxy's host allowlist and carry the build credential off
         // our own API host, so the widget receives the 3xx instead.
         services.AddHttpClient(Nexus.Service.Widgets.AppProxyService.ClientName)
-            .ConfigurePrimaryHttpMessageHandler(static () => new System.Net.Http.HttpClientHandler
-            {
-                AllowAutoRedirect = false,
-            });
+            .ConfigurePrimaryHttpMessageHandler(static () => Nexus.Service.Widgets.AppProxyService.CreateHandler());
         services.AddSingleton<Nexus.Service.Widgets.AppInstaller>();
         services.AddSingleton<Nexus.Service.Store.StoreInstaller>(sp => new Nexus.Service.Store.StoreInstaller(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("StoreInstall"),
@@ -2602,6 +2707,32 @@ public static class NexusServiceCollectionExtensions
             Nexus.Service.Widgets.AppActions.OpenUrlActions.RegisterAll(registry);
             return registry;
         });
+#if WINDOWS
+        // Logitech speaker acoustics (G560): G HUB's EQ, DTS surround and channel volumes
+        // through Logitech's speaker effect, the subwoofer level over HID++.
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.WindowsLogitechSpeakerApo>();
+        services.AddSingleton(sp =>
+            new Nexus.Service.Peripherals.LogitechAudio.HidppSpeakerBass(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()));
+#endif
+#if DEV_TOOLS
+        services.AddSingleton(sp => new Nexus.Service.Dev.LogitechSpeakerSim(
+#if WINDOWS
+            sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.WindowsLogitechSpeakerApo>(),
+            sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.HidppSpeakerBass>()));
+#else
+            null,
+            null));
+#endif
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerApo>(sp => sp.GetRequiredService<Nexus.Service.Dev.LogitechSpeakerSim>());
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerBass>(sp => sp.GetRequiredService<Nexus.Service.Dev.LogitechSpeakerSim>());
+#elif WINDOWS
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerApo>(sp => sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.WindowsLogitechSpeakerApo>());
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.ILogitechSpeakerBass>(sp => sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.HidppSpeakerBass>());
+#endif
+#if WINDOWS || DEV_TOOLS
+        services.AddSingleton<Nexus.Service.Peripherals.LogitechAudio.LogitechSpeakerService>();
+        services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Peripherals.LogitechAudio.LogitechSpeakerService>());
+#endif
         services.AddSingleton<Nexus.Service.Widgets.AppDispatchRateLimiter>();
         services.AddSingleton(sp => Nexus.Service.Widgets.AppDataStoreWiring.Create(
             sp.GetRequiredService<ProfileManager>(),
@@ -2815,7 +2946,7 @@ public static class NexusServiceCollectionExtensions
 #endif
             var sockets = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
             var configStore = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
-            return new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
+            var coordinator = new Nexus.Service.Panel.Streams.StreamedPanelCoordinator(
                 sp.GetServices<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(),
                 sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelStore>(),
                 sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
@@ -2825,6 +2956,8 @@ public static class NexusServiceCollectionExtensions
                 lockState: sp.GetService<Nexus.Service.Lighting.LcdLockState>(),
                 removePanel: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().Remove,
                 isCustomized: sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRemover>().IsCustomized);
+            coordinator.ScheduleFollow = sp.GetService<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
+            return coordinator;
         });
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Panel.Streams.StreamedPanelCoordinator>());

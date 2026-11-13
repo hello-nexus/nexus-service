@@ -244,6 +244,8 @@ public class LightingDevice
     public int? MaxRateHz { get; set; }
     /// <summary>How the card's LEDs read the canvas: "led" (a small spot, the default), "nearest", "rows" or "columns" (the mean of the LED's nearest-LED cell, the last two with the cells stretched into bands).</summary>
     public string Sampling { get; set; } = Nexus.Service.Lighting.Engine.SamplingModes.Led;
+    /// <summary>How the card's LED combines the canvas pixels it reads: "standard" (plain mean, the default), "vivid" (linear-light mean) or "ignore-black" (mean of the non-near-black pixels).</summary>
+    public string ColorSampling { get; set; } = Nexus.Service.Lighting.Engine.ColorSamplings.Standard;
     /// <summary>Area sampling cells: one polygon per LED (exactly <see cref="LedCount"/> entries), each <c>[u,v,u,v,...]</c> vertices in order in the card's normalized unrotated frame space, v down. Empty for a disabled LED or one past the draft count. Null when <see cref="Sampling"/> is "led".</summary>
     public float[][]? AreaCells { get; set; }
     public int LedCount { get; set; }
@@ -313,6 +315,13 @@ public class LedPreviewLayoutResponse : Nexus.Service.Models.ApiResponse
 
 /// <summary>POST /devices/lighting-devices/sampling. <see cref="Mode"/> is one of "led", "nearest", "rows", "columns".</summary>
 public class SetLightingDeviceSamplingBody
+{
+    public string Id { get; set; } = "";
+    public string Mode { get; set; } = "";
+}
+
+/// <summary>POST /devices/lighting-devices/color-sampling. <see cref="Mode"/> is one of "standard", "vivid", "ignore-black".</summary>
+public class SetLightingDeviceColorSamplingBody
 {
     public string Id { get; set; } = "";
     public string Mode { get; set; } = "";

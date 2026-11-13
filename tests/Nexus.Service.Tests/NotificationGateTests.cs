@@ -36,6 +36,20 @@ public class NotificationGateTests
     }
 
     [Fact]
+    public void UrgentNoticesPassFocusModeButWaitForOnboarding()
+    {
+        NotificationGate.ResetForTests();
+        Assert.True(NotificationGate.TryHold(() => Task.CompletedTask, out _, urgent: true));
+
+        NotificationGate.Initialize(onboardingComplete: true);
+        NotificationGate.Hold(NotificationGate.ReasonFocusMode);
+
+        Assert.False(NotificationGate.TryHold(() => Task.CompletedTask, out _, urgent: true));
+        Assert.True(NotificationGate.TryHold(() => Task.CompletedTask, out _));
+        NotificationGate.ResetForTests();
+    }
+
+    [Fact]
     public async Task AnOpenGateNeitherHoldsNorSends()
     {
         // The caller sends when this returns false, so sending here too would

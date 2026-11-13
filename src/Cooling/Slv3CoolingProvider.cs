@@ -21,12 +21,16 @@ namespace Nexus.Service.Cooling;
 /// software-controlled bookkeeping is needed to know Auto vs Manual.
 /// A bound HydroShift II AIO is one pump channel "lianli-wireless:{mac}:pump"
 /// whose duty is the one Nexus drives (<see cref="Slv3Hub.GetPumpDuty"/>),
-/// plus its coolant temperature as a "Cooler" sensor.
+/// plus its coolant temperature as a "Cooler" sensor, and a
+/// "{mac}:fans" channel for its radiator fans: the AIO applies one duty to all of
+/// them, so that duty is written to every fan slot and the pump slot is never a target.
 /// </summary>
 public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
 {
     private const string IdPrefix = "lianli-wireless:";
     private const string PumpSuffix = ":pump";
+    private const string FansSuffix = ":fans";
+    private const string FansName = "HydroShift II Fans";
     private const string CoolantSuffix = ":coolant";
     private const string AioName = "Lian Li HydroShift II";
     private const string PumpName = "HydroShift II Pump";
@@ -52,6 +56,10 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     private static bool IsBoundHydroShift(Slv3FanInfo fan) =>
         fan.BoundToUs && Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType);
 
+    // The AIO's radiator fans are the port channels; the pump slot is never one.
+    private static int RadiatorFanCount(Slv3FanInfo fan) =>
+        Math.Clamp(fan.FanCount, 0, Slv3Protocol.HydroShiftPumpPort);
+
     // ── IFanControlProvider ──
 
     public IReadOnlyList<FanChannel> GetFanChannels()
@@ -68,13 +76,29 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
                     Id = PumpId(fan.Mac),
                     Name = PumpName,
                     DutyPercent = duty ?? 0,
-                    Rpm = PumpRpm(fan),
+                    Rpm = PumpRpmOf(fan),
                     Mode = duty is null ? FanModes.Auto : FanModes.Manual,
                     Kind = FanKinds.Pump,
                     DeviceId = DeviceId(fan.Mac),
                     DeviceName = AioName,
                     PortLabel = "Pump",
                 });
+                if (RadiatorFanCount(fan) > 0)
+                {
+                    var fansDuty = _hub.GetPortDuty(fan.Mac, 0);
+                    result.Add(new FanChannel
+                    {
+                        Id = FansId(fan.Mac),
+                        Name = FansName,
+                        DutyPercent = fansDuty ?? _hub.State.MotherboardPwmPercent ?? 0,
+                        Rpm = RadiatorRpm(fan),
+                        Mode = fansDuty is null ? FanModes.Auto : FanModes.Manual,
+                        MinDuty = Slv3Protocol.HydroShiftFanMinDuty,
+                        DeviceId = DeviceId(fan.Mac),
+                        DeviceName = AioName,
+                        PortLabel = "Fans",
+                    });
+                }
                 continue;
             }
             if (!HasFanPorts(fan)) continue;
@@ -153,7 +177,8 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         ApplyWrite(channelId, Math.Clamp(dutyPercent, 0, 100));
 
     // A cleared port target makes the hub send the follow-motherboard PWM byte again; the AIO pump is left out.
-    public bool ReleaseRestoresHardwareControl(string channelId) => TryParsePort(channelId, out _, out _);
+    public bool ReleaseRestoresHardwareControl(string channelId) =>
+        TryParsePort(channelId, out _, out _) || TryParseSuffixed(channelId, FansSuffix, out _);
 
     public void ReleaseFan(string channelId)
     {
@@ -162,8 +187,38 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
             _hub.SetPumpDuty(aioMac, null);
             return;
         }
+        if (TryParseSuffixed(channelId, FansSuffix, out var aioFans))
+        {
+            SetRadiatorFans(aioFans, null);
+            return;
+        }
         if (!TryParsePort(channelId, out var mac, out var port)) return;
         _hub.SetPortDuty(mac, port, null);
+    }
+
+    // The pump and the radiator fans all go back to L-Connect defaults together.
+    private void ReleaseHydroShift(Slv3FanInfo fan, bool releaseFans = true)
+    {
+        _hub.SetPumpDuty(fan.Mac, null);
+        if (!releaseFans) return;
+        SetRadiatorFans(fan.Mac, null);
+    }
+
+    // One duty for every radiator fan slot (the AIO applies a single duty to all its fans), set in one hub call; the pump slot is never a target.
+    private void SetRadiatorFans(string macHex, int? percent) => _hub.SetRadiatorFanDuty(macHex, percent);
+
+    private static int RadiatorRpm(Slv3FanInfo fan)
+    {
+        var sum = 0;
+        var spinning = 0;
+        for (var port = 0; port < RadiatorFanCount(fan); port++)
+        {
+            var rpm = PortRpm(fan, port);
+            if (rpm <= 0) continue;
+            sum += rpm;
+            spinning++;
+        }
+        return spinning == 0 ? 0 : sum / spinning;
     }
 
     public void ReleaseAll()
@@ -173,7 +228,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         {
             if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
             {
-                _hub.SetPumpDuty(fan.Mac, null);
+                ReleaseHydroShift(fan);
                 continue;
             }
             if (!HasFanPorts(fan)) continue;
@@ -199,7 +254,8 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         {
             if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
             {
-                _hub.SetPumpDuty(fan.Mac, null);
+                // Radiator fans follow the same header rule as any chain; the pump is always released.
+                ReleaseHydroShift(fan, releaseFans: headerLive);
                 continue;
             }
             if (!headerLive || !HasFanPorts(fan)) continue;
@@ -243,11 +299,22 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
                             Id = PumpId(fan.Mac),
                             Name = PumpName,
                             Type = "Pump",
-                            Rpm = PumpRpm(fan),
+                            Rpm = PumpRpmOf(fan),
                             Pwm = _hub.GetPumpDuty(fan.Mac) ?? 0,
                         },
                     },
                 });
+                if (RadiatorFanCount(fan) > 0)
+                {
+                    components[^1].Devices.Add(new CoolingDevice
+                    {
+                        Id = FansId(fan.Mac),
+                        Name = FansName,
+                        Type = "Fan",
+                        Rpm = RadiatorRpm(fan),
+                        Pwm = _hub.GetPortDuty(fan.Mac, 0) ?? _hub.State.MotherboardPwmPercent ?? 0,
+                    });
+                }
                 continue;
             }
             if (!HasFanPorts(fan)) continue;
@@ -292,6 +359,11 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
             }
             return;
         }
+        if (TryParseSuffixed(channelId, FansSuffix, out var aioFans))
+        {
+            SetRadiatorFans(aioFans, dutyPercent);
+            return;
+        }
         if (!TryParsePort(channelId, out var mac, out var port))
         {
             return;
@@ -321,7 +393,9 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         return rpm >= 0 ? rpm : 0;
     }
 
-    private static int PumpRpm(Slv3FanInfo fan) => PortRpm(fan, Slv3Protocol.HydroShiftPumpPort);
+    private static int PumpRpmOf(Slv3FanInfo fan) => PortRpm(fan, Slv3Protocol.HydroShiftPumpPort);
+
+    private static string FansId(string macHex) => $"{IdPrefix}{macHex}{FansSuffix}";
 
     private static string PumpId(string macHex) => $"{IdPrefix}{macHex}{PumpSuffix}";
 

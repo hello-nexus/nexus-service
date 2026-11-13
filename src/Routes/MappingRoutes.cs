@@ -500,6 +500,7 @@ public static partial class DevicesRoutes
         public bool Uncontrolled { get; init; }
         public bool AutoApplyDeclined { get; init; }
         public string? Sampling { get; init; }
+        public string? ColorSampling { get; init; }
     }
 
     /// <summary>Reads each surviving link's state under the ordinal it held, keyed to the ordinal it is moving to. Must run before <see cref="Nexus.Service.Lighting.Zones.ZoneStateDrop"/> clears the old slots.</summary>
@@ -526,6 +527,7 @@ public static partial class DevicesRoutes
                 Uncontrolled = settings.Devices.UncontrolledLightingDevices.Contains(fromId),
                 AutoApplyDeclined = settings.Devices.MappingAutoApplyDeclined.Contains(fromId),
                 Sampling = settings.Devices.SamplingModes.GetValueOrDefault(fromId),
+                ColorSampling = settings.Devices.ColorSamplingModes.GetValueOrDefault(fromId),
             });
         }
         return carried;
@@ -550,6 +552,8 @@ public static partial class DevicesRoutes
                 settings.Devices.MappingAutoApplyDeclined.Add(slot.ZoneId);
             if (slot.Sampling is { } sampling)
                 settings.Devices.SamplingModes = new Dictionary<string, string>(settings.Devices.SamplingModes) { [slot.ZoneId] = sampling };
+            if (slot.ColorSampling is { } colorSampling)
+                settings.Devices.ColorSamplingModes = new Dictionary<string, string>(settings.Devices.ColorSamplingModes) { [slot.ZoneId] = colorSampling };
         }
     }
 

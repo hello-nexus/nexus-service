@@ -168,6 +168,7 @@ public sealed class CurveEngine : BackgroundService
     {
         lock (_lastSpeed) { _lastSpeed.Clear(); }
         lock (_lastRaw) { _lastRaw.Clear(); }
+        ClearMissingSourceState();
         lock (_triggerStates) { _triggerStates.Clear(); }
         lock (_autoStates) { _autoStates.Clear(); }
         lock (_lastWrite) { _lastWrite.Clear(); }
@@ -388,6 +389,7 @@ public sealed class CurveEngine : BackgroundService
 
         if (curves.Count == 0)
         {
+            ClearMissingSourceState();
             return;
         }
 
@@ -406,6 +408,7 @@ public sealed class CurveEngine : BackgroundService
         // Mixed reads other curves' output and Sync reads a channel another
         // curve may drive, so evaluate in dependency order.
         var rawByCurve = new Dictionary<string, double>(StringComparer.Ordinal);
+        var fellBack = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var curveDoc in CurveOrdering.Sort(snapshot))
         {
@@ -420,12 +423,35 @@ public sealed class CurveEngine : BackgroundService
                 {
                     temp = _fans.ReadTemperature(curveDoc.Input.Id);
                 }
-                if (temp is null && NeedsTemperature(curveDoc.Type))
+                // A source that reads nothing (hub unplugged, not detected yet) holds the curve's fans at the
+                // last duty for a few ticks, which covers a stalled read, a start-up gap and a one-tick null.
+                // After that they are floored at a safe duty: never below it, never cut below what they already
+                // run at. A mix is unreadable when none of its members evaluated (missing or dangling). The
+                // guard still owns the final duty below, so it wins over this.
+                var unreadable = (temp is null && NeedsTemperature(curveDoc.Type))
+                    || (curveDoc.Type == "Mixed" && NoMemberEvaluated(curveDoc.Mixed, rawByCurve));
+                var missingSource = false;
+                if (unreadable)
                 {
-                    continue;
+                    int misses;
+                    lock (_missingTicks)
+                    {
+                        misses = _missingTicks.GetValueOrDefault(curveDoc.Id) + 1;
+                        _missingTicks[curveDoc.Id] = misses;
+                    }
+                    if (misses < MissingSourceGraceTicks)
+                    {
+                        continue;
+                    }
+                    missingSource = true;
+                    fellBack.Add(curveDoc.Id);
+                }
+                else
+                {
+                    lock (_missingTicks) { _missingTicks.Remove(curveDoc.Id); }
                 }
 
-                double? rawSpeed = curveDoc.Type switch
+                double? rawSpeed = missingSource ? MissingSourceDuty : curveDoc.Type switch
                 {
                     "Flat" => EvaluateFlat(curveDoc.Flat),
                     "Linear" => EvaluateLinear(curveDoc.Linear, temp!.Value),
@@ -441,18 +467,32 @@ public sealed class CurveEngine : BackgroundService
                     continue;
                 }
 
-                rawByCurve[curveDoc.Id] = rawSpeed.Value;
-                lock (_lastRaw) { _lastRaw[curveDoc.Id] = rawSpeed.Value; }
+                // A fallback duty is not a reading: mixes skip it as a missing member, and the scale
+                // and smoothing that shape a curve's output would only delay the safe duty.
+                if (!missingSource)
+                {
+                    rawByCurve[curveDoc.Id] = rawSpeed.Value;
+                    lock (_lastRaw) { _lastRaw[curveDoc.Id] = rawSpeed.Value; }
+                }
 
                 // Sync mirrors a channel whose duty already carries the global
                 // boost; applying it again would compound it. The guard curve is a
                 // safety curve and is never scaled.
-                var modifiedSpeed = CoolingConfigLint.IsGlobalModifierExempt(curveDoc)
+                var modifiedSpeed = missingSource || CoolingConfigLint.IsGlobalModifierExempt(curveDoc)
                     ? Math.Clamp(rawSpeed.Value, 0, 100)
                     : Math.Clamp(rawSpeed.Value * globalMod, 0, 100);
 
                 var responseTime = GetResponseTime(curveDoc);
-                var smoothedSpeed = ApplySmoothing(curveDoc.Id, modifiedSpeed, responseTime);
+                double smoothedSpeed;
+                if (missingSource)
+                {
+                    _lastSpeed[curveDoc.Id] = modifiedSpeed;
+                    smoothedSpeed = modifiedSpeed;
+                }
+                else
+                {
+                    smoothedSpeed = ApplySmoothing(curveDoc.Id, modifiedSpeed, responseTime);
+                }
 
                 // Apply to all output channels. Dedup against the last duty we
                 // wrote to that channel and rate-limit per-channel writes so we
@@ -462,7 +502,9 @@ public sealed class CurveEngine : BackgroundService
                 foreach (var output in curveDoc.Outputs)
                 {
                     var offset = offsets.TryGetValue(output.Id, out var off) ? off : 0;
-                    var appliedSpeed = CoolingSafety.ClampDuty((int)Math.Round(smoothedSpeed) + offset);
+                    var appliedSpeed = missingSource
+                        ? CoolingSafety.ClampDuty((int)Math.Round(Math.Max(MissingSourceDuty, channelDuty.GetValueOrDefault(output.Id))))
+                        : CoolingSafety.ClampDuty((int)Math.Round(smoothedSpeed) + offset);
                     // The guard's floor / override is the last word on a guarded channel's
                     // duty; null means it forbids writing the channel this tick.
                     var guarded = plan.Apply(output.Id, appliedSpeed);
@@ -495,6 +537,11 @@ public sealed class CurveEngine : BackgroundService
                     });
                 }
 
+                if (missingSource)
+                {
+                    continue;
+                }
+
                 calculations.Add(new CurveCalculation
                 {
                     CurveId = curveDoc.Id,
@@ -510,6 +557,8 @@ public sealed class CurveEngine : BackgroundService
                 Console.Error.WriteLine($"[curve-engine] curve '{curveDoc.Id}' failed: {ex.Message}");
             }
         }
+
+        LogFallbackTransitions(fellBack);
 
         Isolated("guard orphan pass", () => ApplyGuardToOrphanOutputs(activePlan, manualSnapshot, present, owned, drivenChannels));
 
@@ -943,6 +992,67 @@ public sealed class CurveEngine : BackgroundService
     internal static bool NeedsTemperature(string type) =>
         type is "Linear" or "Graph" or "Trigger" or "Auto";
 
+    /// <summary>The duty a temperature-driven curve holds while its source reads nothing.</summary>
+    internal const double MissingSourceDuty = 70;
+
+    /// <summary>Consecutive ticks a source must read nothing before the fallback duty applies.</summary>
+    internal const int MissingSourceGraceTicks = 3;
+
+    /// <summary>True when a mix has members and none of them produced a value this tick (missing or dangling).</summary>
+    internal static bool NoMemberEvaluated(MixedCurveData? mixed, IReadOnlyDictionary<string, double> rawByCurve)
+    {
+        if (mixed is null || mixed.CurveIds.Count == 0)
+        {
+            return false;
+        }
+        foreach (var id in mixed.CurveIds)
+        {
+            if (rawByCurve.ContainsKey(id))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Consecutive ticks each curve's source has read nothing.
+    private readonly Dictionary<string, int> _missingTicks = new(StringComparer.Ordinal);
+
+    // Curves currently on the fallback duty, so entering and leaving log once rather than every tick.
+    private readonly HashSet<string> _fallbackActive = new(StringComparer.Ordinal);
+
+    private void ClearMissingSourceState()
+    {
+        lock (_missingTicks)
+        {
+            _missingTicks.Clear();
+            _fallbackActive.Clear();
+        }
+    }
+
+    private void LogFallbackTransitions(HashSet<string> fellBack)
+    {
+        lock (_missingTicks)
+        {
+            foreach (var id in fellBack)
+            {
+                if (_fallbackActive.Add(id))
+                {
+                    Console.Error.WriteLine($"[curve-engine] curve '{id}' source has no reading, flooring its fans at {MissingSourceDuty:0}%");
+                }
+            }
+            _fallbackActive.RemoveWhere(id =>
+            {
+                if (fellBack.Contains(id))
+                {
+                    return false;
+                }
+                Console.Error.WriteLine($"[curve-engine] curve '{id}' source reading is back, resuming the curve");
+                return true;
+            });
+        }
+    }
+
     /// <summary>
     /// Combine member curves' raw output. A member that did not evaluate this
     /// tick (missing sensor, dangling id) is skipped; no member at all yields
@@ -1066,6 +1176,14 @@ public sealed class CurveEngine : BackgroundService
         foreach (var c in curves)
         {
             live.Add(c.Id);
+        }
+
+        lock (_missingTicks)
+        {
+            foreach (var id in _missingTicks.Keys.Where(id => !live.Contains(id)).ToList())
+            {
+                _missingTicks.Remove(id);
+            }
         }
 
         lock (_lastRaw)

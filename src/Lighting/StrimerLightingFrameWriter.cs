@@ -168,7 +168,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var atxZones     = ZoneResolution.Resolve(atxStructure, settings);
         SegmentFrameComposer.EnsureBuffers(atxStructure, ref _atxSegBuf);
         SegmentFrameComposer.Compose(
-            atxStructure, atxZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _atxSegBuf);
+            atxStructure, atxZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _atxSegBuf, _engine.Live, segmentGated: true);
         for (var s = 0; s < StrimerProtocol.AtxZoneCount; s++)
         {
             // A fully uncontrolled strip skips its color/commit pair entirely,
@@ -185,7 +185,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var gpuZones     = ZoneResolution.Resolve(gpuStructure, settings);
         SegmentFrameComposer.EnsureBuffers(gpuStructure, ref _gpuSegBuf);
         SegmentFrameComposer.Compose(
-            gpuStructure, gpuZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _gpuSegBuf);
+            gpuStructure, gpuZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _gpuSegBuf, _engine.Live, segmentGated: true);
         var gpuZoneCount = StrimerProtocol.NormalizeGpuZoneCount(settings.Devices.StrimerGpuZones);
         for (var s = 0; s < gpuZoneCount; s++)
         {

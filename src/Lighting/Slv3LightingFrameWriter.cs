@@ -180,6 +180,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _rollingIds.Clear();
         _planChains = 0;
         _planLeds = 0;
+        _liveZones.Clear();
+        _liveEqual.Clear();
         var rollingChains = 0;
         string? pushMac = null;
         var pushAgeMs = -1L;
@@ -226,7 +228,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers);
+                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live, stageLive: true);
+            _liveZones[macHex] = zones;
 
             var totalLeds = FillWireBuffer(macHex, structure);
             if (totalLeds == 0) continue;
@@ -246,6 +249,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 && !string.Equals(confirmed, last.EffectIndexHex, StringComparison.OrdinalIgnoreCase);
             if (last.Hash == hash && !driftedSinceLastConfirm)
             {
+                // Unchanged since the last push, so the chain already shows it.
+                _liveEqual.Add(macHex);
                 continue;
             }
 
@@ -268,16 +273,30 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         ApplyWindowPlan(nowMs);
         RequestSharedWindow(nowMs);
 
+        var livePushed = false;
         // A push blocks this thread on its header gaps, so one per tick (oldest
         // first) keeps later ticks inside a window's join range.
         if (pushMac is not null)
         {
             var pushed = _hub.SendRgbFrame(pushMac, _pushBuffer.AsSpan(0, pushLeds), PassThroughBrightnessPercent, IntervalMs, out var sentEffectIndexHex);
+            livePushed = pushed;
             // Stamped on failure too, or a failing chain stays oldest and takes every slot.
             _lastPushTicks[pushMac] = nowTicks;
             if (pushed)
             {
                 _lastSent[pushMac] = (pushHash, sentEffectIndexHex);
+            }
+        }
+        // Only the chain actually pushed (or already showing the same bytes) publishes; the rest keep their last output on show.
+        foreach (var (mac, liveZones) in _liveZones)
+        {
+            if ((livePushed && mac == pushMac) || _liveEqual.Contains(mac))
+            {
+                _engine.Live.CommitZones(liveZones);
+            }
+            else
+            {
+                _engine.Live.TouchZones(liveZones);
             }
         }
         LogHealth(nowMs, rollingChains);
@@ -396,6 +415,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private long _windowStartedId;
     private int _windowStretch = 1;
     private double _windowRequestPeriodMs = WindowPeriodMs;
+    private readonly Dictionary<string, IReadOnlyList<ResolvedZone>> _liveZones = new();
+    private readonly HashSet<string> _liveEqual = new();
     private int _planChains;
     private int _planLeds;
     private RgbColor[] _pushBuffer = Array.Empty<RgbColor>();

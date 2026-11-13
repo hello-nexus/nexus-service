@@ -99,6 +99,16 @@ public static class ThermalLimits
     public static bool IsDistanceToTjMax(string sensorName) =>
         sensorName.Contains("Distance to TjMax", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>True when the CPU model string names an AMD part.</summary>
+    public static bool IsAmd(string? cpuModel)
+    {
+        var model = cpuModel ?? "";
+        return model.Contains("AMD", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("Ryzen", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("Threadripper", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("EPYC", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Limit for a CPU given its model string and, when readable, its reported Tjmax.</summary>
     public static ThermalLimit ResolveCpu(string? cpuModel, double? hardwareTjMaxC)
     {
@@ -108,11 +118,7 @@ public static class ThermalLimits
         }
 
         var model = cpuModel ?? "";
-        var isAmd = model.Contains("AMD", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("Ryzen", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("Threadripper", StringComparison.OrdinalIgnoreCase)
-            || model.Contains("EPYC", StringComparison.OrdinalIgnoreCase);
-        if (!isAmd)
+        if (!IsAmd(model))
         {
             return new ThermalLimit(GenericDefaultC, ThermalLimitSources.Default);
         }

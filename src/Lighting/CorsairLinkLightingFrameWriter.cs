@@ -161,13 +161,14 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             devIdx++;
             SegmentFrameComposer.EnsureBuffers(structure, ref _segBuf);
             SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, effectiveBrightness, 1.0, nowTicks, _identify, _segBuf);
+                structure, zones, devices, disabled, uncontrolled, prefs, effectiveBrightness, 1.0, nowTicks, _identify, _segBuf, _engine.Live, stageLive: true);
 
             // Segment 0 holds all LEDs for this device; copy as R,G,B (no swap).
             var buf = _segBuf[0];
             if (dev.Class == CorsairLinkClass.Aio && hubHasLcd)
             {
                 ApplyAioInnerRingBlank(buf);
+                BlankLiveInnerRing(zones);
             }
             for (var i = 0; i < buf.Length; i++)
             {
@@ -179,7 +180,8 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
             }
         }
 
-        hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
+        var sent = hub.SendColors(new ReadOnlySpan<byte>(_wireBuf, 0, wireOffset));
+        PublishLive(_engine.Live, _tickZones, sent);
     }
 
     /// <summary>
@@ -247,13 +249,55 @@ public sealed class CorsairLinkLightingFrameWriter : IHostedService, IDisposable
         return 1.0f;
     }
 
+    // The staged output publishes only when the hub took the colors.
+    internal static void PublishLive(LiveLedSink live, IReadOnlyList<IReadOnlyList<ResolvedZone>> groups, bool sent)
+    {
+        foreach (var zones in groups)
+        {
+            if (sent)
+            {
+                live.CommitZones(zones);
+            }
+            else
+            {
+                live.TouchZones(zones);
+            }
+        }
+    }
+
+    internal const int AioInnerRingBlankFirst = 16;
+    internal const int AioInnerRingBlankCount = 4;
+
+    // Blanked segment LEDs mapped to each zone's own LED index through its slices.
+    private void BlankLiveInnerRing(IReadOnlyList<ResolvedZone> zones)
+    {
+        if (!_engine.Live.Enabled)
+        {
+            return;
+        }
+        foreach (var zone in zones)
+        {
+            var zoneLocal = 0;
+            foreach (var slice in zone.Slices)
+            {
+                var from = Math.Max(AioInnerRingBlankFirst, slice.Start);
+                var to = Math.Min(AioInnerRingBlankFirst + AioInnerRingBlankCount, slice.Start + slice.Count);
+                if (slice.Segment == 0 && to > from)
+                {
+                    _engine.Live.BlankStaged(zone.Id, zoneLocal + from - slice.Start, to - from);
+                }
+                zoneLocal += slice.Count;
+            }
+        }
+    }
+
     /// <summary>
-    /// Zeros the AIO pump inner-ring LEDs (indices 16..19) when a pump LCD is present on the
+    /// Zeros the AIO pump inner-ring LEDs (<see cref="AioInnerRingBlankFirst"/> for <see cref="AioInnerRingBlankCount"/>) when a pump LCD is present on the
     /// chain, matching OpenLinkHub (lsh.go:5485).
     /// </summary>
     internal static void ApplyAioInnerRingBlank(RgbColor[] segment)
     {
-        for (var i = 16; i < 20 && i < segment.Length; i++)
+        for (var i = AioInnerRingBlankFirst; i < AioInnerRingBlankFirst + AioInnerRingBlankCount && i < segment.Length; i++)
         {
             segment[i] = default;
         }

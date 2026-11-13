@@ -51,13 +51,18 @@ public static class GlacialLcdSensors
     /// snapshot, the capture sensors, the network aggregate and the fan header renames.
     /// </summary>
     public static SensorSnapshotSources Gather(
-        ISensorProvider sensors, string category, Nexus.Service.Fps.IFpsProvider? fps, Func<IReadOnlyDictionary<string, string>?>? fanNames)
+        ISensorProvider sensors, string category, Nexus.Service.Fps.IFpsProvider? fps, Func<IReadOnlyDictionary<string, string>?>? fanNames,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
         SensorExtras? extras = null;
         IReadOnlyList<HardwareSensor>? network = null;
         if (SensorSnapshotResolver.CategoryUsesExtras(category))
         {
             extras = sensors.GetSensorExtras();
+            if (Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(category))
+            {
+                Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, fans);
+            }
             if (category == "network")
             {
                 network = SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics);

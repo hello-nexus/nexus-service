@@ -359,7 +359,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             }).ToList();
     }
 
-    public IReadOnlyList<HardwareSensor> GetMotherboardSensors()
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => ReadMotherboardSensors(updateSubHardware: true);
+
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached() => ReadMotherboardSensors(updateSubHardware: false);
+
+    private IReadOnlyList<HardwareSensor> ReadMotherboardSensors(bool updateSubHardware)
     {
         _lhm.Update();
         var mobo = FindHardware(HardwareType.Motherboard).FirstOrDefault();
@@ -370,7 +374,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         sensors.AddRange(MapSensors(mobo));
         foreach (var sub in mobo.SubHardware)
         {
-            sub.Update();
+            if (updateSubHardware) sub.Update();
             sensors.AddRange(MapSensors(sub));
         }
         return sensors;
@@ -464,7 +468,10 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.Coolers.Add(cooler);
                     break;
                 }
+                // Inline power meters (WireView Pro II) share the PSU group: same
+                // per-rail voltage/current/power shape, no separate wire type.
                 case HardwareType.Psu:
+                case HardwareType.PowerMonitor:
                     extras.Psus.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Storage:
@@ -519,11 +526,17 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
         var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
-        return hw.Sensors.Select(s =>
+        var isPowerMonitor = hw.HardwareType == HardwareType.PowerMonitor;
+        return hw.Sensors
+            .Where(s => !isPowerMonitor || !LhmComponentIdentifiers.HidePowerMonitorSensor(
+                s.SensorType == SensorType.Control, s.SensorType == SensorType.Temperature, s.Value))
+            .Select(s =>
         {
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
-            var value = Hold.Resolve(key, LhmWalkWatch.Shared.Read(s.Value), now, out var missed);
+            var reading = LhmWalkWatch.Shared.Read(s.Value);
+            var value = Hold.Resolve(key, reading, now, out var missed);
+            var stale = !missed && (reading is not { } raw || !float.IsFinite(raw));
             if (missed && isGpu)
             {
                 var hwKey = hw.Identifier.ToString();
@@ -554,6 +567,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     FormattedMax = LhmDataSensors.Format(max, unit),
                     FormattedMin = LhmDataSensors.Format(min, unit),
                     Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                    Stale = stale,
                 };
             }
             return new HardwareSensor
@@ -569,6 +583,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 FormattedMax = FormatValue(max, s.SensorType),
                 FormattedMin = FormatValue(min, s.SensorType),
                 Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                Stale = stale,
             };
         }).ToList();
     }

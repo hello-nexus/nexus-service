@@ -35,9 +35,9 @@ namespace Nexus.Service.Routes;
 /// </summary>
 public static class MonitoringHistoryRoutes
 {
-    private const int MinMaxPoints = 1;
-    private const int MaxMaxPoints = 2000;
-    private const int DefaultMaxPoints = 600;
+    internal const int MinMaxPoints = 1;
+    internal const int MaxMaxPoints = 2000;
+    internal const int DefaultMaxPoints = 600;
 
     // Aligned with the minute-rollup rings' own eligibility
     // (BinaryMetricsHistoryStore.IsRollupEligible): below this,
@@ -90,6 +90,48 @@ public static class MonitoringHistoryRoutes
             : name;
     }
 
+    /// <summary>The history response of <paramref name="seriesFilter"/> (null = every series) over a window, read from the store plus the unflushed tail.</summary>
+    internal static MetricsHistoryResponse QueryHistory(
+        long fromSec, long toSec, int stepSeconds, int clampedMaxPoints, IReadOnlySet<string>? seriesFilter,
+        IMetricsHistoryStore store, MetricsSampleBuffer buffer, ISensorProvider sensors)
+    {
+        var adapterLuids = ResolveGpuAdapterLuids(sensors);
+        var cpuTempName = ResolveCpuTempName(buffer.LatestCpuName);
+        MetricsHistoryResponse response;
+        if (stepSeconds >= DecimatedPathMinStepSeconds)
+        {
+            // The GROUP BY's own overhead (temp b-tree sort, three
+            // separate round trips) measurably exceeds the raw path's
+            // cost at a moderate reduction ratio, and only wins once
+            // the window is wide enough - DecimatedPathMinStepSeconds
+            // is picked from that measured crossover, not from "any
+            // reduction is happening".
+            var tailSamples = buffer.SnapshotRange(fromSec, toSec);
+            var dbScalars = store.QueryScalarsDecimated(fromSec, toSec, stepSeconds);
+            var dbGpu = store.QueryGpuDecimated(fromSec, toSec, stepSeconds);
+            var dbFan = store.QueryFanDecimated(fromSec, toSec, stepSeconds);
+            var dbComponentTemps = store.QueryComponentTempDecimated(fromSec, toSec, stepSeconds);
+            response = BuildDecimatedHistoryResponse(
+                dbScalars, dbGpu, dbFan, dbComponentTemps, tailSamples, fromSec, toSec, stepSeconds, seriesFilter, adapterLuids, cpuTempName);
+        }
+        else
+        {
+            // Buffer read first: a flush landing between the two calls
+            // commits its samples to the store and then RemoveThroughs
+            // them out of the buffer, so querying the store first could
+            // miss those seconds in both reads. Reading the tail before
+            // the store guarantees any sample dropped from the tail by
+            // an intervening flush is already visible in the store read
+            // that follows; MergeSamples's tail-wins-by-ts dedup handles
+            // the overlap either way.
+            var tailSamples = buffer.SnapshotRange(fromSec, toSec);
+            var dbSamples = store.Query(fromSec, toSec);
+            response = BuildHistoryResponse(
+                dbSamples, tailSamples, fromSec, toSec, clampedMaxPoints, seriesFilter, adapterLuids, cpuTempName);
+        }
+        return response;
+    }
+
     public static void MapMonitoringHistoryEndpoints(this WebApplication app)
     {
         app.MapGet("/monitoring/history", (
@@ -109,42 +151,8 @@ public static class MonitoringHistoryRoutes
 
             try
             {
-                var adapterLuids = ResolveGpuAdapterLuids(sensors);
-                var cpuTempName = ResolveCpuTempName(buffer.LatestCpuName);
                 var stepSeconds = MetricsDecimation.StepSecondsFor(Math.Max(0, toSec - fromSec), clampedMaxPoints);
-
-                MetricsHistoryResponse response;
-                if (stepSeconds >= DecimatedPathMinStepSeconds)
-                {
-                    // The GROUP BY's own overhead (temp b-tree sort, three
-                    // separate round trips) measurably exceeds the raw path's
-                    // cost at a moderate reduction ratio, and only wins once
-                    // the window is wide enough - DecimatedPathMinStepSeconds
-                    // is picked from that measured crossover, not from "any
-                    // reduction is happening".
-                    var tailSamples = buffer.SnapshotRange(fromSec, toSec);
-                    var dbScalars = store.QueryScalarsDecimated(fromSec, toSec, stepSeconds);
-                    var dbGpu = store.QueryGpuDecimated(fromSec, toSec, stepSeconds);
-                    var dbFan = store.QueryFanDecimated(fromSec, toSec, stepSeconds);
-                    var dbComponentTemps = store.QueryComponentTempDecimated(fromSec, toSec, stepSeconds);
-                    response = BuildDecimatedHistoryResponse(
-                        dbScalars, dbGpu, dbFan, dbComponentTemps, tailSamples, fromSec, toSec, stepSeconds, seriesFilter, adapterLuids, cpuTempName);
-                }
-                else
-                {
-                    // Buffer read first: a flush landing between the two calls
-                    // commits its samples to the store and then RemoveThroughs
-                    // them out of the buffer, so querying the store first could
-                    // miss those seconds in both reads. Reading the tail before
-                    // the store guarantees any sample dropped from the tail by
-                    // an intervening flush is already visible in the store read
-                    // that follows; MergeSamples's tail-wins-by-ts dedup handles
-                    // the overlap either way.
-                    var tailSamples = buffer.SnapshotRange(fromSec, toSec);
-                    var dbSamples = store.Query(fromSec, toSec);
-                    response = BuildHistoryResponse(
-                        dbSamples, tailSamples, fromSec, toSec, clampedMaxPoints, seriesFilter, adapterLuids, cpuTempName);
-                }
+                var response = QueryHistory(fromSec, toSec, stepSeconds, clampedMaxPoints, seriesFilter, store, buffer, sensors);
 
                 LogTimingThrottled(
                     ref s_lastHistoryTimingLogTicks, "monitoring-history",
@@ -915,7 +923,7 @@ public static class MonitoringHistoryRoutes
     // On collision, append a hash of the raw id so the disambiguated id is
     // stable for that raw id regardless of iteration order or which sibling
     // claimed the base candidate first.
-    private static string ResolveUniqueSanitizedId(string rawComponentId, HashSet<string> usedIds)
+    internal static string ResolveUniqueSanitizedId(string rawComponentId, HashSet<string> usedIds)
     {
         var candidate = MetricsHistory.SanitizeId(rawComponentId);
         if (usedIds.Add(candidate))
@@ -1005,7 +1013,7 @@ public static class MonitoringHistoryRoutes
     // the buffered tail - at most the window's right edge or two, which is
     // inherently a live/partial reading either way rather than a fixed
     // historical average.
-    private static List<MetricPoint> MergeDecimatedSlots(
+    internal static List<MetricPoint> MergeDecimatedSlots(
         IEnumerable<(long Slot, double? Avg, double? Max)> dbSlots, IReadOnlyList<MetricPoint> tailPoints)
     {
         var map = new SortedDictionary<long, MetricPoint>();
@@ -1272,7 +1280,7 @@ public static class MonitoringHistoryRoutes
         return null;
     }
 
-    private static List<MetricPoint> ToWirePoints(IReadOnlyList<MetricPoint> points, bool wholeNumbers) =>
+    internal static List<MetricPoint> ToWirePoints(IReadOnlyList<MetricPoint> points, bool wholeNumbers) =>
         points.Select(p => p with
         {
             T = p.T * 1000,
