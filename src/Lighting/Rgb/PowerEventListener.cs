@@ -29,13 +29,15 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
     private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? _curve;
+    private readonly Nexus.Service.Lifecycle.ResumeSelfRestart? _selfRestart;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? _aio;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null, Nexus.Service.Lifecycle.ResumeSelfRestart? selfRestart = null)
     {
+        _selfRestart = selfRestart;
         _curve = curve;
         _aio = aio;
         _slv3 = slv3;
@@ -46,6 +48,11 @@ public sealed class PowerEventListener : IHostedService, IDisposable
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        if (_selfRestart is not null)
+        {
+            _bridge.SelfRestart = _selfRestart.TryRestart;
+            _selfRestart.LogStartMarker();
+        }
 #if WINDOWS
         if (OperatingSystem.IsWindows())
         {
@@ -81,6 +88,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         // follows the blackout: the pump waits only for its first attempt, capped.
         if (e.Mode == PowerModes.Suspend)
         {
+            ServiceLog.Info($"[resume] suspend: devices={_bridge.Devices.Count}, smbus mutex={RgbBridge.ProbeSmbusMutex()}, {RgbBridge.LhmWalkSummary()}");
             _blackout.OnSuspending();
             // The SaveCfg sequence runs on a hub background task; this pump waits only for its first
             // attempt, hard-capped by the hub, so a stuck USB write cannot hold it.
@@ -90,6 +98,7 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         else if (e.Mode == PowerModes.Resume)
         {
             ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
+            ServiceLog.Info($"[resume] resumed: devices before restart={_bridge.Devices.Count}, smbus mutex={RgbBridge.ProbeSmbusMutex()}, {RgbBridge.LhmWalkSummary()}");
             _blackout.OnResumed();
             _bridge.OnSystemResume();
             _lianLi?.OnSystemResumed();

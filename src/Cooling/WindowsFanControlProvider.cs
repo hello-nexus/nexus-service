@@ -115,7 +115,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 Id = m.Id,
                 Name = m.Name,
                 DutyPercent = (int)(m.ControlSensor.Value ?? 0f),
-                Rpm = (int)(m.FanSensor.Value ?? 0f),
+                Rpm = (int)(LhmWalkWatch.Shared.Read(m.FanSensor.Value) ?? 0f),
                 Mode = mode,
                 RpmSensorId = m.FanSensorId,
                 IsGpu = m.IsGpu,
@@ -168,7 +168,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             var sensor = FindSensorById(hw, sensorId);
             if (sensor is null) continue;
 
-            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : sensor.Value;
+            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : LhmWalkWatch.Shared.Read(sensor.Value);
         }
 
         return null;
@@ -252,6 +252,11 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         IProgress<FanCalibrationProgress> progress,
         CancellationToken ct)
     {
+        if (LhmWalkWatch.Shared.IsStale)
+        {
+            ServiceLog.Warn("[fan-control] calibration skipped: sensor readings are stale");
+            return Array.Empty<FanCalibration>();
+        }
         var mappings = EnsureDiscovered();
         var toCalibrate = fanIds.Count == 0
             ? mappings
@@ -271,6 +276,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                         () => ReadCalibrationRpm(m),
                         progress,
                         ct);
+                }
+                catch (CalibrationStaleReadException)
+                {
+                    // A 0 RPM taken from stale data would save the fan as Unresponsive.
+                    ServiceLog.Warn($"[fan-control] calibration of {m.Id} aborted: sensor readings went stale");
+                    return null;
                 }
                 catch (CalibrationWriteRefusedException)
                 {
@@ -364,6 +375,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private sealed class CalibrationWriteRefusedException : Exception;
 
+    private sealed class CalibrationStaleReadException : Exception;
+
     private static bool WriteDuty(ChannelMapping mapping, float duty)
     {
         if (mapping.AmdFan is { } amd) return amd.SetDuty((int)MathF.Round(duty));
@@ -388,6 +401,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private int ReadCalibrationRpm(ChannelMapping mapping)
     {
         _lhm.Update(SensorRefresh.Fast);
+        if (LhmWalkWatch.Shared.IsStale) throw new CalibrationStaleReadException();
         return (int)(mapping.FanSensor.Value ?? 0f);
     }
 
@@ -627,7 +641,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         foreach (var sensor in hw.Sensors)
         {
             if (sensor.SensorType != SensorType.Temperature) continue;
-            var value = sensor.Value ?? 0f;
+            var value = LhmWalkWatch.Shared.Read(sensor.Value) ?? 0f;
             // Skip disconnected/disabled channels (e.g. unpopulated DIMM SPD
             // temps read 0 / ~0.25°C) so they never become curve inputs -
             // same gate every platform's provider applies. See TemperatureSourceFilter.
