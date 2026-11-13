@@ -42,13 +42,16 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
             return null;
         }
         _hasFrame = false;
-        foreach (var command in RyujinProtocol.EncodeLiveStart())
+        lock (RyujinProtocol.HidWriteGate)
         {
-            if (!hid.Write(command))
+            foreach (var command in RyujinProtocol.EncodeLiveStart())
             {
-                return null;
+                if (!hid.Write(command))
+                {
+                    return null;
+                }
+                Thread.Sleep(RyujinProtocol.StartCommandGapMs);
             }
-            Thread.Sleep(RyujinProtocol.StartCommandGapMs);
         }
         return (RyujinProtocol.Width, RyujinProtocol.Height);
     }
@@ -67,6 +70,14 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => !_hasFrame || (hid is not null && Push(pipe, hid));
 
     private bool Push(IBulkUsbPipe pipe, IHidDevice hid)
+    {
+        lock (RyujinProtocol.HidWriteGate)
+        {
+            return PushLocked(pipe, hid);
+        }
+    }
+
+    private bool PushLocked(IBulkUsbPipe pipe, IHidDevice hid)
     {
         for (int offset = 0; offset < _bgr.Length; offset += RyujinProtocol.ChunkBytes)
         {

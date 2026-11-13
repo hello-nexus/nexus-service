@@ -16,6 +16,13 @@ public static class RyujinProtocol
 {
     public const int ProductIdWithLcd = 0x1AA2;
     public const int ProductIdExtreme = 0x1BCB;
+
+    /// <summary>
+    /// Held across any sequence that must reach the device unbroken. The panel driver takes it
+    /// around an upload and its commit, and the cooling writer around each duty report, so the
+    /// two never interleave on the one HID interface.
+    /// </summary>
+    public static readonly object HidWriteGate = new();
     public const int Width = 320;
     public const int Height = 240;
 
