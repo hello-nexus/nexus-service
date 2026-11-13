@@ -79,6 +79,12 @@ public class MediaPositionMathTests
     }
 
     [Fact]
+    public void ShouldPush_DurationJitterWithinSlackStaysQuiet()
+    {
+        Assert.False(Push(true, 5_000, 200_000, 1.0, 1, true, 200_400, 6_000));
+    }
+
+    [Fact]
     public void EffectiveAdvanceRate_ZeroWhenStampUnusableOrRateNotPositive()
     {
         var now = DateTimeOffset.UtcNow;

@@ -106,7 +106,9 @@ public sealed class MediaPusher : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    // Rebuilding records the unreadable session as known-null, so this logs once.
                     Console.Error.WriteLine($"[media-pusher] drift check failed: {ex.Message}");
+                    return true;
                 }
             }
         }

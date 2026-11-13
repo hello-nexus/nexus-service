@@ -39,7 +39,7 @@ public static class MediaPositionMath
         bool pushedPlaying, double pushedPositionMs, double pushedDurationMs, double advanceRate, TimeSpan sincePush,
         bool playing, double durationMs, double livePositionMs, double slackMs)
     {
-        if (pushedPlaying != playing || pushedDurationMs != durationMs) return true;
+        if (pushedPlaying != playing || Math.Abs(pushedDurationMs - durationMs) > slackMs) return true;
         var expected = playing && durationMs > 0
             ? Advance(pushedPositionMs, durationMs, sincePush, advanceRate)
             : pushedPositionMs;
