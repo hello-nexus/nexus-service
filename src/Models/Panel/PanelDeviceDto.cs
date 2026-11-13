@@ -3,6 +3,13 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Models.Panel;
 
+/// <summary>Accent and font remembered for one skin.</summary>
+public sealed class PanelSkinOverride
+{
+    public string? Accent { get; set; }
+    public string? Font { get; set; }
+}
+
 /// <summary>One colour stop of a panel's gauge gradient.</summary>
 public sealed class PanelGaugeGradientStop
 {
@@ -96,10 +103,8 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public string? Font { get; set; }
     /// <summary>Skin id (lowercase slug). Null is no skin; a patch of "" clears it.</summary>
     public string? Skin { get; set; }
-    /// <summary>Accent override for the active skin. Null follows the skin default; a patch of "" clears it.</summary>
-    public string? SkinAccent { get; set; }
-    /// <summary>Font override for the active skin, same values as <see cref="Font"/>. Null follows the skin default; a patch of "" clears it.</summary>
-    public string? SkinFont { get; set; }
+    /// <summary>Accent and font remembered per skin id. Null or absent entries follow the skin default; a patch replaces the whole map and an empty object clears it.</summary>
+    public Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -332,8 +337,7 @@ public interface IPanelPersonalization
     string? TextColor { get; set; }
     string? Font { get; set; }
     string? Skin { get; set; }
-    string? SkinAccent { get; set; }
-    string? SkinFont { get; set; }
+    Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
@@ -388,8 +392,7 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public string? TextColor { get; set; }
     public string? Font { get; set; }
     public string? Skin { get; set; }
-    public string? SkinAccent { get; set; }
-    public string? SkinFont { get; set; }
+    public Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
@@ -524,10 +527,8 @@ public sealed class PanelDevicePatch
     public string? Font { get; set; }
     /// <summary>Skin id (lowercase slug). Null is no skin; a patch of "" clears it.</summary>
     public string? Skin { get; set; }
-    /// <summary>Accent override for the active skin. Null follows the skin default; a patch of "" clears it.</summary>
-    public string? SkinAccent { get; set; }
-    /// <summary>Font override for the active skin, same values as <see cref="Font"/>. Null follows the skin default; a patch of "" clears it.</summary>
-    public string? SkinFont { get; set; }
+    /// <summary>Accent and font remembered per skin id. Null or absent entries follow the skin default; a patch replaces the whole map and an empty object clears it.</summary>
+    public Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>

@@ -278,6 +278,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, Dictionary<string, System.Text.Json.JsonElement>>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceRecord))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelGaugeGradientStop))]
+[JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelSkinOverride))]
+[JsonSerializable(typeof(Dictionary<string, Nexus.Service.Models.Panel.PanelSkinOverride>))]
 [JsonSerializable(typeof(List<Nexus.Service.Models.Panel.PanelGaugeGradientStop>))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.PanelDeviceCapabilities))]
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.KioskViewportDto))]

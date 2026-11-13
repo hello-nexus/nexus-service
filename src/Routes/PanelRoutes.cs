@@ -392,9 +392,9 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
-            if (body.SkinFont is not null && !Nexus.Service.Panel.PanelFontValue.TryNormalize(body.SkinFont, out _))
+            if (body.SkinOverrides is not null && Nexus.Service.Panel.PanelSkinOverrides.Validate(body.SkinOverrides) is { } skinOverridesError)
             {
-                return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+                return Results.Json(ApiResponse.Fail(skinOverridesError), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
             if (body.Skin is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.Skin, out _))
             {

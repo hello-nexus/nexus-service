@@ -90,8 +90,7 @@ public static class PanelPresets
         to.TextColor = from.TextColor;
         to.Font = from.Font;
         to.Skin = from.Skin;
-        to.SkinAccent = from.SkinAccent;
-        to.SkinFont = from.SkinFont;
+        to.SkinOverrides = PanelSkinOverrides.Clone(from.SkinOverrides);
         to.ThemeSyncWithDesktop = from.ThemeSyncWithDesktop;
         to.AccentSyncWithDesktop = from.AccentSyncWithDesktop;
     }

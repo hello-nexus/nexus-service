@@ -834,10 +834,8 @@ public sealed class PanelDeviceRegistry
                 record.Font = font;
             if (patch.Skin is not null && PanelSkinValue.TryNormalize(patch.Skin, out var skin))
                 record.Skin = skin;
-            if (patch.SkinAccent is not null)
-                record.SkinAccent = NullIfEmpty(patch.SkinAccent);
-            if (patch.SkinFont is not null && PanelFontValue.TryNormalize(patch.SkinFont, out var skinFont))
-                record.SkinFont = skinFont;
+            if (patch.SkinOverrides is not null && PanelSkinOverrides.TryNormalize(patch.SkinOverrides, out var skinOverrides))
+                record.SkinOverrides = skinOverrides;
             if (patch.ThemeSyncWithDesktop.HasValue)
                 record.ThemeSyncWithDesktop = patch.ThemeSyncWithDesktop.Value;
             if (patch.AccentSyncWithDesktop.HasValue)
@@ -972,8 +970,7 @@ public sealed class PanelDeviceRegistry
             record.TextColor = null;
             record.Font = null;
             record.Skin = null;
-            record.SkinAccent = null;
-            record.SkinFont = null;
+            record.SkinOverrides = null;
             record.ThemeSyncWithDesktop = null;
             record.AccentSyncWithDesktop = null;
             record.WidgetSize = null;
@@ -1353,8 +1350,7 @@ public sealed class PanelDeviceRegistry
             TextColor = r.TextColor,
             Font = r.Font,
             Skin = r.Skin,
-            SkinAccent = r.SkinAccent,
-            SkinFont = r.SkinFont,
+            SkinOverrides = PanelSkinOverrides.Clone(r.SkinOverrides),
             ThemeSyncWithDesktop = r.ThemeSyncWithDesktop,
             AccentSyncWithDesktop = r.AccentSyncWithDesktop,
             FirstSeenAt = r.FirstSeenAt,

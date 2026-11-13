@@ -227,23 +227,104 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(_registry.Patch(record.Id, new PanelDevicePatch { Skin = "" })!.Skin);
     }
 
+    private static Dictionary<string, PanelSkinOverride> Overrides(params (string Skin, string? Accent, string? Font)[] entries)
+    {
+        return entries.ToDictionary(e => e.Skin, e => new PanelSkinOverride { Accent = e.Accent, Font = e.Font });
+    }
+
     [Fact]
-    public void Patch_SkinOverrides_RoundTripClearAndSurviveOmission()
+    public void Patch_SkinOverrides_ReplaceClearAndSurviveOmission()
     {
         var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
-        Assert.Null(record.SkinAccent);
+        Assert.Null(record.SkinOverrides);
 
-        _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = "#ff8800", SkinFont = "jura" });
-        var patched = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
-        Assert.Equal("#ff8800", patched!.SkinAccent);
-        Assert.Equal("jura", patched.SkinFont);
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", " #ff8800 ", "jura"), ("lcd", null, "system:Fira Code")) });
+        var kept = _registry.Patch(record.Id, new PanelDevicePatch { DisplayName = "Renamed" });
+        Assert.Equal(2, kept!.SkinOverrides!.Count);
+        Assert.Equal("#ff8800", kept.SkinOverrides["arcade"].Accent);
+        Assert.Equal("jura", kept.SkinOverrides["arcade"].Font);
+        Assert.Null(kept.SkinOverrides["lcd"].Accent);
+        Assert.Equal("system:Fira Code", kept.SkinOverrides["lcd"].Font);
 
-        Assert.Equal("system:Fira Code", _registry.Patch(record.Id, new PanelDevicePatch { SkinFont = "system:Fira Code" })!.SkinFont);
-        Assert.Equal("system:Fira Code", _registry.Patch(record.Id, new PanelDevicePatch { SkinFont = "system:bad;family" })!.SkinFont);
+        var replaced = _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", "#00ff00", null), ("crt", "", " ")) });
+        Assert.Equal(new[] { "arcade" }, replaced!.SkinOverrides!.Keys);
+        Assert.Equal("#00ff00", replaced.SkinOverrides["arcade"].Accent);
+        Assert.Null(replaced.SkinOverrides["arcade"].Font);
 
-        var cleared = _registry.Patch(record.Id, new PanelDevicePatch { SkinAccent = "", SkinFont = " " });
-        Assert.Null(cleared!.SkinAccent);
-        Assert.Null(cleared.SkinFont);
+        var cleared = _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = new Dictionary<string, PanelSkinOverride>() });
+        Assert.Null(cleared!.SkinOverrides);
+    }
+
+    [Fact]
+    public void Patch_SkinOverrides_InvalidMapIsIgnoredWhole()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", "#ff8800", null)) });
+
+        var oversize = Enumerable.Range(0, PanelSkinOverrides.MaxEntries + 1).Select(i => ("s" + i, (string?)"#fff", (string?)null)).ToArray();
+        foreach (var bad in new[]
+        {
+            Overrides(("Bad Key", "#fff", null)),
+            Overrides(("lcd", "#fff", "system:bad;family")),
+            Overrides(oversize),
+        })
+        {
+            var after = _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = bad });
+            Assert.Equal(new[] { "arcade" }, after!.SkinOverrides!.Keys);
+        }
+    }
+
+    [Theory]
+    [InlineData("Bad Key", "#fff", null, "invalid_skin")]
+    [InlineData("lcd", "#fff", "system:bad;family", "invalid_font")]
+    [InlineData("lcd", "#fff", "jura", null)]
+    public void Validate_ReportsTheRouteErrorCode(string skin, string? accent, string? font, string? expected)
+    {
+        Assert.Equal(expected, PanelSkinOverrides.Validate(Overrides((skin, accent, font))));
+    }
+
+    [Fact]
+    public void Validate_RejectsMoreEntriesThanTheCap()
+    {
+        var full = Enumerable.Range(0, PanelSkinOverrides.MaxEntries).Select(i => ("s" + i, (string?)"#fff", (string?)null)).ToArray();
+        Assert.Null(PanelSkinOverrides.Validate(Overrides(full)));
+        Assert.Equal("invalid_skin", PanelSkinOverrides.Validate(Overrides(full.Append(("extra", "#fff", null)).ToArray())));
+    }
+
+    [Fact]
+    public void SkinOverrides_SnapshotsAndPresetsDeepCopy()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", "#ff8800", "jura")) });
+
+        var snapshot = _registry.Get(record.Id)!;
+        snapshot.SkinOverrides!["arcade"].Accent = "#000000";
+        snapshot.SkinOverrides.Remove("arcade");
+        Assert.Equal("#ff8800", _registry.Get(record.Id)!.SkinOverrides!["arcade"].Accent);
+
+        _registry.CreatePreset(record.Id, "Desk", out _);
+        var presets = _store.Load().PanelDevices[record.Id].Presets!.Single();
+        Assert.Equal("jura", presets.SkinOverrides!["arcade"].Font);
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", "#123456", null)) });
+        Assert.Equal("jura", _store.Load().PanelDevices[record.Id].Presets!.Single().SkinOverrides!["arcade"].Font);
+    }
+
+    [Fact]
+    public void SkinOverrides_RoundTripThroughBothJsonContexts()
+    {
+        var record = _registry.Allocate(null, Caps(PanelSurfaces.Phone));
+        _registry.Patch(record.Id, new PanelDevicePatch { SkinOverrides = Overrides(("arcade", "#ff8800", "jura")) });
+        var stored = _registry.Get(record.Id)!;
+
+        var wire = System.Text.Json.JsonSerializer.Serialize(stored, Nexus.Service.Serialization.AppJsonContext.Default.PanelDeviceRecord);
+        Assert.Contains("\"skinOverrides\":{\"arcade\":{\"accent\":\"#ff8800\",\"font\":\"jura\"}}", wire);
+        var persisted = System.Text.Json.JsonSerializer.Serialize(stored, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+        var back = System.Text.Json.JsonSerializer.Deserialize(persisted, Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord);
+        Assert.Equal("jura", back!.SkinOverrides!["arcade"].Font);
+
+        var patch = System.Text.Json.JsonSerializer.Deserialize("{\"skinOverrides\":{\"lcd\":{\"accent\":\"#111111\"}}}", Nexus.Service.Serialization.AppJsonContext.Default.PanelDevicePatch);
+        Assert.Equal("#111111", patch!.SkinOverrides!["lcd"].Accent);
+        Assert.Null(System.Text.Json.JsonSerializer.Deserialize("{}", Nexus.Service.Serialization.PersistenceJsonContext.Default.PanelDeviceRecord)!.SkinOverrides);
     }
 
     [Fact]
@@ -631,8 +712,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
             WidgetPadding = 25,
             Font = "tektur",
             Skin = "lcd",
-            SkinAccent = "#ff8800",
-            SkinFont = "jura",
+            SkinOverrides = Overrides(("lcd", "#ff8800", "jura")),
             ThemeSyncWithDesktop = false,
             AccentSyncWithDesktop = false,
         });
@@ -671,8 +751,7 @@ public sealed class PanelDeviceRegistryTests : IDisposable
         Assert.Null(reset.WidgetPadding);
         Assert.Null(reset.Font);
         Assert.Null(reset.Skin);
-        Assert.Null(reset.SkinAccent);
-        Assert.Null(reset.SkinFont);
+        Assert.Null(reset.SkinOverrides);
         Assert.Null(reset.ThemeSyncWithDesktop);
         Assert.Null(reset.AccentSyncWithDesktop);
         Assert.Null(_registry.Get(record.Id)!.Layout);
