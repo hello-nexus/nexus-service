@@ -94,6 +94,10 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public string? TextColor { get; set; }
     /// <summary>Font id for every widget on this panel. Null follows the app font; a patch of "" clears it.</summary>
     public string? Font { get; set; }
+    /// <summary>Skin id (global visual theme) for this panel. Null is no skin; a patch of "" clears it. The web owns the id list.</summary>
+    public string? Skin { get; set; }
+    /// <summary>Variant id within the skin. Null is the skin default; a patch of "" clears it.</summary>
+    public string? SkinVariant { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -325,6 +329,8 @@ public interface IPanelPersonalization
     string? TextColorMode { get; set; }
     string? TextColor { get; set; }
     string? Font { get; set; }
+    string? Skin { get; set; }
+    string? SkinVariant { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
@@ -378,6 +384,10 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
     public string? Font { get; set; }
+    /// <summary>Skin id (global visual theme) for this panel. Null is no skin; a patch of "" clears it. The web owns the id list.</summary>
+    public string? Skin { get; set; }
+    /// <summary>Variant id within the skin. Null is the skin default; a patch of "" clears it.</summary>
+    public string? SkinVariant { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
@@ -510,6 +520,10 @@ public sealed class PanelDevicePatch
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
     public string? Font { get; set; }
+    /// <summary>Skin id (global visual theme) for this panel. Null is no skin; a patch of "" clears it. The web owns the id list.</summary>
+    public string? Skin { get; set; }
+    /// <summary>Variant id within the skin. Null is the skin default; a patch of "" clears it.</summary>
+    public string? SkinVariant { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>
