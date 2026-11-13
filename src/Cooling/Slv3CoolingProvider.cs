@@ -56,7 +56,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
     private static bool IsBoundHydroShift(Slv3FanInfo fan) =>
         fan.BoundToUs && Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType);
 
-    // The AIO's radiator fans are ports 0..2; slot 3 is the pump and is never a port channel.
+    // The AIO's radiator fans are the port channels; the pump slot is never one.
     private static int RadiatorFanCount(Slv3FanInfo fan) =>
         Math.Clamp(fan.FanCount, 0, Slv3Protocol.HydroShiftPumpPort);
 

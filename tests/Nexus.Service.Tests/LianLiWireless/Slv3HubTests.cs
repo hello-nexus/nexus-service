@@ -1221,6 +1221,7 @@ public partial class Slv3HubTests
         {
             var driven = Run(true, header, out var binds);
             // Every params frame, from the first tick on, matches the pump-only run's.
+            Assert.NotEmpty(driven);
             Assert.All(driven, f => Assert.Equal(baseline[0], f));
             Assert.NotEmpty(binds);
             Assert.All(binds, f => Assert.Equal(Slv3Protocol.PwmFollowMotherboard, f[24]));

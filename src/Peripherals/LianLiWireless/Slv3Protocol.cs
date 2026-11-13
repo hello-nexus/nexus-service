@@ -616,7 +616,7 @@ public static class Slv3Protocol
 
     /// <summary>
     /// Duty tuple for a HydroShift II (lian-li-linux fan_speed.rs build_pwm_packet: the same 0x10 frame
-    /// with duties at [17..20], slots below fan_count are the radiator fans, slot 3 is the pump slot).
+    /// with the same duty bytes; slots below fan_count are the radiator fans, the last slot is the pump).
     /// A fan with no target follows the motherboard header; the pump slot always stays on the
     /// follow byte, as Nexus has sent it all along, because the pump runs from the param block timer.
     /// </summary>
