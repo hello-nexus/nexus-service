@@ -27,7 +27,7 @@ namespace Nexus.Service.Helper;
 /// change, and handles <c>media.control</c> / <c>media.getAlbumArt</c>
 /// commands coming back the other way.
 ///
-/// A snapshot goes out on MediaManager events, and on a once-per-second
+/// A snapshot goes out on MediaManager events, and on a periodic
 /// timeline check that fires only when a position (a seek Spotify raises no
 /// event for) leaves where the service's own ticker predicts it.
 /// </summary>
@@ -72,14 +72,14 @@ public sealed class MediaPusher : IDisposable
     // Null marks a session BuildSnapshot skipped: known, but with no anchor to drift from.
     private readonly Dictionary<string, PushedPosition?> _pushed = new(StringComparer.Ordinal);
 
-    private readonly record struct PushedPosition(double PositionMs, double DurationMs, bool Playing, long At);
+    private readonly record struct PushedPosition(double PositionMs, double DurationMs, bool Playing, double AdvanceRate, long At);
 
     private async Task PollDriftAsync()
     {
-        using var timer = new PeriodicTimer(MediaTopicPublisher.PollInterval);
-        var token = _cts.Token;
         try
         {
+            using var timer = new PeriodicTimer(MediaTopicPublisher.PollInterval);
+            var token = _cts.Token;
             while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
             {
                 PushIfDrifted();
@@ -134,8 +134,10 @@ public sealed class MediaPusher : IDisposable
             anchor.Playing,
             anchor.PositionMs,
             anchor.DurationMs,
+            anchor.AdvanceRate,
             Stopwatch.GetElapsedTime(anchor.At),
             playing,
+            timeline.EndTime.TotalMilliseconds,
             LivePositionMs(timeline, playing, RateOf(playback)),
             MediaTopicPublisher.PositionSlackMs);
     }
@@ -146,6 +148,9 @@ public sealed class MediaPusher : IDisposable
         var reported = playback.PlaybackRate ?? 1.0;
         return double.IsFinite(reported) ? reported : 1.0;
     }
+
+    private static double AdvanceRateOf(GlobalSystemMediaTransportControlsSessionTimelineProperties timeline, bool playing, double rate)
+        => playing ? MediaPositionMath.EffectiveAdvanceRate(timeline.LastUpdatedTime, DateTimeOffset.UtcNow, rate) : 0;
 
     private static double LivePositionMs(GlobalSystemMediaTransportControlsSessionTimelineProperties timeline, bool playing, double rate)
     {
@@ -208,56 +213,67 @@ public sealed class MediaPusher : IDisposable
                 if (session?.ControlSession is null) continue;
                 freshPushed[session.Id] = null;
 
-                GlobalSystemMediaTransportControlsSessionMediaProperties? props = null;
-                try { props = session.ControlSession.TryGetMediaPropertiesAsync().AsTask().GetAwaiter().GetResult(); }
-                catch { }
-                if (props is null) continue;
-
-                var playback = session.ControlSession.GetPlaybackInfo();
-                var timeline = session.ControlSession.GetTimelineProperties();
-
-                var friendly = MediaSourceNames.Friendly(session.Id);
-                var key = UniqueKey(result, friendly);
-                freshMap[key] = session.Id;
-
-                var playing = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-                var rate = RateOf(playback);
-                // Position is what the player last SET, not a live clock.
-                var positionMs = LivePositionMs(timeline, playing, rate);
-                freshPushed[session.Id] = new PushedPosition(positionMs, timeline.EndTime.TotalMilliseconds, playing, Stopwatch.GetTimestamp());
-
-                result[key] = new MediaSession
+                string? key = null;
+                try
                 {
-                    SourceAppName = key,
-                    IsFocused = !string.IsNullOrEmpty(focusedId) && string.Equals(focusedId, session.Id, StringComparison.Ordinal),
-                    Song = new MediaSong
+                    GlobalSystemMediaTransportControlsSessionMediaProperties? props = null;
+                    try { props = session.ControlSession.TryGetMediaPropertiesAsync().AsTask().GetAwaiter().GetResult(); }
+                    catch { }
+                    if (props is null) continue;
+
+                    var playback = session.ControlSession.GetPlaybackInfo();
+                    var timeline = session.ControlSession.GetTimelineProperties();
+
+                    var friendly = MediaSourceNames.Friendly(session.Id);
+                    key = UniqueKey(result, friendly);
+                    freshMap[key] = session.Id;
+
+                    var playing = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                    var rate = RateOf(playback);
+                    // Position is what the player last SET, not a live clock.
+                    var positionMs = LivePositionMs(timeline, playing, rate);
+                    freshPushed[session.Id] = new PushedPosition(
+                        positionMs, timeline.EndTime.TotalMilliseconds, playing, AdvanceRateOf(timeline, playing, rate), Stopwatch.GetTimestamp());
+
+                    result[key] = new MediaSession
                     {
-                        Title = props.Title ?? string.Empty,
-                        Artist = props.Artist ?? string.Empty,
-                        Album = props.AlbumTitle ?? string.Empty,
-                        ArtVersion = _artVersions.TryGetValue(session.Id, out var artVersion) ? artVersion : 0,
-                    },
-                    Playback = new MediaPlayback
-                    {
-                        Playing = playing,
-                        Stopped = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped,
-                        Shuffled = playback.IsShuffleActive == true,
-                        RepeatMode = (playback.AutoRepeatMode ?? MediaPlaybackAutoRepeatMode.None).ToString(),
-                        PositionMs = positionMs,
-                        DurationMs = timeline.EndTime.TotalMilliseconds,
-                        PlaybackRate = rate,
-                    },
-                    Controls = new MediaControls
-                    {
-                        IsPrevEnabled = playback.Controls.IsPreviousEnabled,
-                        IsNextEnabled = playback.Controls.IsNextEnabled,
-                        IsShuffleEnabled = playback.Controls.IsShuffleEnabled,
-                        IsRepeatModeEnabled = playback.Controls.IsRepeatEnabled,
-                        IsPlayEnabled = playback.Controls.IsPlayEnabled,
-                        IsPauseEnabled = playback.Controls.IsPauseEnabled,
-                        IsSeekEnabled = playback.Controls.IsPlaybackPositionEnabled,
-                    },
-                };
+                        SourceAppName = key,
+                        IsFocused = !string.IsNullOrEmpty(focusedId) && string.Equals(focusedId, session.Id, StringComparison.Ordinal),
+                        Song = new MediaSong
+                        {
+                            Title = props.Title ?? string.Empty,
+                            Artist = props.Artist ?? string.Empty,
+                            Album = props.AlbumTitle ?? string.Empty,
+                            ArtVersion = _artVersions.TryGetValue(session.Id, out var artVersion) ? artVersion : 0,
+                        },
+                        Playback = new MediaPlayback
+                        {
+                            Playing = playing,
+                            Stopped = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped,
+                            Shuffled = playback.IsShuffleActive == true,
+                            RepeatMode = (playback.AutoRepeatMode ?? MediaPlaybackAutoRepeatMode.None).ToString(),
+                            PositionMs = positionMs,
+                            DurationMs = timeline.EndTime.TotalMilliseconds,
+                            PlaybackRate = rate,
+                        },
+                        Controls = new MediaControls
+                        {
+                            IsPrevEnabled = playback.Controls.IsPreviousEnabled,
+                            IsNextEnabled = playback.Controls.IsNextEnabled,
+                            IsShuffleEnabled = playback.Controls.IsShuffleEnabled,
+                            IsRepeatModeEnabled = playback.Controls.IsRepeatEnabled,
+                            IsPlayEnabled = playback.Controls.IsPlayEnabled,
+                            IsPauseEnabled = playback.Controls.IsPauseEnabled,
+                            IsSeekEnabled = playback.Controls.IsPlaybackPositionEnabled,
+                        },
+                    };
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[media-pusher] session {session.Id} skipped: {ex.Message}");
+                    freshPushed[session.Id] = null;
+                    if (key is not null) { freshMap.Remove(key); result.Remove(key); }
+                }
             }
         }
         catch (Exception ex)
