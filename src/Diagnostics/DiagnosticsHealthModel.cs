@@ -641,7 +641,7 @@ public sealed class DiagnosticsHealthModel
                 var names = string.Join(", ", host.FailedUnits);
                 reasons.Add(new HealthComponentReason("system.failedUnits", HealthStatuses.Watch,
                     $"{host.FailedUnits.Count} system service(s) failed",
-                    $"systemd reports failed system units: units={names}.",
+                    $"systemd reports failed system units: {names}.",
                     new Dictionary<string, string>
                     {
                         ["count"] = ReasonParams.Num(host.FailedUnits.Count),
