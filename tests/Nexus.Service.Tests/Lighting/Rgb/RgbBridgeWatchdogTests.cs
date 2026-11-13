@@ -1117,6 +1117,8 @@ public class RgbBridgeWatchdogTests : IDisposable
         _controller.Devices = Array.Empty<RgbDevice>();
         await ResumeAndWaitForBounceAsync(1);
         Advance(TimeSpan.FromSeconds(30));
+        // A full fetch still running from the restart would make the look return before it reaches the gate.
+        Assert.True(await WaitUntilAsync(() => !_bridge.RefreshInFlight, TimeSpan.FromSeconds(5)));
         var gate = new TaskCompletionSource();
         _controller.AddressGate = gate.Task;
         var looksBefore = _bridge.SettleLookCount;
@@ -1158,6 +1160,8 @@ public class RgbBridgeWatchdogTests : IDisposable
         _controller.Devices = Array.Empty<RgbDevice>();
         await ResumeAndWaitForBounceAsync(1);
         Advance(TimeSpan.FromSeconds(30));
+        // A full fetch still running from the restart would make the look return before it reaches the gate.
+        Assert.True(await WaitUntilAsync(() => !_bridge.RefreshInFlight, TimeSpan.FromSeconds(5)));
         var gate = new TaskCompletionSource();
         _controller.AddressGate = gate.Task;
         _deadlines.Single!.Fire();
@@ -1204,6 +1208,8 @@ public class RgbBridgeWatchdogTests : IDisposable
         _controller.Devices = Array.Empty<RgbDevice>();
         await ResumeAndWaitForBounceAsync(1);
         Advance(TimeSpan.FromSeconds(30));
+        // A full fetch still running from the restart would make the look return before it reaches the gate.
+        Assert.True(await WaitUntilAsync(() => !_bridge.RefreshInFlight, TimeSpan.FromSeconds(5)));
         var gate = new TaskCompletionSource();
         _controller.AddressGate = gate.Task;
         _deadlines.Single!.Fire();
