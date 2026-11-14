@@ -33,7 +33,7 @@ internal static class RyujinMonitorSensors
         _ => id,
     };
 
-    /// <summary>Always three valid ids: a stored slot that is missing or unknown falls back to its default.</summary>
+    /// <summary>Always one valid id per slot: a stored slot that is missing or unknown falls back to its default.</summary>
     public static string[] NormalizeSlots(IReadOnlyList<string>? stored)
     {
         var slots = new string[MaxCount];

@@ -135,7 +135,10 @@ public sealed class RyujinCoolingWorker : BackgroundService
         long nextCycle = 0;
         while (!ct.IsCancellationRequested && _gate.IsEnabled(RyujinCoolingProtocol.HandlerId))
         {
-            ApplyDisplayChange();
+            if (ApplyDisplayChange())
+            {
+                nextCycle = 0;
+            }
             if (Environment.TickCount64 >= nextCycle)
             {
                 _cooling.ReassertControl();
@@ -158,8 +161,8 @@ public sealed class RyujinCoolingWorker : BackgroundService
         }
     }
 
-    /// <summary>Sends the settings the user changed since the last send: a rotation change re-selects the layout, a brightness change is the burst of three settings reports, each behind a DC.</summary>
-    private void ApplyDisplayChange()
+    /// <summary>Sends the settings the user changed since the last send: a rotation or sensor selection change re-selects the layout (and returns true so the next cycle sends the new sensor frames at once), a brightness change is the burst of three settings reports, each behind a DC.</summary>
+    private bool ApplyDisplayChange()
     {
         var wanted = _store.Load().Devices.RyujinDisplay;
         int wantedCount = RyujinMonitorSensors.NormalizeCount(wanted.SensorCount);
@@ -174,6 +177,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 _appliedBrightness = wanted.Brightness;
                 _appliedCount = wantedCount;
                 _appliedSlots = wantedSlots;
+                return sensorsChanged;
             }
         }
         else if (wanted.Brightness != _appliedBrightness)
@@ -184,6 +188,8 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 _appliedBrightness = wanted.Brightness;
             }
         }
+
+        return false;
     }
 
     private IReadOnlyList<byte[]> BuildSensorFrames()
