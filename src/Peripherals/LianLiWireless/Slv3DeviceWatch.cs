@@ -19,7 +19,13 @@ internal sealed class Slv3DeviceWatch
 
     internal readonly record struct Summary(
         int Sent, int Confirmed, int Unconfirmed, long LatencyAvgMs, long LatencyMaxMs,
-        int Reports, int IdxChanges, string LastReportedIdx, long SinceConfirmMs, long PendingMs, int StuckEvents, int Suppressed, int SendFailed);
+        int Reports, int IdxChanges, string LastReportedIdx, long SinceConfirmMs, long PendingMs, int StuckEvents, int Suppressed, int SendFailed, int Resends, int ResendConfirmed);
+
+    /// <summary>The chain's latest rolling window upload as the watch sees it.</summary>
+    internal readonly record struct WindowState(string IdxHex, long AgeMs, bool Confirmed, int Resends);
+
+    internal const long ResendAfterMs = 500;
+    internal const int MaxResends = 2;
 
     private sealed class Chain
     {
@@ -32,6 +38,10 @@ internal sealed class Slv3DeviceWatch
         public bool Stuck;
         public bool StuckSilent;
         public long EpisodeWindowStartMs;
+        public string WinIdx = "";
+        public long WinSentMs;
+        public bool WinConfirmed;
+        public int WinResends, PeriodResends, PeriodResendConfirmed;
         public int EpisodesInWindow, Suppressed, SendFailed, FailSinceConfirm;
         public long StuckSinceMs;
         public int Sent, Confirmed, Unconfirmed, Reports, IdxChanges, StuckEvents;
@@ -53,12 +63,19 @@ internal sealed class Slv3DeviceWatch
     }
 
     /// <summary>An upload carrying <paramref name="idxHex"/> was fully written to the TX.</summary>
-    internal void NoteSent(string mac, string idxHex, long nowMs)
+    internal void NoteSent(string mac, string idxHex, long nowMs, bool window = false)
     {
         lock (_gate)
         {
             var c = For(mac);
             c.Sent++;
+            if (window)
+            {
+                c.WinIdx = idxHex;
+                c.WinSentMs = nowMs;
+                c.WinConfirmed = false;
+                c.WinResends = 0;
+            }
             if (c.UnconfirmedSinceMs == 0)
             {
                 c.UnconfirmedSinceMs = nowMs;
@@ -68,6 +85,36 @@ internal sealed class Slv3DeviceWatch
             c.RingNext = (c.RingNext + 1) % SentRingSize;
         }
     }
+
+    /// <summary>The current window was written again under its original index.</summary>
+    internal void NoteResent(string mac, long nowMs)
+    {
+        lock (_gate)
+        {
+            var c = For(mac);
+            c.WinSentMs = nowMs;
+            c.WinResends++;
+            c.PeriodResends++;
+        }
+    }
+
+    internal bool TryGetWindow(string mac, long nowMs, out WindowState state)
+    {
+        lock (_gate)
+        {
+            if (_chains.TryGetValue(mac, out var c) && c.WinIdx.Length > 0)
+            {
+                state = new WindowState(c.WinIdx, nowMs - c.WinSentMs, c.WinConfirmed, c.WinResends);
+                return true;
+            }
+        }
+        state = default;
+        return false;
+    }
+
+    /// <summary>A window is re-sent when the chain has not echoed it in time, under the cap, while most of it is still ahead.</summary>
+    internal static bool ResendDue(in WindowState w, long currentFrame, long firstFrame, int windowFrames) =>
+        !w.Confirmed && w.Resends < MaxResends && w.AgeMs >= ResendAfterMs && currentFrame < firstFrame + windowFrames / 2;
 
     /// <summary>An upload to the chain failed before it was fully written.</summary>
     internal void NoteSendFailed(string mac)
@@ -102,6 +149,14 @@ internal sealed class Slv3DeviceWatch
             }
             c.Reported = idxHex;
             c.IdxChanges++;
+            if (c.WinIdx.Length > 0 && !c.WinConfirmed && string.Equals(c.WinIdx, idxHex, StringComparison.OrdinalIgnoreCase))
+            {
+                c.WinConfirmed = true;
+                if (c.WinResends > 0)
+                {
+                    c.PeriodResendConfirmed++;
+                }
+            }
             var slot = -1;
             for (var i = 0; i < SentRingSize; i++)
             {
@@ -211,8 +266,8 @@ internal sealed class Slv3DeviceWatch
                 c.Reports, c.IdxChanges, c.Reported,
                 c.LastConfirmMs == 0 ? -1 : nowMs - c.LastConfirmMs,
                 c.UnconfirmedSinceMs == 0 ? 0 : nowMs - c.UnconfirmedSinceMs,
-                c.StuckEvents, c.Suppressed, c.SendFailed);
-            c.Sent = c.Confirmed = c.Unconfirmed = c.Reports = c.IdxChanges = c.StuckEvents = c.Suppressed = c.SendFailed = 0;
+                c.StuckEvents, c.Suppressed, c.SendFailed, c.PeriodResends, c.PeriodResendConfirmed);
+            c.Sent = c.Confirmed = c.Unconfirmed = c.Reports = c.IdxChanges = c.StuckEvents = c.Suppressed = c.SendFailed = c.PeriodResends = c.PeriodResendConfirmed = 0;
             c.LatencySum = c.LatencyMax = 0;
             return s;
         }

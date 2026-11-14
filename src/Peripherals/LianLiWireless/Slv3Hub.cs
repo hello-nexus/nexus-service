@@ -402,6 +402,8 @@ public sealed partial class Slv3Hub : IDisposable
 
     internal Slv3DeviceWatch DeviceWatch { get; } = new();
 
+    internal long NowMs => _nowMs();
+
     // Device-list records span more than one page once enough chains are bound
     // (up to MaxSlot, plus non-fan devices), so the poll requests
     // ceil(count/RecordsPerPage) pages. Clamp so a corrupt count can't trigger
@@ -3148,10 +3150,10 @@ public sealed partial class Slv3Hub : IDisposable
     /// the window profile and a chain-safe effect index.
     /// </summary>
     public async Task<bool> SendRgbWindowAsync(
-        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, string? reuseIndexHex = null)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out var windowIndex))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out var windowIndex, reuseIndexHex))
         {
             return false;
         }
@@ -3184,7 +3186,14 @@ public sealed partial class Slv3Hub : IDisposable
                 }
                 NoteConfigChangedLocked();
                 firstPassesWritten = true;
-                DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs());
+                if (reuseIndexHex is null)
+                {
+                    DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs(), window: true);
+                }
+                else
+                {
+                    DeviceWatch.NoteResent(macHex, _nowMs());
+                }
             }
             // The late passes' cost is booked at decision time so a concurrent
             // upload's check already sees it; the passes themselves are not re-counted.
@@ -3251,7 +3260,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     private bool TryPrepareUpload(
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
-        out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
+        out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex, string? reuseIndexHex = null)
     {
         if (IsWiredOnly(macHex))
         {
@@ -3286,9 +3295,20 @@ public sealed partial class Slv3Hub : IDisposable
                 return false;
             }
 
-            effectIndex = window
+            if (reuseIndexHex is not null)
+            {
+                effectIndex = Convert.FromHexString(reuseIndexHex);
+                if (record.EffectIndex is { Length: 4 } && effectIndex.AsSpan().SequenceEqual(record.EffectIndex))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                effectIndex = window
                 ? NextSafeEffectIndexLocked(record)
                 : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            }
             packets = Slv3RgbFrame.BuildPackets(
                 record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;

@@ -175,4 +175,71 @@ public class Slv3DeviceWatchTests
         Assert.Equal(1, s.SendFailed);
         Assert.Equal(0, s.Sent);
     }
+
+    private static Slv3DeviceWatch.WindowState Win(long age, bool confirmed = false, int resends = 0) => new("01020304", age, confirmed, resends);
+
+    [Theory]
+    [InlineData(499, false, 0, 10, false)]
+    [InlineData(500, false, 0, 10, true)]
+    [InlineData(900, true, 0, 10, false)]
+    [InlineData(900, false, 2, 10, false)]
+    [InlineData(900, false, 1, 10, true)]
+    [InlineData(900, false, 0, 15, false)]
+    [InlineData(900, false, 0, 14, true)]
+    [InlineData(900, false, 0, -3, true)]
+    public void Resend_decision(long age, bool confirmed, int resends, long current, bool expected)
+    {
+        Assert.Equal(expected, Slv3DeviceWatch.ResendDue(Win(age, confirmed, resends), current, 0, 30));
+    }
+
+    [Fact]
+    public void New_window_supersedes_resend_state()
+    {
+        var watch = new Slv3DeviceWatch();
+        watch.NoteSent(Mac, "01020301", 1_000, window: true);
+        watch.NoteResent(Mac, 1_600);
+        watch.NoteSent(Mac, "01020302", 3_000, window: true);
+        Assert.True(watch.TryGetWindow(Mac, 3_100, out var w));
+        Assert.Equal("01020302", w.IdxHex);
+        Assert.Equal(0, w.Resends);
+        Assert.Equal(100, w.AgeMs);
+        Assert.False(w.Confirmed);
+    }
+
+    [Fact]
+    public void Resend_restarts_the_age_and_counts_toward_the_cap()
+    {
+        var watch = new Slv3DeviceWatch();
+        watch.NoteSent(Mac, "01020301", 1_000, window: true);
+        watch.NoteResent(Mac, 1_600);
+        Assert.True(watch.TryGetWindow(Mac, 1_800, out var w));
+        Assert.Equal(200, w.AgeMs);
+        Assert.Equal(1, w.Resends);
+    }
+
+    [Fact]
+    public void Echo_of_the_first_send_confirms_the_window_and_counts_resend_confirmed()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "01020301", 1_000, window: true);
+        watch.NoteResent(Mac, 1_600);
+        watch.NoteReported(Mac, "01020301", 1_700, log.Add);
+        Assert.True(watch.TryGetWindow(Mac, 1_700, out var w));
+        Assert.True(w.Confirmed);
+        Assert.False(Slv3DeviceWatch.ResendDue(w, 0, 0, 30));
+        var s = watch.Take(Mac, 1_700)!.Value;
+        Assert.Equal(1, s.Resends);
+        Assert.Equal(1, s.ResendConfirmed);
+    }
+
+    [Fact]
+    public void Live_upload_does_not_replace_the_window_state()
+    {
+        var watch = new Slv3DeviceWatch();
+        watch.NoteSent(Mac, "01020301", 1_000, window: true);
+        watch.NoteSent(Mac, "0A0B0C0D", 1_200);
+        Assert.True(watch.TryGetWindow(Mac, 1_300, out var w));
+        Assert.Equal("01020301", w.IdxHex);
+    }
 }

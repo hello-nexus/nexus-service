@@ -377,6 +377,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public byte[]? WindowPayload;
         public int WindowLedCount;
         public bool Failing;
+        public bool UploadIsResend;
         public bool Visited;
         public double LastUploadStartMs;
         public bool Joinable;
@@ -420,6 +421,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private int _healthUploadsFailed;
     private int _healthRenders;
     private int _healthUntaken;
+    private int _healthResends;
     private double _healthNextAirMs;
     private double _stretchDownSinceMs;
     private int _healthAirMax;
@@ -498,10 +500,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // A first call or a return from idle has no full period to report.
         if (_healthNextLogMs > 0 && nowMs - _healthNextLogMs < HealthLogPeriodMs)
         {
-            ServiceLog.Info($"[lianli-wireless] health chains={_planChains} rolling={rollingChains} live={_planChains - rollingChains} uploads ok={_healthUploadsOk} fail={_healthUploadsFailed} renders={_healthRenders} untaken={_healthUntaken} airMax={_healthAirMax} tickMax={_healthTickMaxMs}");
+            ServiceLog.Info($"[lianli-wireless] health chains={_planChains} rolling={rollingChains} live={_planChains - rollingChains} uploads ok={_healthUploadsOk} fail={_healthUploadsFailed} renders={_healthRenders} untaken={_healthUntaken} resends={_healthResends} airMax={_healthAirMax} tickMax={_healthTickMaxMs}");
         }
         _healthNextLogMs = nowMs + HealthLogPeriodMs;
-        _healthUploadsOk = _healthUploadsFailed = _healthRenders = _healthUntaken = _healthAirMax = 0;
+        _healthUploadsOk = _healthUploadsFailed = _healthRenders = _healthUntaken = _healthResends = _healthAirMax = 0;
         _healthTickMaxMs = 0;
     }
 
@@ -538,7 +540,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 chain.ResetDiag();
             }
             var dev = _hub.DeviceWatch.Take(fan.Mac, hubNow) is { } w
-                ? $"dev sent={w.Sent} confirmed={w.Confirmed} unconfirmed={w.Unconfirmed} confMs avg={w.LatencyAvgMs} max={w.LatencyMaxMs} reports={w.Reports} idxChanges={w.IdxChanges} idx={w.LastReportedIdx} sinceConfirmMs={w.SinceConfirmMs} pendingMs={w.PendingMs} stuck={w.StuckEvents} suppressed={w.Suppressed} sendFail={w.SendFailed} stale={fan.Stale}"
+                ? $"dev sent={w.Sent} confirmed={w.Confirmed} unconfirmed={w.Unconfirmed} confMs avg={w.LatencyAvgMs} max={w.LatencyMaxMs} reports={w.Reports} idxChanges={w.IdxChanges} idx={w.LastReportedIdx} sinceConfirmMs={w.SinceConfirmMs} pendingMs={w.PendingMs} resends={w.Resends} resendConfirmed={w.ResendConfirmed} stuck={w.StuckEvents} suppressed={w.Suppressed} sendFail={w.SendFailed} stale={fan.Stale}"
                 : "dev none";
             ServiceLog.Info($"[lianli-wireless] chain {fan.Mac} path={path} {upload} {dev}");
         }
@@ -680,6 +682,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         if (st.Upload is not { IsCompleted: true } upload) return;
         st.Upload = null;
+        if (st.UploadIsResend)
+        {
+            st.UploadIsResend = false;
+            return;
+        }
         var ok = upload.IsCompletedSuccessfully && upload.Result;
         if (ok)
         {
@@ -767,6 +774,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // One chain per render, longest-waiting first, spreads a round's uploads
         // over the air. A chain joining late skips a window that is mostly played already.
         if (st.Joinable && st.UploadedWindowId != _windowId && _windowStartedId != _windowId
+            && !st.UploadIsResend
             && TryCurrentFrame(nowMs, out var joinFrame)
             && joinFrame >= _windowFirstFrame + WindowStartSafetyFrames
             && joinFrame < _windowFirstFrame + WindowFrames / 2
@@ -793,7 +801,37 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && current >= st.WindowFirstFrame
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
         if (!covered) st.DiagGapTicks++;
+        else TryResend(macHex, st, nowMs);
         return covered;
+    }
+
+    private bool ResendDue(string macHex, ChainRolling st, double nowMs)
+    {
+        return st.Upload is null && st.WindowPayload is not null && st.WindowFirstFrame != long.MinValue
+            && _hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var w)
+            && TryCurrentFrame(nowMs, out var current)
+            && Slv3DeviceWatch.ResendDue(w, current, st.WindowFirstFrame, WindowFrames);
+    }
+
+    // One re-send at a time and never beside a running upload, earliest-ending window first, so it adds no burst to the air.
+    private void TryResend(string macHex, ChainRolling st, double nowMs)
+    {
+        if (!ResendDue(macHex, st, nowMs)) return;
+        foreach (var (otherMac, other) in _rolling)
+        {
+            if (ReferenceEquals(other, st)) continue;
+            if (other.Upload is { IsCompleted: false }) return;
+            var earlier = other.WindowFirstFrame < st.WindowFirstFrame
+                || (other.WindowFirstFrame == st.WindowFirstFrame && string.CompareOrdinal(otherMac, macHex) < 0);
+            if (earlier && ResendDue(otherMac, other, nowMs)) return;
+        }
+        if (!_hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var w)) return;
+        var payload = st.WindowPayload!;
+        var ledCount = st.WindowLedCount;
+        var interval = WindowInterval;
+        st.UploadIsResend = true;
+        _healthResends++;
+        st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent, w.IdxHex));
     }
 
     private bool IsNextToUpload(ChainRolling chain)
