@@ -1679,7 +1679,7 @@ public sealed class TryxPanoramaHub : IDisposable
 
     internal const string ClockDevice = "clock";
 
-    // The heartbeat resends the overlay every second, so a clock line needs no extra trigger.
+    // Each heartbeat resends the overlay, so a clock line needs no extra trigger.
     // The service runs with invariant globalization, so "system" cannot read the OS locale:
     // time falls back to 24h like the deck clock strip, date to the dashboard's system shape
     // in English. Date patterns are the client-owned keys in nexus-web src/lib/units.ts.
