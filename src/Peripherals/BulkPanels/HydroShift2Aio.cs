@@ -356,6 +356,8 @@ public sealed class HydroShift2Aio : BackgroundService
                 {
                     _wirelessHeld = false;
                     _ringHoldUntil = now + RingAfterWirelessHoldMs;
+                    _ringFailures = 0;
+                    _ringRetryMs = 0;
                 }
             }
             RaiseAvailabilityChanged();
@@ -460,7 +462,7 @@ public sealed class HydroShift2Aio : BackgroundService
         }
         // Retrying while the firmware still ignores uploads keeps the glass stalled, so back off, then park.
         _ringFailures++;
-        _ringRetryMs = _ringFailures > RingFailuresBeforeParking ? RingParkedRetryMs
+        _ringRetryMs = _ringFailures >= RingFailuresBeforeParking ? RingParkedRetryMs
             : _ringRetryMs == 0 ? RingRetryMs : Math.Min(_ringRetryMs * 2, RingRetryMaxMs);
         _ringHoldUntil = now + _ringRetryMs;
         ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] ring write unanswered ({_ringFailures} in a row); retrying in {_ringRetryMs / 1000} s");

@@ -151,6 +151,10 @@ public class HydroShift2Tests
         Assert.False(log.Due("a", 20 + ReplyLog.IntervalMs - 1));
         Assert.True(log.Due("a", 20 + ReplyLog.IntervalMs));
         Assert.True(log.Due("b", 30));
+        Assert.True(log.Due("c", 0, repeating: false));
+        Assert.True(log.Due("c", 1, repeating: false));
+        Assert.True(log.Due("c", 2, repeating: false));
+        Assert.False(log.Due("c", 3 + ReplyLog.IntervalMs, repeating: false));
 
         log.Reset();
         Assert.True(log.Due("a", 40));
@@ -470,19 +474,18 @@ public class HydroShift2Tests
         var (aio, pipe) = Attached();
         pipe.Silent = true;
         aio.SetRing(Solid(255, 0, 0));
-        foreach (var t in new[] { 10_000, 15_000, 25_000, 45_000, 85_000, 124_750 })
+        foreach (var t in new[] { 10_000, 15_000, 25_000, 45_000, 124_750 })
         {
             aio.Tick(t);
         }
-        Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        Assert.Equal(4, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
         // Past the backoff steps the upload is parked rather than retried every cap.
-        aio.Tick(125_000);
-        aio.Tick(85_000 + HydroShift2Aio.RingParkedRetryMs - 250);
-        Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        aio.Tick(45_000 + HydroShift2Aio.RingParkedRetryMs - 250);
+        Assert.Equal(4, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
-        aio.Tick(85_000 + HydroShift2Aio.RingParkedRetryMs);
-        Assert.Equal(6, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        aio.Tick(45_000 + HydroShift2Aio.RingParkedRetryMs);
+        Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 
     [Fact]
@@ -491,21 +494,21 @@ public class HydroShift2Tests
         var (aio, pipe) = Attached();
         pipe.Silent = true;
         aio.SetRing(Solid(255, 0, 0));
-        foreach (var t in new[] { 10_000, 15_000, 25_000, 45_000, 85_000 })
+        foreach (var t in new[] { 10_000, 15_000, 25_000, 45_000 })
         {
             aio.Tick(t);
         }
         pipe.Silent = false;
-        var answered = 85_000 + HydroShift2Aio.RingParkedRetryMs;
+        var answered = 45_000 + HydroShift2Aio.RingParkedRetryMs;
         aio.Tick(answered);
         pipe.Silent = true;
         aio.SetRing(Solid(0, 255, 0));
         aio.Tick(answered + 2_000);
         aio.Tick(answered + 2_000 + 4_750);
-        Assert.Equal(7, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        Assert.Equal(6, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
         aio.Tick(answered + 2_000 + 5_000);
-        Assert.Equal(8, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        Assert.Equal(7, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 
     [Fact]

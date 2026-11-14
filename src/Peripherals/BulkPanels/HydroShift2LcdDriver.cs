@@ -193,7 +193,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     private void LogReply(string label, byte command, bool wrote, byte[]? reply)
     {
         var failed = reply is null;
-        if (!_replyLog.Due(failed ? label + " failed" : label, Environment.TickCount64))
+        if (!_replyLog.Due(failed ? label + " failed" : label, Environment.TickCount64, failed))
         {
             return;
         }
@@ -258,8 +258,8 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 }
 
 /// <summary>
-/// Lets the first few lines per key through, then one per interval, so a reply logged on
-/// every poll or retry cannot flood the log.
+/// Lets the first few lines per key through, then one per interval for repeating keys, so a
+/// reply logged on every poll or retry cannot flood the log.
 /// </summary>
 internal sealed class ReplyLog
 {
@@ -276,12 +276,13 @@ internal sealed class ReplyLog
         }
     }
 
-    public bool Due(string key, long now)
+    /// <summary>Failures keep one line per interval; successes stop after the first few, so a healthy unit logs nothing steady.</summary>
+    public bool Due(string key, long now, bool repeating = true)
     {
         lock (_seen)
         {
             _seen.TryGetValue(key, out var entry);
-            if (entry.Count < FirstAlways || now - entry.LastAt >= IntervalMs)
+            if (entry.Count < FirstAlways || (repeating && now - entry.LastAt >= IntervalMs))
             {
                 _seen[key] = (entry.Count + 1, now);
                 return true;

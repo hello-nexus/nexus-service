@@ -185,7 +185,7 @@ public static class HydroShift2Protocol
 
     /// <summary>
     /// A panel-sized PNG that replaces the overlay layer where the firmware draws its own
-    /// coolant and pump readout over every JPEG. One corner pixel carries alpha 1 so firmware
+    /// coolant and pump readout over every JPEG. One corner pixel carries the lowest non-zero alpha so firmware
     /// that treats an all-transparent PNG as nothing to draw still takes the push. The corner
     /// lies outside the round glass, and a near-transparent black pixel is invisible on the square one.
     /// </summary>
