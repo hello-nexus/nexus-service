@@ -56,6 +56,9 @@ public class TryxPanoramaClockTests
     [InlineData("h:mm", true)]
     [InlineData("H:mm", false)]
     [InlineData("HH:mm", false)]
+    [InlineData("HH:mm 'h'", false)]
+    [InlineData("H 'h' mm", false)]
+    [InlineData("HH 'tt' mm", false)]
     [InlineData("", false)]
     [InlineData(null, false)]
     public void ShortTimePattern_MapsToHourCycle(string? pattern, bool expected)

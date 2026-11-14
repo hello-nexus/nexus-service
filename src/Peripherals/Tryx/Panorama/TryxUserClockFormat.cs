@@ -19,6 +19,9 @@ internal static class TryxUserClockFormat
     private static int _refreshing;
     private static volatile bool _uses12Hour;
 
+    /// <summary>Starts the first read so the first overlay frame is already correct.</summary>
+    public static void Warm() => SystemUses12Hour();
+
     public static bool SystemUses12Hour()
     {
         var now = Environment.TickCount64;
@@ -55,6 +58,7 @@ internal static class TryxUserClockFormat
         {
             return false;
         }
+        shortTimePattern = StripQuotedLiterals(shortTimePattern);
         if (shortTimePattern.Contains('t'))
         {
             return true;
@@ -64,6 +68,25 @@ internal static class TryxUserClockFormat
             return false;
         }
         return shortTimePattern.Contains('h');
+    }
+
+    // Single-quoted segments are literal text (for example 'h' as a unit suffix), never fields.
+    private static string StripQuotedLiterals(string pattern)
+    {
+        var sb = new System.Text.StringBuilder(pattern.Length);
+        var quoted = false;
+        foreach (var c in pattern)
+        {
+            if (c == '\'')
+            {
+                quoted = !quoted;
+            }
+            else if (!quoted)
+            {
+                sb.Append(c);
+            }
+        }
+        return sb.ToString();
     }
 
     private static string? TryReadShortTime()

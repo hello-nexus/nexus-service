@@ -67,6 +67,7 @@ public sealed class TryxPanoramaHub : IDisposable
         _overlay = new TryxOverlayConfig { Docked = saved.OverlayDocked };
         State.Brightness = saved.Brightness;
         LoadContent(saved, Array.Empty<string>());
+        TryxUserClockFormat.Warm();
     }
 
     private void LoadContent(TryxSettings saved, IReadOnlyList<string> customMedia)
