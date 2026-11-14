@@ -226,9 +226,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
-            // A zone with no engine frame, or a fresh one the engine has not painted yet, would
-            // compose as black; keep what the chain already shows until the engine catches up.
-            if (!AllZoneFramesRendered(zones, devices))
+            // While an effect is active, a zone with no engine frame or a fresh one it has not painted yet would
+            // compose as black; keep what the chain already shows until the engine catches up. With no effect
+            // (lighting Off) the frame streams as it always did.
+            if (_engine.HasActiveEffect && !AllZoneFramesRendered(zones, devices))
             {
                 // Keeps the dashboard preview on the held frame instead of expiring to the zeroed engine frame.
                 _engine.Live.TouchZones(zones);

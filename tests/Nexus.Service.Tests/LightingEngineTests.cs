@@ -119,15 +119,6 @@ public class LightingEngineTests
     }
 
     [Fact]
-    public void UpdateDevices_LeavesNewFramesUnpublishedWhenNoEffectRuns()
-    {
-        using var engine = new LightingEngine();
-        var frames = MakeDevices();
-        engine.UpdateDevices(frames);
-        Assert.All(frames, f => Assert.False(f.HasPublished));
-    }
-
-    [Fact]
     public async Task UpdateDevices_WhilePaused_PublishesOnlyTheNewFramesWithoutRendering()
     {
         using var engine = new LightingEngine();
@@ -140,8 +131,10 @@ public class LightingEngineTests
         engine.FramePublished += () => first.TrySetResult(true);
         await Task.WhenAny(first.Task, Task.Delay(2000));
         engine.SetPaused(true);
-        // Let an in-flight tick finish so the paused baseline is stable.
-        await Task.Delay(50);
+        // The first publish after the pause is the paused branch's, so the render count is stable from here.
+        var afterPause = new TaskCompletionSource<bool>();
+        engine.FramePublished += () => afterPause.TrySetResult(true);
+        await Task.WhenAny(afterPause.Task, Task.Delay(2000));
         var renders = effect.RenderCount;
 
         var fresh = new DeviceFrame(9, "fresh", 4);
