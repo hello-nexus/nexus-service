@@ -8,7 +8,7 @@ namespace Nexus.Service.Sensors;
 
 /// <summary>
 /// Collects per-item update times during one LHM walk and, when the whole walk ran long,
-/// produces one log line naming the slowest items. Rate limited so a persistently slow walk logs once a minute.
+/// produces one log line naming the slowest items. Rate limited so a persistently slow walk logs once per log interval.
 /// Walks are serialized by the caller, so no locking.
 /// </summary>
 internal sealed class LhmSlowWalkReport

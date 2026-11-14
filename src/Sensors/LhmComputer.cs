@@ -164,9 +164,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     public Computer Instance => _computer;
 
-    private void OnWalkStalled(TimeSpan age) =>
+    private void OnWalkStalled(TimeSpan age)
+    {
         var inside = _walkWatch.CurrentItem is { } at ? $", inside {at.Item}" : "";
-            ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s{inside}; sensor readings reported as missing until it completes");
+        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s{inside}; sensor readings reported as missing until it completes");
+    }
 
     /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
     internal bool IsHubDriven(IHardware hw) =>
@@ -463,8 +465,14 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             }
             _walkWatch.SetItem(item);
             var itemStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            hw.Update();
-            _slowWalk.Record(item, (long)System.Diagnostics.Stopwatch.GetElapsedTime(itemStart).TotalMilliseconds);
+            try
+            {
+                hw.Update();
+            }
+            finally
+            {
+                _slowWalk.Record(item, (long)System.Diagnostics.Stopwatch.GetElapsedTime(itemStart).TotalMilliseconds);
+            }
         }
         catch (Exception ex)
         {
