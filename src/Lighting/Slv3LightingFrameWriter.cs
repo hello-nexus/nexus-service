@@ -866,7 +866,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         var fan = FindFanInfo(mac);
         if (fan is null) return "absent from hub state";
-        return _provider.ExclusionReason(fan, _store.Load().Devices.LianLiWireless.Chains) ?? "no longer excluded";
+        return Slv3LightingDeviceProvider.ExclusionReason(fan, _store.Load().Devices.LianLiWireless.Chains) ?? "no longer excluded";
     }
 
     private bool CoversChain(List<string> ids)

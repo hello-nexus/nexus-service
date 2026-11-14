@@ -115,16 +115,15 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
-    public void Tick_keeps_the_last_frame_while_a_replacement_frame_is_unpainted()
+    public void Tick_holds_a_chain_whose_rebuilt_frame_lands_before_the_engine_paints_it()
     {
         var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
-        engine.PublishNewFramesWhenStopped = false;
         FillAll(frames, 159, 0, 113);
         writer.Tick();
         var sent = RgbSyncFrames(tx).Count;
         Assert.True(sent > 0);
 
-        // A neighbor left and rejoined: the chain's frame is rebuilt zeroed and unpublished.
+        // A neighbor left and rejoined while no effect ran yet (startup, before the saved effect restores): the rebuilt frame is zeroed and unpublished.
         var fresh = frames.ConvertAll(f => new DeviceFrame(f.Index, f.Id, f.LedCount));
         engine.UpdateDevices(fresh.ToArray());
         writer.Tick();

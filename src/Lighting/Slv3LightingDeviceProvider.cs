@@ -426,11 +426,11 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
     }
 
     /// <summary>The single filter behind <see cref="BuildStructures()"/>: why a chain gets no structure, or null when it gets one.</summary>
-    internal string? ExclusionReason(Slv3FanInfo fan, IReadOnlyDictionary<string, LianLiWirelessChainLighting> chains, bool playsArgb = false)
+    internal static string? ExclusionReason(Slv3FanInfo fan, IReadOnlyDictionary<string, LianLiWirelessChainLighting> chains, bool playsArgb = false)
     {
         if (!fan.BoundToUs) return "BoundToUs=false";
         // A chain playing its motherboard ARGB input is not engine driven.
-        if (PlaysMotherboardArgb(fan, chains) != playsArgb) return "motherboard ARGB input";
+        if (PlaysMotherboardArgb(fan, chains) != playsArgb) return playsArgb ? "not on its motherboard ARGB input" : "on its motherboard ARGB input";
         if (Slv3Protocol.IsStrimerDevType((byte)fan.DevType))
         {
             return StrimerLedCountFor((byte)fan.DevType) > 0 ? null : "strimer LED count unknown";

@@ -119,28 +119,40 @@ public class LightingEngineTests
     }
 
     [Fact]
-    public void UpdateDevices_PublishesNewFramesWhenNoEffectRuns()
+    public void UpdateDevices_LeavesNewFramesUnpublishedWhenNoEffectRuns()
     {
         using var engine = new LightingEngine();
         var frames = MakeDevices();
         engine.UpdateDevices(frames);
-        Assert.All(frames, f => Assert.True(f.HasPublished));
+        Assert.All(frames, f => Assert.False(f.HasPublished));
     }
 
     [Fact]
-    public async Task UpdateDevices_WhilePaused_GetsNewFramesPublished()
+    public async Task UpdateDevices_WhilePaused_PublishesOnlyTheNewFramesWithoutRendering()
     {
         using var engine = new LightingEngine();
-        engine.UpdateDevices(MakeDevices());
+        var kept = MakeDevices();
+        engine.UpdateDevices(kept);
         engine.FrameIntervalMs = 10;
-        engine.SetEffect(new TestEffect("held"));
+        var effect = new CountingEffect("held");
+        engine.SetEffect(effect);
+        var first = new TaskCompletionSource<bool>();
+        engine.FramePublished += () => first.TrySetResult(true);
+        await Task.WhenAny(first.Task, Task.Delay(2000));
         engine.SetPaused(true);
+        // Let an in-flight tick finish so the paused baseline is stable.
+        await Task.Delay(50);
+        var renders = effect.RenderCount;
 
-        var fresh = MakeDevices();
-        engine.UpdateDevices(fresh);
+        var fresh = new DeviceFrame(9, "fresh", 4);
+        engine.UpdateDevices(new[] { kept[0], kept[1], fresh });
+        var published = new TaskCompletionSource<bool>();
+        engine.FramePublished += () => { if (fresh.HasPublished) published.TrySetResult(true); };
+        if (fresh.HasPublished) published.TrySetResult(true);
+        await Task.WhenAny(published.Task, Task.Delay(2000));
 
-        for (var i = 0; i < 200 && !fresh[0].HasPublished; i++) await Task.Delay(10);
-        Assert.All(fresh, f => Assert.True(f.HasPublished));
+        Assert.True(fresh.HasPublished);
+        Assert.Equal(renders, effect.RenderCount);
     }
 
     [Fact]

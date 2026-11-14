@@ -174,31 +174,24 @@ public sealed partial class LightingEngine : IDisposable
         EnsureNewFramesPublish(devices);
     }
 
-    // A new frame is zeroed until published, and writers hold off chains whose frame was never
-    // published. A running loop publishes it on its next tick; a paused one only repaints on a
-    // resample, and a stopped one never ticks, so a new frame there is published as the black it is.
+    // A new frame is zeroed until published, and writers hold a chain whose frame was never published
+    // rather than stream that zero. A running loop publishes it on its next tick; a paused one needs a
+    // nudge. With no effect running it stays held until an effect starts, so hardware keeps what it shows
+    // instead of being blanked by a rebuild that lands before the persisted effect is restored.
     private void EnsureNewFramesPublish(DeviceFrame[] devices)
     {
-        var pending = false;
         foreach (var dev in devices)
         {
-            if (!dev.HasPublished) { pending = true; break; }
-        }
-        if (!pending) return;
-        if (LoopPublishing)
-        {
-            _resampleOnce = true;
-            return;
-        }
-        if (!PublishNewFramesWhenStopped) return;
-        foreach (var dev in devices)
-        {
-            if (!dev.HasPublished) dev.Publish();
+            if (!dev.HasPublished)
+            {
+                _newFramesPending = true;
+                return;
+            }
         }
     }
 
-    // Tests clear this to hold a frame in the unrendered state a writer must not stream.
-    internal bool PublishNewFramesWhenStopped { get; set; } = true;
+    // Read by the paused branch only: publishes just the unpublished frames from the last rendered canvas.
+    private volatile bool _newFramesPending;
 
     // Devices placed in the 3D scene and the camera that sees them; null means
     // every device samples its 2D frame. Replaced wholesale, never mutated.
@@ -964,6 +957,19 @@ public sealed partial class LightingEngine : IDisposable
                             ApplyLedColorLocks(devices);
                         }
                         foreach (var dev in devices)
+                        {
+                            dev.Publish();
+                        }
+                    }
+                    else if (_newFramesPending && wakeMs <= 0)
+                    {
+                        // Paused: frames built since the last publish take the held canvas as it is, with no new
+                        // RenderFrame, so an input-driven effect does not step and the other devices do not change.
+                        _newFramesPending = false;
+                        var fresh = Array.FindAll(_devices, d => !d.HasPublished);
+                        SampleDevicesFromCanvas(fresh);
+                        ApplyLedColorLocks(fresh);
+                        foreach (var dev in fresh)
                         {
                             dev.Publish();
                         }
