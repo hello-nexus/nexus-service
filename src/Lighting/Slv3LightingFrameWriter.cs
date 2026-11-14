@@ -226,6 +226,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
+            // A zone with no engine frame, or a fresh one the engine has not painted yet, would
+            // compose as black; keep what the chain already shows until the engine catches up.
+            if (!AllZoneFramesRendered(zones, devices))
+            {
+                continue;
+            }
+
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live, stageLive: true);
@@ -270,6 +277,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
         }
 
+        LogChainMembership(liveMacs, nowMs);
         ApplyWindowPlan(nowMs);
         RequestSharedWindow(nowMs);
 
@@ -797,6 +805,66 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             _lastSent[macHex] = (ComputeHash(colors), effectIndexHex);
             _lastPushTicks[macHex] = _nowTicks();
         }
+    }
+
+    private static bool AllZoneFramesRendered(IReadOnlyList<ResolvedZone> zones, IReadOnlyList<DeviceFrame> devices)
+    {
+        foreach (var zone in zones)
+        {
+            var found = false;
+            for (var i = 0; i < devices.Count; i++)
+            {
+                if (devices[i].Id != zone.Id) continue;
+                found = devices[i].HasPublished;
+                break;
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    private const long MembershipLogGapMs = 30_000;
+    private readonly HashSet<string> _presentMacs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _everSeenMacs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _membershipLoggedMs = new(StringComparer.OrdinalIgnoreCase);
+
+    // Names which provider filter dropped a chain, so a bundle explains a transient leave.
+    private void LogChainMembership(HashSet<string> liveMacs, double nowMs)
+    {
+        foreach (var mac in _presentMacs)
+        {
+            if (liveMacs.Contains(mac)) continue;
+            LogMembership(mac, $"left list ({DropReason(mac)})", nowMs);
+        }
+        foreach (var mac in liveMacs)
+        {
+            if (!_presentMacs.Contains(mac) && _everSeenMacs.Contains(mac))
+            {
+                LogMembership(mac, "rejoined list", nowMs);
+            }
+        }
+        _presentMacs.Clear();
+        foreach (var mac in liveMacs)
+        {
+            _presentMacs.Add(mac);
+            _everSeenMacs.Add(mac);
+        }
+    }
+
+    private void LogMembership(string mac, string what, double nowMs)
+    {
+        if (_membershipLoggedMs.TryGetValue(mac, out var last) && nowMs - last < MembershipLogGapMs) return;
+        _membershipLoggedMs[mac] = (long)nowMs;
+        ServiceLog.Info($"[lianli-wireless-lighting-writer] {mac} {what}");
+    }
+
+    private string DropReason(string mac)
+    {
+        var fan = FindFanInfo(mac);
+        if (fan is null) return "absent from hub state";
+        if (!fan.BoundToUs) return "BoundToUs=false";
+        if (fan.FanCount <= 0 && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType) && !Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType)) return "FanCount<=0";
+        return "motherboard ARGB input or other filter";
     }
 
     private bool CoversChain(List<string> ids)

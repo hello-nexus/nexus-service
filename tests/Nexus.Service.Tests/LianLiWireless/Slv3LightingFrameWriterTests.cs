@@ -101,6 +101,57 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
+    public void Tick_does_not_upload_black_for_a_chain_with_no_engine_frame()
+    {
+        var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
+        // The engine's device list lacks this chain's frame (a rebuild is pending).
+        engine.UpdateDevices(new[] { new DeviceFrame(0, "other-device", 4) });
+        frames[0].Fill(159, 0, 113);
+        frames[0].Publish();
+
+        writer.Tick();
+
+        Assert.Empty(RgbSyncFrames(tx));
+    }
+
+    [Fact]
+    public void Tick_keeps_the_last_frame_while_a_replacement_frame_is_unpainted()
+    {
+        var (_, _, tx, provider, engine, writer, frames) = CreateBoundSetup();
+        FillAll(frames, 159, 0, 113);
+        writer.Tick();
+        var sent = RgbSyncFrames(tx).Count;
+        Assert.True(sent > 0);
+
+        // A neighbor left and rejoined: the chain's frame is rebuilt zeroed and unpublished.
+        var fresh = frames.ConvertAll(f => new DeviceFrame(f.Index, f.Id, f.LedCount));
+        engine.UpdateDevices(fresh.ToArray());
+        writer.Tick();
+        writer.Tick();
+        Assert.Equal(sent, RgbSyncFrames(tx).Count);
+
+        // Once the engine paints it, the new color streams.
+        FillAll(fresh, 0, 255, 0);
+        writer.Tick();
+        Assert.True(RgbSyncFrames(tx).Count > sent);
+    }
+
+    [Fact]
+    public void Tick_still_sends_a_published_black_frame()
+    {
+        var (_, _, tx, _, _, writer, frames) = CreateBoundSetup();
+        FillAll(frames, 159, 0, 113);
+        writer.Tick();
+        var sent = RgbSyncFrames(tx).Count;
+
+        // The engine's suspend fade and a user-chosen black both publish zeros.
+        FillAll(frames, 0, 0, 0);
+        writer.Tick();
+
+        Assert.True(RgbSyncFrames(tx).Count > sent);
+    }
+
+    [Fact]
     public void Tick_streams_a_bound_strimer_as_one_cable_in_wire_order()
     {
         var (hub, net, tx) = Slv3TestHub.CreateConnected();
@@ -238,7 +289,10 @@ public class Slv3LightingFrameWriterTests
         var store = new InMemoryConfigStore();
         var provider = new Slv3LightingDeviceProvider(hub, store, identify);
         var engine = new LightingEngine();
-        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var frames = provider.BuildFrames(0).ToArray();
+        // The engine has rendered a first (black) frame by the time the writer streams from it.
+        foreach (var frame in frames) frame.Publish();
+        engine.UpdateDevices(frames);
         var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, clock);
         return (hub, tx, store, engine, writer);
     }

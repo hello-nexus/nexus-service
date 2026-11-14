@@ -24,6 +24,7 @@ public sealed class DeviceFrame
     // Scratch for PublishScaled's undimmed seed. Only ever touched by the
     // engine thread, which is the only caller.
     private byte[]? _scaleSeed;
+    private volatile bool _published;
 
     public DeviceFrame(int index, string id, int ledCount, float x = 0, float y = 0, float w = 120, float h = 30, int rotation = 0, int physicalIndex = -1, int zoneIndex = -1, int zoneOffset = 0)
     {
@@ -145,8 +146,12 @@ public sealed class DeviceFrame
         var painted = _back;
         _back = _front;
         Volatile.Write(ref _front, painted);
+        _published = true;
         Array.Copy(painted, _back, painted.Length);
     }
+
+    /// <summary>False until the engine has published this frame once; a fresh frame's bytes are zeroed filler, not a rendered color.</summary>
+    public bool HasPublished => _published;
 
     /// <summary>The frame being painted this tick. Engine thread only.</summary>
     public Span<byte> PaintBuffer => _back;
