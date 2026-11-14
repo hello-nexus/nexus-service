@@ -276,6 +276,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
@@ -318,6 +320,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -371,6 +375,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
@@ -410,6 +416,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -1463,6 +1471,11 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LightingFrameWriter>());
         services.AddHostedService<Nexus.Service.Peripherals.Galahad2.Galahad2ConnectionWorker>();
 
+        // ASUS ROG Ryujin III Extreme pump and fan: its own HID handle, apart from the LCD worker.
+        services.AddSingleton<Nexus.Service.Peripherals.Ryujin.RyujinCoolingHub>();
+        services.AddSingleton<Nexus.Service.Cooling.RyujinCoolingProvider>();
+        services.AddHostedService<Nexus.Service.Peripherals.Ryujin.RyujinCoolingWorker>();
+
         // Asiahorse Umbra V2 ARGB/PWM controller: hub + cooling provider + lighting + connection worker.
         services.AddSingleton<Nexus.Service.Peripherals.AsiahorseUmbra.UmbraHub>();
         services.AddSingleton<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>();
@@ -1903,6 +1916,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiWirelessHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiFlexHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Galahad2Handler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.RyujinExtremeHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KrakenHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NzxtFanControllerHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CorsairLinkHandler>();

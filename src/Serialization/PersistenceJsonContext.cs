@@ -160,6 +160,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(GlacialLcdSettings))]
 [JsonSerializable(typeof(GlacialLcdSlot))]
 [JsonSerializable(typeof(List<GlacialLcdSlot>))]
+[JsonSerializable(typeof(RyujinDisplaySettings))]
 [JsonSerializable(typeof(DeepCoolMystiqueSettings))]
 [JsonSerializable(typeof(DeepCoolMystiqueSensorPick))]
 [JsonSerializable(typeof(DeepCoolMystiqueMediaItem))]

@@ -1701,6 +1701,8 @@ public sealed class DevicesSettings
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
     public DeepCoolMystiqueSettings DeepCoolMystique { get; set; } = new();
+    /// <summary>What the ROG Ryujin III Extreme's screen is set to. The device cannot be read back, so this is what Nexus last sent, not a reading.</summary>
+    public RyujinDisplaySettings RyujinDisplay { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2444,6 +2446,22 @@ public sealed class GlacialLcdSettings
         }
         return copy;
     }
+}
+
+/// <summary>What the ROG Ryujin III Extreme's screen is set to, as Nexus last sent it.</summary>
+public sealed class RyujinDisplaySettings
+{
+    /// <summary>Armoury Crate's default, and the value assumed until the user changes it.</summary>
+    public int Brightness { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorProtocol.DefaultBrightness;
+
+    /// <summary>0 or 90, the two values Armoury Crate sends.</summary>
+    public int Rotation { get; set; }
+
+    /// <summary>How many readings the screen shows, from MinCount to MaxCount.</summary>
+    public int SensorCount { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.MaxCount;
+
+    /// <summary>Sensor ids, one per screen slot; only the first <see cref="SensorCount"/> are shown.</summary>
+    public List<string> Slots { get; set; } = new(Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.DefaultSlots);
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
