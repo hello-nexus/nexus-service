@@ -544,12 +544,13 @@ public class GalleonSdOnboardTests
 
         rig.Settle(Solid(Red));
 
-        var expected = new List<string> { "SET:02", "GET:6E" };
+        var expected = new List<string> { "GET:6E" };
         void Read(string h, string res, int reads = 1) { expected.Add($"OPEN:h0:{res}"); expected.Add("SIZE"); for (var i = 0; i < reads; i++) expected.Add("READ"); expected.Add("CLOSE:h0"); }
         Read("0", "000F");
         Read("0", "6D60");
         Read("0", "6D62");
         foreach (var l in UserLayers) Read("0", l.ToString("X4"));
+        expected.Add("SET:02");
         expected.AddRange(new[] { "OPEN:h1:6D62", "CLOSE:h1", "OPEN:h1:6D68", "OPEN:h1:6D62", "CLOSE:h1", "CREATE:6D68", "OPEN:h1:6D68", "WRITE:h1", "CONT", "CLOSE:h1" });
         expected.AddRange(new[] { "OPEN:h2:6D62", "WRITE:h2", "CLOSE:h2" });
         expected.Add("SET:02");
@@ -559,7 +560,7 @@ public class GalleonSdOnboardTests
         expected.AddRange(new[] { "OPEN:h1:000F", "WRITE:h1", "CLOSE:h1" });
         expected.Add("SET:01");
 
-        var tokens = rig.Board.Tokens().SkipWhile(t => t != "SET:02").ToArray();
+        var tokens = rig.Board.Tokens().SkipWhile(t => t != "GET:6E").ToArray();
         Assert.Equal(expected, tokens);
         Assert.Equal(0, rig.Board.StrayCloses);
     }
@@ -890,7 +891,7 @@ public class GalleonSdOnboardTests
         rig.Settle(Solid(Red));
 
         Assert.DoesNotContain(rig.Board.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdCreate);
-        Assert.Equal("SET:01", rig.Board.Tokens()[^1]);
+        Assert.DoesNotContain("SET:02", rig.Board.Tokens());
     }
 
     // ---- reply desync (customer bundle: the board goes quiet after a hardware-mode switch and a committed write) ----
@@ -1027,7 +1028,7 @@ public class GalleonSdOnboardTests
 
         Assert.Equal(2, rig.Board.Tokens().Count(t => t == "GET:6E"));
         Assert.DoesNotContain(rig.Board.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdCreate);
-        Assert.Equal("SET:01", rig.Board.Tokens()[^1]);
+        Assert.DoesNotContain("SET:02", rig.Board.Tokens());
     }
 
     // ---- review fixes ----
@@ -1293,7 +1294,7 @@ public class GalleonSdOnboardTests
 
     // ---- second review ----
 
-    private static string[] TxTokens(Rig rig) => rig.Board.Tokens().SkipWhile(t => t != "SET:02").ToArray();
+    private static string[] TxTokens(Rig rig) => rig.Board.Tokens();
 
     [Fact]
     public void A_close_that_is_not_confirmed_aborts_the_transaction()
@@ -1353,7 +1354,7 @@ public class GalleonSdOnboardTests
         Assert.Equal(0x6D68, Assert.Single(rig.Record!.Owned).Id);
         Assert.Empty(rig.Board.Written);
         Assert.DoesNotContain(rig.Board.Tokens(), t => t.StartsWith("WRITE:", StringComparison.Ordinal));
-        Assert.Equal("SET:01", rig.Board.Tokens()[^1]);
+        Assert.DoesNotContain("SET:02", rig.Board.Tokens());
         hub2.Dispose();
     }
 
@@ -1510,5 +1511,121 @@ public class GalleonSdOnboardTests
         {
             try { System.IO.Directory.Delete(dir, recursive: true); } catch { }
         }
+    }
+
+    // ---- board edited behind our back: our profile gone, the new profile lists an entry that refuses open ----
+
+    private const ushort NewProfile = 0x6D6C;
+    private const ushort NewList = 0x6D6E;
+    private const ushort Dangling = 0x6D71;
+
+    private static void ReplaceBoardWithDanglingList(Board board)
+    {
+        board.Store.Remove(Profile);
+        board.Store.Remove(ListRes);
+        var p = (byte[])ProfileBytes.Clone();
+        p[6 + (3 * 2)] = unchecked((byte)NewList);
+        p[6 + (3 * 2) + 1] = unchecked((byte)(NewList >> 8));
+        board.Store[NewProfile] = p;
+        board.Store[NewList] = GalleonSdOnboardCodec.BuildLayerList(new[] { Dangling });
+        board.Store[Registry] = new byte[] { 0x13, 0x00, 0x01, 0x00, unchecked((byte)NewProfile), unchecked((byte)(NewProfile >> 8)) };
+    }
+
+    private static void SeedStaleRecord(Rig rig) =>
+        rig.Store.Update(s => s.Devices.GalleonOnboard = new() { ["SN1"] = new GalleonOnboardRecord
+        {
+            ProfileRes = Profile, ProfileB64 = "AQI=", ListRes = ListRes, ListB64 = "AwQ=", RegistryB64 = "BQY=",
+            Owned = new() { new GalleonOwnedLayer { Id = 0x6D68, BodyB64 = "BwgJ" } },
+            WrittenListB64 = "CgsM",
+        } });
+
+    [Fact]
+    public void A_listed_entry_that_refuses_open_stays_in_the_list_untouched_while_the_write_succeeds()
+    {
+        var rig = new Rig();
+        ReplaceBoardWithDanglingList(rig.Board);
+        SeedStaleRecord(rig);
+        var registryBefore = rig.Board.Store[Registry];
+        var listBefore = rig.Board.Store[NewList];
+
+        rig.Settle(Solid(Red));
+
+        Assert.Null(rig.Hub.SavedBlockedReason);
+        var refs = GalleonSdOnboardCodec.TryParseLayerList(rig.Board.Store[NewList], out var parsed) ? parsed : Array.Empty<ushort>();
+        Assert.Equal(2, refs.Length);
+        Assert.Equal(Dangling, refs[^1]);
+        Assert.DoesNotContain(Dangling, rig.Board.Written);
+        Assert.False(rig.Board.Store.ContainsKey(Dangling));
+        Assert.DoesNotContain(rig.Board.Tokens(), t => t.StartsWith("CREATE:6D71", StringComparison.Ordinal) || t.StartsWith("DELETE:6D71", StringComparison.Ordinal));
+        Assert.Equal(registryBefore, rig.Board.Store[Registry]);
+        Assert.Equal(refs[0], (ushort)Assert.Single(rig.Record!.Owned).Id);
+        Assert.Equal(0, rig.Board.StrayCloses);
+
+        // the stale backup is replaced by the current profile's bytes
+        Assert.Equal(NewProfile, rig.Record.ProfileRes);
+        Assert.Equal(NewList, rig.Record.ListRes);
+        Assert.Equal(Convert.ToBase64String(listBefore), rig.Record.ListB64);
+        Assert.Equal(Convert.ToBase64String(registryBefore), rig.Record.RegistryB64);
+        Assert.NotEqual("AQI=", rig.Record.ProfileB64);
+    }
+
+    [Fact]
+    public void Undo_after_a_gone_profile_restores_the_current_profiles_list_and_never_writes_the_old_profile()
+    {
+        var rig = new Rig();
+        ReplaceBoardWithDanglingList(rig.Board);
+        SeedStaleRecord(rig);
+        var listBefore = rig.Board.Store[NewList];
+        rig.Settle(Solid(Red));
+        rig.Board.Written.Clear();
+
+        rig.Hub.SetSavedToDevice(false);
+
+        Assert.Equal(listBefore, rig.Board.Store[NewList]);
+        Assert.DoesNotContain(Profile, rig.Board.Written);
+        Assert.DoesNotContain(ListRes, rig.Board.Written);
+        Assert.DoesNotContain(Dangling, rig.Board.Written);
+        Assert.Empty(rig.Record!.Owned);
+    }
+
+    [Fact]
+    public void A_listed_entry_that_refuses_open_on_a_busy_handle_is_not_taken_for_opaque()
+    {
+        var rig = new Rig();
+        ReplaceBoardWithDanglingList(rig.Board);
+        rig.Board.BusyAfter[0] = rig.Board.TotalOpens + 4;
+
+        rig.Settle(Solid(Red));
+
+        Assert.Empty(rig.Board.Written);
+        Assert.DoesNotContain("SET:02", rig.Board.Tokens());
+    }
+
+    [Fact]
+    public void A_deterministic_failure_does_not_flip_modes_and_waits_long_before_retrying()
+    {
+        var rig = new Rig();
+        ReplaceBoardWithDanglingList(rig.Board);
+        rig.Board.RefuseOpen = (res, _) => res == NewProfile;
+        var frame = Solid(Red);
+
+        rig.Settle(frame);
+
+        Assert.DoesNotContain("SET:02", rig.Board.Tokens());
+        var seen = rig.Board.Writes.Count;
+
+        for (var i = 0; i < 10; i++)
+        {
+            rig.Advance(5);
+            rig.Hub.SetSavedToDevice(true, frame);
+        }
+        Assert.Equal(seen, rig.Board.Writes.Count);
+        Assert.DoesNotContain("SET:02", rig.Board.Tokens());
+
+        rig.Board.RefuseOpen = null;
+        rig.Advance(15);
+        rig.Hub.SetSavedToDevice(true, frame);
+        Assert.True(rig.Board.Writes.Count > seen);
+        Assert.Contains(NewList, rig.Board.Written);
     }
 }
