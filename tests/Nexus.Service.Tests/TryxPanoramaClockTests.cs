@@ -42,6 +42,33 @@ public class TryxPanoramaClockTests
         => Assert.Equal(expected, TryxPanoramaHub.FormatClockValue("date", Afternoon, "system", dateFormat));
 
     [Theory]
+    [InlineData("system", true, "3:05 PM")]
+    [InlineData("system", false, "15:05")]
+    [InlineData("24h", true, "15:05")]
+    [InlineData("12h", false, "3:05 PM")]
+    public void SystemTime_FollowsTheUsersClock(string timeFormat, bool userUses12Hour, string expected)
+        => Assert.Equal(expected, TryxPanoramaHub.FormatClockValue("time", Afternoon, timeFormat, "system", userUses12Hour));
+
+    [Theory]
+    [InlineData("h:mm tt", true)]
+    [InlineData("hh:mm tt", true)]
+    [InlineData("tt h:mm", true)]
+    [InlineData("h:mm", true)]
+    [InlineData("H:mm", false)]
+    [InlineData("HH:mm", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void ShortTimePattern_MapsToHourCycle(string? pattern, bool expected)
+        => Assert.Equal(expected, TryxUserClockFormat.ParseUses12Hour(pattern));
+
+    [Theory]
+    [InlineData("system", "yyyy-mm-dd", false, "2026-11-04  15:05")]
+    [InlineData("12h", "ddd, d mmm", false, "Wed, 4 Nov  3:05 PM")]
+    [InlineData("system", "system", true, "Wed, Nov 4  3:05 PM")]
+    public void DateTime_JoinsDateAndTimeWithTwoSpaces(string timeFormat, string dateFormat, bool userUses12Hour, string expected)
+        => Assert.Equal(expected, TryxPanoramaHub.FormatClockValue("datetime", Afternoon, timeFormat, dateFormat, userUses12Hour));
+
+    [Theory]
     [InlineData("bogus")]
     [InlineData("")]
     public void UnknownSensorId_FallsBackLikeUnknownSensor(string sensorId)

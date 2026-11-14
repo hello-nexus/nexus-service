@@ -1617,7 +1617,8 @@ public sealed class TryxPanoramaHub : IDisposable
         foreach (var item in items)
         {
             var value = item.Device == ClockDevice
-                ? FormatClockValue(item.SensorId, now, units.TimeFormat, units.DateFormat)
+                ? FormatClockValue(item.SensorId, now, units.TimeFormat, units.DateFormat,
+                    units.TimeFormat == "system" && TryxUserClockFormat.SystemUses12Hour())
                 : ResolveSensorValue(item.Device, item.SensorId, wholeNumbers, sources);
             lines.Add(new TryxOverlayLine(item.Label, value));
         }
@@ -1679,10 +1680,11 @@ public sealed class TryxPanoramaHub : IDisposable
 
     internal const string ClockDevice = "clock";
 
-    // Each heartbeat resends the overlay, so a clock line needs no extra trigger.
-    // The service runs with invariant globalization, so "system" cannot read the OS locale:
-    // time falls back to 24h like the deck clock strip, date to the dashboard's system shape
-    // in English. Date patterns are the client-owned keys in nexus-web src/lib/units.ts.
+    // Each heartbeat resends the overlay, so a clock line needs no extra trigger. Under
+    // invariant globalization "system" time follows the signed-in user's own 12/24 hour
+    // choice (TryxUserClockFormat), passed in as systemUses12Hour; date falls back to the
+    // dashboard's system shape in English. Date patterns are the client-owned keys in
+    // nexus-web src/lib/units.ts.
     private static readonly string[] ClockDatePatterns =
     [
         "ddd, d mmm", "ddd d mmm", "ddd, mmm d", "d mmm", "mmm d",
@@ -1691,19 +1693,31 @@ public sealed class TryxPanoramaHub : IDisposable
         "yyyy-mm-dd", "yyyy/mm/dd", "yyyy. m. d.", "yyyy年m月d日",
     ];
 
-    internal static string FormatClockValue(string sensorId, DateTime now, string timeFormat, string dateFormat)
+    internal static string FormatClockValue(string sensorId, DateTime now, string timeFormat, string dateFormat, bool systemUses12Hour = false)
     {
-        var inv = CultureInfo.InvariantCulture;
         switch (sensorId)
         {
             case "time":
-                return now.ToString(timeFormat == "12h" ? "h:mm tt" : "HH:mm", inv);
+                return FormatClockTime(now, timeFormat, systemUses12Hour);
             case "date":
-                var pattern = Array.IndexOf(ClockDatePatterns, dateFormat) >= 0 ? dateFormat : "ddd, mmm d";
-                return ApplyDatePattern(pattern, now);
+                return FormatClockDate(now, dateFormat);
+            case "datetime":
+                return FormatClockDate(now, dateFormat) + "  " + FormatClockTime(now, timeFormat, systemUses12Hour);
             default:
                 return "--";
         }
+    }
+
+    private static string FormatClockTime(DateTime now, string timeFormat, bool systemUses12Hour)
+    {
+        var twelve = timeFormat == "12h" || (timeFormat != "24h" && systemUses12Hour);
+        return now.ToString(twelve ? "h:mm tt" : "HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatClockDate(DateTime now, string dateFormat)
+    {
+        var pattern = Array.IndexOf(ClockDatePatterns, dateFormat) >= 0 ? dateFormat : "ddd, mmm d";
+        return ApplyDatePattern(pattern, now);
     }
 
     private static string ApplyDatePattern(string pattern, DateTime now)
