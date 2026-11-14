@@ -77,7 +77,7 @@ public class RyujinMonitorTests
     {
         var select = RyujinMonitorProtocol.EncodeSelectMonitorLayout();
 
-        Assert.Equal(Frame("EC 5D 00 01 21 00 00 00 00 05"), select[0]);
+        Assert.Equal(Frame("EC 5D 00 01 21 00 01 00 00 05"), select[0]);
         Assert.Equal(Frame("EC 51 1F 00 00 00"), select[1]);
     }
 
@@ -85,7 +85,7 @@ public class RyujinMonitorTests
     public void Colors_report_is_the_captured_5e()
     {
         Assert.Equal(
-            Frame("EC 5E 00 00 01 00 01 00 FF FF FF 00 FF FF FF 00 FF FF FF 00 FF FF FF 00 FF FF FF 00 FF FF FF"),
+            Frame("EC 5E 00 00 02 00 01 00 FF FF FF 00 FF FF FF 00 FF FF FF 00 FF FF FF 00 FF FF FF 00 FF FF FF"),
             RyujinMonitorProtocol.EncodeColors());
     }
 

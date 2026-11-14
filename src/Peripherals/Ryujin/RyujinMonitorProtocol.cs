@@ -30,6 +30,9 @@ internal static class RyujinMonitorProtocol
     public const string GpuName = "GPU";
     public const string PumpName = "AIO Pump";
 
+    /// <summary>The style Armoury Crate sent with both the two and three sensor layouts.</summary>
+    private const byte MonitorStyle = 0x01;
+
     public const int CpuSlot = 0;
     public const int GpuSlot = 1;
     public const int PumpSlot = 2;
@@ -62,12 +65,15 @@ internal static class RyujinMonitorProtocol
         return report;
     }
 
-    /// <summary>The colors report as sent at startup: the default style and six white groups.</summary>
+    /// <summary>
+    /// The colors report: the sensor count less one at byte 4 (Armoury Crate sent 02 with three 5F slots
+    /// and 01 with two), the style at byte 6, and six white groups.
+    /// </summary>
     public static byte[] EncodeColors()
     {
         var report = Simple(0x5E);
-        report[4] = 0x01;
-        report[6] = 0x01;
+        report[4] = (byte)PumpSlot;
+        report[6] = MonitorStyle;
         for (int group = 0; group < 6; group++)
         {
             int at = 8 + group * 4;
@@ -78,11 +84,7 @@ internal static class RyujinMonitorProtocol
         return report;
     }
 
-    /// <summary>
-    /// Selects the hardware-monitor layout: a layout report, then the commit. Byte 6 appears to pick how many
-    /// sensor slots the screen shows: Armoury Crate sent 00 alongside three slots and 01 alongside two,
-    /// and with 01 the device drew only slots 0 and 1.
-    /// </summary>
+    /// <summary>Selects the hardware-monitor layout: a layout report carrying the same style as the colors report, then the commit.</summary>
     public static byte[][] EncodeSelectMonitorLayout()
     {
         var layout = Simple(0x5D);
@@ -90,7 +92,7 @@ internal static class RyujinMonitorProtocol
         layout[3] = 0x01;
         layout[4] = 0x21;
         layout[5] = 0x00;
-        layout[6] = 0x00;
+        layout[6] = MonitorStyle;
         layout[7] = 0x00;
         layout[8] = 0x00;
         layout[9] = 0x05;
