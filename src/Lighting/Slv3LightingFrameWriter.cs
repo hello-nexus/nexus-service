@@ -538,7 +538,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 chain.ResetDiag();
             }
             var dev = _hub.DeviceWatch.Take(fan.Mac, hubNow) is { } w
-                ? $"dev sent={w.Sent} confirmed={w.Confirmed} unconfirmed={w.Unconfirmed} confMs avg={w.LatencyAvgMs} max={w.LatencyMaxMs} reports={w.Reports} idxChanges={w.IdxChanges} idx={w.LastReportedIdx} sinceConfirmMs={w.SinceConfirmMs} pendingMs={w.PendingMs} stuck={w.StuckEvents} stale={fan.Stale}"
+                ? $"dev sent={w.Sent} confirmed={w.Confirmed} unconfirmed={w.Unconfirmed} confMs avg={w.LatencyAvgMs} max={w.LatencyMaxMs} reports={w.Reports} idxChanges={w.IdxChanges} idx={w.LastReportedIdx} sinceConfirmMs={w.SinceConfirmMs} pendingMs={w.PendingMs} stuck={w.StuckEvents} suppressed={w.Suppressed} sendFail={w.SendFailed} stale={fan.Stale}"
                 : "dev none";
             ServiceLog.Info($"[lianli-wireless] chain {fan.Mac} path={path} {upload} {dev}");
         }
