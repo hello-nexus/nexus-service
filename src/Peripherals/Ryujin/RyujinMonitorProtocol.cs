@@ -78,7 +78,11 @@ internal static class RyujinMonitorProtocol
         return report;
     }
 
-    /// <summary>Selects the hardware-monitor layout: a layout report, then the commit.</summary>
+    /// <summary>
+    /// Selects the hardware-monitor layout: a layout report, then the commit. Byte 6 appears to pick how many
+    /// sensor slots the screen shows: Armoury Crate sent 00 alongside three slots and 01 alongside two,
+    /// and with 01 the device drew only slots 0 and 1.
+    /// </summary>
     public static byte[][] EncodeSelectMonitorLayout()
     {
         var layout = Simple(0x5D);
@@ -86,7 +90,7 @@ internal static class RyujinMonitorProtocol
         layout[3] = 0x01;
         layout[4] = 0x21;
         layout[5] = 0x00;
-        layout[6] = 0x01;
+        layout[6] = 0x00;
         layout[7] = 0x00;
         layout[8] = 0x00;
         layout[9] = 0x05;

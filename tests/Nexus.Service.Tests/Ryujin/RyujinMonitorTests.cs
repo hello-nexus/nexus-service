@@ -77,7 +77,7 @@ public class RyujinMonitorTests
     {
         var select = RyujinMonitorProtocol.EncodeSelectMonitorLayout();
 
-        Assert.Equal(Frame("EC 5D 00 01 21 00 01 00 00 05"), select[0]);
+        Assert.Equal(Frame("EC 5D 00 01 21 00 00 00 00 05"), select[0]);
         Assert.Equal(Frame("EC 51 1F 00 00 00"), select[1]);
     }
 
