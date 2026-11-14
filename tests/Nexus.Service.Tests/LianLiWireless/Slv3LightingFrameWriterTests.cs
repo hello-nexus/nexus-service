@@ -117,7 +117,8 @@ public class Slv3LightingFrameWriterTests
     [Fact]
     public void Tick_keeps_the_last_frame_while_a_replacement_frame_is_unpainted()
     {
-        var (_, _, tx, provider, engine, writer, frames) = CreateBoundSetup();
+        var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
+        engine.PublishNewFramesWhenStopped = false;
         FillAll(frames, 159, 0, 113);
         writer.Tick();
         var sent = RgbSyncFrames(tx).Count;

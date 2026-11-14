@@ -119,6 +119,31 @@ public class LightingEngineTests
     }
 
     [Fact]
+    public void UpdateDevices_PublishesNewFramesWhenNoEffectRuns()
+    {
+        using var engine = new LightingEngine();
+        var frames = MakeDevices();
+        engine.UpdateDevices(frames);
+        Assert.All(frames, f => Assert.True(f.HasPublished));
+    }
+
+    [Fact]
+    public async Task UpdateDevices_WhilePaused_GetsNewFramesPublished()
+    {
+        using var engine = new LightingEngine();
+        engine.UpdateDevices(MakeDevices());
+        engine.FrameIntervalMs = 10;
+        engine.SetEffect(new TestEffect("held"));
+        engine.SetPaused(true);
+
+        var fresh = MakeDevices();
+        engine.UpdateDevices(fresh);
+
+        for (var i = 0; i < 200 && !fresh[0].HasPublished; i++) await Task.Delay(10);
+        Assert.All(fresh, f => Assert.True(f.HasPublished));
+    }
+
+    [Fact]
     public void SetEffect_ResetsPaused()
     {
         using var engine = new LightingEngine();

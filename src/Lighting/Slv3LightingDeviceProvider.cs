@@ -409,13 +409,10 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
         var chains = settings.Devices.LianLiWireless.Chains;
         foreach (var fan in _hub.State.Fans)
         {
-            if (!fan.BoundToUs) continue;
-            // A chain playing its motherboard ARGB input is not engine driven.
-            if (PlaysMotherboardArgb(fan, chains) != playsArgb) continue;
+            if (ExclusionReason(fan, chains, playsArgb) is not null) continue;
             if (Slv3Protocol.IsStrimerDevType((byte)fan.DevType))
             {
-                var ledCount = StrimerLedCountFor((byte)fan.DevType);
-                if (ledCount > 0) structures.Add(BuildStrimerStructure(fan, ledCount));
+                structures.Add(BuildStrimerStructure(fan, StrimerLedCountFor((byte)fan.DevType)));
                 continue;
             }
             if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType))
@@ -423,10 +420,23 @@ public sealed class Slv3LightingDeviceProvider : ILightingDeviceProvider, ILight
                 structures.Add(BuildHydroShiftStructure(fan));
                 continue;
             }
-            if (fan.FanCount <= 0) continue;
             structures.Add(BuildStructure(fan, settings.Devices.FlexUnits.TryGetValue(fan.Mac, out var look) && look.UpDownSwap));
         }
         return structures;
+    }
+
+    /// <summary>The single filter behind <see cref="BuildStructures()"/>: why a chain gets no structure, or null when it gets one.</summary>
+    internal string? ExclusionReason(Slv3FanInfo fan, IReadOnlyDictionary<string, LianLiWirelessChainLighting> chains, bool playsArgb = false)
+    {
+        if (!fan.BoundToUs) return "BoundToUs=false";
+        // A chain playing its motherboard ARGB input is not engine driven.
+        if (PlaysMotherboardArgb(fan, chains) != playsArgb) return "motherboard ARGB input";
+        if (Slv3Protocol.IsStrimerDevType((byte)fan.DevType))
+        {
+            return StrimerLedCountFor((byte)fan.DevType) > 0 ? null : "strimer LED count unknown";
+        }
+        if (Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType)) return null;
+        return fan.FanCount <= 0 ? "FanCount<=0" : null;
     }
 
     // Community mappings pool and auto-apply by card DeviceKey, which the

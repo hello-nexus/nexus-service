@@ -230,6 +230,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             // compose as black; keep what the chain already shows until the engine catches up.
             if (!AllZoneFramesRendered(zones, devices))
             {
+                // Keeps the dashboard preview on the held frame instead of expiring to the zeroed engine frame.
+                _engine.Live.TouchZones(zones);
+                LogMembership(macHex, "held", "held back, engine frame missing or not yet rendered", nowMs);
                 continue;
             }
 
@@ -834,13 +837,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         foreach (var mac in _presentMacs)
         {
             if (liveMacs.Contains(mac)) continue;
-            LogMembership(mac, $"left list ({DropReason(mac)})", nowMs);
+            LogMembership(mac, "left", $"left list ({DropReason(mac)})", nowMs);
         }
         foreach (var mac in liveMacs)
         {
             if (!_presentMacs.Contains(mac) && _everSeenMacs.Contains(mac))
             {
-                LogMembership(mac, "rejoined list", nowMs);
+                LogMembership(mac, "rejoined", "rejoined list", nowMs);
             }
         }
         _presentMacs.Clear();
@@ -851,10 +854,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void LogMembership(string mac, string what, double nowMs)
+    private void LogMembership(string mac, string eventKey, string what, double nowMs)
     {
-        if (_membershipLoggedMs.TryGetValue(mac, out var last) && nowMs - last < MembershipLogGapMs) return;
-        _membershipLoggedMs[mac] = (long)nowMs;
+        var key = mac + "|" + eventKey;
+        if (_membershipLoggedMs.TryGetValue(key, out var last) && nowMs - last < MembershipLogGapMs) return;
+        _membershipLoggedMs[key] = (long)nowMs;
         ServiceLog.Info($"[lianli-wireless-lighting-writer] {mac} {what}");
     }
 
@@ -862,9 +866,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         var fan = FindFanInfo(mac);
         if (fan is null) return "absent from hub state";
-        if (!fan.BoundToUs) return "BoundToUs=false";
-        if (fan.FanCount <= 0 && !Slv3Protocol.IsStrimerDevType((byte)fan.DevType) && !Slv3Protocol.IsHydroShiftDevType((byte)fan.DevType)) return "FanCount<=0";
-        return "motherboard ARGB input or other filter";
+        return _provider.ExclusionReason(fan, _store.Load().Devices.LianLiWireless.Chains) ?? "no longer excluded";
     }
 
     private bool CoversChain(List<string> ids)

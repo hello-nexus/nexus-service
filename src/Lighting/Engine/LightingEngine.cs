@@ -171,7 +171,34 @@ public sealed partial class LightingEngine : IDisposable
     {
         _devices = devices;
         PruneAreaCaches(devices);
+        EnsureNewFramesPublish(devices);
     }
+
+    // A new frame is zeroed until published, and writers hold off chains whose frame was never
+    // published. A running loop publishes it on its next tick; a paused one only repaints on a
+    // resample, and a stopped one never ticks, so a new frame there is published as the black it is.
+    private void EnsureNewFramesPublish(DeviceFrame[] devices)
+    {
+        var pending = false;
+        foreach (var dev in devices)
+        {
+            if (!dev.HasPublished) { pending = true; break; }
+        }
+        if (!pending) return;
+        if (LoopPublishing)
+        {
+            _resampleOnce = true;
+            return;
+        }
+        if (!PublishNewFramesWhenStopped) return;
+        foreach (var dev in devices)
+        {
+            if (!dev.HasPublished) dev.Publish();
+        }
+    }
+
+    // Tests clear this to hold a frame in the unrendered state a writer must not stream.
+    internal bool PublishNewFramesWhenStopped { get; set; } = true;
 
     // Devices placed in the 3D scene and the camera that sees them; null means
     // every device samples its 2D frame. Replaced wholesale, never mutated.
