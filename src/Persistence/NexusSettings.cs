@@ -2439,6 +2439,12 @@ public sealed class RyujinDisplaySettings
 
     /// <summary>0 or 90, the two values Armoury Crate sends.</summary>
     public int Rotation { get; set; }
+
+    /// <summary>How many readings the screen shows, 2 or 3.</summary>
+    public int SensorCount { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.MaxCount;
+
+    /// <summary>Sensor ids for the three screen slots; only the first <see cref="SensorCount"/> are shown.</summary>
+    public List<string> Slots { get; set; } = new(Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.DefaultSlots);
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>

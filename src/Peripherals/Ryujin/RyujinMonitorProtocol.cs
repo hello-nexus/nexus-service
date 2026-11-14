@@ -26,16 +26,8 @@ internal static class RyujinMonitorProtocol
     /// <summary>Gap Armoury Crate leaves between selecting a layout and committing it.</summary>
     public const int LayoutGapMs = 100;
 
-    public const string CpuName = "CPU";
-    public const string GpuName = "GPU";
-    public const string PumpName = "AIO Pump";
-
     /// <summary>The style Armoury Crate sent with both the two and three sensor layouts.</summary>
     private const byte MonitorStyle = 0x01;
-
-    public const int CpuSlot = 0;
-    public const int GpuSlot = 1;
-    public const int PumpSlot = 2;
 
     private const string DegreeCelsius = "℃";
 
@@ -69,10 +61,10 @@ internal static class RyujinMonitorProtocol
     /// The colors report: the sensor count less one at byte 4 (Armoury Crate sent 02 with three 5F slots
     /// and 01 with two), the style at byte 6, and six white groups.
     /// </summary>
-    public static byte[] EncodeColors()
+    public static byte[] EncodeColors(int sensorCount = RyujinMonitorSensors.MaxCount)
     {
         var report = Simple(0x5E);
-        report[4] = (byte)PumpSlot;
+        report[4] = (byte)(RyujinMonitorSensors.NormalizeCount(sensorCount) - 1);
         report[6] = MonitorStyle;
         for (int group = 0; group < 6; group++)
         {
@@ -137,8 +129,8 @@ internal static class RyujinMonitorProtocol
         Display(rotationDegrees, newPercent, tail: true, marker: false),
     };
 
-    /// <summary>A rotation change: the settings, DC twice, then the clock and layout again.</summary>
-    public static byte[][] EncodeRotationChange(DateTime local, int rotationDegrees, int brightnessPercent)
+    /// <summary>A rotation or sensor selection change: the settings, DC twice, then the clock, colors and layout again.</summary>
+    public static byte[][] EncodeRotationChange(DateTime local, int rotationDegrees, int brightnessPercent, int sensorCount = RyujinMonitorSensors.MaxCount)
     {
         var select = EncodeSelectMonitorLayout();
         return new[]
@@ -148,7 +140,7 @@ internal static class RyujinMonitorProtocol
             EncodeDc(),
             EncodeDc(),
             EncodeClock(local),
-            EncodeColors(),
+            EncodeColors(sensorCount),
             select[0],
             select[1],
         };
@@ -160,7 +152,7 @@ internal static class RyujinMonitorProtocol
     /// change. The reset may have cleared them, and a change made while the cooler was away
     /// never reached it.
     /// </summary>
-    public static byte[][] EncodeStartup(DateTime local, int rotationDegrees, int brightnessPercent)
+    public static byte[][] EncodeStartup(DateTime local, int rotationDegrees, int brightnessPercent, int sensorCount = RyujinMonitorSensors.MaxCount)
     {
         var select = EncodeSelectMonitorLayout();
         return new[]
@@ -173,7 +165,7 @@ internal static class RyujinMonitorProtocol
             EncodeDc(),
             EncodeDc(),
             EncodeClock(local),
-            EncodeColors(),
+            EncodeColors(sensorCount),
             select[0],
             select[1],
             EncodeFirmwareQuery(),

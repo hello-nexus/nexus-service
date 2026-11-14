@@ -118,15 +118,134 @@ public class RyujinMonitorTests
         Assert.Equal(0x5A, frames[1][3]);
     }
 
+    private static readonly RyujinReadings Full = new(45.5f, 40.0f, 31.2f, 3500, 1200);
+
     [Fact]
     public void Missing_readings_leave_their_slot_unsent_and_values_are_not_invented()
     {
-        var all = RyujinMonitorFrames.Build(45.5f, 40.0f, 3500);
+        var all = RyujinMonitorFrames.Build(3, RyujinMonitorSensors.DefaultSlots, Full);
         Assert.Equal(new byte[] { 0, 1, 2 }, all.Select(f => f[3]).ToArray());
 
-        var some = RyujinMonitorFrames.Build(null, float.NaN, 3500);
+        var some = RyujinMonitorFrames.Build(3, RyujinMonitorSensors.DefaultSlots, new RyujinReadings(null, float.NaN, null, 3500, null));
         Assert.Equal(new byte[] { 2 }, some.Select(f => f[3]).ToArray());
-        Assert.Empty(RyujinMonitorFrames.Build(null, null, null));
+        Assert.Empty(RyujinMonitorFrames.Build(3, RyujinMonitorSensors.DefaultSlots, default));
+    }
+
+    [Theory]
+    [InlineData("liquid-temp", "Liquid", "31.2℃")]
+    [InlineData("fan-rpm", "AIO Fan", "1200↌")]
+    [InlineData("pump-rpm", "AIO Pump", "3500↌")]
+    [InlineData("cpu-temp", "CPU", "45.5℃")]
+    [InlineData("gpu-temp", "GPU", "40.0℃")]
+    public void Each_sensor_id_is_sent_with_its_name_and_unit_glyph(string id, string name, string value)
+    {
+        var frames = RyujinMonitorFrames.Build(3, new[] { "cpu-temp", "gpu-temp", id }, Full);
+
+        Assert.Equal(Sensor(2, System.Text.Encoding.UTF8.GetBytes(name), System.Text.Encoding.UTF8.GetBytes(value)), frames[2]);
+    }
+
+    [Fact]
+    public void Two_sensors_send_only_slots_zero_and_one_from_the_chosen_sources()
+    {
+        var frames = RyujinMonitorFrames.Build(2, new[] { "fan-rpm", "liquid-temp", "cpu-temp" }, Full);
+
+        Assert.Equal(new byte[] { 0, 1 }, frames.Select(f => f[3]).ToArray());
+        Assert.Equal(Sensor(0, System.Text.Encoding.UTF8.GetBytes("AIO Fan"), System.Text.Encoding.UTF8.GetBytes("1200↌")), frames[0]);
+        Assert.Equal(Sensor(1, System.Text.Encoding.UTF8.GetBytes("Liquid"), System.Text.Encoding.UTF8.GetBytes("31.2℃")), frames[1]);
+    }
+
+    [Fact]
+    public void Colors_report_count_byte_is_the_sensor_count_less_one()
+    {
+        Assert.Equal(2, RyujinMonitorProtocol.EncodeColors(3)[4]);
+        Assert.Equal(1, RyujinMonitorProtocol.EncodeColors(2)[4]);
+        Assert.Equal(2, RyujinMonitorProtocol.EncodeColors()[4]);
+        Assert.Equal(1, RyujinMonitorProtocol.EncodeRotationChange(DateTime.Now, 0, 40, 2).Single(f => f[1] == 0x5E)[4]);
+        Assert.Equal(1, RyujinMonitorProtocol.EncodeStartup(DateTime.Now, 0, 40, 2).Single(f => f[1] == 0x5E)[4]);
+    }
+
+    // ---- display route: validation, partial update, persistence ----
+
+    [Fact]
+    public void Display_state_defaults_to_three_sensors_and_lists_the_available_ids()
+    {
+        var state = Nexus.Service.Routes.DevicesRoutes.BuildRyujinDisplayState(new Nexus.Service.Persistence.RyujinDisplaySettings(), true);
+
+        Assert.Equal(3, state.SensorCount);
+        Assert.Equal(new[] { "cpu-temp", "gpu-temp", "pump-rpm" }, state.Slots);
+        Assert.Equal(new[] { "cpu-temp", "gpu-temp", "liquid-temp", "pump-rpm", "fan-rpm" }, state.AvailableSensors);
+    }
+
+    [Theory]
+    [InlineData(1, null)]
+    [InlineData(4, null)]
+    [InlineData(null, "cpu-temp,gpu-temp")]
+    [InlineData(null, "cpu-temp,gpu-temp,pump-rpm,fan-rpm")]
+    [InlineData(null, "cpu-temp,gpu-temp,vram-temp")]
+    [InlineData(null, "cpu-temp,gpu-temp,")]
+    public void Bad_sensor_values_are_rejected(int? count, string? slots)
+    {
+        var body = new Nexus.Service.Routes.RyujinDisplayRequest { SensorCount = count, Slots = slots?.Split(',').ToList() };
+
+        Assert.NotNull(Nexus.Service.Routes.DevicesRoutes.ValidateRyujinDisplay(body));
+    }
+
+    [Fact]
+    public void A_partial_update_keeps_the_other_fields_and_persists_through_a_round_trip()
+    {
+        var settings = new Nexus.Service.Persistence.NexusSettings();
+        var d = settings.Devices.RyujinDisplay;
+        d.Brightness = 70;
+        d.Rotation = 90;
+        var body = new Nexus.Service.Routes.RyujinDisplayRequest { SensorCount = 2, Slots = new() { "liquid-temp", "fan-rpm", "cpu-temp" } };
+        Assert.Null(Nexus.Service.Routes.DevicesRoutes.ValidateRyujinDisplay(body));
+        Nexus.Service.Routes.DevicesRoutes.ApplyRyujinDisplay(d, body);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(settings, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings)!.Devices.RyujinDisplay;
+
+        Assert.Equal(70, back.Brightness);
+        Assert.Equal(90, back.Rotation);
+        Assert.Equal(2, back.SensorCount);
+        Assert.Equal(new[] { "liquid-temp", "fan-rpm", "cpu-temp" }, back.Slots);
+
+        Nexus.Service.Routes.DevicesRoutes.ApplyRyujinDisplay(back, new Nexus.Service.Routes.RyujinDisplayRequest { Brightness = 50 });
+        Assert.Equal(2, back.SensorCount);
+        Assert.Equal(new[] { "liquid-temp", "fan-rpm", "cpu-temp" }, back.Slots);
+    }
+
+    [Fact]
+    public void A_stored_slot_list_that_is_short_or_unknown_falls_back_per_slot()
+    {
+        Assert.Equal(new[] { "fan-rpm", "gpu-temp", "pump-rpm" }, RyujinMonitorSensors.NormalizeSlots(new[] { "fan-rpm", "bogus" }));
+        Assert.Equal(3, RyujinMonitorSensors.NormalizeCount(7));
+    }
+
+    [Fact]
+    public async Task Changing_the_sensors_resends_colors_and_layout_and_the_next_cycle_sends_only_the_chosen_slots()
+    {
+        var fake = new RyujinDeviceFake();
+        var store = new InMemoryConfigStore();
+        var (worker, gate, hub) = BuildWorker(new FakeEnumerator(fake), store);
+        gate.SetEnabled("asus-ryujin-extreme", true);
+        await worker.StartAsync(CancellationToken.None);
+        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x82), 8000));
+        Assert.Equal(2, fake.Writes.ToArray().Single(w => w[1] == 0x5E)[4]);
+
+        store.Update(s =>
+        {
+            s.Devices.RyujinDisplay.SensorCount = 2;
+            s.Devices.RyujinDisplay.Slots = new() { "liquid-temp", "fan-rpm", "cpu-temp" };
+        });
+        hub.Wake.Release();
+        Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5E) == 2, 5000));
+        await worker.StopAsync(CancellationToken.None);
+
+        var writes = fake.Writes.ToArray();
+        Assert.Equal(1, writes.Last(w => w[1] == 0x5E)[4]);
+        Assert.Equal(2, writes.Count(w => w[1] == 0x5D));
+        Assert.Equal(2, writes.Count(w => w[1] == 0x51 && w[2] == 0x1F));
+        Assert.Equal(2, writes.Count(w => w[1] == 0x5C));
     }
 
     // ---- no live stream to the Extreme, the 360 unchanged ----

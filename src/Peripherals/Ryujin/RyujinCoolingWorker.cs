@@ -34,6 +34,8 @@ public sealed class RyujinCoolingWorker : BackgroundService
 
     private int _appliedBrightness;
     private int _appliedRotation;
+    private int _appliedCount = RyujinMonitorSensors.MaxCount;
+    private string[] _appliedSlots = RyujinMonitorSensors.DefaultSlots;
 
     /// <summary>Gate decisions made so far; a test waits on it instead of sleeping.</summary>
     internal int GateChecks => Volatile.Read(ref _gateChecks);
@@ -120,7 +122,9 @@ public sealed class RyujinCoolingWorker : BackgroundService
         var display = _store.Load().Devices.RyujinDisplay;
         _appliedBrightness = display.Brightness;
         _appliedRotation = display.Rotation;
-        if (!_hub.Send(RyujinMonitorProtocol.EncodeStartup(Now(), display.Rotation, display.Brightness)))
+        _appliedCount = RyujinMonitorSensors.NormalizeCount(display.SensorCount);
+        _appliedSlots = RyujinMonitorSensors.NormalizeSlots(display.Slots);
+        if (!_hub.Send(RyujinMonitorProtocol.EncodeStartup(Now(), display.Rotation, display.Brightness, _appliedCount)))
         {
             ServiceLog.Warn("[asus-ryujin-cooling] startup sequence write failed");
             return;
@@ -158,13 +162,18 @@ public sealed class RyujinCoolingWorker : BackgroundService
     private void ApplyDisplayChange()
     {
         var wanted = _store.Load().Devices.RyujinDisplay;
-        if (wanted.Rotation != _appliedRotation)
+        int wantedCount = RyujinMonitorSensors.NormalizeCount(wanted.SensorCount);
+        var wantedSlots = RyujinMonitorSensors.NormalizeSlots(wanted.Slots);
+        bool sensorsChanged = wantedCount != _appliedCount || !wantedSlots.AsSpan().SequenceEqual(_appliedSlots);
+        if (wanted.Rotation != _appliedRotation || sensorsChanged)
         {
-            if (_hub.Send(RyujinMonitorProtocol.EncodeRotationChange(Now(), wanted.Rotation, wanted.Brightness)))
+            if (_hub.Send(RyujinMonitorProtocol.EncodeRotationChange(Now(), wanted.Rotation, wanted.Brightness, wantedCount)))
             {
-                ServiceLog.Info($"[asus-ryujin-cooling] display rotation {_appliedRotation} -> {wanted.Rotation}, brightness {_appliedBrightness} -> {wanted.Brightness}");
+                ServiceLog.Info($"[asus-ryujin-cooling] display rotation {_appliedRotation} -> {wanted.Rotation}, brightness {_appliedBrightness} -> {wanted.Brightness}, sensors {_appliedCount} [{string.Join(",", _appliedSlots)}] -> {wantedCount} [{string.Join(",", wantedSlots)}]");
                 _appliedRotation = wanted.Rotation;
                 _appliedBrightness = wanted.Brightness;
+                _appliedCount = wantedCount;
+                _appliedSlots = wantedSlots;
             }
         }
         else if (wanted.Brightness != _appliedBrightness)
@@ -180,10 +189,16 @@ public sealed class RyujinCoolingWorker : BackgroundService
     private IReadOnlyList<byte[]> BuildSensorFrames()
     {
         var snap = _hub.Snapshot;
+        bool fresh = _hub.StatusFresh;
         return RyujinMonitorFrames.Build(
-            ReadSummary(SummarySensorKind.CpuTemp),
-            ReadSummary(SummarySensorKind.GpuTemp),
-            _hub.StatusFresh ? snap.PumpRpm : null);
+            _appliedCount,
+            _appliedSlots,
+            new RyujinReadings(
+                ReadSummary(SummarySensorKind.CpuTemp),
+                ReadSummary(SummarySensorKind.GpuTemp),
+                fresh ? (float)snap.LiquidTempC : null,
+                fresh ? snap.PumpRpm : null,
+                fresh ? snap.FanRpm : null));
     }
 
     private float? ReadSummary(SummarySensorKind kind)
