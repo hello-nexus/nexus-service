@@ -2225,14 +2225,15 @@ public sealed class KrakenHub : IDisposable
     }
 
     /// <summary>
-    /// One live frame on the 2023 Elite's direct path: start, raw BGR888 on the bulk
-    /// endpoint, end. No bucket and no per-frame mode switch, so the flash store is never written.
+    /// One live frame on the 2023 Elite's direct path: start, one Q565 payload (raw BGR888
+    /// when Q565 is not smaller) on the bulk endpoint, end. No bucket and no per-frame mode switch, so the flash store is never written.
     /// </summary>
     private bool PushDirectFrame(ReadOnlySpan<byte> bgra)
     {
         lock (_lcdTransferLock)
         {
             int encoded;
+            byte format;
             byte[] scratch;
             IKrakenLcdTransport lcd;
             lock (_lock)
@@ -2254,16 +2255,25 @@ public sealed class KrakenHub : IDisposable
                     _streamReady = true;
                 }
                 lcd = _lcd;
-                EnsureLcdScratch(_lcdWidth * _lcdHeight * 3);
-                encoded = KrakenProtocol.ToWireBgr(
-                    bgra, _lcdWidth, _lcdHeight, _snapshot.LcdOrientationQuarterTurns, sourceIsBgra: true, _lcdScratch);
+                int turns = _snapshot.LcdOrientationQuarterTurns;
+                int rawBytes = _lcdWidth * _lcdHeight * 3;
+                EnsureLcdScratch(Math.Max(rawBytes, Q565Encoder.MaxEncodedLength(_lcdWidth, _lcdHeight)));
+                // The vendor app streams this panel as Q565 (format 0x08), direct and bucketless.
+                format = KrakenProtocol.BulkFormatQ565;
+                encoded = Q565Encoder.Encode(bgra, _lcdWidth, _lcdHeight, turns, _lcdScratch, sourceIsBgra: true);
+                if (encoded >= rawBytes)
+                {
+                    format = KrakenProtocol.BulkFormatBgr888;
+                    encoded = KrakenProtocol.ToWireBgr(bgra, _lcdWidth, _lcdHeight, turns, sourceIsBgra: true, _lcdScratch);
+                }
                 // The capture shows one report read after start and end, not which,
                 // so neither reply is required; re-entry is left to the calls that invalidate it.
-                ExchangeLocked(KrakenProtocol.EncodeStartDirectTransfer(), 0x37, 0x01, DirectReplyTimeoutMs);
+                ExchangeLocked(KrakenProtocol.EncodeStartDirectTransfer(format), 0x37, 0x01, DirectReplyTimeoutMs);
                 scratch = _lcdScratch;
             }
 
-            if (!WriteBulkPayload(lcd, KrakenProtocol.BulkFormatBgr888, scratch.AsSpan(0, encoded), DirectChunkBytes))
+            if (!WriteBulkPayload(
+                    lcd, format, scratch.AsSpan(0, encoded), DirectChunkBytes))
             {
                 lock (_lock) { _streamReady = false; }
                 return false;

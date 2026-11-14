@@ -27,9 +27,9 @@ namespace Nexus.Service.Helper;
 /// change, and handles <c>media.control</c> / <c>media.getAlbumArt</c>
 /// commands coming back the other way.
 ///
-/// Subscribing to MediaManager events instead of polling means a snapshot
-/// only goes out when something actually changed - usually a few per
-/// minute when the user is actively listening.
+/// A snapshot goes out on MediaManager events, and on a periodic
+/// timeline check that fires only when a position (a seek Spotify raises no
+/// event for) leaves where the service's own ticker predicts it.
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
 public sealed class MediaPusher : IDisposable
@@ -60,9 +60,112 @@ public sealed class MediaPusher : IDisposable
             SchedulePush();
         };
         _manager.OnAnyPlaybackStateChanged += (_, __) => SchedulePush();
+        _manager.OnAnyTimelinePropertyChanged += (_, __) => PushIfDrifted();
         try { _manager.Start(); }
         catch (Exception ex) { Console.Error.WriteLine($"[media-pusher] MediaManager.Start failed: {ex.Message}"); }
         SchedulePush();
+        _ = Task.Run(PollDriftAsync);
+    }
+
+    private readonly CancellationTokenSource _cts = new();
+    private volatile bool _disposed;
+    // Null marks a session BuildSnapshot skipped: known, but with no anchor to drift from.
+    private readonly Dictionary<string, PushedPosition?> _pushed = new(StringComparer.Ordinal);
+
+    private readonly record struct PushedPosition(double PositionMs, double DurationMs, bool Playing, double AdvanceRate, long At);
+
+    private async Task PollDriftAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(MediaTopicPublisher.PollInterval);
+            var token = _cts.Token;
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                PushIfDrifted();
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private void PushIfDrifted()
+    {
+        if (!_disposed && HasDrifted()) SchedulePush();
+    }
+
+    private bool HasDrifted()
+    {
+        try
+        {
+            foreach (var pair in _manager.CurrentMediaSessions)
+            {
+                try
+                {
+                    if (SessionNeedsPush(pair.Value)) return true;
+                }
+                catch (Exception ex)
+                {
+                    // Rebuilding records the unreadable session as known-null, so this logs once.
+                    Console.Error.WriteLine($"[media-pusher] drift check failed: {ex.Message}");
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[media-pusher] drift poll failed: {ex.Message}");
+        }
+        return false;
+    }
+
+    private bool SessionNeedsPush(MediaManager.MediaSession? session)
+    {
+        var ctrl = session?.ControlSession;
+        if (ctrl is null) return false;
+        PushedPosition? pushed;
+        bool known;
+        lock (_mapLock) { known = _pushed.TryGetValue(session!.Id, out pushed); }
+        if (!known) return true;
+        if (pushed is not { } anchor) return false;
+
+        var playback = ctrl.GetPlaybackInfo();
+        var playing = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+        var timeline = ctrl.GetTimelineProperties();
+        return MediaPositionMath.ShouldPush(
+            anchor.Playing,
+            anchor.PositionMs,
+            anchor.DurationMs,
+            anchor.AdvanceRate,
+            Stopwatch.GetElapsedTime(anchor.At),
+            playing,
+            timeline.EndTime.TotalMilliseconds,
+            LivePositionMs(timeline, playing, RateOf(playback)),
+            MediaTopicPublisher.PositionSlackMs);
+    }
+
+    // A non-finite rate from a source app would poison the position and throw for the WHOLE envelope when serialized.
+    private static double RateOf(GlobalSystemMediaTransportControlsSessionPlaybackInfo playback)
+    {
+        var reported = playback.PlaybackRate ?? 1.0;
+        return double.IsFinite(reported) ? reported : 1.0;
+    }
+
+    private static double AdvanceRateOf(GlobalSystemMediaTransportControlsSessionTimelineProperties timeline, bool playing, double rate)
+        => playing ? MediaPositionMath.EffectiveAdvanceRate(timeline.LastUpdatedTime, DateTimeOffset.UtcNow, rate) : 0;
+
+    private static double LivePositionMs(GlobalSystemMediaTransportControlsSessionTimelineProperties timeline, bool playing, double rate)
+    {
+        var positionMs = timeline.Position.TotalMilliseconds;
+        if (playing && timeline.EndTime.TotalMilliseconds > 0)
+        {
+            positionMs = MediaPositionMath.Advance(
+                positionMs,
+                timeline.EndTime.TotalMilliseconds,
+                MediaPositionMath.SinceTimelineStamp(timeline.LastUpdatedTime, DateTimeOffset.UtcNow),
+                rate);
+        }
+        return positionMs;
     }
 
     /// <summary>
@@ -78,6 +181,7 @@ public sealed class MediaPusher : IDisposable
         {
             await Task.Delay(150).ConfigureAwait(false);
             Interlocked.Exchange(ref _pushScheduled, 0);
+            if (_disposed) return;
             try { await PushAsync().ConfigureAwait(false); }
             catch (Exception ex) { Console.Error.WriteLine($"[media-pusher] push failed: {ex.Message}"); }
         });
@@ -97,6 +201,7 @@ public sealed class MediaPusher : IDisposable
     {
         var result = new Dictionary<string, MediaSession>(StringComparer.OrdinalIgnoreCase);
         var freshMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var freshPushed = new Dictionary<string, PushedPosition?>(StringComparer.Ordinal);
 
         try
         {
@@ -108,67 +213,69 @@ public sealed class MediaPusher : IDisposable
             {
                 var session = pair.Value;
                 if (session?.ControlSession is null) continue;
+                freshPushed[session.Id] = null;
 
-                GlobalSystemMediaTransportControlsSessionMediaProperties? props = null;
-                try { props = session.ControlSession.TryGetMediaPropertiesAsync().AsTask().GetAwaiter().GetResult(); }
-                catch { }
-                if (props is null) continue;
-
-                var playback = session.ControlSession.GetPlaybackInfo();
-                var timeline = session.ControlSession.GetTimelineProperties();
-
-                var friendly = MediaSourceNames.Friendly(session.Id);
-                var key = UniqueKey(result, friendly);
-                freshMap[key] = session.Id;
-
-                var playing = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-                // A non-finite rate from a source app would poison the position
-                // and throw for the WHOLE envelope when it is serialized.
-                var reportedRate = playback.PlaybackRate ?? 1.0;
-                var rate = double.IsFinite(reportedRate) ? reportedRate : 1.0;
-                // Position is what the player last SET, not a live clock.
-                var positionMs = timeline.Position.TotalMilliseconds;
-                if (playing && timeline.EndTime.TotalMilliseconds > 0)
+                string? key = null;
+                try
                 {
-                    positionMs = MediaPositionMath.Advance(
-                        positionMs,
-                        timeline.EndTime.TotalMilliseconds,
-                        MediaPositionMath.SinceTimelineStamp(timeline.LastUpdatedTime, DateTimeOffset.UtcNow),
-                        rate);
+                    GlobalSystemMediaTransportControlsSessionMediaProperties? props = null;
+                    try { props = session.ControlSession.TryGetMediaPropertiesAsync().AsTask().GetAwaiter().GetResult(); }
+                    catch { }
+                    if (props is null) continue;
+
+                    var playback = session.ControlSession.GetPlaybackInfo();
+                    var timeline = session.ControlSession.GetTimelineProperties();
+
+                    var friendly = MediaSourceNames.Friendly(session.Id);
+                    key = UniqueKey(result, friendly);
+                    freshMap[key] = session.Id;
+
+                    var playing = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                    var rate = RateOf(playback);
+                    // Position is what the player last SET, not a live clock.
+                    var positionMs = LivePositionMs(timeline, playing, rate);
+                    freshPushed[session.Id] = new PushedPosition(
+                        positionMs, timeline.EndTime.TotalMilliseconds, playing, AdvanceRateOf(timeline, playing, rate), Stopwatch.GetTimestamp());
+
+                    result[key] = new MediaSession
+                    {
+                        SourceAppName = key,
+                        IsFocused = !string.IsNullOrEmpty(focusedId) && string.Equals(focusedId, session.Id, StringComparison.Ordinal),
+                        Song = new MediaSong
+                        {
+                            Title = props.Title ?? string.Empty,
+                            Artist = props.Artist ?? string.Empty,
+                            Album = props.AlbumTitle ?? string.Empty,
+                            ArtVersion = _artVersions.TryGetValue(session.Id, out var artVersion) ? artVersion : 0,
+                        },
+                        Playback = new MediaPlayback
+                        {
+                            Playing = playing,
+                            Stopped = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped,
+                            Shuffled = playback.IsShuffleActive == true,
+                            RepeatMode = (playback.AutoRepeatMode ?? MediaPlaybackAutoRepeatMode.None).ToString(),
+                            PositionMs = positionMs,
+                            DurationMs = timeline.EndTime.TotalMilliseconds,
+                            PlaybackRate = rate,
+                        },
+                        Controls = new MediaControls
+                        {
+                            IsPrevEnabled = playback.Controls.IsPreviousEnabled,
+                            IsNextEnabled = playback.Controls.IsNextEnabled,
+                            IsShuffleEnabled = playback.Controls.IsShuffleEnabled,
+                            IsRepeatModeEnabled = playback.Controls.IsRepeatEnabled,
+                            IsPlayEnabled = playback.Controls.IsPlayEnabled,
+                            IsPauseEnabled = playback.Controls.IsPauseEnabled,
+                            IsSeekEnabled = playback.Controls.IsPlaybackPositionEnabled,
+                        },
+                    };
                 }
-
-                result[key] = new MediaSession
+                catch (Exception ex)
                 {
-                    SourceAppName = key,
-                    IsFocused = !string.IsNullOrEmpty(focusedId) && string.Equals(focusedId, session.Id, StringComparison.Ordinal),
-                    Song = new MediaSong
-                    {
-                        Title = props.Title ?? string.Empty,
-                        Artist = props.Artist ?? string.Empty,
-                        Album = props.AlbumTitle ?? string.Empty,
-                        ArtVersion = _artVersions.TryGetValue(session.Id, out var artVersion) ? artVersion : 0,
-                    },
-                    Playback = new MediaPlayback
-                    {
-                        Playing = playing,
-                        Stopped = playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped,
-                        Shuffled = playback.IsShuffleActive == true,
-                        RepeatMode = (playback.AutoRepeatMode ?? MediaPlaybackAutoRepeatMode.None).ToString(),
-                        PositionMs = positionMs,
-                        DurationMs = timeline.EndTime.TotalMilliseconds,
-                        PlaybackRate = rate,
-                    },
-                    Controls = new MediaControls
-                    {
-                        IsPrevEnabled = playback.Controls.IsPreviousEnabled,
-                        IsNextEnabled = playback.Controls.IsNextEnabled,
-                        IsShuffleEnabled = playback.Controls.IsShuffleEnabled,
-                        IsRepeatModeEnabled = playback.Controls.IsRepeatEnabled,
-                        IsPlayEnabled = playback.Controls.IsPlayEnabled,
-                        IsPauseEnabled = playback.Controls.IsPauseEnabled,
-                        IsSeekEnabled = playback.Controls.IsPlaybackPositionEnabled,
-                    },
-                };
+                    Console.Error.WriteLine($"[media-pusher] session {session.Id} skipped: {ex.Message}");
+                    freshPushed[session.Id] = null;
+                    if (key is not null) { freshMap.Remove(key); result.Remove(key); }
+                }
             }
         }
         catch (Exception ex)
@@ -180,6 +287,8 @@ public sealed class MediaPusher : IDisposable
         {
             _friendlyToSessionId.Clear();
             foreach (var kv in freshMap) _friendlyToSessionId[kv.Key] = kv.Value;
+            _pushed.Clear();
+            foreach (var kv in freshPushed) _pushed[kv.Key] = kv.Value;
         }
         return result;
     }
@@ -210,9 +319,7 @@ public sealed class MediaPusher : IDisposable
                 if (!ctrl.GetPlaybackInfo().Controls.IsPlaybackPositionEnabled) return;
                 ctrl.TryChangePlaybackPositionAsync(positionMs * TimeSpan.TicksPerMillisecond)
                     .AsTask().GetAwaiter().GetResult();
-                // This pusher subscribes to no timeline event, so without an
-                // explicit push the service keeps serving - and advancing - the
-                // pre-seek position until an unrelated session event fires.
+                // The drift check is up to a poll interval away, so push now rather than wait for it.
                 SchedulePush();
             }
             catch (Exception ex)
@@ -337,6 +444,8 @@ public sealed class MediaPusher : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+        try { _cts.Cancel(); _cts.Dispose(); } catch { }
         try { _manager.Dispose(); } catch { }
     }
 }

@@ -521,7 +521,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     private static readonly SensorHoldLast Hold = new();
 
-    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), s.Value, Environment.TickCount64, out _);
+    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), LhmWalkWatch.Shared.Read(s.Value), Environment.TickCount64, out _);
 
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
@@ -534,9 +534,10 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         {
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
-            var value = Hold.Resolve(key, s.Value, now, out var missed);
-            var stale = !missed && (s.Value is not { } raw || !float.IsFinite(raw));
-            if (missed && isGpu)
+            var reading = LhmWalkWatch.Shared.Read(s.Value);
+            var value = Hold.Resolve(key, reading, now, out var missed);
+            var stale = !missed && (reading is not { } raw || !float.IsFinite(raw));
+            if (missed && isGpu && !LhmWalkWatch.Shared.IsStale)
             {
                 var hwKey = hw.Identifier.ToString();
                 var count = Hold.NoteMiss(hwKey, now);
