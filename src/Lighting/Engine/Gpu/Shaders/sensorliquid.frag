@@ -21,6 +21,9 @@ uniform float u_fill_flip; // hint_range(0.0, 1.0, 1.0) = 0.0
 uniform float u_fill_wave; // hint_range(0.0, 1.0, 0.01) = 0.6
 uniform float u_fill_speed; // hint_range(0.0, 3.0, 0.01) = 1.0
 uniform float u_fill_softness; // hint_range(0.01, 0.3, 0.01) = 0.05
+uniform float u_fill_bgHue; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_fill_bgSat; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_fill_bgVal; // hint_range(0.0, 1.0, 0.01) = 0.0
 uniform float u_col_low; // hint_range(0.0, 0.95, 0.01) = 0.5
 uniform float u_col_shade; // hint_range(0.0, 1.0, 0.01) = 1.0
 uniform float u_col_reverse; // hint_range(0.0, 1.0, 1.0) = 0.0
@@ -49,6 +52,8 @@ void main() {
   float hue = u_hue + S_HUE;
   float v = 0.0;
   float fieldPos = -1.0;
+  vec3 fieldBg = vec3(0.0);
+  float fieldCover = 1.0;
   vec3 col = vec3(0.0);
   { float f = 0.0;
     float ar = u_resolution.x / u_resolution.y; float ra = radians((u_fill_angle)); vec2 dir = vec2(sin(ra), -cos(ra));
@@ -61,6 +66,7 @@ void main() {
     float d = surf - x;
     fieldPos = clamp(x, 0.0, 1.0);
     f = smoothstep(0.0, (u_fill_softness), d) * mix(1.0, 0.5, clamp(d * 2.0, 0.0, 1.0));
+    fieldBg = (hsv2rgb(vec3(u_fill_bgHue, u_fill_bgSat, u_fill_bgVal))); fieldCover = smoothstep(0.0, (u_fill_softness), d);
     v = f; }
   {
     float k = fieldPos >= 0.0 ? clamp(fieldPos, 0.0, 1.0) : clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
@@ -68,5 +74,6 @@ void main() {
     float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
     col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }
+  col += fieldBg * (1.0 - fieldCover);
   fragColor = vec4(finalize(col, hue), 1.0);
 }

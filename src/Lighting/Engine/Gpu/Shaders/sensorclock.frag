@@ -19,6 +19,9 @@ uniform float u_fill_level_s; // sensor {"category":"quick","sensor":"summary/cp
 uniform float u_fill_angle; // hint_range(0.0, 360.0, 1.0) = 0.0
 uniform float u_fill_flip; // hint_range(0.0, 1.0, 1.0) = 0.0
 uniform float u_fill_softness; // hint_range(0.01, 0.5, 0.01) = 0.04
+uniform float u_fill_bgHue; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_fill_bgSat; // hint_range(0.0, 1.0, 0.01) = 0.0
+uniform float u_fill_bgVal; // hint_range(0.0, 1.0, 0.01) = 0.0
 uniform float u_col_low; // hint_range(0.0, 0.95, 0.01) = 0.55
 uniform float u_col_shade; // hint_range(0.0, 1.0, 0.01) = 1.0
 uniform float u_col_reverse; // hint_range(0.0, 1.0, 1.0) = 0.0
@@ -47,6 +50,8 @@ void main() {
   float hue = u_hue + S_HUE;
   float v = 0.0;
   float fieldPos = -1.0;
+  vec3 fieldBg = vec3(0.0);
+  float fieldCover = 1.0;
   vec3 col = vec3(0.0);
   { float f = 0.0;
     float ang = fract(atan(p.y, p.x) / 6.2831853 + 0.25 - (u_fill_angle) / 360.0);
@@ -55,6 +60,7 @@ void main() {
     float lit = 1.0 - smoothstep(lv - (u_fill_softness), lv, ang);
     fieldPos = clamp(ang, 0.0, 1.0);
     f = lit * (0.55 + 0.45 * fieldPos);
+    fieldBg = (hsv2rgb(vec3(u_fill_bgHue, u_fill_bgSat, u_fill_bgVal))); fieldCover = lit;
     v = f; }
   {
     float k = fieldPos >= 0.0 ? clamp(fieldPos, 0.0, 1.0) : clamp((v - (u_col_low)) / (1.0 - (u_col_low)), 0.0, 1.0);
@@ -62,5 +68,6 @@ void main() {
     float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
     col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }
+  col += fieldBg * (1.0 - fieldCover);
   fragColor = vec4(finalize(col, hue), 1.0);
 }
