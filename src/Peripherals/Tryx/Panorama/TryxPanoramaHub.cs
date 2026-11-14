@@ -1610,11 +1610,16 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         var items = _overlay.Items;
         var sources = GatherOverlaySources(items);
-        var wholeNumbers = _configStore.Load().Units.MonitoringWholeNumbers == true;
+        var units = _configStore.Load().Units;
+        var wholeNumbers = units.MonitoringWholeNumbers == true;
+        var now = DateTime.Now;
         var lines = new List<TryxOverlayLine>(items.Count);
         foreach (var item in items)
         {
-            lines.Add(new TryxOverlayLine(item.Label, ResolveSensorValue(item.Device, item.SensorId, wholeNumbers, sources)));
+            var value = item.Device == ClockDevice
+                ? FormatClockValue(item.SensorId, now, units.TimeFormat, CultureInfo.CurrentCulture)
+                : ResolveSensorValue(item.Device, item.SensorId, wholeNumbers, sources);
+            lines.Add(new TryxOverlayLine(item.Label, value));
         }
         return lines;
     }
@@ -1670,6 +1675,30 @@ public sealed class TryxPanoramaHub : IDisposable
             ? FindById(_fps.GetComponent().Sensors, sensorId)
             : SensorSnapshotResolver.Resolve(_sensors, device, sensorId, sources);
         return sensor is null ? "--" : FormatSensorValue(sensor, wholeNumbers);
+    }
+
+    internal const string ClockDevice = "clock";
+
+    // The heartbeat resends the overlay every second, so a clock line needs no extra trigger.
+    // Time honors the Units.TimeFormat preference ("system" falls back to the culture's short
+    // time pattern); date is the culture's short date. Unknown ids read like an unknown sensor.
+    internal static string FormatClockValue(string sensorId, DateTime now, string timeFormat, CultureInfo culture)
+    {
+        switch (sensorId)
+        {
+            case "time":
+                var pattern = timeFormat switch
+                {
+                    "12h" => "h:mm tt",
+                    "24h" => "HH:mm",
+                    _ => culture.DateTimeFormat.ShortTimePattern,
+                };
+                return now.ToString(pattern, culture);
+            case "date":
+                return now.ToString(culture.DateTimeFormat.ShortDatePattern, culture);
+            default:
+                return "--";
+        }
     }
 
     private static HardwareSensor? FindById(IReadOnlyList<HardwareSensor> sensors, string id)
