@@ -381,6 +381,22 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public double LastUploadStartMs;
         public bool Joinable;
         public int UploadStretch;
+        public int DiagUploads;
+        public double DiagUpMsSum;
+        public double DiagUpMsMax;
+        public long DiagLandMin = long.MaxValue;
+        public long DiagLandMax = long.MinValue;
+        public int DiagLate;
+        public int DiagGapTicks;
+        public int DiagLeds;
+
+        public void ResetDiag()
+        {
+            DiagUploads = DiagLate = DiagGapTicks = 0;
+            DiagUpMsSum = DiagUpMsMax = 0;
+            DiagLandMin = long.MaxValue;
+            DiagLandMax = long.MinValue;
+        }
     }
 
     // One look-ahead render per window serves every chain: all chains play on
@@ -472,6 +488,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private void LogHealth(double nowMs, int rollingChains)
     {
         if (_planChains == 0) return;
+        LogChainDiag(nowMs);
         if (nowMs >= _healthNextAirMs)
         {
             _healthNextAirMs = nowMs + HealthAirSampleMs;
@@ -486,6 +503,45 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _healthNextLogMs = nowMs + HealthLogPeriodMs;
         _healthUploadsOk = _healthUploadsFailed = _healthRenders = _healthUntaken = _healthAirMax = 0;
         _healthTickMaxMs = 0;
+    }
+
+    private const double ChainDiagFastMs = 10_000;
+    private const double ChainDiagSlowMs = 60_000;
+    private const double ChainDiagFastPhaseMs = 30 * 60_000;
+    private double _chainDiagStartMs;
+    private double _chainDiagNextMs;
+
+    private void LogChainDiag(double nowMs)
+    {
+        if (_chainDiagStartMs == 0)
+        {
+            _chainDiagStartMs = nowMs;
+            _chainDiagNextMs = nowMs + ChainDiagFastMs;
+            return;
+        }
+        if (nowMs < _chainDiagNextMs) return;
+        _chainDiagNextMs = nowMs + (nowMs - _chainDiagStartMs < ChainDiagFastPhaseMs ? ChainDiagFastMs : ChainDiagSlowMs);
+        var hubNow = Environment.TickCount64;
+        foreach (var fan in _hub.State.Fans)
+        {
+            if (!fan.BoundToUs) continue;
+            var path = "live";
+            var upload = "uploads=0";
+            if (_rolling.TryGetValue(fan.Mac, out var chain))
+            {
+                var n = chain.DiagUploads;
+                var avg = n > 0 ? chain.DiagUpMsSum / n : 0;
+                var landMin = n > 0 ? chain.DiagLandMin : 0;
+                var landMax = n > 0 ? chain.DiagLandMax : 0;
+                path = chain.WindowFirstFrame != long.MinValue ? "roll" : "live";
+                upload = $"leds={chain.DiagLeds} uploads={n} upMs avg={avg:F0} max={chain.DiagUpMsMax:F0} land min={landMin} max={landMax} late={chain.DiagLate} gapTicks={chain.DiagGapTicks}";
+                chain.ResetDiag();
+            }
+            var dev = _hub.DeviceWatch.Take(fan.Mac, hubNow) is { } w
+                ? $"dev sent={w.Sent} confirmed={w.Confirmed} unconfirmed={w.Unconfirmed} confMs avg={w.LatencyAvgMs} max={w.LatencyMaxMs} reports={w.Reports} idxChanges={w.IdxChanges} idx={w.LastReportedIdx} sinceConfirmMs={w.SinceConfirmMs} pendingMs={w.PendingMs} stuck={w.StuckEvents} stale={fan.Stale}"
+                : "dev none";
+            ServiceLog.Info($"[lianli-wireless] chain {fan.Mac} path={path} {upload} {dev}");
+        }
     }
 
     private double WindowInterval => WindowIntervalTicks * _windowStretch;
@@ -628,6 +684,18 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (ok)
         {
             _healthUploadsOk++;
+            var doneMs = UtcNowMs();
+            var upMs = doneMs - st.LastUploadStartMs;
+            st.DiagUploads++;
+            st.DiagUpMsSum += upMs;
+            st.DiagUpMsMax = Math.Max(st.DiagUpMsMax, upMs);
+            if (st.UploadStretch == _windowStretch && TryCurrentFrame(doneMs, out var landedAt))
+            {
+                var land = st.UploadFirstFrame - landedAt;
+                st.DiagLandMin = Math.Min(st.DiagLandMin, land);
+                st.DiagLandMax = Math.Max(st.DiagLandMax, land);
+                if (land < 0) st.DiagLate++;
+            }
             st.WindowFirstFrame = st.UploadStretch == _windowStretch ? st.UploadFirstFrame : long.MinValue;
             st.WindowPayload = st.UploadPayload;
             st.WindowLedCount = st.UploadLedCount;
@@ -712,6 +780,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadFirstFrame = _windowFirstFrame;
                 st.UploadPayload = payload;
                 st.UploadLedCount = ledCount;
+                st.DiagLeds = ledCount;
                 st.UploadStretch = _windowStretch;
                 var interval = WindowInterval;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
@@ -719,10 +788,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 return true;
             }
         }
-        return st.WindowFirstFrame != long.MinValue
+        var covered = st.WindowFirstFrame != long.MinValue
             && TryCurrentFrame(nowMs, out var current)
             && current >= st.WindowFirstFrame
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
+        if (!covered) st.DiagGapTicks++;
+        return covered;
     }
 
     private bool IsNextToUpload(ChainRolling chain)

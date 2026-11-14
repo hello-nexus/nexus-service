@@ -400,6 +400,8 @@ public sealed partial class Slv3Hub : IDisposable
     // Seeded so a restart does not replay the index a chain last reported.
     private byte _effectCounter = (byte)Environment.TickCount64;
 
+    internal Slv3DeviceWatch DeviceWatch { get; } = new();
+
     // Device-list records span more than one page once enough chains are bound
     // (up to MaxSlot, plus non-fan devices), so the poll requests
     // ceil(count/RecordsPerPage) pages. Clamp so a corrupt count can't trigger
@@ -2303,12 +2305,14 @@ public sealed partial class Slv3Hub : IDisposable
                     }
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
+                DeviceWatch.NoteReported(key, Convert.ToHexString(record.EffectIndex), nowMs, ServiceLog.Info);
             }
         }
         _pollRecords = pollRecords;
         UpdateReportOrderLocked(pollRecords);
 
         ExpireChainsLocked(nowMs);
+        DeviceWatch.Check(nowMs, ServiceLog.Info);
 
         // Page estimate follows the larger of the reply's count and the tracked
         // set, so a partial report can't shrink the next read below the full list.
@@ -2383,6 +2387,7 @@ public sealed partial class Slv3Hub : IDisposable
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
+                DeviceWatch.Remove(key, nowMs, ServiceLog.Info);
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);
@@ -3276,6 +3281,7 @@ public sealed partial class Slv3Hub : IDisposable
             effectIndex = window
                 ? NextSafeEffectIndexLocked(record)
                 : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs());
             packets = Slv3RgbFrame.BuildPackets(
                 record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;
