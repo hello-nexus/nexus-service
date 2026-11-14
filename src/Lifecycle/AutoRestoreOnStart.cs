@@ -211,6 +211,10 @@ internal sealed class AutoRestoreOnStart : BackgroundService
                     saved = Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected(s.Animate.Templates, effect)
                         ?? new AnimateEffectState();
                 }
+                else
+                {
+                    saved = Nexus.Service.Lighting.AnimateTemplateDefaults.WithPresetParams(saved, Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected(s.Animate.Templates, effect));
+                }
                 _lighting.StartAnimate(new AnimateHeadlessStart
                 {
                     Effect = effect,

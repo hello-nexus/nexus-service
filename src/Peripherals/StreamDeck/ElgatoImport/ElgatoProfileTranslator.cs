@@ -733,7 +733,7 @@ public sealed class ElgatoProfileTranslator
         {
             Type = "monitoring",
             Category = ResolveLhmCategory(sensorUid),
-            Sensor = "",
+            Sensor = sensorUid.StartsWith("/gpu-powermonitor/", StringComparison.OrdinalIgnoreCase) ? sensorUid : "",
             Style = "line",
         };
         return (deckAction, null, "monitoringSensor");
@@ -746,6 +746,10 @@ public sealed class ElgatoProfileTranslator
             sensorUid.StartsWith("/intelcpu", StringComparison.OrdinalIgnoreCase))
         {
             return "cpu";
+        }
+        if (sensorUid.StartsWith("/gpu-powermonitor/", StringComparison.OrdinalIgnoreCase))
+        {
+            return "psu";
         }
         if (sensorUid.StartsWith("/gpu", StringComparison.OrdinalIgnoreCase))
         {

@@ -100,12 +100,41 @@ public class LianLiLightingModesTests
         }
     }
 
+    [Theory]
+    [InlineData("meteor", 0x2A)]
+    [InlineData("runway", 0x2B)]
+    [InlineData("tide", 0x2C)]
+    [InlineData("mixing", 0x2D)]
+    [InlineData("stackMultiColor", 0x2E)]
+    public void Sl_v2_merged_bytes(string key, byte expected)
+    {
+        foreach (var pid in new[] { 0xA103, 0xA105 })
+        {
+            Assert.True(LianLiFanProfiles.TryGet(pid, out var profile));
+            var m = LianLiLightingModes.Find(LianLiFanFamily.SlV2, key)!;
+            Assert.Equal(expected, m.MergedEffectByte);
+            Assert.True(m.MergesOn(profile));
+        }
+    }
+
     [Fact]
-    public void Merges_exist_only_on_sl_infinity()
+    public void Sl_v2_merges_only_its_five_effects_and_keeps_their_options()
+    {
+        var merged = LianLiLightingModes.CatalogFor(LianLiFanFamily.SlV2).Where(m => m.MergedEffectByte != 0).Select(m => m.Key).ToArray();
+        Assert.Equal(new[] { "runway", "tide", "meteor", "mixing", "stackMultiColor" }, merged);
+        var stack = LianLiLightingModes.Find(LianLiFanFamily.SlV2, "stackMultiColor")!;
+        Assert.True(stack.HasSpeed);
+        Assert.True(stack.HasDirection);
+        Assert.Equal(0, stack.ColorsMax);
+        Assert.False(LianLiLightingModes.Find(LianLiFanFamily.SlV2, "meteor")!.HasDirection);
+    }
+
+    [Fact]
+    public void Merges_exist_only_on_sl_infinity_and_sl_v2()
     {
         foreach (var family in Families)
         {
-            if (family == LianLiFanFamily.SlInfinity) continue;
+            if (family is LianLiFanFamily.SlInfinity or LianLiFanFamily.SlV2) continue;
             Assert.All(LianLiLightingModes.CatalogFor(family), m => Assert.Equal(0, m.MergedEffectByte));
         }
     }

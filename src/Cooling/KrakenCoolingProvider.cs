@@ -94,7 +94,7 @@ public sealed class KrakenCoolingProvider : IFanControlProvider, ICoolingProvide
             return Array.Empty<TemperatureSource>();
         }
         var snap = _hub.Snapshot;
-        if (snap.LiquidTempC <= 0)
+        if (snap.LiquidTempC <= 0 || !_hub.StatusFresh)
         {
             return Array.Empty<TemperatureSource>();
         }
@@ -119,7 +119,7 @@ public sealed class KrakenCoolingProvider : IFanControlProvider, ICoolingProvide
             return null;
         }
         var snap = _hub.Snapshot;
-        return snap.LiquidTempC > 0 ? (float)snap.LiquidTempC : null;
+        return snap.LiquidTempC > 0 && _hub.StatusFresh ? (float)snap.LiquidTempC : null;
     }
 
     public int SetFanSpeed(string channelId, int dutyPercent)

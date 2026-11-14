@@ -3,38 +3,6 @@ using System.Collections.Generic;
 
 namespace Nexus.Service.Lighting.Engine;
 
-/// <summary>sRGB to linear light and back, as lookup tables.</summary>
-internal static class AreaLight
-{
-    public const int LinMax = 65535;
-    public static readonly ushort[] ToLinear = BuildToLinear();
-    public static readonly byte[] ToSrgb = BuildToSrgb();
-
-    private static ushort[] BuildToLinear()
-    {
-        var t = new ushort[256];
-        for (var i = 0; i < 256; i++)
-        {
-            var c = i / 255.0;
-            var lin = c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
-            t[i] = (ushort)Math.Round(lin * LinMax);
-        }
-        return t;
-    }
-
-    private static byte[] BuildToSrgb()
-    {
-        var t = new byte[LinMax + 1];
-        for (var i = 0; i <= LinMax; i++)
-        {
-            var lin = i / (double)LinMax;
-            var c = lin <= 0.0031308 ? lin * 12.92 : 1.055 * Math.Pow(lin, 1.0 / 2.4) - 0.055;
-            t[i] = (byte)Math.Clamp((int)Math.Round(c * 255.0), 0, 255);
-        }
-        return t;
-    }
-}
-
 /// <summary>How a card's LEDs read the canvas. <see cref="Led"/> is the plain spot read; the others read the mean of the LED's cell.</summary>
 public enum SamplingMode
 {
@@ -374,8 +342,8 @@ internal sealed class AreaOwnerMap
     public int PixelCount(int led) => led < 0 || led >= Rep.Length || Rep[led] < 0 ? 0 : Start[Rep[led] + 1] - Start[Rep[led]];
     public int LedCount => Math.Max(0, Start.Length - 1);
 
-    /// <summary>Linear-light mean, back in sRGB, of an LED's owned pixels; black for an LED that owns none.</summary>
-    public void Sample(ReadOnlySpan<byte> px, int led, out byte r, out byte g, out byte b)
+    /// <summary>Combined color of an LED's owned pixels under <paramref name="mode"/>; black for an LED that owns none.</summary>
+    public void Sample(ReadOnlySpan<byte> px, int led, out byte r, out byte g, out byte b, ColorSampling mode = ColorSampling.Standard)
     {
         var own = Rep[led];
         if (own < 0)
@@ -384,26 +352,14 @@ internal sealed class AreaOwnerMap
             return;
         }
         int s = Start[own], e = Start[own + 1];
-        if (e <= s)
-        {
-            r = g = b = 0;
-            return;
-        }
-        var lin = AreaLight.ToLinear;
         var pix = Pix;
-        long sr = 0, sg = 0, sb = 0;
+        var acc = new ColorAccumulator(mode);
         for (var k = s; k < e; k++)
         {
             var o = pix[k];
-            sr += lin[px[o]];
-            sg += lin[px[o + 1]];
-            sb += lin[px[o + 2]];
+            acc.Add(px[o], px[o + 1], px[o + 2]);
         }
-        long n = e - s, half = n / 2;
-        var srgb = AreaLight.ToSrgb;
-        r = srgb[(int)Math.Min((sr + half) / n, AreaLight.LinMax)];
-        g = srgb[(int)Math.Min((sg + half) / n, AreaLight.LinMax)];
-        b = srgb[(int)Math.Min((sb + half) / n, AreaLight.LinMax)];
+        (r, g, b) = acc.Result();
     }
 
     private static AreaOwnerMap Pack(int cw, int ch, int ledCount, int[] owner, int[] fallbackPix, int[] rep)

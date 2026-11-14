@@ -75,6 +75,8 @@ public class UpgradeRegressionTests : IDisposable
         new object[] { "v28-dev" },
         new object[] { "v29-dev" },
         new object[] { "v30-3.1.8-beta" },
+        new object[] { "v32-main-t1" },
+        new object[] { "v32-main-t1-edited" },
     };
 
     [Theory]

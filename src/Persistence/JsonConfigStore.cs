@@ -73,6 +73,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // only a document from before it needs the v17 unswap.
                 _cached.Lighting.FreeRotationLayouts = true;
                 _cached.MaximizedCanvasDefaults = true;
+                Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: true);
                 Persist(_cached);
                 return _cached;
             }
@@ -106,7 +107,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                 // for the v8 OnboardingCompleted migration, so route through
                 // Migrate() the same as any other pre-v8 document.
                 _cached = new NexusSettings { SchemaVersion = 0 };
+                _cached.Diagnostics.Notifications.Enabled = false;
                 Migrate(_cached);
+                Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false);
                 // Sign-ins and paired devices survive a reset of the rest of the file.
                 if (TryReadAuth(json) is { } auth)
                 {
@@ -137,6 +140,17 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         // Pre-pin per-device locks and fan locks fold into pins before
         // anything reads the document; a no-op once migrated.
         var pinsMigrated = Nexus.Service.Lighting.PinMigration.Apply(_cached);
+        // The master switch defaults on for a new install only; a stored file without the key was written when it defaulted off.
+        if (!HasStoredNotificationsEnabled(json))
+        {
+            _cached.Diagnostics.Notifications.Enabled = false;
+            pinsMigrated = true;
+        }
+        // Keyed on the file's own content rather than the schema version, so it runs once on any build.
+        if (Nexus.Service.Lighting.StrimerEffectsMigration.Apply(_cached, json))
+        {
+            pinsMigrated = true;
+        }
         // A file with no schemaVersion key deserializes to the current
         // version and would skip Migrate(), yet it is not a fresh install.
         if (!HasTopLevelSchemaVersion(json))
@@ -148,6 +162,9 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (_cached.SchemaVersion < NexusSettings.CurrentSchemaVersion)
         {
             var preUsbMonitor = _cached.SchemaVersion < Nexus.Service.Panel.UsbMonitorPanelMigration.SchemaVersion;
+            // Read before the fold: the rotation takes a stored legacy flag into account too.
+            var movesLayout = _cached.SchemaVersion < Nexus.Service.Panel.PanelLayoutSlotsMigration.SchemaVersion
+                && Nexus.Service.Panel.PanelLayoutSlotsMigration.WouldMove(_cached);
             Migrate(_cached);
             Nexus.Service.Conflicts.ConflictWhitelistMigration.ReconcileBetaLock(_cached);
             if (preUsbMonitor && _cached.UsbMonitorPanelPairs is not null)
@@ -166,11 +183,33 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
                     Console.Error.WriteLine($"[nexus-service] could not keep the pre-v29 settings: {ex.Message}");
                 }
             }
+            if (movesLayout)
+            {
+                // The v32 pass rewrites layouts and rotations in place; keep the file it was read from, once.
+                try
+                {
+                    var backup = SettingsPath + ".pre-v32";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, json);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[nexus-service] could not keep the pre-v32 settings: {ex.Message}");
+                }
+            }
+            Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false);
             Persist(_cached);
         }
         else
         {
             var recovered = pinsMigrated;
+            // Every load, not only on a version bump: a build without sensor alerts drops the list and keeps the schema version.
+            if (Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.Ensure(_cached.Diagnostics, newInstall: false))
+            {
+                recovered = true;
+            }
             if (NeedsDeckModesRecovery(_cached))
             {
                 // A downgrade to a pre-deck-modes build (then a re-upgrade)
@@ -203,6 +242,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             }
             // A downgrade to a pre-rotation build writes the flags back at the current schema version.
             if (Nexus.Service.Panel.PanelRotationMigration.Apply(_cached))
+            {
+                recovered = true;
+            }
+            // Same for a build that stored the strip's layout as one and dropped the marker.
+            if (Nexus.Service.Panel.PanelLayoutSlotsMigration.Apply(_cached))
             {
                 recovered = true;
             }
@@ -247,6 +291,33 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             Console.Error.WriteLine($"[nexus-service] settings backup unusable: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>True when the document is not an object, or it stores diagnostics.notifications.enabled.</summary>
+    private static bool HasStoredNotificationsEnabled(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        return doc.RootElement.ValueKind != JsonValueKind.Object
+            || (TryGetIgnoreCase(doc.RootElement, "diagnostics", out var d)
+                && TryGetIgnoreCase(d, "notifications", out var n)
+                && TryGetIgnoreCase(n, "enabled", out _));
+    }
+
+    private static bool TryGetIgnoreCase(JsonElement parent, string name, out JsonElement value)
+    {
+        if (parent.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in parent.EnumerateObject())
+            {
+                if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = prop.Value;
+                    return true;
+                }
+            }
+        }
+        value = default;
+        return false;
     }
 
     /// <summary>True when the document is not an object, or its top level carries a schemaVersion property; a nested one does not count.</summary>
@@ -317,6 +388,7 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
     /// v24: Lighting.RenderBackend "wgl" (the old default, always persisted) becomes "angle".
     /// v25: a stored Keeb.FirmwareLighting.Brightness equal to the old default (always persisted) moves to the new default. Profile files are covered by ProfileManager.
     /// v31: panel records' Flip180/Portrait fold into one clockwise Rotation (PanelRotationMigration).
+    /// v32: the 8.8 inch strip's single layout moves to the slot of its mounted orientation (PanelLayoutSlotsMigration).
     /// </summary>
     private static void Migrate(NexusSettings doc)
     {
@@ -437,6 +509,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
         if (doc.SchemaVersion < Nexus.Service.Panel.PanelRotationMigration.SchemaVersion)
         {
             Nexus.Service.Panel.PanelRotationMigration.Apply(doc);
+        }
+        if (doc.SchemaVersion < Nexus.Service.Panel.PanelLayoutSlotsMigration.SchemaVersion)
+        {
+            Nexus.Service.Panel.PanelLayoutSlotsMigration.ClampRectangular(doc);
+            Nexus.Service.Panel.PanelLayoutSlotsMigration.Apply(doc);
         }
         doc.SchemaVersion = NexusSettings.CurrentSchemaVersion;
     }

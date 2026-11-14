@@ -70,6 +70,7 @@ public static class DevSimRoutes
         });
 
         MapAstralSim(app);
+        MapLogitechSpeakerSim(app);
 
         // PUT /dev/restricted?on=true forces system/session restricted:true until PUT ?on=false or restart.
         app.MapPut("/dev/restricted", (bool on, Nexus.Service.Lifecycle.RestrictedModePublisher restricted) =>
@@ -98,6 +99,21 @@ public static class DevSimRoutes
         app.MapGet("/dev/sim/astral", (AstralSim sim) => Results.Json(sim.Get(), AppJsonContext.Default.AstralSimDto));
         app.MapPost("/dev/sim/astral", (AstralSimRequest? body, AstralSim sim, IServiceProvider sp) => Reply(sim.Set(body ?? new AstralSimRequest()), sp));
         app.MapDelete("/dev/sim/astral", (AstralSim sim, IServiceProvider sp) => Reply(sim.Stop(), sp));
+    }
+
+    /// <summary>Simulated Logitech G560; each change refreshes the Devices list so the entry appears and goes at once.</summary>
+    private static void MapLogitechSpeakerSim(WebApplication app)
+    {
+        IResult Reply(LogitechSpeakerSimDto dto, IServiceProvider sp)
+        {
+            sp.GetService<Nexus.Service.Peripherals.LogitechAudio.LogitechSpeakerService>()?.ForgetEndpoints();
+            sp.GetService<DeviceBroadcaster>()?.BroadcastNow();
+            return Results.Json(dto, AppJsonContext.Default.LogitechSpeakerSimDto);
+        }
+
+        app.MapGet("/dev/sim/logitech-speaker", (LogitechSpeakerSim sim) => Results.Json(sim.Get(), AppJsonContext.Default.LogitechSpeakerSimDto));
+        app.MapPost("/dev/sim/logitech-speaker", (LogitechSpeakerSim sim, IServiceProvider sp) => Reply(sim.Start(), sp));
+        app.MapDelete("/dev/sim/logitech-speaker", (LogitechSpeakerSim sim, IServiceProvider sp) => Reply(sim.Stop(), sp));
     }
 
     internal static DevSimEventsResponse Describe(DevSimEvents sim) => new()

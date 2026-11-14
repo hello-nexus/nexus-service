@@ -246,8 +246,8 @@ public sealed class ScreenMirrorEffect : IEffect
         }
 #if WINDOWS
         var outputIdx = uint.TryParse(_monitorId, out var idx) ? idx : 0u;
-        _dxgi = new Capture.DxgiScreenCapture();
-        if (_dxgi.Initialize(outputIdx)) { Console.Error.WriteLine("[screen-mirror] using DXGI"); return; }
+        _dxgi = new Capture.DxgiScreenCapture { Diag = ServiceLog.Info };
+        if (_dxgi.Initialize(outputIdx)) { _dxgi.ConfigureDownsample(w, h); Console.Error.WriteLine("[screen-mirror] using DXGI"); return; }
         _dxgi.Dispose(); _dxgi = null;
 #endif
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && !RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

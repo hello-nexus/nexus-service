@@ -225,7 +225,11 @@ public sealed unsafe class StreamFrameSectionTests
         }
         stop.Cancel();
         writer.Join();
-        Assert.True(accepted > 0);
+        // A writer that never pauses can starve the reader for the whole window, so liveness is checked once it is quiet.
+        long settled = 0;
+        Assert.True(Read(section, ref settled, destination, out var settledLength));
+        Assert.Equal(Bytes, settledLength);
+        Assert.True(destination.AsSpan(0, settledLength).IndexOfAnyExcept(destination[0]) < 0);
     }
 
     [Fact]

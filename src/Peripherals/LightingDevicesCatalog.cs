@@ -312,7 +312,9 @@ public static class LightingDevicesCatalog
         // Tryx - PIDs from src/Peripherals/Tryx/Panorama. All are LCD-screen AIOs.
         Native("Tryx",    "Panorama",               "aio",      "0x391A", "0x1011", screen: true),
         Native("Tryx",    "Panorama SE",            "aio",      "0x391A", "0x1021", screen: true),
+        Native("Tryx",    "Panorama SE",            "aio",      "0x391A", "0x1061", screen: true),
         Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x1031", screen: true),
+        Native("Tryx",    "Panorama WaterBlock",    "aio",      "0x391A", "0x10A1", screen: true),
         Native("Tryx",    "Panorama v2",            "aio",      "0x391A", "0x10B1", screen: true),
 
         // Corsair Galleon 100 SD keyboard - IDs from src/Peripherals/Corsair/Galleon.
@@ -359,6 +361,7 @@ public static class LightingDevicesCatalog
         // where Windows has bound WinUSB, and likewise untested.
         Native("Thermalright", "Vision LCD",        "aio",      "0x87AD", "0x70DB", screen: true, rgb: false),
         Native("ASUS",       "Ryujin LCD",          "aio",      "0x0B05", "0x1AA2", screen: true, rgb: false),
+        Native("ASUS",       "ROG Ryujin III Extreme", "aio", "0x0B05", "0x1BCB", screen: false, rgb: false),
         Native("Lian Li",    "Universal Screen 8.8","light",    "0x1CBE", "0xA088", screen: true, rgb: false),
         Native("ASUS",       "ROG Crosshair X870E Glacial LCD", "light", "0x0B05", "0x1D93", screen: true, rgb: false),
         Native("DeepCool",   "Mystique",            "aio",      "0x3633", "0x0009", screen: true, rgb: false),

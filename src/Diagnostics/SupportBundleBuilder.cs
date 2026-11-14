@@ -56,6 +56,8 @@ public static class SupportBundleBuilder
         public List<FanChannel>? Fans { get; init; }
         public SystemDiagnosticsResponse? System { get; init; }
         public UsbTopologyReport? UsbTopology { get; init; }
+        /// <summary>The saved PC setup record, shaped like GET /system/setup; written with free-text item names blanked.</summary>
+        public Models.Lighting.PcSetupResponse? PcSetup { get; init; }
         /// <summary>OS account names whose home paths are rewritten to a placeholder in every text file.</summary>
         public IReadOnlyList<string> UserNames { get; init; } = Array.Empty<string>();
         public string MachineName { get; init; } = "";
@@ -150,6 +152,7 @@ public static class SupportBundleBuilder
             if (src.Fans is not null) WriteJson(zip, r, "diagnostics/fans.json", src.Fans, AppJsonContext.Default.ListFanChannel);
             if (src.System is not null) WriteJson(zip, r, "diagnostics/system.json", src.System, AppJsonContext.Default.SystemDiagnosticsResponse);
             if (src.UsbTopology is not null) WriteJson(zip, r, "diagnostics/usb-topology.json", src.UsbTopology, AppJsonContext.Default.UsbTopologyReport);
+            if (src.PcSetup is not null) WriteJson(zip, r, "diagnostics/pc-setup.json", RedactPcSetup(src.PcSetup), AppJsonContext.Default.PcSetupResponse);
             var budget = src.LogBudgetBytes;
             if (src.JournalText.Length > 0)
             {
@@ -162,6 +165,29 @@ public static class SupportBundleBuilder
             }
         }
         return ms.ToArray();
+    }
+
+    /// <summary>A copy with the user's own item names blanked; the source-gen round-trip keeps it AOT-safe.</summary>
+    internal static Models.Lighting.PcSetupResponse RedactPcSetup(Models.Lighting.PcSetupResponse response)
+    {
+        var json = JsonSerializer.Serialize(response, AppJsonContext.Default.PcSetupResponse);
+        var copy = JsonSerializer.Deserialize(json, AppJsonContext.Default.PcSetupResponse) ?? new Models.Lighting.PcSetupResponse();
+        foreach (var item in copy.Setup.Items)
+        {
+            if (item.Custom is { } custom)
+            {
+                custom.Name = "<redacted>";
+            }
+        }
+        // nexus-build derives each resolved object's label from the item's name.
+        foreach (var obj in copy.Setup.Resolved.Objects)
+        {
+            if (obj.Label is not null)
+            {
+                obj.Label = "<redacted>";
+            }
+        }
+        return copy;
     }
 
     /// <summary>A copy with every credential blanked; the source-gen round-trip keeps it AOT-safe and shaped like the file on disk.</summary>

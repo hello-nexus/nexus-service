@@ -23,6 +23,9 @@ internal sealed class SecondaryMonitorFeed : IDisposable
     private readonly Func<(int Rotation, bool Mirror)> _orientation;
     private readonly Action _stateChanged;
     private readonly Func<int?>? _fpsCap;
+    // The size the pushed frames have when the transport renders turned; 0 reads the glass's size at start.
+    private readonly int _frameWidth;
+    private readonly int _frameHeight;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _monitorLock = new();
     private readonly Thread _frames;
@@ -37,9 +40,13 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         Func<byte[], bool> push,
         Func<(int Rotation, bool Mirror)> orientation,
         Action stateChanged,
-        Func<int?>? fpsCap = null)
+        Func<int?>? fpsCap = null,
+        int frameWidth = 0,
+        int frameHeight = 0)
     {
         _fpsCap = fpsCap;
+        _frameWidth = frameWidth;
+        _frameHeight = frameHeight;
         _host = host;
         _hub = hub;
         _push = push;
@@ -85,8 +92,8 @@ internal sealed class SecondaryMonitorFeed : IDisposable
 
     private void PumpFrames()
     {
-        int width = _hub.Width;
-        int height = _hub.Height;
+        int width = _frameWidth > 0 ? _frameWidth : _hub.Width;
+        int height = _frameHeight > 0 ? _frameHeight : _hub.Height;
         var monitor = _host.Create(width, height, _hub.Driver.Dpi, _cts.Token, out var failure);
         if (monitor is null)
         {
@@ -105,7 +112,7 @@ internal sealed class SecondaryMonitorFeed : IDisposable
         }
         if (_hub.Driver.HasTouch)
         {
-            _touch = new BulkPanelTouchReader(_hub, width, height, _orientation, injection => SafeInject(monitor, injection), "secondary-monitor-touch", _cts.Token);
+            _touch = new BulkPanelTouchReader(_hub, _hub.Width, _hub.Height, width, height, _orientation, injection => SafeInject(monitor, injection), "secondary-monitor-touch", _cts.Token);
             _touch.Start();
         }
 

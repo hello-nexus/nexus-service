@@ -55,7 +55,8 @@ public sealed record KrakenModel(
     bool FirmwareGif = false,
     int StreamFps = 30,
     bool Rgb565DirectStream = false,
-    byte TelemetryInterval = 0x01)
+    byte TelemetryInterval = 0x01,
+    bool CamSessionInit = false)
 {
     public bool HasLcd => LcdFormat != KrakenLcdFormat.None;
 
@@ -88,8 +89,10 @@ public sealed record KrakenModel(
         // 2023 Kraken. Smaller panel, and a model that takes uncompressed RGB565 like the Plus V2 -
         // its firmware has no Q565 decoder, and it rejects bucket setup like the Plus V2, so
         // frames take the same direct RGB565 transfer.
+        // Rate, telemetry interval, session init and backlight layout follow a capture of the
+        // vendor app driving this panel (CamSessionInit).
         new(0x300E, "NZXT Kraken", 240, 240, KrakenLcdFormat.Rgb565, KrakenLightingProtocol.None, true,
-            StreamFps: 20, Rgb565DirectStream: true),
+            StreamFps: 26, Rgb565DirectStream: true, TelemetryInterval: 0x0B, CamSessionInit: true),
 
         // Kraken Z3 (Z53/Z63/Z73). 320x320, and the only model still on raw RGBA. A filled
         // bucket rewritten in place is acked but never shown, so a stream deletes and

@@ -23,6 +23,29 @@ public static class MediaPositionMath
         return advanced;
     }
 
+    /// <summary>
+    /// Rate at which a live position actually advances: zero when the stamp is
+    /// unusable (the live read is then frozen) or the rate is not positive.
+    /// </summary>
+    public static double EffectiveAdvanceRate(DateTimeOffset lastUpdated, DateTimeOffset now, double playbackRate)
+        => SinceTimelineStamp(lastUpdated, now) > TimeSpan.Zero ? Math.Max(0, playbackRate) : 0;
+
+    /// <summary>
+    /// Helper-side decision to push a snapshot for one session. The prediction
+    /// uses the same advance rate the live read does, so only a real jump counts;
+    /// a session without a known duration is never advanced, as the service does.
+    /// </summary>
+    public static bool ShouldPush(
+        bool pushedPlaying, double pushedPositionMs, double pushedDurationMs, double advanceRate, TimeSpan sincePush,
+        bool playing, double durationMs, double livePositionMs, double slackMs)
+    {
+        if (pushedPlaying != playing || Math.Abs(pushedDurationMs - durationMs) > slackMs) return true;
+        var expected = playing && durationMs > 0
+            ? Advance(pushedPositionMs, durationMs, sincePush, advanceRate)
+            : pushedPositionMs;
+        return Math.Abs(livePositionMs - expected) > slackMs;
+    }
+
     /// <summary>Elapsed time since a player's timeline stamp; zero when the stamp is missing or implausible.</summary>
     public static TimeSpan SinceTimelineStamp(DateTimeOffset lastUpdated, DateTimeOffset now)
     {

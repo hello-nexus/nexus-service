@@ -20,6 +20,10 @@ public sealed class KrakenStreamTransport : IStreamedPanelTransport
 {
     private readonly KrakenHub _hub;
     private readonly byte[] _frame;
+    // Stopgap for the 2023 Kraken (0x300E): the streamed capture arrives with a translucent light
+    // row over its first row, which the vendor app's frames never have. The cause is not found, so
+    // that model gets row 1 copied over row 0.
+    private readonly int _topRowBytes;
     private int _filled;
     private bool _disposed;
 
@@ -32,6 +36,8 @@ public sealed class KrakenStreamTransport : IStreamedPanelTransport
         _hub = hub;
         Serial = serial;
         _frame = new byte[hub.LcdFrameBytes];
+        var height = hub.LcdHeight;
+        _topRowBytes = hub.IsCamSessionModel && height > 1 ? _frame.Length / height : 0;
     }
 
     public bool IsOpen => !_disposed && _hub.IsConnected && _hub.HasLcd;
@@ -85,6 +91,10 @@ public sealed class KrakenStreamTransport : IStreamedPanelTransport
                 continue;
             }
             _filled = 0;
+            if (_topRowBytes > 0)
+            {
+                _frame.AsSpan(_topRowBytes, _topRowBytes).CopyTo(_frame);
+            }
             if (_hub.PushStreamFrame(_frame))
             {
                 _dropLogged = false;

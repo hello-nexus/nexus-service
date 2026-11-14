@@ -26,6 +26,7 @@ namespace Nexus.Service.Cooling;
 public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingProvider
 {
     private readonly LhmComputer _lhm;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
     private readonly IConfigStore _config;
     private List<ChannelMapping>? _channels;
     private readonly object _discoveryLock = new();
@@ -66,8 +67,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private readonly MultiplexHub _hub;
 
-    public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config, MultiplexHub hub)
+    public WindowsFanControlProvider(LhmComputer lhm, IConfigStore config, MultiplexHub hub, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
+        _kraken = kraken;
         _hub = hub;
         _lhm = lhm;
         _config = config;
@@ -113,7 +115,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                 Id = m.Id,
                 Name = m.Name,
                 DutyPercent = (int)(m.ControlSensor.Value ?? 0f),
-                Rpm = (int)(m.FanSensor.Value ?? 0f),
+                Rpm = (int)(LhmWalkWatch.Shared.Read(m.FanSensor.Value) ?? 0f),
                 Mode = mode,
                 RpmSensorId = m.FanSensorId,
                 IsGpu = m.IsGpu,
@@ -142,6 +144,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         foreach (var hw in _lhm.Instance.Hardware)
         {
             var category = MapCategory(hw.HardwareType);
+            if (IsHubDrivenKraken(hw))
+            {
+                // A curve must never steer by LHM's value here, which stopped updating.
+                AddHubLiquid(sources, hw, category);
+                continue;
+            }
             AddTempSensors(sources, hw, category);
 
             foreach (var sub in hw.SubHardware)
@@ -160,7 +168,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             var sensor = FindSensorById(hw, sensorId);
             if (sensor is null) continue;
 
-            return sensor.Value;
+            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : LhmWalkWatch.Shared.Read(sensor.Value);
         }
 
         return null;
@@ -244,6 +252,11 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         IProgress<FanCalibrationProgress> progress,
         CancellationToken ct)
     {
+        if (LhmWalkWatch.Shared.IsStale)
+        {
+            ServiceLog.Warn("[fan-control] calibration skipped: sensor readings are stale");
+            return Array.Empty<FanCalibration>();
+        }
         var mappings = EnsureDiscovered();
         var toCalibrate = fanIds.Count == 0
             ? mappings
@@ -263,6 +276,12 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
                         () => ReadCalibrationRpm(m),
                         progress,
                         ct);
+                }
+                catch (CalibrationStaleReadException)
+                {
+                    // A 0 RPM taken from stale data would save the fan as Unresponsive.
+                    ServiceLog.Warn($"[fan-control] calibration of {m.Id} aborted: sensor readings went stale");
+                    return null;
                 }
                 catch (CalibrationWriteRefusedException)
                 {
@@ -356,6 +375,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     private sealed class CalibrationWriteRefusedException : Exception;
 
+    private sealed class CalibrationStaleReadException : Exception;
+
     private static bool WriteDuty(ChannelMapping mapping, float duty)
     {
         if (mapping.AmdFan is { } amd) return amd.SetDuty((int)MathF.Round(duty));
@@ -380,6 +401,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
     private int ReadCalibrationRpm(ChannelMapping mapping)
     {
         _lhm.Update(SensorRefresh.Fast);
+        if (LhmWalkWatch.Shared.IsStale) throw new CalibrationStaleReadException();
         return (int)(mapping.FanSensor.Value ?? 0f);
     }
 
@@ -595,12 +617,31 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     // ── Helpers ──
 
+    private bool IsHubDrivenKraken(IHardware hw) =>
+        _lhm.IsHubDriven(hw);
+
+    private void AddHubLiquid(List<TemperatureSource> list, IHardware hw, string category)
+    {
+        if (KrakenLhmSensors.Liquid(_kraken!) is not { } liquid) return;
+        foreach (var sensor in hw.Sensors)
+        {
+            if (sensor.SensorType != SensorType.Temperature) continue;
+            list.Add(new TemperatureSource
+            {
+                Id = sensor.Identifier.ToString(),
+                Name = sensor.Name,
+                Category = category,
+                Value = liquid,
+            });
+        }
+    }
+
     private static void AddTempSensors(List<TemperatureSource> list, IHardware hw, string category)
     {
         foreach (var sensor in hw.Sensors)
         {
             if (sensor.SensorType != SensorType.Temperature) continue;
-            var value = sensor.Value ?? 0f;
+            var value = LhmWalkWatch.Shared.Read(sensor.Value) ?? 0f;
             // Skip disconnected/disabled channels (e.g. unpopulated DIMM SPD
             // temps read 0 / ~0.25°C) so they never become curve inputs -
             // same gate every platform's provider applies. See TemperatureSourceFilter.

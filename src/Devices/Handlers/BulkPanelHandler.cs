@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Nexus.Service.Peripherals.BulkPanels;
@@ -15,9 +16,13 @@ public sealed class BulkPanelHandler : IDeviceHandler
 
     public BulkPanelHub Hub => _hub;
 
-    public BulkPanelHandler(BulkPanelHub hub)
+    private readonly IReadOnlyList<UsbId> _companions;
+
+    /// <param name="companions">Other USB functions of the same product; any one present keeps the row connected, without becoming an inventory identity of its own.</param>
+    public BulkPanelHandler(BulkPanelHub hub, IReadOnlyList<UsbId>? companions = null)
     {
         _hub = hub;
+        _companions = companions ?? Array.Empty<UsbId>();
         Identifiers = hub.Driver.ProductIds
             .Select(pid => new UsbId(hub.Driver.VendorId, pid))
             .ToArray();
@@ -35,8 +40,14 @@ public sealed class BulkPanelHandler : IDeviceHandler
         {
             return true;
         }
+        return DrivesDisplay(detectedDevices)
+            || detectedDevices.Any(d => _companions.Any(c => c.VendorId == d.VendorId && c.ProductId == d.ProductId));
+    }
+
+    public bool DrivesDisplay(IReadOnlyList<UsbDeviceEntry> detectedDevices)
+    {
         var driver = _hub.Driver;
-        return detectedDevices.Any(d =>
+        return _hub.IsConnected || detectedDevices.Any(d =>
             d.VendorId == driver.VendorId && driver.ProductIds.Contains(d.ProductId));
     }
 

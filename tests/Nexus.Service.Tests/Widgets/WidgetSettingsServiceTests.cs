@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Models.Widgets;
@@ -101,6 +102,41 @@ public class WidgetSettingsServiceTests : IDisposable
           "settings": [{{settingsJson}}]
         }
         """;
+    }
+
+    [Fact]
+    public void Editing_a_widget_in_one_orientation_leaves_the_other_orientations_copy_alone()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(s =>
+        {
+            s.PanelDevices["strip"] = new PanelDeviceRecord
+            {
+                Id = "strip",
+                Rotation = 90,
+                Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480, SupportsPortrait = true },
+                Layout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg", Widgets = { new PanelWidgetDto { Id = "landscape-copy", Type = MarketplaceType, Size = "2x2" } } } } },
+            };
+            Nexus.Service.Panel.PanelLayoutSlotsMigration.Apply(s);
+        });
+        var strip = _store.Load().PanelDevices["strip"];
+        var portraitId = strip.PortraitLayout!.Pages.Single().Widgets.Single().Id;
+        var landscapeId = strip.Layout!.Pages.Single().Widgets.Single().Id;
+        Assert.Equal("landscape-copy", portraitId);
+        Assert.NotEqual(portraitId, landscapeId);
+
+        Set(svc, portraitId, "#111111");
+        Assert.Null(strip.Layout!.Pages.Single().Widgets.Single().Config);
+
+        Set(svc, landscapeId, "#222222");
+        Assert.Equal("#111111", strip.PortraitLayout!.Pages.Single().Widgets.Single().Config!["color"].GetString());
+        Assert.Equal("#222222", strip.Layout.Pages.Single().Widgets.Single().Config!["color"].GetString());
+    }
+
+    private static void Set(WidgetSettingsService svc, string instanceId, string color)
+    {
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(color));
+        svc.Apply(instanceId, new WidgetSettingsPatch { Set = new Dictionary<string, JsonElement> { ["color"] = doc.RootElement.Clone() } });
     }
 
     [Fact]

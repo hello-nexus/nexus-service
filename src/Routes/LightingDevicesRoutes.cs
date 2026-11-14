@@ -1037,6 +1037,46 @@ public static partial class DevicesRoutes
             return Results.Ok(ApiResponse.Ok());
         }).AllowPanel();
 
+        // How a card's LED combines the canvas pixels it reads. Broadcasts `lighting` so the card refetches.
+        app.MapPost("/devices/lighting-devices/color-sampling", (
+            SetLightingDeviceColorSamplingBody body,
+            ILightingDeviceProvider ld,
+            Nexus.Service.Persistence.IConfigStore store,
+            Nexus.Service.Lighting.Engine.LightingEngine engine,
+            FeatureGates gates,
+            Nexus.Service.Sockets.MultiplexHub hub) =>
+        {
+            if (!gates.Lighting)
+            {
+                return Results.Conflict(new FeatureDisabledResponse { Feature = FeatureNames.Lighting });
+            }
+            if (!Nexus.Service.Lighting.Engine.ColorSamplings.TryParse(body.Mode, out var mode))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid mode."));
+            }
+            // Back to "standard" needs no listed card, so a stale id of an unplugged device can still be cleared.
+            if (string.IsNullOrEmpty(body.Id) || (mode != Nexus.Service.Lighting.Engine.ColorSampling.Standard && !ld.GetAll().Devices.Any(c => c.Id == body.Id)))
+            {
+                return Results.BadRequest(ApiResponse.Fail("Invalid id."));
+            }
+            store.Update(s =>
+            {
+                var modes = new Dictionary<string, string>(s.Devices.ColorSamplingModes);
+                if (mode == Nexus.Service.Lighting.Engine.ColorSampling.Standard)
+                {
+                    modes.Remove(body.Id);
+                }
+                else
+                {
+                    modes[body.Id] = body.Mode;
+                }
+                s.Devices.ColorSamplingModes = modes;
+            });
+            engine.SetColorSamplingModes(store.Load().Devices.ColorSamplingModes);
+            Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
+            return Results.Ok(ApiResponse.Ok());
+        }).AllowPanel();
+
         // Hue and saturation of a color-capable device (smart lights), as
         // device metadata the UI reads back. Not a pin: what a device shows on
         // its own goes through POST /devices/lighting-devices/pins.

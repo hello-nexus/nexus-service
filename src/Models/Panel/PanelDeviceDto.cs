@@ -3,6 +3,17 @@ using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Models.Panel;
 
+/// <summary>Accent, font and background mode remembered for one skin.</summary>
+public sealed class PanelSkinOverride
+{
+    public string? Accent { get; set; }
+    public string? Font { get; set; }
+    /// <summary>"solid", "shader", "media" or "skin"; null = the skin's default.</summary>
+    public string? BackgroundMode { get; set; }
+    /// <summary>Shader effect key; only kept with BackgroundMode "shader".</summary>
+    public string? BackgroundEffect { get; set; }
+}
+
 /// <summary>One colour stop of a panel's gauge gradient.</summary>
 public sealed class PanelGaugeGradientStop
 {
@@ -94,6 +105,10 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     public string? TextColor { get; set; }
     /// <summary>Font id for every widget on this panel. Null follows the app font; a patch of "" clears it.</summary>
     public string? Font { get; set; }
+    /// <summary>Skin id (lowercase slug). Null is no skin; a patch of "" clears it.</summary>
+    public string? Skin { get; set; }
+    /// <summary>Accent and font remembered per skin id. Null or absent entries follow the skin default; a patch replaces the whole map and an empty object clears it.</summary>
+    public Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public long FirstSeenAt { get; set; }
@@ -155,6 +170,31 @@ public sealed class PanelDeviceRecord : IPanelPersonalization
     /// <summary>Short-axis cell count of the page grid, even and within <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MinGridSlots"/> to <see cref="Nexus.Service.Panel.PanelDeviceRegistry.MaxGridSlots"/>. Overrides the count <see cref="WidgetSize"/>
     /// would derive; null = derive from <see cref="WidgetSize"/>.</summary>
     public int? GridSlots { get; set; }
+    /// <summary>
+    /// Storage slot for the layout of a glass mounted at 90 or 270 whose render size swaps (a non-square pushed-frame
+    /// panel). <see cref="Layout"/>, <see cref="WidgetSize"/> and <see cref="GridSlots"/> stay the 0/180 slot, byte for
+    /// byte what earlier builds stored. Persisted only: a response clone carries the slot for the record's current
+    /// rotation in <see cref="Layout"/> and leaves these null.
+    /// </summary>
+    public PanelLayoutDto? PortraitLayout { get; set; }
+    /// <summary>The 90/270 slot's <see cref="WidgetSize"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
+    public string? PortraitWidgetSize { get; set; }
+    /// <summary>The 90/270 slot's <see cref="GridSlots"/>; persisted only, see <see cref="PortraitLayout"/>.</summary>
+    public int? PortraitGridSlots { get; set; }
+    /// <summary>
+    /// Persisted only. Set on a record whose glass has its own portrait mode (the 8.8 inch strip) once its layout is
+    /// stored per orientation, so the schema 32 migration never copies a layout it has already placed.
+    /// </summary>
+    public bool? LayoutSlots { get; set; }
+    /// <summary>
+    /// Response-only: the size in CSS pixels this panel renders at for its current rotation, on glass that takes
+    /// quarter turns. A non-square pushed-frame panel swaps width and height at 90 and 270 while
+    /// <see cref="PanelDeviceCapabilities.CssWidth"/> and CssHeight keep the glass's native size. Null where the
+    /// glass takes no quarter turn; read the capabilities then. Never persisted.
+    /// </summary>
+    public int? RenderWidth { get; set; }
+    /// <summary>Response-only, see <see cref="RenderWidth"/>.</summary>
+    public int? RenderHeight { get; set; }
     /// <summary>Downgrade guard. When non-null it replaces <see cref="Enabled"/> (see <see cref="Nexus.Service.Panel.PanelHosting"/>)
     /// and <see cref="Enabled"/> is stored false, so a build that predates it hosts no kiosk for this record. Persisted only.</summary>
     public bool? Hosted { get; set; }
@@ -300,11 +340,19 @@ public interface IPanelPersonalization
     string? TextColorMode { get; set; }
     string? TextColor { get; set; }
     string? Font { get; set; }
+    string? Skin { get; set; }
+    Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     bool? ThemeSyncWithDesktop { get; set; }
     bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Travels with <see cref="Layout"/>: the web re-plans and saves both together.</summary>
     string? WidgetSize { get; set; }
     int? GridSlots { get; set; }
+    /// <summary>The layout for a glass turned a quarter whose render size swaps; <see cref="Layout"/> is the other slot.</summary>
+    PanelLayoutDto? PortraitLayout { get; set; }
+    string? PortraitWidgetSize { get; set; }
+    int? PortraitGridSlots { get; set; }
+    /// <summary>The 8.8 inch strip's layout in this payload is stored per orientation; absent on one an older build saved.</summary>
+    bool? LayoutSlots { get; set; }
 }
 
 /// <summary>
@@ -347,10 +395,16 @@ public sealed class PanelPreset : IAppBoundPreset, IPanelPersonalization
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
     public string? Font { get; set; }
+    public string? Skin { get; set; }
+    public Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     public string? WidgetSize { get; set; }
     public int? GridSlots { get; set; }
+    public PanelLayoutDto? PortraitLayout { get; set; }
+    public string? PortraitWidgetSize { get; set; }
+    public int? PortraitGridSlots { get; set; }
+    public bool? LayoutSlots { get; set; }
 
     IReadOnlyList<PresetAppBinding>? IAppBoundPreset.Apps => Apps;
 }
@@ -475,6 +529,10 @@ public sealed class PanelDevicePatch
     public string? TextColorMode { get; set; }
     public string? TextColor { get; set; }
     public string? Font { get; set; }
+    /// <summary>Skin id (lowercase slug). Null is no skin; a patch of "" clears it.</summary>
+    public string? Skin { get; set; }
+    /// <summary>Accent and font remembered per skin id. Null or absent entries follow the skin default; a patch replaces the whole map and an empty object clears it.</summary>
+    public Dictionary<string, PanelSkinOverride>? SkinOverrides { get; set; }
     public bool? ThemeSyncWithDesktop { get; set; }
     public bool? AccentSyncWithDesktop { get; set; }
     /// <summary>Display-bound records only; ignored for other panels.</summary>

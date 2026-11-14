@@ -26,9 +26,10 @@ public readonly record struct MystiqueFound(string Category, HardwareSensor Sens
 public static class MystiqueSensors
 {
     public static MystiqueReading Read(
-        ISensorProvider sensors, DeepCoolMystiqueSettings settings, IReadOnlyDictionary<string, string>? fanNames = null)
+        ISensorProvider sensors, DeepCoolMystiqueSettings settings, IReadOnlyDictionary<string, string>? fanNames = null,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
-        var ctx = new Context(sensors, fanNames);
+        var ctx = new Context(sensors, fanNames, fans);
         return new MystiqueReading(
             TempC: Round(Value(ctx, settings.CpuTemperature, MystiqueValue.CpuTemperature)),
             UsagePct: Round(Value(ctx, settings.CpuUsage, MystiqueValue.CpuUsage)),
@@ -53,15 +54,16 @@ public static class MystiqueSensors
     /// cooling page match by their new name.
     /// </summary>
     public static MystiqueFound? Find(
-        ISensorProvider sensors, DeepCoolMystiqueSensorPick pick, MystiqueValue value, IReadOnlyDictionary<string, string>? fanNames = null) =>
-        Find(new Context(sensors, fanNames), pick, value);
+        ISensorProvider sensors, DeepCoolMystiqueSensorPick pick, MystiqueValue value, IReadOnlyDictionary<string, string>? fanNames = null,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null) =>
+        Find(new Context(sensors, fanNames, fans), pick, value);
 
     private static MystiqueFound? Find(Context ctx, DeepCoolMystiqueSensorPick pick, MystiqueValue value)
     {
         if (!string.IsNullOrEmpty(pick.Sensor))
         {
             var picked = SensorSnapshotResolver.ResolveExact(
-                ctx.Sensors, pick.Category, pick.Sensor, new SensorSnapshotSources(null, null, null, ctx.FanNames));
+                ctx.Sensors, pick.Category, pick.Sensor, Nexus.Service.Monitoring.HubCoolerSensors.SourcesFor(ctx.Sensors, pick.Category, ctx.Fans, ctx.FanNames));
             return picked is not null && picked.Type == RequiredType(value) ? new MystiqueFound(pick.Category, picked) : null;
         }
         return value switch
@@ -140,11 +142,14 @@ public static class MystiqueSensors
         private IReadOnlyList<HardwareSensor>? _cpu;
         private IReadOnlyList<HardwareSensor>? _board;
 
-        public Context(ISensorProvider sensors, IReadOnlyDictionary<string, string>? fanNames)
+        public Context(ISensorProvider sensors, IReadOnlyDictionary<string, string>? fanNames, Nexus.Service.Cooling.IFanControlProvider? fans)
         {
             Sensors = sensors;
             FanNames = fanNames;
+            Fans = fans;
         }
+
+        public Nexus.Service.Cooling.IFanControlProvider? Fans { get; }
 
         public ISensorProvider Sensors { get; }
         public IReadOnlyDictionary<string, string>? FanNames { get; }

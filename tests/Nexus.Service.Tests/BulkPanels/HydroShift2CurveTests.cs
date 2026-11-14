@@ -472,6 +472,66 @@ public class HydroShift2CurveTests
     }
 
     [Fact]
+    public void A_display_back_from_desktop_mode_is_rebooted_once_even_with_offline_mode_on()
+    {
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver { OfflineModeSource = () => true };
+        driver.RequestReboot();
+        Assert.False(driver.RebootWanted);
+
+        Assert.NotNull(driver.Connect(pipe, null));
+        Assert.True(driver.RebootWanted);
+        pipe.Commands.Clear();
+        driver.Disconnect(pipe, null);
+
+        Assert.Equal(new[] { HydroShift2Protocol.CommandStopPlay, HydroShift2CurveProtocol.CommandReboot }, pipe.Commands);
+        Assert.False(driver.RebootWanted);
+    }
+
+    [Fact]
+    public void After_the_desktop_mode_reboot_the_display_reconnects_once_settled_and_stays()
+    {
+        long now = 1_000;
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver(() => now);
+        driver.RequestReboot();
+        Assert.NotNull(driver.Connect(pipe, null));
+        driver.Disconnect(pipe, null);
+
+        Assert.Null(driver.Connect(pipe, null));
+        now += 12_000;
+        Assert.NotNull(driver.Connect(pipe, null));
+        Assert.False(driver.RebootWanted);
+    }
+
+    [Fact]
+    public void A_failed_first_handshake_keeps_the_desktop_mode_reboot_for_the_next_session()
+    {
+        var pipe = new GlassPipe { Answers = false };
+        var driver = new HydroShift2CurveLcdDriver();
+        driver.RequestReboot();
+        Assert.Null(driver.Connect(pipe, null));
+        driver.Disconnect(pipe, null);
+
+        pipe.Answers = true;
+        Assert.NotNull(driver.Connect(pipe, null));
+        Assert.True(driver.RebootWanted);
+    }
+
+    [Fact]
+    public void A_reboot_request_with_no_session_inside_its_window_lapses()
+    {
+        long now = 1_000;
+        var pipe = new GlassPipe { Answers = true };
+        var driver = new HydroShift2CurveLcdDriver(() => now);
+        driver.RequestReboot();
+        now += HydroShift2CurveLcdDriver.RebootRequestMs;
+
+        Assert.NotNull(driver.Connect(pipe, null));
+        Assert.False(driver.RebootWanted);
+    }
+
+    [Fact]
     public void Release_with_offline_mode_on_skips_the_reboot_and_refreshes_the_clock()
     {
         var pipe = new GlassPipe { Answers = true };

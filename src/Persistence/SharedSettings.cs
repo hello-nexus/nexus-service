@@ -185,6 +185,7 @@ public sealed class Preferences
     public int StartupDelaySeconds { get; set; }
     public bool DisableGpuMonitoring { get; set; }
     public bool ReadRamTemperatures { get; set; } = true;
+    public bool PowerMonitorsEnabled { get; set; } = true;
     public bool AmdGpuLighting { get; set; }
     /// <summary>Read-only: true on Linux, where <see cref="AmdGpuLighting"/> has an effect. Ignored on write.</summary>
     public bool AmdGpuLightingApplicable { get; set; }
@@ -221,14 +222,13 @@ public sealed class DiagnosticsThresholdsPatch
 
 /// <summary>Master + per-category native-notification toggles for diagnostics
 /// alerts, plus the minimum gap between repeat alerts for the same
-/// component. Every toggle defaults off; DiagnosticsAlertService only raises
+/// component. DiagnosticsAlertService only raises
 /// a native notification when Enabled and the reason's own category are
 /// both true.</summary>
 public sealed class DiagnosticsNotifications
 {
-    // Master switch stays off by default; the per-category flags default on, so
-    // turning notifications on notifies for every category without extra setup.
-    public bool Enabled { get; set; }
+    // On for a new install. JsonConfigStore forces it off for any stored file that lacks the key (older builds defaulted it off).
+    public bool Enabled { get; set; } = true;
     public bool HighTemp { get; set; } = true;
     public bool StorageHealth { get; set; } = true;
     public bool Cooling { get; set; } = true;
@@ -236,6 +236,10 @@ public sealed class DiagnosticsNotifications
     public bool SystemDevices { get; set; } = true;
     public bool GpuThrottle { get; set; } = true;
     public int CooldownMinutes { get; set; } = 60;
+    /// <summary>Retired: sensor alerts follow <see cref="Enabled"/> and <see cref="CooldownMinutes"/>. Kept, frozen, for downgrade; never read.</summary>
+    public bool SensorAlerts { get; set; } = true;
+    /// <summary>Retired with <see cref="SensorAlerts"/>: frozen for downgrade, never read.</summary>
+    public int SensorCooldownMinutes { get; set; } = 60;
 }
 
 public sealed class DiagnosticsNotificationsPatch
@@ -248,6 +252,8 @@ public sealed class DiagnosticsNotificationsPatch
     public bool? SystemDevices { get; set; }
     public bool? GpuThrottle { get; set; }
     public int? CooldownMinutes { get; set; }
+    public bool? SensorAlerts { get; set; }
+    public int? SensorCooldownMinutes { get; set; }
 }
 
 /// <summary>Per-area enable flag for diagnostics health status + alerts. A
@@ -276,17 +282,27 @@ public sealed class DiagnosticsComponentsPatch
 public sealed class DiagnosticsSettings
 {
     public DiagnosticsThresholds Thresholds { get; set; } = new();
-    /// <summary>Minutes an over-threshold warning is kept after the component
-    /// last measured hot. 0 = clears as soon as the latest sample cools.</summary>
+    /// <summary>Retired: the built-in sensor rules replaced it. Kept, frozen, so a downgrade
+    /// still finds the value the user had.</summary>
     public int WarningLingerMinutes { get; set; }
     public DiagnosticsNotifications Notifications { get; set; } = new();
     public DiagnosticsComponents Components { get; set; } = new();
     /// <summary>Health component ids (the HealthComponent.Id values, e.g.
-    /// "storage:&lt;serial&gt;", "cooling:&lt;deviceId&gt;", "gpu:0") the user
+    /// "storage:&lt;serial&gt;", "cooling:&lt;deviceId&gt;") the user
     /// chose to ignore. An ignored component is dropped from GET
     /// /diagnostics/health, so it never colours the overall status, the panel
     /// widget or a notification; its own tab still lists the device.</summary>
     public List<string> IgnoredComponents { get; set; } = new();
+    /// <summary>User sensor threshold rules, machine-wide. Capped at <see cref="Nexus.Service.Diagnostics.Alerts.SensorAlertRules.MaxRules"/> by the routes.</summary>
+    public List<SensorAlertRule> SensorAlerts { get; set; } = new();
+    /// <summary>Generation of the built-in sensor rules; below the per-device generation, the legacy per-kind templates are still to be seeded from the old fields.</summary>
+    public int BuiltInSensorsVersion { get; set; }
+    /// <summary>Generation of the health-check switches; past the first step the retired GPU, storage and cooling toggles are folded into the per-drive ignore list and the per-fan Watchlist entries, and past the second the per-GPU ignore entries are gone.</summary>
+    public int HealthChecksVersion { get; set; }
+    /// <summary>Set by the migration when the cooling toggle was off: every fan channel known at first sight is added to the ignore list, then this clears.</summary>
+    public bool PendingFansOff { get; set; }
+    /// <summary>Set by the migration when the storage toggle was off: every drive known at first sight is added to the ignore list, then this clears.</summary>
+    public bool PendingDrivesOff { get; set; }
 }
 
 public sealed class DiagnosticsSettingsPatch
@@ -316,6 +332,7 @@ public sealed class PreferencesPatch
     public int? StartupDelaySeconds { get; set; }
     public bool? DisableGpuMonitoring { get; set; }
     public bool? ReadRamTemperatures { get; set; }
+    public bool? PowerMonitorsEnabled { get; set; }
     public bool? AmdGpuLighting { get; set; }
     public FeaturesSettingsPatch? Features { get; set; }
 }

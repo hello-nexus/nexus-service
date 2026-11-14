@@ -46,10 +46,14 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Task _openTask;
     private readonly object _updateLock = new();
     private readonly object _readerLock = new();
+    // Separate from _updateLock so a reader asking a cached answer never waits behind a hardware walk.
+    private readonly object _rotationalLock = new();
+    private readonly LhmWalkWatch _walkWatch = LhmWalkWatch.Shared;
     private long _lastUpdateTicks;
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
     private readonly IConfigStore _config;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
     private readonly DeviceControlGate _gate;
     private readonly FeatureGates _gates;
     private readonly Nexus.Service.Sockets.MultiplexHub? _hub;
@@ -57,6 +61,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
+    private volatile bool _opened;
     private volatile bool _disposed;
     private readonly bool _testHost = Environment.GetEnvironmentVariable("NEXUS_TEST_HOST") == "1";
     private readonly Dictionary<string, bool?> _rotational = new(StringComparer.Ordinal);
@@ -73,9 +78,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // floor would feed it the same cached value four times.
     private const long FastFloorMs = 100;
 
-    public LhmComputer(IConfigStore config, DeviceControlGate gate, FeatureGates? gates = null, Nexus.Service.Sockets.MultiplexHub? hub = null)
+    public LhmComputer(IConfigStore config, DeviceControlGate gate, FeatureGates? gates = null, Nexus.Service.Sockets.MultiplexHub? hub = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
         _hub = hub;
+        _kraken = kraken;
         _smartActive = new SmartActiveFlip(() => { if (_hub is not null) Nexus.Service.Sockets.PanelTopics.BroadcastSmartPoll(_hub); });
         _gates = gates ?? FeatureGates.AllEnabled;
         _config = config;
@@ -115,6 +121,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             IsNetworkEnabled = true,
             IsBatteryEnabled = true,
             IsPsuEnabled = true,
+            // Opens matching STM32 serial ports to probe for a WireView Pro II.
+            IsPowerMonitorEnabled = config.Load().PowerMonitorsEnabled,
         };
         _openTask = Task.Run(async () =>
         {
@@ -135,7 +143,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 if (!_testHost)
                 {
+                    // A mutex abandoned by an earlier OpenRGB child would otherwise be adopted by this process for good.
+                    SmbusMutexReclaimer.Reclaim("before sensor open");
                     _computer.Open();
+                    _opened = true;
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
                 }
             }
@@ -148,14 +159,25 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 PawnIoBootGate.SignalLhmOpened();
             }
         });
+        _walkWatch.Stalled += OnWalkStalled;
         _gate.Changed += OnControlGateChanged;
         _config.OnChanged += OnConfigChanged;
         // A toggle between the reads above and these subscriptions would otherwise
         // hold until the next restart.
         ScheduleSpdApply();
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
     }
 
     public Computer Instance => _computer;
+
+    private void OnWalkStalled(TimeSpan age) =>
+        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s; sensor readings reported as missing until it completes");
+
+    /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
+    internal bool IsHubDriven(IHardware hw) =>
+        hw.HardwareType == HardwareType.Cooler
+        && KrakenLhmSensors.IsHubDriven(_kraken, hw.Name, 1)
+        && _computer.Hardware.Count(h => h.HardwareType == HardwareType.Cooler && h.Name == hw.Name) == 1;
 
     private void OnControlGateChanged(string handlerId, bool enabled)
     {
@@ -168,13 +190,43 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     private void OnConfigChanged()
     {
-        var setting = _config.Load().ReadRamTemperatures;
-        if (setting == _settingSeen)
+        var snapshot = _config.Load();
+        var setting = snapshot.ReadRamTemperatures;
+        if (setting != _settingSeen)
+        {
+            _settingSeen = setting;
+            ScheduleSpdApply();
+        }
+        _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
+    }
+
+    /// <summary>Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.</summary>
+    private void ApplyPowerMonitors()
+    {
+        if (_testHost)
         {
             return;
         }
-        _settingSeen = setting;
-        ScheduleSpdApply();
+        try
+        {
+            bool want;
+            lock (_updateLock)
+            {
+                want = _config.Load().PowerMonitorsEnabled;
+                if (_disposed || _computer.IsPowerMonitorEnabled == want)
+                {
+                    return;
+                }
+                _computer.IsPowerMonitorEnabled = want;
+            }
+            Console.WriteLine(_opened
+                ? $"[lhm] power monitors {(want ? "on" : "off")}"
+                : $"[lhm] power monitors setting stored: {(want ? "on" : "off")}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[lhm] power monitor apply failed: {ex.Message}");
+        }
     }
 
     // The swap needs Open() finished; the open task never faults, so the
@@ -199,23 +251,32 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 {
                     return;
                 }
-                // Page reset runs while the real driver is still seated.
-                if (!decision.Wanted)
+                _walkWatch.BeginWalk();
+                _walkWatch.SetItem("spd-gate");
+                try
                 {
-                    ResetLocked(SpdLiveResetBudget);
+                    // Page reset runs while the real driver is still seated.
+                    if (!decision.Wanted)
+                    {
+                        ResetLocked(SpdLiveResetBudget);
+                    }
+                    // Group first (cancels its retry task, closes its DIMMs), then
+                    // the driver swap. Re-enabling probes eight addresses
+                    // synchronously under the lock.
+                    _computer.IsMemoryEnabled = false;
+                    // Detach, never UnloadDriver: Unload disposes the PawnIO modules,
+                    // and the closed group's SPDAccessor finalizers reset the DIMM
+                    // page through them later, dereferencing the disposed module on
+                    // the finalizer thread and terminating the process. The old
+                    // modules stay open until the next re-enable re-detects buses.
+                    DriverManager.Driver = decision.Wanted ? null : NoSpdDriver.Instance;
+                    _computer.IsMemoryEnabled = true;
+                    _spdActive = decision.Wanted;
                 }
-                // Group first (cancels its retry task, closes its DIMMs), then
-                // the driver swap. Re-enabling probes eight addresses
-                // synchronously under the lock.
-                _computer.IsMemoryEnabled = false;
-                // Detach, never UnloadDriver: Unload disposes the PawnIO modules,
-                // and the closed group's SPDAccessor finalizers reset the DIMM
-                // page through them later, dereferencing the disposed module on
-                // the finalizer thread and terminating the process. The old
-                // modules stay open until the next re-enable re-detects buses.
-                DriverManager.Driver = decision.Wanted ? null : NoSpdDriver.Instance;
-                _computer.IsMemoryEnabled = true;
-                _spdActive = decision.Wanted;
+                finally
+                {
+                    _walkWatch.EndWalk();
+                }
             }
             Console.WriteLine(decision.Wanted
                 ? $"[lhm] DIMM SPD polling on: {decision.Reason}"
@@ -227,6 +288,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
+    // Fan defaults are handed back by CurveEngine's shutdown ReleaseAll before this runs, so skipping Close loses only LHM's own driver teardown.
+    private static readonly TimeSpan CloseWalkWait = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SpdDisposeBudget = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan SpdLiveResetBudget = TimeSpan.FromMilliseconds(750);
 
@@ -319,7 +382,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     public Task OpenTask => _openTask;
 
     /// <summary>
-    /// Update all hardware sensors. Thread-safe - concurrent callers are serialized.
+    /// Update all hardware sensors. Walks are serialized, and a Normal reader that finds a walk
+    /// running returns the values the previous walk cached instead of waiting for it.
     /// Capped at one hardware walk per second, which collapses the redundant
     /// updates from multiple callers (MonitoringBroadcaster, CurveEngine, HTTP
     /// handlers) into a single iteration; callers inside that window read the
@@ -345,8 +409,17 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         var smartDemand = SmartPollDemand.Capture(_gates, settings, SmartLiveConsumers.Any(_hub));
         _smartActive.Observe(smartDemand.IsActive(StorageIdentifiers()));
 
-        lock (_updateLock)
+        // Normal readers never wait on a walk: while one runs they get the cached values. Forced and fast
+        // readers need fresh data and wait, unless the walk is stale (wedged), when nobody waits.
+        var held = false;
+        try
         {
+            held = LhmWalkWatch.Acquire(_updateLock, refresh == SensorRefresh.Normal || _walkWatch.IsStale);
+            if (!held)
+            {
+                return;
+            }
+
             var now = Environment.TickCount64;
             if (refresh != SensorRefresh.Force && now - _lastUpdateTicks < floorMs)
             {
@@ -359,20 +432,42 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             // is ~188ms on a 12-core part - 57% of the whole walk, all of it
             // sleeping. Holding 1ms resolution across the walk turns each of
             // those into ~1-2ms.
-            using (WindowsTimerResolution.Elevate())
+            // The test host walks an empty tree; it must not arm the shared deadline.
+            if (!_testHost)
             {
-                foreach (var hw in _computer.Hardware)
+                _walkWatch.BeginWalk();
+            }
+            try
+            {
+                using (WindowsTimerResolution.Elevate())
                 {
-                    // StorageDevice keeps its skip counter per instance and reads the static
-                    // at the top of its own Update, so setting it here is per-drive. Throughput
-                    // and free space are on separate paths and still refresh every walk.
-                    if (hw.HardwareType == HardwareType.Storage)
-                        StorageDevice.SmartUpdateCycleCount = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
+                    foreach (var hw in _computer.Hardware)
+                    {
+                        // StorageDevice keeps its skip counter per instance and reads the static
+                        // at the top of its own Update, so setting it here is per-drive. Throughput
+                        // and free space are on separate paths and still refresh every walk.
+                        if (hw.HardwareType == HardwareType.Storage)
+                            StorageDevice.SmartUpdateCycleCount = SmartCyclesFor(hw, monitoring, smartDemand, refresh);
 
-                    TryUpdate(hw);
-                    foreach (var sub in hw.SubHardware)
-                        TryUpdate(sub);
+                        TryUpdate(hw);
+                        foreach (var sub in hw.SubHardware)
+                            TryUpdate(sub);
+                    }
                 }
+            }
+            finally
+            {
+                if (!_testHost && _walkWatch.EndWalk())
+                {
+                    ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
+                }
+            }
+        }
+        finally
+        {
+            if (held)
+            {
+                Monitor.Exit(_updateLock);
             }
         }
     }
@@ -381,8 +476,21 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     // fail the walk for every other device or the routes that triggered it.
     private void TryUpdate(IHardware hw)
     {
+        // A Kraken the hub drives is not polled here. Everything that reads its entries
+        // takes the hub's values instead, because LHM's stay at their last reading.
+        if (IsHubDriven(hw))
+        {
+            return;
+        }
         try
         {
+            var item = hw.Identifier.ToString();
+            if (_walkWatch.SpdQuiesced && item.StartsWith("/memory/dimm", StringComparison.Ordinal))
+            {
+                _walkWatch.SetItem(null);
+                return;
+            }
+            _walkWatch.SetItem(item);
             hw.Update();
         }
         catch (Exception ex)
@@ -453,7 +561,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     public bool? IsRotational(IHardware hw)
     {
         var identifier = hw.Identifier.ToString();
-        lock (_updateLock)
+        lock (_rotationalLock)
         {
             if (_rotational.TryGetValue(identifier, out var cached)) return cached;
             bool? value = null;
@@ -470,6 +578,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     {
         _gate.Changed -= OnControlGateChanged;
         _config.OnChanged -= OnConfigChanged;
+        _walkWatch.Stalled -= OnWalkStalled;
         // Wait for the background open to finish before Close(): LHM's
         // Computer.Close() isn't documented thread-safe against an in-flight
         // Open(), and Dispose() is only called at service shutdown so the
@@ -477,7 +586,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
         _disposed = true;
         ResetSpdPages(SpdDisposeBudget);
-        _computer.Close();
+        // Close can block on the driver a wedged walk is stuck in, and a service that never stops stays down.
+        if (!LhmWalkWatch.TryRunWhenIdle(_updateLock, CloseWalkWait, _computer.Close))
+        {
+            ServiceLog.Warn("[resume] LHM walk still running at shutdown; skipping Computer.Close so shutdown completes");
+        }
     }
 }
 

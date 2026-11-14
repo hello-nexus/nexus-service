@@ -112,6 +112,23 @@ internal static partial class WindowsDevnodes
         return result;
     }
 
+    /// <summary>VID:PID of each hub above the first present USB device with this id, nearest first, joined by ">"; empty when none.</summary>
+    public static string DescribeUsbParents(int vendorId, int productId)
+    {
+        foreach (var d in EnumeratePresent(enumerator: "USB", idsOnly: true))
+        {
+            if (d.InstanceId.Contains("&MI_", StringComparison.OrdinalIgnoreCase)
+                || !TryParseVidPid(d.InstanceId, out var vid, out var pid) || vid != vendorId || pid != productId)
+            {
+                continue;
+            }
+            return string.Join(">", ParentInstanceIds(d.InstanceId)
+                .TakeWhile(p => p.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase))
+                .Select(p => TryParseVidPid(p, out var v, out var q) ? $"{v:X4}:{q:X4}" : "root"));
+        }
+        return "";
+    }
+
     private static Nexus.Service.Diagnostics.UsbTopologyNode TopologyNode(string instanceId, string name, int depth) => new()
     {
         Id = Nexus.Service.Diagnostics.UsbTopology.ShortHash(instanceId),

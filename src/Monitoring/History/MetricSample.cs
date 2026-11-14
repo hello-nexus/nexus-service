@@ -24,6 +24,18 @@ public sealed record FanReading(string FanId, string Name, int? Rpm, int? Duty);
 /// Kind is "storage" or "ram".</summary>
 public sealed record ComponentTempReading(string ComponentId, string Kind, string Name, double? ValueC);
 
+/// <summary>One tracked-sensor reading within a MetricSample: Id is the
+/// sensor alert rule id, Value is in the sensor's native unit. Only finite,
+/// readable values are ever carried.</summary>
+public sealed record SensorSeriesReading(string Id, double Value);
+
+/// <summary>Supplies the tracked-sensor readings MetricsSampler stamps onto
+/// each sample (implemented by SensorAlertEngine).</summary>
+public interface ISensorSeriesSource
+{
+    IReadOnlyList<SensorSeriesReading> CurrentReadings(long tsSec);
+}
+
 /// <summary>
 /// One second's worth of system metrics: wall-clock epoch-seconds timestamp
 /// plus nullable scalars (null = that source failed this tick) and the
@@ -48,4 +60,6 @@ public sealed record MetricSample(
     int? Fps = null)
 {
     public IReadOnlyList<ComponentTempReading> ComponentTemps { get; init; } = ComponentTemps ?? Array.Empty<ComponentTempReading>();
+
+    public IReadOnlyList<SensorSeriesReading> SensorReadings { get; init; } = Array.Empty<SensorSeriesReading>();
 }

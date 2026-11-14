@@ -8,6 +8,92 @@ namespace Nexus.Service.Tests.Activity;
 
 public class MediaPositionMathTests
 {
+    private const double Slack = MediaTopicPublisher.PositionSlackMs;
+
+    private static bool Push(
+        bool pushedPlaying, double pushed, double pushedDuration, double rate, double sinceSec,
+        bool playing, double duration, double live)
+        => MediaPositionMath.ShouldPush(
+            pushedPlaying, pushed, pushedDuration, rate, TimeSpan.FromSeconds(sinceSec), playing, duration, live, Slack);
+
+    [Theory]
+    [InlineData(60_000, 5, 65_000, false)]
+    [InlineData(60_000, 5, 66_400, false)]
+    [InlineData(60_000, 5, 120_000, true)]
+    [InlineData(60_000, 5, 10_000, true)]
+    [InlineData(60_000, 5, 60_000, true)]
+    public void ShouldPush_PlayingFlagsSeeksOnly(double pushed, int sinceSec, double live, bool push)
+    {
+        Assert.Equal(push, Push(true, pushed, 200_000, 1.0, sinceSec, true, 200_000, live));
+    }
+
+    [Fact]
+    public void ShouldPush_PredictionClampsToDuration()
+    {
+        Assert.False(Push(true, 195_000, 200_000, 1.0, 30, true, 200_000, 200_000));
+    }
+
+    [Fact]
+    public void ShouldPush_NoDurationNeverAdvances()
+    {
+        Assert.False(Push(true, 5_000, 0, 1.0, 30, true, 0, 5_000));
+        Assert.True(Push(true, 5_000, 0, 1.0, 30, true, 0, 60_000));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ShouldPush_PlayStateChangePushes(bool pushedPlaying, bool playing)
+    {
+        Assert.True(Push(pushedPlaying, 5_000, 200_000, 1.0, 0, playing, 200_000, 5_000));
+    }
+
+    [Theory]
+    [InlineData(5_000, false)]
+    [InlineData(5_800, false)]
+    [InlineData(90_000, true)]
+    [InlineData(1_000, true)]
+    public void ShouldPush_PausedHoldsStillAndCatchesSeek(double live, bool push)
+    {
+        Assert.Equal(push, Push(false, 5_000, 200_000, 0, 60, false, 200_000, live));
+    }
+
+    [Fact]
+    public void ShouldPush_SteadyNonUnityRateStaysQuiet()
+    {
+        Assert.False(Push(true, 60_000, 200_000, 2.0, 30, true, 200_000, 120_000));
+        Assert.True(Push(true, 60_000, 200_000, 2.0, 30, true, 200_000, 90_000));
+    }
+
+    [Fact]
+    public void ShouldPush_FrozenLiveReadStaysQuietWhenAnchoredAtZeroRate()
+    {
+        Assert.False(Push(true, 60_000, 200_000, 0, 600, true, 200_000, 60_000));
+    }
+
+    [Fact]
+    public void ShouldPush_DurationChangePushes()
+    {
+        Assert.True(Push(true, 5_000, 0, 1.0, 1, true, 200_000, 6_000));
+        Assert.True(Push(true, 5_000, 200_000, 1.0, 1, true, 210_000, 6_000));
+    }
+
+    [Fact]
+    public void ShouldPush_DurationJitterWithinSlackStaysQuiet()
+    {
+        Assert.False(Push(true, 5_000, 200_000, 1.0, 1, true, 200_400, 6_000));
+    }
+
+    [Fact]
+    public void EffectiveAdvanceRate_ZeroWhenStampUnusableOrRateNotPositive()
+    {
+        var now = DateTimeOffset.UtcNow;
+        Assert.Equal(1.5, MediaPositionMath.EffectiveAdvanceRate(now.AddSeconds(-5), now, 1.5));
+        Assert.Equal(0, MediaPositionMath.EffectiveAdvanceRate(default, now, 1.0));
+        Assert.Equal(0, MediaPositionMath.EffectiveAdvanceRate(now.AddDays(-3), now, 1.0));
+        Assert.Equal(0, MediaPositionMath.EffectiveAdvanceRate(now.AddSeconds(-5), now, 0));
+    }
+
     [Fact]
     public void Advance_AddsElapsedTime()
     {

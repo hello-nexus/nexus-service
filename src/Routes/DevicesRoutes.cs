@@ -36,6 +36,7 @@ public static partial class DevicesRoutes
         MapGalahad2Endpoints(app);
         MapGlacialLcdEndpoints(app);
         MapDeepCoolMystiqueEndpoints(app);
+        MapRyujinEndpoints(app);
         MapDeepCoolMystiqueMediaEndpoints(app);
         MapHydroShift2Endpoints(app);
         MapHydroShift2CurveEndpoints(app);
@@ -45,6 +46,7 @@ public static partial class DevicesRoutes
         MapStrimerEndpoints(app);
         MapNollieEndpoints(app);
         MapAsiahorseUmbraEndpoints(app);
+        MapLogitechSpeakerEndpoints(app);
     }
 
     /// <summary>

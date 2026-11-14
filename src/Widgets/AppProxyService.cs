@@ -26,8 +26,8 @@ namespace Nexus.Service.Widgets;
 ///   <item>Host must match the widget manifest's <c>capabilities.net.fetch</c>
 ///         allowlist. Wildcard hosts (<c>*.example.com</c>) match any
 ///         subdomain depth (suffix match on <c>.example.com</c>).</item>
-///   <item>Response body capped at <see cref="MaxBodyBytes"/>; oversized
-///         responses are truncated + flagged.</item>
+///   <item>Response body capped at <see cref="MaxBodyBytes"/> (<see cref="MaxBinaryBodyBytes"/>
+///         for binary content types); oversized responses are truncated + flagged.</item>
 ///   <item>Per-widget rate limit (<see cref="MaxRequestsPerMinute"/> rolling).</item>
 ///   <item>Method allowlist: GET / POST / PUT / PATCH / DELETE / HEAD.</item>
 ///   <item>Forbidden headers (Cookie, Authorization, Host, the build
@@ -42,7 +42,25 @@ namespace Nexus.Service.Widgets;
 public sealed class AppProxyService
 {
     public const int MaxBodyBytes = 1 * 1024 * 1024; // 1 MiB
-    public const int MaxRequestsPerMinute = 30;
+    /// <summary>Cap for a binary body (map tiles and the like); text and JSON keep <see cref="MaxBodyBytes"/>.</summary>
+    public const int MaxBinaryBodyBytes = 4 * 1024 * 1024;
+    public const int MaxRequestsPerMinute = 300;
+    /// <summary>Upstream requests one app may have in flight; bounds buffered body memory to this times <see cref="MaxBinaryBodyBytes"/>.</summary>
+    public const int MaxConcurrentPerApp = 6;
+
+    /// <summary>How long a request waits for an in-flight slot before it is refused.</summary>
+    internal TimeSpan ConcurrencyWait { get; set; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Handler for the named client: no redirects (a followed hop escapes the
+    /// allowlist), and gzip/deflate/brotli decoded so bodies cross the network
+    /// compressed. The body caps apply to the decoded bytes.
+    /// </summary>
+    public static HttpClientHandler CreateHandler() => new()
+    {
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.All,
+    };
 
     /// <summary>
     /// Default User-Agent sent when the widget doesn't supply one. Public
@@ -78,6 +96,7 @@ public sealed class AppProxyService
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly AppRegistry _registry;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _inFlight = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RateBucket> _rateBuckets = new(StringComparer.Ordinal);
 
     public AppProxyService(IHttpClientFactory httpFactory, AppRegistry registry)
@@ -192,6 +211,12 @@ public sealed class AppProxyService
             msg.Content = content;
         }
 
+        var gate = _inFlight.GetOrAdd(req.AppId, _ => new SemaphoreSlim(MaxConcurrentPerApp, MaxConcurrentPerApp));
+        if (!await gate.WaitAsync(ConcurrencyWait, ct))
+        {
+            resp.Error = "too many concurrent requests; try again";
+            return resp;
+        }
         try
         {
             using var upstream = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -214,6 +239,8 @@ public sealed class AppProxyService
                 }
             }
 
+            var contentType = upstream.Content.Headers.ContentType?.MediaType ?? "";
+            var maxBody = IsBinaryMediaType(contentType) ? MaxBinaryBodyBytes : MaxBodyBytes;
             using var content = await upstream.Content.ReadAsStreamAsync(ct);
             using var buffered = new MemoryStream();
             var buffer = new byte[8192];
@@ -221,10 +248,10 @@ public sealed class AppProxyService
             int read;
             while ((read = await content.ReadAsync(buffer.AsMemory(0, buffer.Length), ct)) > 0)
             {
-                if (totalRead + read > MaxBodyBytes)
+                if (totalRead + read > maxBody)
                 {
-                    resp.Error = $"response exceeded {MaxBodyBytes}-byte cap; truncated";
-                    var allowed = MaxBodyBytes - totalRead;
+                    resp.Error = $"response exceeded {maxBody}-byte cap; truncated";
+                    var allowed = maxBody - totalRead;
                     if (allowed > 0) buffered.Write(buffer, 0, allowed);
                     totalRead += allowed;
                     break;
@@ -234,7 +261,6 @@ public sealed class AppProxyService
             }
 
             var rawBytes = buffered.ToArray();
-            var contentType = upstream.Content.Headers.ContentType?.MediaType ?? "";
             if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase) && rawBytes.Length > 0)
             {
                 try
@@ -246,6 +272,10 @@ public sealed class AppProxyService
                 {
                     resp.BodyText = Encoding.UTF8.GetString(rawBytes);
                 }
+            }
+            else if (IsBinaryMediaType(contentType))
+            {
+                resp.BodyBase64 = Convert.ToBase64String(rawBytes);
             }
             else
             {
@@ -261,8 +291,29 @@ public sealed class AppProxyService
         {
             resp.Error = ex.Message;
         }
+        finally
+        {
+            gate.Release();
+        }
         return resp;
     }
+
+    /// <summary>
+    /// True for a declared content type whose body is not text. A missing type
+    /// stays text so existing apps see no change.
+    /// </summary>
+    internal static bool IsBinaryMediaType(string mediaType)
+    {
+        if (string.IsNullOrEmpty(mediaType)) return false;
+        if (mediaType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (var marker in TextMediaMarkers)
+        {
+            if (mediaType.Contains(marker, StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        return true;
+    }
+
+    private static readonly string[] TextMediaMarkers = { "json", "xml", "javascript", "ecmascript", "x-www-form-urlencoded" };
 
     private bool CheckRate(string widgetId)
     {

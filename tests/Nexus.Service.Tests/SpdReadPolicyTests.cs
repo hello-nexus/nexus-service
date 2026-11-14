@@ -30,6 +30,38 @@ public class SpdReadPolicyTests
         Assert.Matches("\"readRamTemperatures\":\\s*false", json);
     }
 
+    [Fact]
+    public void PowerMonitorsEnabled_DefaultsTrue() => Assert.True(new NexusSettings().PowerMonitorsEnabled);
+
+    [Fact]
+    public void PowerMonitorsEnabled_MissingFromOldSettingsFile_IsTrue()
+    {
+        var parsed = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"startupDelaySeconds\":7}", Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        Assert.True(parsed!.PowerMonitorsEnabled);
+    }
+
+    [Fact]
+    public void PowerMonitorsEnabled_RoundTripsAsCamelCase()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new NexusSettings { PowerMonitorsEnabled = false }, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        Assert.Matches("\"powerMonitorsEnabled\":\\s*false", json);
+        var back = System.Text.Json.JsonSerializer.Deserialize(json, Nexus.Service.Serialization.PersistenceJsonContext.Default.NexusSettings);
+        Assert.False(back!.PowerMonitorsEnabled);
+    }
+
+    [Fact]
+    public void PowerMonitorsEnabled_PatchRoundTripsThroughWireContext()
+    {
+        var patch = System.Text.Json.JsonSerializer.Deserialize(
+            "{\"powerMonitorsEnabled\":false}", Nexus.Service.Serialization.AppJsonContext.Default.PreferencesPatch);
+        Assert.False(patch!.PowerMonitorsEnabled);
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new Preferences { PowerMonitorsEnabled = false }, Nexus.Service.Serialization.AppJsonContext.Default.Preferences);
+        Assert.Matches("\"powerMonitorsEnabled\":\\s*false", json);
+    }
+
     [Theory]
     [InlineData(true, true, true)]
     [InlineData(true, false, false)]

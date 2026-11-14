@@ -31,6 +31,7 @@ public static class AppPrefixMigration
             foreach (var record in doc.PanelDevices.Values)
             {
                 RewriteLayout(record?.Layout);
+                RewriteLayout(record?.PortraitLayout);
             }
         }
     }

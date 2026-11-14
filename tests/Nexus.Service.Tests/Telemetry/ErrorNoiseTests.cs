@@ -54,6 +54,17 @@ public class ErrorNoiseTests
     }
 
     [Fact]
+    public void Kestrel_out_of_socket_buffer_space_is_noise_directly_or_wrapped()
+    {
+        var sock = new System.Net.Sockets.SocketException(10055);
+        Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel, sock, clientAborted: false));
+        Assert.True(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new IOException("write failed", sock), clientAborted: false));
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, sock, clientAborted: false, Microsoft.Extensions.Logging.LogLevel.Critical));
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new System.Net.Sockets.SocketException(10054), clientAborted: false));
+        Assert.False(ErrorNoise.IsKestrelClientDisconnect("Nexus.Service.Routes", sock, clientAborted: false));
+    }
+
+    [Fact]
     public void Other_kestrel_errors_and_other_categories_are_reported()
     {
         Assert.False(ErrorNoise.IsKestrelClientDisconnect(Kestrel, new InvalidOperationException("Response Content-Length mismatch: too many bytes written (5 of 3)."), true));

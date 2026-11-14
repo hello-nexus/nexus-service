@@ -45,7 +45,28 @@ public sealed record HealthComponent
     public IReadOnlyList<HealthComponentReason> Reasons { get; init; } = Array.Empty<HealthComponentReason>();
 }
 
-public sealed record HealthComponentReason(string Code, string Severity, string Summary, string Detail);
+/// <summary>
+/// One reason a component is not healthy. Detail is human/debug text and stays
+/// as is (support bundle). Params, when present, carries the same key=value
+/// facts Detail embeds, machine-readable so the UI can compose a localized
+/// sentence: keys are exactly the keys Detail uses, values are invariant-culture
+/// strings (numbers with '.', booleans "true"/"false", temperatures in Celsius,
+/// timestamps as unix milliseconds).
+/// </summary>
+public sealed record HealthComponentReason(
+    string Code, string Severity, string Summary, string Detail, Dictionary<string, string>? Params = null);
+
+/// <summary>Invariant-culture formatting shared by every reason that fills HealthComponentReason.Params.</summary>
+internal static class ReasonParams
+{
+    public static string Num(double value, string? format = null) =>
+        value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
+
+    public static string Bool(bool value) => value ? "true" : "false";
+
+    public static long Ms(DateTime utc) =>
+        new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+}
 
 /// <summary>
 /// Aggregates every diagnostics module into the GET /diagnostics/health payload.
@@ -60,19 +81,16 @@ public sealed class DiagnosticsHealthModel
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan EventWindow = TimeSpan.FromDays(30);
 
-    // Wider than the recency window Compute checks, so an episode that
-    // started before that window but still overlaps it is not truncated.
-    private static readonly TimeSpan TempEpisodeLookback = TimeSpan.FromHours(48);
-
     private readonly ISmartHealthSource _smart;
     private readonly CoolingStallDetector _cooling;
     private readonly GpuHealthMonitor _gpu;
     private readonly EventLogMonitor _events;
     private readonly MemoryDiagnosticOrchestrator _memDiag;
     private readonly PnpProblemScanner _pnp;
+    private readonly HostHealthProbe _host;
     private readonly ISensorProvider _sensors;
-    private readonly IMetricsHistoryStore _tempStore;
     private readonly IConfigStore _store;
+    private readonly Alerts.SensorAlertEngine? _alerts;
 
     private readonly object _gate = new();
     private DiagnosticsHealthResponse? _cached;
@@ -92,9 +110,12 @@ public sealed class DiagnosticsHealthModel
         MemoryDiagnosticOrchestrator memDiag,
         PnpProblemScanner pnp,
         ISensorProvider sensors,
-        IMetricsHistoryStore tempStore,
-        IConfigStore store)
+        IConfigStore store,
+        Alerts.SensorAlertEngine? alerts = null,
+        HostHealthProbe? host = null)
     {
+        _alerts = alerts;
+        _host = host ?? new HostHealthProbe();
         _smart = smart;
         _cooling = cooling;
         _gpu = gpu;
@@ -102,7 +123,6 @@ public sealed class DiagnosticsHealthModel
         _memDiag = memDiag;
         _pnp = pnp;
         _sensors = sensors;
-        _tempStore = tempStore;
         _store = store;
     }
 
@@ -121,11 +141,8 @@ public sealed class DiagnosticsHealthModel
         var domains = diagnostics.Components;
         return components.Where(c => !ignored.Contains(c.Id) && c.Kind switch
         {
-            "storage" => domains.Storage,
-            "gpu" => domains.Gpu,
-            "memory" => domains.Ram,
+            "memory" => true,
             "system" => domains.System,
-            "cooling" => domains.Cooling,
             _ => true,
         }).ToList();
     }
@@ -172,7 +189,30 @@ public sealed class DiagnosticsHealthModel
     public DiagnosticsHealthResponse BuildHealth(bool forceRefresh = false) => BuildHealthCore(forceRefresh);
 #endif
 
+    /// <summary>The cached module health plus the live sensor alert components. The alerts sit outside the module cache so a raise or acknowledge shows on the next read.</summary>
     private DiagnosticsHealthResponse BuildHealthCore(bool forceRefresh)
+    {
+        var health = BuildCachedHealth(forceRefresh);
+        if (_alerts is null)
+        {
+            return health;
+        }
+        var ignored = _store.Load().Diagnostics.IgnoredComponents ?? new List<string>();
+        var extra = _alerts.HealthComponents().Where(c => !ignored.Contains(c.Id, StringComparer.Ordinal)).ToList();
+        if (extra.Count == 0)
+        {
+            return health;
+        }
+        var components = health.Components.Concat(extra).ToList();
+        return health with
+        {
+            Supported = true,
+            Components = components,
+            Overall = WorstStatus(components.Select(c => c.Status)),
+        };
+    }
+
+    private DiagnosticsHealthResponse BuildCachedHealth(bool forceRefresh)
     {
         lock (_gate)
         {
@@ -187,14 +227,6 @@ public sealed class DiagnosticsHealthModel
             {
                 return _cached;
             }
-            var thresholdOverrides = new Dictionary<string, double>
-            {
-                ["cpu"] = diagnostics.Thresholds.CpuC,
-                ["gpu"] = diagnostics.Thresholds.GpuC,
-                ["storage"] = diagnostics.Thresholds.StorageC,
-                ["ram"] = diagnostics.Thresholds.RamC,
-            };
-
             var result = Compute(
                 smart: _smart.Snapshot(),
                 cooling: _cooling.Snapshot(),
@@ -202,10 +234,10 @@ public sealed class DiagnosticsHealthModel
                 counts30d: _events.CountsSince(EventWindow),
                 lastMemoryTest: _memDiag.LastResult(),
                 pnp: _pnp.Snapshot(),
+                host: _host.Snapshot(),
                 knownGpuModels: _sensors.GetGpuModels(),
                 windowsSupported: OperatingSystem.IsWindows(),
                 generatedAtUtc: now,
-                tempEpisodes: TemperatureInsights.DetectEpisodes(QueryTempRows(now), thresholdOverrides),
                 diagnostics: diagnostics,
                 thermalTrip: _store.Load().Cooling.LastThermalTrip);
 
@@ -216,29 +248,14 @@ public sealed class DiagnosticsHealthModel
         }
     }
 
-    private IReadOnlyList<TemperatureBucketRow> QueryTempRows(DateTime nowUtc)
-    {
-        try
-        {
-            var toMs = new DateTimeOffset(nowUtc).ToUnixTimeMilliseconds();
-            var fromMs = new DateTimeOffset(nowUtc - TempEpisodeLookback).ToUnixTimeMilliseconds();
-            return _tempStore.QueryTemperatureBuckets(fromMs, toMs);
-        }
-        catch (Exception ex)
-        {
-            ServiceLog.Warn($"[diagnostics-health] temperature query failed: {ex.Message}");
-            return Array.Empty<TemperatureBucketRow>();
-        }
-    }
-
     /// <summary>
     /// Pure aggregation. Storage (SMART), GPU, and cooling are evaluated on
     /// every platform - each self-guards on its own snapshot's Supported flag,
     /// so on Linux/macOS they contribute only when the underlying source
     /// (smartctl, NVML, IFanControlProvider) produced real data. Memory and
-    /// system/pnp are Windows-only diagnostics (Windows Memory Diagnostic,
-    /// Win32_PnPEntity) with no cross-platform data, so they stay behind
-    /// <paramref name="windowsSupported"/>.
+    /// system/pnp are Windows diagnostics (Windows Memory Diagnostic,
+    /// Win32_PnPEntity) and stay behind <paramref name="windowsSupported"/>;
+    /// elsewhere <paramref name="host"/> supplies their tiles.
     ///
     /// Every component reflects current state only: SMART classification,
     /// active GPU throttle, last memory test result, live pnp problems, and
@@ -259,9 +276,9 @@ public sealed class DiagnosticsHealthModel
         IReadOnlyList<string> knownGpuModels,
         bool windowsSupported,
         DateTime generatedAtUtc,
-        IReadOnlyList<TemperatureEpisode>? tempEpisodes = null,
         DiagnosticsSettings? diagnostics = null,
-        ThermalGuardTripRecord? thermalTrip = null)
+        ThermalGuardTripRecord? thermalTrip = null,
+        HostHealthSnapshot? host = null)
     {
         var diag = diagnostics ?? new DiagnosticsSettings();
         var ignored = new HashSet<string>(diag.IgnoredComponents ?? new List<string>(), StringComparer.Ordinal);
@@ -270,44 +287,45 @@ public sealed class DiagnosticsHealthModel
         // Storage surfaces off Windows too: AddStorageComponents returns early
         // on !smart.Supported, so it contributes only where a real source
         // produced data (LHM on Windows, smartctl on Linux).
-        if (diag.Components.Storage)
-        {
-            AddStorageComponents(components, smart);
-        }
+        AddStorageComponents(components, smart);
         // GPU off Windows only when a live health source (NVML) reported.
         // AddGpuComponents' known-models fallback adds an Unknown placeholder
         // tile whenever a model name exists (system_profiler on every Mac,
         // lspci on any Linux with a display adapter) - a meaningless tile off
         // Windows, so require gpu.Supported there and keep the Windows path
         // (placeholder included) unchanged.
-        if (diag.Components.Gpu && (windowsSupported || gpu.Supported))
+        if (windowsSupported || gpu.Supported)
         {
             AddGpuComponents(components, gpu, knownGpuModels);
         }
-        // Memory and system/pnp have no non-Windows data source and their
-        // Add* helpers do not self-guard, so keep them Windows-only.
+        // The Windows memory test and pnp scan exist only on Windows and their
+        // Add* helpers do not self-guard, so they stay Windows-only.
         if (windowsSupported)
         {
-            if (diag.Components.Ram)
-            {
-                AddMemoryComponent(components, lastMemoryTest);
-            }
+            AddMemoryComponent(components, lastMemoryTest);
             if (diag.Components.System)
             {
                 AddSystemComponent(components, pnp);
             }
         }
-        AddCoolingComponents(components, cooling, tempEpisodes ?? Array.Empty<TemperatureEpisode>(), generatedAtUtc, diag, ignored);
-        if (diag.Components.Cooling)
+        // Off Windows the host snapshot stands in for the Windows-only sources.
+        if (!windowsSupported && host is not null)
         {
-            AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
+            AddHostMemoryComponent(components, host);
+            if (diag.Components.System)
+            {
+                AddHostSystemComponent(components, host);
+            }
         }
+        AddCoolingComponents(components, cooling);
+        AddThermalGuardComponent(components, thermalTrip, generatedAtUtc);
 
         // Windows always reports the grid (its per-domain scanners exist even
-        // when a domain is empty). Elsewhere the grid is meaningful only when
-        // a working sub-domain (SMART, GPU, cooling) produced a component -
-        // otherwise the tab is hidden client-side. Counted before the ignore
-        // filter: ignoring every device is still a working grid.
+        // when a domain is empty). Elsewhere the host Memory and System tiles
+        // keep it populated; without a host snapshot it is meaningful only
+        // when a working sub-domain (SMART, GPU, cooling) produced a component.
+        // Counted before the ignore filter: ignoring every device is still a
+        // working grid.
         var supported = windowsSupported || components.Count > 0;
 
         // User-ignored devices drop out here, after every module has run, so
@@ -370,88 +388,56 @@ public sealed class DiagnosticsHealthModel
     private static string MapReasonSeverity(ReasonSeverity severity) =>
         severity == ReasonSeverity.Act ? HealthStatuses.Act : HealthStatuses.Watch;
 
-    /// <summary>
-    /// A temperature episode counts as a current warning only while it is
-    /// still ongoing or just barely ended: recency window is the wider of one
-    /// bucket's width (accounts for the latest bucket not having flushed yet)
-    /// and the user's configured linger. Default linger 0 means only an
-    /// episode that is ongoing right now (or ended within one bucket) shows a
-    /// warning; the 24h+ episode history stays on GET /diagnostics/temperatures,
-    /// which calls TemperatureInsights.DetectEpisodes directly and never
-    /// passes through this recency filter.
-    ///
-    /// An episode whose ComponentId is an ignored component id is dropped
-    /// too: storage episodes carry the drive's own "storage:&lt;serial&gt;" id,
-    /// so an ignored drive that runs hot stays silent. (GPU episodes use the
-    /// adapter id, not the "gpu:&lt;n&gt;" health id, so they never match.)
-    /// </summary>
-    private static void AddCoolingComponents(
-        List<HealthComponent> components,
-        CoolingStallSnapshot cooling,
-        IReadOnlyList<TemperatureEpisode> tempEpisodes,
-        DateTime generatedAtUtc,
-        DiagnosticsSettings diagnostics,
-        IReadOnlySet<string> ignored)
+    /// <summary>Per-device fan and pump stalls, plus the aggregate "cooling" component. Heat is reported by the built-in sensor alerts, so the aggregate carries no reasons.</summary>
+    private static void AddCoolingComponents(List<HealthComponent> components, CoolingStallSnapshot cooling)
     {
-        var recencyMinutes = Math.Max(TemperatureInsights.NativeBucketMinutes, diagnostics.WarningLingerMinutes);
-        var cutoffUtc = generatedAtUtc.AddMinutes(-recencyMinutes);
-        var recentEpisodes = tempEpisodes
-            .Where(e => e.EndUtc >= cutoffUtc && e.StartUtc <= generatedAtUtc)
-            .Where(e => IsTempKindEnabled(e.Kind, diagnostics.Components))
-            .Where(e => !ignored.Contains(e.ComponentId))
-            .ToList();
-
-        var stallEligible = diagnostics.Components.Cooling && cooling.Devices.Count > 0;
-        if (!stallEligible && recentEpisodes.Count == 0)
+        if (cooling.Devices.Count == 0)
         {
             return;
         }
 
-        if (diagnostics.Components.Cooling)
+        foreach (var device in cooling.Devices)
         {
-            foreach (var device in cooling.Devices)
+            if (device.Status != CoolingStallStatuses.Stalled && device.Status != CoolingStallStatuses.Suspect)
             {
-                if (device.Status != CoolingStallStatuses.Stalled && device.Status != CoolingStallStatuses.Suspect)
-                {
-                    continue;
-                }
-
-                var isPump = string.Equals(device.Type, "pump", StringComparison.OrdinalIgnoreCase);
-                var code = isPump ? "cooling.pumpStall" : "cooling.fanStall";
-                var severity = device.Status == CoolingStallStatuses.Stalled ? HealthStatuses.Act : HealthStatuses.Watch;
-                var summary = device.Status == CoolingStallStatuses.Stalled
-                    ? $"{device.Name} reports 0 RPM while driven"
-                    : $"{device.Name} reports 0 RPM at low duty";
-                var detail = $"rpm={Fmt(device.Rpm)} targetDuty={Fmt(device.TargetDutyPercent)}% since={device.SinceUtc:O}";
-
-                components.Add(new HealthComponent
-                {
-                    Id = $"cooling:{device.Id}",
-                    Kind = "cooling",
-                    Name = device.Name,
-                    Status = severity,
-                    Reasons = new List<HealthComponentReason> { new(code, severity, summary, detail) },
-                });
+                continue;
             }
-        }
 
-        var reasons = recentEpisodes.Select(ep => new HealthComponentReason(
-            "cooling.sustainedHighTemp",
-            HealthStatuses.Watch,
-            $"{ep.Name} recently ran above {ep.ThresholdC:0} C",
-            $"componentId={ep.ComponentId} peakC={ep.PeakC:0.0} start={ep.StartUtc:O} end={ep.EndUtc:O}")).ToList();
+            var isPump = string.Equals(device.Type, "pump", StringComparison.OrdinalIgnoreCase);
+            var code = isPump ? "cooling.pumpStall" : "cooling.fanStall";
+            var severity = device.Status == CoolingStallStatuses.Stalled ? HealthStatuses.Act : HealthStatuses.Watch;
+            var summary = device.Status == CoolingStallStatuses.Stalled
+                ? $"{device.Name} reports 0 RPM while driven"
+                : $"{device.Name} reports 0 RPM at low duty";
+            var detail = $"rpm={Fmt(device.Rpm)} targetDuty={Fmt(device.TargetDutyPercent)}% since={device.SinceUtc:O}";
+            var stallParams = new Dictionary<string, string>
+            {
+                ["rpm"] = Fmt(device.Rpm),
+                ["targetDuty"] = Fmt(device.TargetDutyPercent),
+            };
+            if (device.SinceUtc is { } since)
+            {
+                stallParams["since"] = ReasonParams.Ms(since).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
 
-        if (stallEligible || reasons.Count > 0)
-        {
             components.Add(new HealthComponent
             {
-                Id = "cooling",
+                Id = $"cooling:{device.Id}",
                 Kind = "cooling",
-                Name = $"Cooling ({cooling.Devices.Count})",
-                Status = WorstReasonStatus(reasons, HealthStatuses.Ok),
-                Reasons = reasons,
+                Name = device.Name,
+                Status = severity,
+                Reasons = new List<HealthComponentReason> { new(code, severity, summary, detail, stallParams) },
             });
         }
+
+        components.Add(new HealthComponent
+        {
+            Id = "cooling",
+            Kind = "cooling",
+            Name = $"Cooling ({cooling.Devices.Count})",
+            Status = HealthStatuses.Ok,
+            Reasons = Array.Empty<HealthComponentReason>(),
+        });
     }
 
     /// <summary>Act while the guard is tripped or escalated, watch for a day after it ends.</summary>
@@ -480,19 +466,19 @@ public sealed class DiagnosticsHealthModel
             Reasons = new List<HealthComponentReason>
             {
                 new("cooling.thermalGuardTrip", severity, summary,
-                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}"),
+                    $"cause={cause} active={active} reason={trip.Reason} peakC={trip.PeakC:0.0} escalated={trip.Escalated} at={trip.AtUtcMs}",
+                    new Dictionary<string, string>
+                    {
+                        ["cause"] = cause,
+                        ["active"] = ReasonParams.Bool(active),
+                        ["reason"] = trip.Reason,
+                        ["peakC"] = ReasonParams.Num(trip.PeakC, "0.0"),
+                        ["escalated"] = ReasonParams.Bool(trip.Escalated),
+                        ["at"] = trip.AtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    }),
             },
         });
     }
-
-    private static bool IsTempKindEnabled(string kind, DiagnosticsComponents components) => kind switch
-    {
-        "cpu" => components.Cpu,
-        "gpu" => components.Gpu,
-        "storage" => components.Storage,
-        "ram" => components.Ram,
-        _ => true,
-    };
 
     private static string Fmt(double? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null";
 
@@ -594,6 +580,97 @@ public sealed class DiagnosticsHealthModel
             Kind = "system",
             Name = "System",
             Status = WorstReasonStatus(reasons, HealthStatuses.Ok),
+            Reasons = reasons,
+        });
+    }
+
+    private static void AddHostMemoryComponent(List<HealthComponent> components, HostHealthSnapshot host)
+    {
+        var reasons = new List<HealthComponentReason>();
+
+        if (host.Supported && host.HardwareCorruptedKb > 0)
+        {
+            reasons.Add(new HealthComponentReason("memory.hardwareCorrupted", HealthStatuses.Act,
+                "The kernel has retired memory pages as corrupted",
+                $"/proc/meminfo reports HardwareCorrupted={host.HardwareCorruptedKb} kB.",
+                new Dictionary<string, string> { ["kb"] = ReasonParams.Num(host.HardwareCorruptedKb) }));
+        }
+        if (host.Supported && (host.EdacUncorrected > 0 || host.EdacCorrected > 0))
+        {
+            var uncorrected = host.EdacUncorrected > 0;
+            reasons.Add(new HealthComponentReason("memory.edacErrors",
+                uncorrected ? HealthStatuses.Act : HealthStatuses.Watch,
+                uncorrected
+                    ? "The memory controller has logged uncorrectable errors"
+                    : "The memory controller has corrected errors",
+                $"EDAC reports corrected={host.EdacCorrected} uncorrected={host.EdacUncorrected} memory errors.",
+                new Dictionary<string, string>
+                {
+                    ["corrected"] = ReasonParams.Num(host.EdacCorrected),
+                    ["uncorrected"] = ReasonParams.Num(host.EdacUncorrected),
+                }));
+        }
+        if (reasons.Count == 0)
+        {
+            // No memory self-test or error counter exists on consumer non-ECC
+            // RAM here, so "healthy" is not something this tile can claim.
+            reasons.Add(new HealthComponentReason("memory.noHealthSource", HealthStatuses.Unknown,
+                "Memory health cannot be read on this system",
+                "This system exposes no memory error counters (they need ECC memory), so memory reports no health signal either way."));
+        }
+
+        components.Add(new HealthComponent
+        {
+            Id = "memory",
+            Kind = "memory",
+            Name = "Memory",
+            Status = reasons.Any(r => r.Severity != HealthStatuses.Unknown)
+                ? WorstReasonStatus(reasons, HealthStatuses.Ok)
+                : HealthStatuses.Unknown,
+            Reasons = reasons,
+        });
+    }
+
+    private static void AddHostSystemComponent(List<HealthComponent> components, HostHealthSnapshot host)
+    {
+        var reasons = new List<HealthComponentReason>();
+        var status = HealthStatuses.Unknown;
+
+        if (!host.Supported || host.FailedUnits is null)
+        {
+            reasons.Add(new HealthComponentReason("system.noHealthSource", HealthStatuses.Unknown,
+                "System health cannot be read on this system",
+                "Windows reports device faults through Device Manager. This system has no readable equivalent, so System reports no health signal either way."));
+        }
+        else
+        {
+            status = HealthStatuses.Ok;
+            if (host.FailedUnits.Count > 0)
+            {
+                const int MaxListed = 5;
+                var listed = host.FailedUnits.Take(MaxListed).ToList();
+                var names = string.Join(", ", listed);
+                var detailNames = host.FailedUnits.Count > MaxListed
+                    ? $"{names} and {host.FailedUnits.Count - MaxListed} more"
+                    : names;
+                reasons.Add(new HealthComponentReason("system.failedUnits", HealthStatuses.Watch,
+                    host.FailedUnits.Count == 1 ? "1 system service failed" : $"{host.FailedUnits.Count} system services failed",
+                    $"systemd reports failed system units: {detailNames}.",
+                    new Dictionary<string, string>
+                    {
+                        ["count"] = ReasonParams.Num(host.FailedUnits.Count),
+                        ["units"] = names,
+                    }));
+                status = HealthStatuses.Watch;
+            }
+        }
+
+        components.Add(new HealthComponent
+        {
+            Id = "system",
+            Kind = "system",
+            Name = "System",
+            Status = status,
             Reasons = reasons,
         });
     }

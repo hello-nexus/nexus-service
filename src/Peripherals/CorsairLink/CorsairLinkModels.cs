@@ -29,6 +29,9 @@ public sealed class CorsairLinkModel
     /// <summary>Carries a temperature probe (QX fans, liquid loops, CPU/pump blocks).</summary>
     public bool HasTemperature { get; init; }
 
+    /// <summary>The probe is built into a fan (QX), so it is listed as a fan sensor rather than under Cooler.</summary>
+    public bool FanProbe { get; init; }
+
     /// <summary>Per-LED u in [0..1], in wire order; null = linear. Shared, never mutated.</summary>
     public float[]? LedU { get; init; }
 
@@ -89,7 +92,7 @@ public static class CorsairLinkModels
 
     private static readonly Dictionary<(int type, int model), CorsairLinkModel> Table = new()
     {
-        [(1, 0)] = new() { Name = "iCUE LINK QX RGB", LedCount = 34, Class = CorsairLinkClass.Fan, HasSpeed = true, HasTemperature = true, LedU = QxLayout.U, LedV = QxLayout.V },
+        [(1, 0)] = new() { Name = "iCUE LINK QX RGB", LedCount = 34, Class = CorsairLinkClass.Fan, HasSpeed = true, HasTemperature = true, FanProbe = true, LedU = QxLayout.U, LedV = QxLayout.V },
         [(2, 0)] = new() { Name = "iCUE LINK LX RGB", LedCount = 18, Class = CorsairLinkClass.Fan, HasSpeed = true },
         [(3, 0)] = new() { Name = "iCUE LINK RX RGB MAX", LedCount = 8, Class = CorsairLinkClass.Fan, HasSpeed = true },
         [(4, 0)] = new() { Name = "iCUE LINK RX MAX", LedCount = 0, Class = CorsairLinkClass.Fan, HasSpeed = true },

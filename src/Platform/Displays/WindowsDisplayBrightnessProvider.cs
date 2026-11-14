@@ -435,12 +435,14 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         if (nameFragments is null || nameFragments.Count == 0) return null;
         try
         {
-            foreach (var entry in EnumerateHMonitors())
+            // Fragment order is priority: the best-ranked fragment wins across
+            // all monitors, not whichever monitor enumerates first.
+            foreach (var fragment in nameFragments)
             {
-                var rawDeviceId = WindowsDisplayIdentity.ReadMonitorDeviceId(entry.AdapterDevice);
-                if (string.IsNullOrEmpty(rawDeviceId)) continue;
-                foreach (var fragment in nameFragments)
+                foreach (var entry in EnumerateHMonitors())
                 {
+                    var rawDeviceId = WindowsDisplayIdentity.ReadMonitorDeviceId(entry.AdapterDevice);
+                    if (string.IsNullOrEmpty(rawDeviceId)) continue;
                     if (rawDeviceId.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         // Return the same stable id SetVcp/GetBrightness key off.

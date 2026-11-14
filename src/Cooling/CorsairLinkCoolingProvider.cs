@@ -99,11 +99,12 @@ public sealed class CorsairLinkCoolingProvider : IFanControlProvider, ICoolingPr
                 result.Add(new TemperatureSource
                 {
                     Id = $"{hub.ChannelId(d.Channel)}:temp",
-                    Name = $"{d.Name} probe ({hub.PortLabel(d.Channel)})",
-                    Category = "Hub",
+                    Name = d.FanProbe ? $"QX fan ({hub.PortLabel(d.Channel)})" : $"{d.Name} probe ({hub.PortLabel(d.Channel)})",
+                    Category = d.FanProbe ? "Fan sensors" : "Hub",
                     Value = d.TempC,
                     DeviceId = hub.DeviceId,
                     DeviceName = HubName(hub),
+                    FanProbe = d.FanProbe,
                 });
             }
         }

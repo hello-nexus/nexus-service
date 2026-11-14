@@ -21,6 +21,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
     private readonly IConfigStore _store;
     private readonly CorsairLinkHubs _hubs;
     private readonly DeviceControlGate _gate;
+    private readonly Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? _follow;
 
     private string? _loadedMediaId;
     private LcdImageData? _loadedImage;
@@ -37,8 +38,10 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
         CorsairLinkLcdMediaLibrary library,
         IConfigStore store,
         CorsairLinkHubs hubs,
-        DeviceControlGate gate)
+        DeviceControlGate gate,
+        Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState? follow = null)
     {
+        _follow = follow;
         _lcd = lcd;
         _library = library;
         _store = store;
@@ -158,6 +161,10 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
         }
     }
 
+    /// <summary>The stored slider capped by the schedule while this LCD follows the schedule; the stored value stays the user's.</summary>
+    private byte Shown(byte stored) =>
+        _follow is null ? stored : (byte)_follow.Scale(Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowKeys.CorsairLcd, stored);
+
     /// <summary>Pushes the brightness the glass should show now: a ramp down or up across a lock, dark while it holds, else the stored value.</summary>
     internal void SyncBrightness(CorsairSettings s)
     {
@@ -181,7 +188,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
                     // From the level on the glass now (or the step a ramp is on) to the other end:
                     // the stored level, which a lock never touches, is what a fade up returns to.
                     var from = _fade is { } running ? running.LevelAt(Clock()) : _appliedBrightness;
-                    var to = sleeping ? 0 : s.LcdBrightness;
+                    var to = sleeping ? 0 : Shown(s.LcdBrightness);
                     _fade = from == to
                         ? null
                         : new LcdFade(from, to, sleeping ? SleepBlackoutCoordinator.LockFadeDuration : SleepBlackoutCoordinator.UnlockFadeDuration, Clock());
@@ -195,7 +202,7 @@ public sealed class CorsairLinkLcdWorker : BackgroundService
             {
                 return;
             }
-            var brightness = sleeping ? (byte)0 : s.LcdBrightness;
+            var brightness = sleeping ? (byte)0 : Shown(s.LcdBrightness);
             // Frames keep flowing while locked (the firmware drops to its own screen if
             // they stop), and whether the first frame after a host-mode change moves the
             // backlight is unmeasured, so the dark value is also re-sent at a slow cadence.

@@ -36,7 +36,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     public string HandlerId => Id;
     public string Name => !_identified ? "Lian Li HydroShift II" : _round ? "Lian Li HydroShift II LCD-C" : "Lian Li HydroShift II LCD-S";
-    public int VendorId => 0x1CBE;
+    public int VendorId => HydroShift2Protocol.VendorId;
     public IReadOnlyList<int> ProductIds { get; } = new[] { HydroShift2Protocol.ProductIdSquare, HydroShift2Protocol.ProductIdCircle };
     public string Surface => _round ? Models.Panel.PanelSurfaces.LcdRound : Models.Panel.PanelSurfaces.LcdSquare;
 
@@ -81,7 +81,10 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { FrameRate });
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
         Command(pipe, HydroShift2Protocol.CommandStopClock, stackalloc byte[] { 0 });
-        ClearOverlay(pipe);
+        if (!ClearOverlay(pipe))
+        {
+            ServiceLog.Warn($"[{HandlerId}] overlay wipe at connect unanswered");
+        }
 
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(HydroShift2Protocol.Width, HydroShift2Protocol.Height);
