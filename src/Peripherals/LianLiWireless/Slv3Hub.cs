@@ -587,6 +587,7 @@ public sealed partial class Slv3Hub : IDisposable
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _anyAioBound = false;
         _knownChains.Clear();
+        DeviceWatch.Clear();
         _unconfirmedChains.Clear();
         _bindingLogs.Clear();
         _intents.Clear();
@@ -2380,7 +2381,7 @@ public sealed partial class Slv3Hub : IDisposable
         UpdateReportOrderLocked(pollRecords);
 
         ExpireChainsLocked(nowMs);
-        DeviceWatch.Check(nowMs, ServiceLog.Info);
+        DeviceWatch.Check(nowMs, key => _knownChains.TryGetValue(key, out var k) && IsBoundToUsLocked(k.Record), ServiceLog.Info);
 
         // Page estimate follows the larger of the reply's count and the tracked
         // set, so a partial report can't shrink the next read below the full list.
@@ -3271,10 +3272,11 @@ public sealed partial class Slv3Hub : IDisposable
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out var windowIndex))
         {
             return false;
         }
+        var firstPassesWritten = false;
         BeginUpload();
         try
         {
@@ -3302,6 +3304,8 @@ public sealed partial class Slv3Hub : IDisposable
                     }
                 }
                 NoteConfigChangedLocked();
+                firstPassesWritten = true;
+                DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs());
             }
             // The late passes' cost is booked at decision time so a concurrent
             // upload's check already sees it; the passes themselves are not re-counted.
@@ -3338,6 +3342,10 @@ public sealed partial class Slv3Hub : IDisposable
         }
         finally
         {
+            if (!firstPassesWritten)
+            {
+                DeviceWatch.NoteSendFailed(macHex);
+            }
             EndUpload();
         }
     }
@@ -3402,7 +3410,6 @@ public sealed partial class Slv3Hub : IDisposable
             effectIndex = window
                 ? NextSafeEffectIndexLocked(record)
                 : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs());
             packets = Slv3RgbFrame.BuildPackets(
                 record.Mac, _masterMac, effectIndex, compressed, ledCount, frameCount, intervalMs);
             channel = record.Channel;
@@ -3425,7 +3432,16 @@ public sealed partial class Slv3Hub : IDisposable
         BeginUpload();
         try
         {
-            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
+            var sent = SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
+            if (sent)
+            {
+                DeviceWatch.NoteSent(macHex, effectIndexHex, _nowMs());
+            }
+            else
+            {
+                DeviceWatch.NoteSendFailed(macHex);
+            }
+            return sent;
         }
         finally
         {
