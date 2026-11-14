@@ -242,4 +242,45 @@ public class Slv3DeviceWatchTests
         Assert.True(watch.TryGetWindow(Mac, 1_300, out var w));
         Assert.Equal("01020301", w.IdxHex);
     }
+
+    [Fact]
+    public void Dispatched_resends_hit_the_cap_even_if_every_attempt_fails()
+    {
+        var watch = new Slv3DeviceWatch();
+        watch.NoteSent(Mac, "01020301", 1_000, window: true);
+        watch.NoteResent(Mac, 1_600);
+        watch.TryGetWindow(Mac, 1_700, out var first);
+        Assert.False(Slv3DeviceWatch.ResendDue(first, 0, 0, 30));
+        watch.NoteResent(Mac, 2_200);
+        watch.TryGetWindow(Mac, 9_000, out var capped);
+        Assert.False(Slv3DeviceWatch.ResendDue(capped, 0, 0, 30));
+        Assert.Equal(2, watch.Take(Mac, 9_000)!.Value.Resends);
+    }
+
+    [Fact]
+    public void Refused_resend_is_not_a_send_failure()
+    {
+        var watch = new Slv3DeviceWatch();
+        watch.NoteSent(Mac, "01020301", 1_000, window: true);
+        watch.NoteResent(Mac, 1_600);
+        Assert.Equal(0, watch.Take(Mac, 1_700)!.Value.SendFailed);
+    }
+
+    [Theory]
+    [InlineData(false, false, false, true)]
+    [InlineData(true, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(false, false, true, false)]
+    public void Resend_start_gate(bool fresh, bool otherBusy, bool earlierDue, bool expected)
+    {
+        Assert.Equal(expected, Nexus.Service.Lighting.Slv3LightingFrameWriter.MayStartResend(fresh, otherBusy, earlierDue));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Fresh_upload_waits_for_a_running_resend(bool resendInFlight, bool expected)
+    {
+        Assert.Equal(expected, Nexus.Service.Lighting.Slv3LightingFrameWriter.MayJoinWindow(resendInFlight));
+    }
 }

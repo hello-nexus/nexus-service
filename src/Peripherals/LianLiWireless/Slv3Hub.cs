@@ -3190,10 +3190,6 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs(), window: true);
                 }
-                else
-                {
-                    DeviceWatch.NoteResent(macHex, _nowMs());
-                }
             }
             // The late passes' cost is booked at decision time so a concurrent
             // upload's check already sees it; the passes themselves are not re-counted.
@@ -3230,7 +3226,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
         finally
         {
-            if (!firstPassesWritten)
+            if (!firstPassesWritten && reuseIndexHex is null)
             {
                 DeviceWatch.NoteSendFailed(macHex);
             }

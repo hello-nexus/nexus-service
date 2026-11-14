@@ -378,6 +378,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public int WindowLedCount;
         public bool Failing;
         public bool UploadIsResend;
+        public string WindowIdxHex = "";
+        public double LastResendFaultLogMs;
         public bool Visited;
         public double LastUploadStartMs;
         public bool Joinable;
@@ -678,6 +680,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _nextWindowRequestMs = 0;
     }
 
+    private const double ResendFaultLogPeriodMs = 60_000;
+
+    private static double LogClockMs() => Environment.TickCount64;
+
     private void CollectUpload(string macHex, ChainRolling st)
     {
         if (st.Upload is not { IsCompleted: true } upload) return;
@@ -685,6 +691,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (st.UploadIsResend)
         {
             st.UploadIsResend = false;
+            if (upload.IsFaulted && LogClockMs() - st.LastResendFaultLogMs >= ResendFaultLogPeriodMs)
+            {
+                st.LastResendFaultLogMs = LogClockMs();
+                ServiceLog.Warn($"[lianli-wireless] chain {macHex} window re-send faulted: {upload.Exception?.GetBaseException().Message}");
+            }
             return;
         }
         var ok = upload.IsCompletedSuccessfully && upload.Result;
@@ -706,6 +717,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.WindowFirstFrame = st.UploadStretch == _windowStretch ? st.UploadFirstFrame : long.MinValue;
             st.WindowPayload = st.UploadPayload;
             st.WindowLedCount = st.UploadLedCount;
+            st.WindowIdxHex = _hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var landed) ? landed.IdxHex : "";
             // The chain now plays the window, so the next live frame must go out even if it matches the last one sent.
             _lastSent.Remove(macHex);
         }
@@ -775,6 +787,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // over the air. A chain joining late skips a window that is mostly played already.
         if (st.Joinable && st.UploadedWindowId != _windowId && _windowStartedId != _windowId
             && !st.UploadIsResend
+            && MayJoinWindow(ResendInFlight())
             && TryCurrentFrame(nowMs, out var joinFrame)
             && joinFrame >= _windowFirstFrame + WindowStartSafetyFrames
             && joinFrame < _windowFirstFrame + WindowFrames / 2
@@ -809,29 +822,52 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         return st.Upload is null && st.WindowPayload is not null && st.WindowFirstFrame != long.MinValue
             && _hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var w)
+            && w.IdxHex == st.WindowIdxHex
             && TryCurrentFrame(nowMs, out var current)
             && Slv3DeviceWatch.ResendDue(w, current, st.WindowFirstFrame, WindowFrames);
     }
 
-    // One re-send at a time and never beside a running upload, earliest-ending window first, so it adds no burst to the air.
+    private bool ResendInFlight()
+    {
+        foreach (var other in _rolling.Values)
+        {
+            if (other.UploadIsResend && other.Upload is { IsCompleted: false }) return true;
+        }
+        return false;
+    }
+
+    /// <summary>A re-send yields to a fresh render still waiting for its first chain, to a running upload, and to an earlier-ending due window.</summary>
+    internal static bool MayStartResend(bool freshWindowWaiting, bool otherUploadInFlight, bool earlierChainDue) =>
+        !freshWindowWaiting && !otherUploadInFlight && !earlierChainDue;
+
+    /// <summary>A fresh window upload waits for a running re-send so it does not queue on the hub lock behind it.</summary>
+    internal static bool MayJoinWindow(bool resendInFlight) => !resendInFlight;
+
+    // At most two re-sends per window and each starts only when the air is otherwise idle, so fresh uploads are delayed by one upload at most.
     private void TryResend(string macHex, ChainRolling st, double nowMs)
     {
         if (!ResendDue(macHex, st, nowMs)) return;
+        var fresh = _windowFrames is not null && _windowStartedId != _windowId;
+        var otherBusy = false;
+        var earlierDue = false;
         foreach (var (otherMac, other) in _rolling)
         {
             if (ReferenceEquals(other, st)) continue;
-            if (other.Upload is { IsCompleted: false }) return;
+            otherBusy |= other.Upload is { IsCompleted: false };
             var earlier = other.WindowFirstFrame < st.WindowFirstFrame
                 || (other.WindowFirstFrame == st.WindowFirstFrame && string.CompareOrdinal(otherMac, macHex) < 0);
-            if (earlier && ResendDue(otherMac, other, nowMs)) return;
+            earlierDue |= earlier && ResendDue(otherMac, other, nowMs);
         }
-        if (!_hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var w)) return;
+        if (!MayStartResend(fresh, otherBusy, earlierDue)) return;
         var payload = st.WindowPayload!;
         var ledCount = st.WindowLedCount;
         var interval = WindowInterval;
+        var idx = st.WindowIdxHex;
+        // Counted and timed at dispatch, so a refused or failed re-send is not retried every tick.
+        _hub.DeviceWatch.NoteResent(macHex, _hub.NowMs);
         st.UploadIsResend = true;
         _healthResends++;
-        st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent, w.IdxHex));
+        st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent, idx));
     }
 
     private bool IsNextToUpload(ChainRolling chain)
