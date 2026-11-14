@@ -64,40 +64,9 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
             return Task.FromResult(McpToolExecutionResult.Error($"Unknown scenario '{scenario}'. Expected one of: {known}."));
         }
 
-        // Same resolution as the restore paths: saved delta, else the selected
-        // template slot, else defaults. Static keys are forwarded by StartAnimate
-        // to StartStatic, which persists into Static.States, so they resolve there.
-        // Starting from defaults with Persist would overwrite the user's tuning.
-        var lighting = _store.Load().Lighting;
-        var states = StaticEffectCatalog.Contains(scenario) ? lighting.Static.States : lighting.Animate.States;
-        if (!states.TryGetValue(scenario, out var look) || look is null)
-        {
-            look = AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, scenario) ?? new AnimateEffectState();
-        }
-        else
-        {
-            look = AnimateTemplateDefaults.WithPresetParams(look, AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, scenario));
-        }
-        var start = new AnimateHeadlessStart
-        {
-            Effect = scenario,
-            Speed = look.Speed,
-            Intensity = look.Intensity,
-            Hue = look.Hue,
-            Colorize = look.Colorize,
-            Saturation = look.Saturation,
-            Contrast = look.Contrast,
-            Sensors = look.Sensors,
-            Persist = true,
-            Simple = AnimateTemplateDefaults.RunsAsSimple(lighting, scenario),
-        };
-        if (look.Params is not null)
-        {
-            foreach (var kv in look.Params)
-            {
-                start.Params.Add(new ShaderParam { Name = kv.Key, Value = kv.Value });
-            }
-        }
+        // Same resolution as the restore paths. Starting from defaults with Persist would overwrite the user's tuning.
+        var start = AnimateTemplateDefaults.SavedStart(_store.Load().Lighting, scenario);
+        start.Persist = true;
         _lighting.StartAnimate(start);
         PanelTopics.BroadcastLighting(_hub);
 

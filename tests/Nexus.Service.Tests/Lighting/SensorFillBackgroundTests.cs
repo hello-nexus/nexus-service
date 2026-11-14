@@ -127,4 +127,23 @@ public class SensorFillBackgroundTests
         LightingPresetLooks.Apply(lighting, look);
         Assert.False(lighting.Animate.States.ContainsKey("sensorbar"));
     }
+
+    [Fact]
+    public void A_look_saved_without_the_background_applies_to_an_untouched_effect_without_a_phantom_delta()
+    {
+        var lighting = new LightingSettings { Sync = "rainbow", Animate = new AnimateSettings { Effect = "rainbow" } };
+        // As a shipped build captured it: the untouched preset 1 look, before the background keys existed.
+        var look = new LightingPresetLook
+        {
+            Sync = "sensorbar",
+            AnimateEffect = "sensorbar",
+            AnimateState = StoredBeforeBackground("sensorbar", 0),
+            AnimateSlot = 0,
+        };
+
+        LightingPresetLooks.Apply(lighting, look);
+
+        Assert.Equal("sensorbar", lighting.Animate.Effect);
+        Assert.False(lighting.Animate.States.ContainsKey("sensorbar"));
+    }
 }
