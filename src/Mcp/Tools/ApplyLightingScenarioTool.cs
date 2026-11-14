@@ -74,6 +74,10 @@ public sealed class ApplyLightingScenarioTool : IMcpTool
         {
             look = AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, scenario) ?? new AnimateEffectState();
         }
+        else
+        {
+            look = AnimateTemplateDefaults.WithPresetParams(look, AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, scenario));
+        }
         var start = new AnimateHeadlessStart
         {
             Effect = scenario,

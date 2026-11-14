@@ -12,7 +12,7 @@ public class SensorFillBackgroundTests
 {
     public static TheoryData<string> Fills => new() { "sensorbar", "sensorclock", "sensorsegments", "sensorliquid", "sensorcenter" };
 
-    private static readonly string[] BgParams = { "u_fill_bgHue", "u_fill_bgSat", "u_fill_bgVal" };
+    internal static readonly string[] BgParams = { "u_fill_bgHue", "u_fill_bgSat", "u_fill_bgVal" };
 
     [Theory]
     [MemberData(nameof(Fills))]
@@ -56,7 +56,7 @@ public class SensorFillBackgroundTests
     }
 
     // The v24 upgrade fixture's shape: the selected preset slot stored densely, before the background keys existed.
-    private static AnimateEffectState StoredBeforeBackground(string effect, int slot, float? hue = null)
+    internal static AnimateEffectState StoredBeforeBackground(string effect, int slot, float? hue = null)
     {
         var preset = AnimateTemplateDefaults.Slot(effect, slot)!;
         return new AnimateEffectState
@@ -108,5 +108,23 @@ public class SensorFillBackgroundTests
         {
             Assert.Equal(preset.Params[name], start.Params.Single(p => p.Name == name).Value);
         }
+    }
+
+    [Fact]
+    public void A_captured_look_carries_the_preset_background_and_applies_back_without_a_phantom_delta()
+    {
+        var preset = AnimateTemplateDefaults.Slot("sensorbar", 1)!;
+        var lighting = new LightingSettings { Sync = "sensorbar", Animate = new AnimateSettings { Effect = "sensorbar" } };
+        lighting.Animate.Templates["sensorbar"] = new AnimateEffectTemplates { Selected = 1, Slots = new() { null, StoredBeforeBackground("sensorbar", 1) } };
+        lighting.Animate.States["sensorbar"] = StoredBeforeBackground("sensorbar", 1);
+
+        var look = LightingPresetLooks.Capture(lighting);
+        foreach (var name in BgParams)
+        {
+            Assert.Equal(preset.Params[name], look.AnimateState!.Params[name]);
+        }
+
+        LightingPresetLooks.Apply(lighting, look);
+        Assert.False(lighting.Animate.States.ContainsKey("sensorbar"));
     }
 }

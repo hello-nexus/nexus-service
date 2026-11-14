@@ -71,6 +71,34 @@ public sealed class LightingWriteToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplyLightingScenario_saved_state_without_the_fill_background_takes_the_preset_value()
+    {
+        var lighting = new McpTestHarness.StubLightingProvider();
+        var store = NewStore();
+        store.Update(s =>
+        {
+            s.Lighting.Animate.Templates["sensorbar"] = new AnimateEffectTemplates
+            {
+                Selected = 1,
+                Slots = new() { null, Lighting.SensorFillBackgroundTests.StoredBeforeBackground("sensorbar", 1) },
+            };
+            s.Lighting.Animate.States["sensorbar"] = Lighting.SensorFillBackgroundTests.StoredBeforeBackground("sensorbar", 1, hue: 0.9f);
+        });
+        var tool = new ApplyLightingScenarioTool(lighting, store, new MultiplexHub());
+
+        var result = await tool.ExecuteAsync(JsonSerializer.SerializeToElement(new { scenario = "sensorbar" }), CancellationToken.None);
+
+        Assert.False(result.IsError);
+        var call = Assert.Single(lighting.StartAnimateCalls);
+        Assert.Equal(0.9f, call.Hue, 3);
+        var preset = Nexus.Service.Lighting.AnimateTemplateDefaults.Slot("sensorbar", 1)!;
+        foreach (var name in Lighting.SensorFillBackgroundTests.BgParams)
+        {
+            Assert.Equal(preset.Params[name], call.Params.Single(p => p.Name == name).Value, 3);
+        }
+    }
+
+    [Fact]
     public async Task ApplyLightingScenario_without_saved_state_starts_with_template_defaults()
     {
         var lighting = new McpTestHarness.StubLightingProvider();

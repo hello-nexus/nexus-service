@@ -94,7 +94,7 @@ public static class InstallDefaultsRoutes
                         // through the templates so the export always carries
                         // the active effect's effective slider snapshot.
                         State = (s.Lighting.Animate.States.TryGetValue(s.Lighting.Animate.Effect, out var st) && st is not null
-                                ? st
+                                ? Nexus.Service.Lighting.AnimateTemplateDefaults.WithPresetParams(st, Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected(s.Lighting.Animate.Templates, s.Lighting.Animate.Effect))
                                 : Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected(s.Lighting.Animate.Templates, s.Lighting.Animate.Effect))
                             is { } effective
                             ? new LightingAnimateState

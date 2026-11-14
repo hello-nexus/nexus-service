@@ -137,7 +137,7 @@ public static class LightingPresetLooks
         }
         if (states is not null && states.TryGetValue(effect, out var stored) && stored is not null)
         {
-            return stored;
+            return AnimateTemplateDefaults.WithPresetParams(stored, AnimateTemplateDefaults.ResolveSelected(templates, effect));
         }
         return AnimateTemplateDefaults.ResolveSelected(templates, effect);
     }
