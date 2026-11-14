@@ -29,6 +29,8 @@ public sealed class GalleonOnboardRecord
     public List<GalleonOwnedLayer> Owned { get; set; } = new();
     /// <summary>The layer list bytes Nexus last wrote.</summary>
     public string WrittenListB64 { get; set; } = "";
+    /// <summary>A list/profile/registry tail was started and not finished; the next run completes it even when the board already holds the wanted layers.</summary>
+    public bool TailPending { get; set; }
 
     public bool HasBackup() => ProfileB64.Length > 0 && ListB64.Length > 0 && RegistryB64.Length > 0;
 

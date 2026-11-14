@@ -18,8 +18,10 @@ namespace Nexus.Service.Peripherals.Corsair.Galleon;
 /// </summary>
 public sealed partial class GalleonSdHub
 {
-    private const double DebounceMs = 5000;
+    private const double DebounceMs = 3000;
     private const double MinTxGapMs = 5000;
+    // A failed transaction is retried soon: the board's replies come back in order, so a stall clears within about a second.
+    private const double MinRetryMs = 1500;
     private const double TxBudgetMs = 6000;
     private const double AnimatedLogMs = 15_000;
     private const int MaxOnboardFailures = 5;
@@ -76,6 +78,7 @@ public sealed partial class GalleonSdHub
         public int LogBudget = MaxLogLines;
         public int OpenHandle = -1;
         public long TxDeadline;
+        public bool Unsettled;
         public bool UndoChecked;
         public bool UndoPending;
         public bool UndoGaveUp;
@@ -102,6 +105,7 @@ public sealed partial class GalleonSdHub
             LayersLogged = false;
             InTail = false;
             LogBudget = MaxLogLines;
+            Unsettled = false;
             UndoChecked = false;
             UndoPending = false;
             UndoGaveUp = false;
@@ -246,7 +250,7 @@ public sealed partial class GalleonSdHub
     }
 
     private static double BackoffMs(int failures) =>
-        Math.Max(MinTxGapMs, Math.Min(MaxRejectBackoffMs, RejectBackoffMs * (1 << Math.Min(failures, MaxBackoffDoublings))));
+        Math.Min(MaxRejectBackoffMs, MinRetryMs * (1 << Math.Clamp(failures - 1, 0, MaxBackoffDoublings)));
 
     // Turn-off: undo once per saved-off transition when Nexus layers are on record, retried with backoff, then streaming resumes regardless.
     private void UndoOnboardIfNeededLocked(Slot slot)
@@ -281,6 +285,7 @@ public sealed partial class GalleonSdHub
     private bool RunOnboardTx(Slot slot, string kind, Func<bool> body)
     {
         var ob = slot.Ob;
+        SettleInput(slot);
         ob.OpenHandle = -1;
         ob.InTail = false;
         ob.TxDeadline = _clock() + (long)(TxBudgetMs * Stopwatch.Frequency / 1000);
@@ -297,6 +302,7 @@ public sealed partial class GalleonSdHub
         }
         if (!ok)
         {
+            ob.Unsettled = true;
             if (ob.OpenHandle >= 0)
             {
                 try { Exchange(slot, GalleonSdProtocol.StopTransaction((byte)ob.OpenHandle), $"onboard abort close h={ob.OpenHandle}", ProbeReplyMs, log: true); }
@@ -316,7 +322,7 @@ public sealed partial class GalleonSdHub
     {
         slot.SoftwareMode = false;
         slot.HasLast = false;
-        var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), $"onboard {tag} mode->hardware", ProbeReplyMs, log: true);
+        var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), $"onboard {tag} mode->hardware", SlowReplyMs, log: true, drainFirst: true);
         var confirmed = RestoreConfirmed(reply);
         if (confirmed)
         {
@@ -353,10 +359,10 @@ public sealed partial class GalleonSdHub
         if (!slot.Ob.InTail && _clock() > slot.Ob.TxDeadline) throw new TxAbort("time budget exceeded");
     }
 
-    private GalleonReply TxEx(Slot slot, byte[] wire, string label, bool force = false)
+    private GalleonReply TxEx(Slot slot, byte[] wire, string label, bool force = false, int replyMs = ProbeReplyMs)
     {
         Step(slot);
-        return Exchange(slot, wire, $"onboard {label}", ProbeReplyMs, Lg(slot) || force, check: true);
+        return Exchange(slot, wire, $"onboard {label}", replyMs, Lg(slot) || force, check: true, drainFirst: true);
     }
 
     private static ReadOnlySpan<byte> Wire(Slot slot) => GalleonSdOnboardProbe.Strip(slot.ParsedReply.AsSpan(0, slot.ParsedReplyLength));
@@ -372,8 +378,7 @@ public sealed partial class GalleonSdHub
     private OpenOutcome TxOpen(Slot slot, byte handle, ushort res, string tag, bool force = false)
     {
         Step(slot);
-        DrainInput(slot);
-        var reply = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, res), $"onboard {tag} open", ProbeReplyMs, Lg(slot) || force, check: true);
+        var reply = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, res), $"onboard {tag} open", ProbeReplyMs, Lg(slot) || force, check: true, drainFirst: true);
         if (reply.IsOk)
         {
             slot.Ob.OpenHandle = handle;
@@ -388,9 +393,10 @@ public sealed partial class GalleonSdHub
         if (outcome != OpenOutcome.Ok) throw new TxAbort($"{tag} open {outcome.ToString().ToLowerInvariant()}");
     }
 
-    private void TxClose(Slot slot, byte handle, string tag)
+    // A close after a write commits it, and the board can answer it long after a normal reply window.
+    private void TxClose(Slot slot, byte handle, string tag, int replyMs = ProbeReplyMs)
     {
-        var reply = Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"onboard {tag} close", ProbeReplyMs, Lg(slot), check: true);
+        var reply = Exchange(slot, GalleonSdProtocol.StopTransaction(handle), $"onboard {tag} close", replyMs, Lg(slot), check: true, drainFirst: true);
         slot.Ob.OpenHandle = -1;
         if (!reply.IsOk) throw new TxAbort($"{tag} close not confirmed (parsed={reply.Parsed} status={reply.Status:X2})");
     }
@@ -458,7 +464,7 @@ public sealed partial class GalleonSdHub
             var log = Lg(slot);
             var chunks = GalleonSdProtocol.BlockWrite(handle, data);
             Step(slot);
-            var ack = Exchange(slot, chunks[0], $"onboard {tag} write first", ProbeReplyMs, log, check: true);
+            var ack = Exchange(slot, chunks[0], $"onboard {tag} write first", ProbeReplyMs, log, check: true, drainFirst: true);
             for (var i = 1; i < chunks.Count; i++)
             {
                 if (!SendWire(slot, chunks[i], $"onboard {tag} write next {i}", log)) throw new InvalidOperationException($"write failed: {tag}");
@@ -466,7 +472,7 @@ public sealed partial class GalleonSdHub
             }
             DrainInput(slot);
             if (!ack.IsOk) throw new TxAbort($"{tag} write not acknowledged (parsed={ack.Parsed} status={ack.Status:X2})");
-            TxClose(slot, handle, tag);
+            TxClose(slot, handle, tag, SlowReplyMs);
         }
         catch (Exception)
         {
@@ -502,14 +508,19 @@ public sealed partial class GalleonSdHub
     private BoardView ReadBoard(Slot slot, GalleonOnboardRecord? rec)
     {
         var view = new BoardView();
-        var active = TxEx(slot, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "get 6E");
-        var aw = Wire(slot);
-        if (!active.IsOk || aw.Length < 6) throw new TxAbort("active profile unreadable");
-        int index = aw[5];
+        var index = ReadActiveIndex(slot);
 
         view.Registry = TxRead(slot, GalleonSdOnboardProbe.RegistryResource, "registry")!;
         if (!GalleonSdOnboardCodec.TryParseRegistry(view.Registry, out view.RegistryRefs)) throw new TxAbort("registry layout not recognized");
-        if (index >= view.RegistryRefs.Length || index >= GalleonSdOnboardProbe.MaxProfiles) throw new TxAbort($"active profile index {index} not in the registry");
+        if (index >= view.RegistryRefs.Length || index >= GalleonSdOnboardProbe.MaxProfiles)
+        {
+            // Either the board points at a profile slot with no stored profile, or the reply carried stray bytes after its status.
+            // Ask once more; a second out-of-range answer aborts with nothing written.
+            var again = ReadActiveIndex(slot);
+            if (again >= view.RegistryRefs.Length || again >= GalleonSdOnboardProbe.MaxProfiles) throw new TxAbort($"active profile index {again} not in the registry");
+            ServiceLog.Warn($"[galleon-sd-onboard] active profile index read {index} outside the registry, then {again}; using {again}");
+            index = again;
+        }
         view.ActiveRes = view.RegistryRefs[index];
         view.ProfileRes = view.ActiveRes;
         if (rec is { Owned.Count: > 0, ProfileRes: > 0 } && rec.ProfileRes != view.ActiveRes)
@@ -534,6 +545,14 @@ public sealed partial class GalleonSdHub
         if (!GalleonSdOnboardCodec.TryParseLayerList(view.ListBytes, out view.ListRefs)) throw new TxAbort("layer list layout not recognized");
         ServiceLog.Info($"[galleon-sd-onboard] board registry={FormatRefs(view.RegistryRefs)} active={index} profile={view.ProfileRes:X4} list={view.ListRes:X4} layers={FormatRefs(view.ListRefs)} mismatch={view.Mismatch}");
         return view;
+    }
+
+    private int ReadActiveIndex(Slot slot)
+    {
+        var reply = TxEx(slot, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "get 6E");
+        var w = Wire(slot);
+        if (!reply.IsOk || w.Length < 6) throw new TxAbort("active profile unreadable");
+        return w[5];
     }
 
     private static string B64(byte[] b) => Convert.ToBase64String(b);
@@ -699,7 +718,7 @@ public sealed partial class GalleonSdHub
         var newList = finalIds.Concat(view.ListRefs.Where(r => !ours.Contains(r))).ToList();
         if (newList.Count > GalleonSdOnboardCodec.MaxListLayers) throw new TxAbort("layer list would exceed the supported length");
         var listBytes = GalleonSdOnboardCodec.BuildLayerList(newList);
-        if (!wrote && toDelete.Count == 0 && listBytes.AsSpan().SequenceEqual(view.ListBytes))
+        if (!wrote && toDelete.Count == 0 && !rec.TailPending && listBytes.AsSpan().SequenceEqual(view.ListBytes))
         {
             ServiceLog.Info("[galleon-sd-onboard] board already holds these layers; nothing to write");
             RestoreHardwareLocked(slot, "no-op");
@@ -715,7 +734,7 @@ public sealed partial class GalleonSdHub
                     rec.Owned.RemoveAll(o => o.Id == id);
                     _onboard.Save(serial, rec);
                 }
-            });
+            }, rec);
         }
         rec.Owned = finalIds.Select((id, i) => new GalleonOwnedLayer { Id = id, BodyB64 = B64(bodies[i]) })
             .Concat(shared.Select(o => new GalleonOwnedLayer { Id = o.Id, BodyB64 = B64(o.Body) })).ToList();
@@ -794,9 +813,13 @@ public sealed partial class GalleonSdHub
     }
 
     // Layer list, then (when given) the deletes it made safe, software mode again, profile with a new timestamp, hardware mode, registry unchanged, hardware mode.
-    private void WriteTail(Slot slot, BoardView view, byte[] listBytes, Action? afterList)
+    private void WriteTail(Slot slot, BoardView view, byte[] listBytes, Action? afterList, GalleonOnboardRecord rec)
     {
         slot.Ob.InTail = true;
+        // Set before the list changes and cleared only when the tail completes, so an aborted tail is finished by the next run
+        // even when the board already holds the wanted layers.
+        rec.TailPending = true;
+        _onboard.Save(slot.Info.Serial, rec, flush: true);
         TxWrite(slot, ListHandle, view.ListRes, listBytes, "list");
         afterList?.Invoke();
 
@@ -807,10 +830,11 @@ public sealed partial class GalleonSdHub
         var stamp = (uint)Math.Max(UtcNow().ToUnixTimeSeconds(), (long)oldStamp + 1);
         TxWrite(slot, ProfileHandle, view.ProfileRes, GalleonSdOnboardCodec.WithTimestamp(profile, stamp), "profile");
 
-        var hw = TxEx(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware");
+        var hw = TxEx(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "mode->hardware", replyMs: SlowReplyMs);
         if (hw.Parsed && hw.Status != 0) throw new TxAbort($"hardware mode refused (status {hw.Status:X2})");
         TxWrite(slot, LayerHandle, GalleonSdOnboardProbe.RegistryResource, view.Registry, "registry");
         RestoreHardwareLocked(slot, "done");
+        rec.TailPending = false;
     }
 
     private bool UndoTxBody(Slot slot)
@@ -850,12 +874,12 @@ public sealed partial class GalleonSdHub
         ServiceLog.Info($"[galleon-sd-onboard] undo list={FormatRefs(restored.ToArray())} equalsBackup={backupList is not null && GalleonSdOnboardCodec.BuildLayerList(restored).AsSpan().SequenceEqual(backupList)}");
 
         var listBytes = GalleonSdOnboardCodec.BuildLayerList(restored);
-        if (verified.Count > 0 || !listBytes.AsSpan().SequenceEqual(view.ListBytes))
+        if (verified.Count > 0 || rec.TailPending || !listBytes.AsSpan().SequenceEqual(view.ListBytes))
         {
             WriteTail(slot, view, listBytes, () =>
             {
                 foreach (var v in deletable) DeleteOwned(slot, v.Id);
-            });
+            }, rec);
         }
         else
         {

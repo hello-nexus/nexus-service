@@ -90,6 +90,10 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     private const int OpenReplyMs = 300;
     private const int MinProbeWaitMs = 20;
     private const int ProbeReplyMs = 100;
+    // The board goes quiet for a while after a hardware-mode switch and after a committed write; its replies still arrive, in order.
+    private const int SlowReplyMs = 1500;
+    private const int SettleQuietMs = 150;
+    private const int MaxSettleReads = 10;
     private const int FrameReplyMs = 20;
     private const int FirstPacketReplyMs = 5;
     private const int InputBufferBytes = GalleonSdProtocol.WireLength + 1;
@@ -446,11 +450,11 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         {
             var begun = WithSlot(slot, s =>
             {
-                DrainInput(s);
+                SettleInput(s);
                 s.ModeTouched = true;
                 s.HardwareHeld = false;
-                Exchange(s, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "onboard mode->software", ProbeWait(deadline, ProbeReplyMs), log: true);
-                Exchange(s, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "onboard get 6E", ProbeWait(deadline, ProbeReplyMs), log: true);
+                Exchange(s, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeSoftware), "onboard mode->software", ProbeWait(deadline, ProbeReplyMs), log: true, drainFirst: true);
+                Exchange(s, GalleonSdProtocol.GetProperty(GalleonSdProtocol.PropActiveProfile), "onboard get 6E", ProbeWait(deadline, ProbeReplyMs), log: true, drainFirst: true);
             });
             if (!begun) return;
 
@@ -504,7 +508,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             if (_disposed || _slot != slot) return;
             try
             {
-                var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "onboard mode->hardware", ProbeWait(deadline, ProbeReplyMs), log: true);
+                var reply = Exchange(slot, GalleonSdProtocol.SetMode(GalleonSdProtocol.ModeHardware), "onboard mode->hardware", SlowReplyMs, log: true, drainFirst: true);
                 if (RestoreConfirmed(reply))
                 {
                     slot.Failures = 0;
@@ -571,7 +575,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         const byte handle = 0;
         var tag = $"onboard {resource:X4}";
         body = Array.Empty<byte>();
-        var open = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeWait(deadline, ProbeReplyMs), log: true);
+        var open = Exchange(slot, GalleonSdProtocol.StartTransaction(handle, resource), $"{tag} open", ProbeWait(deadline, ProbeReplyMs), log: true, drainFirst: true);
         if (!open.Parsed) open = AwaitLateOpen(slot, tag, ProbeWait(deadline, OpenReplyMs - ProbeReplyMs));
         if (!open.IsOk)
         {
@@ -738,8 +742,10 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         return slot.Device.Write(GalleonSdProtocol.ToHidBuffer(wire));
     }
 
-    private GalleonReply Exchange(Slot slot, byte[] wire, string label, int replyTimeoutMs, bool log, bool check = false)
+    // drainFirst drops replies still queued from an earlier command, so a late answer is never taken for this command's answer.
+    private GalleonReply Exchange(Slot slot, byte[] wire, string label, int replyTimeoutMs, bool log, bool check = false, bool drainFirst = false)
     {
+        if (drainFirst) DrainInput(slot, log ? label : null);
         if (!SendWire(slot, wire, label, log)) throw new InvalidOperationException($"write failed: {label}");
         if (replyTimeoutMs <= 0)
         {
@@ -789,10 +795,31 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         }
     }
 
-    private static void DrainInput(Slot slot)
+    private static void DrainInput(Slot slot, string? logLabel = null)
     {
         var buf = new byte[InputBufferBytes];
-        for (var i = 0; i < 8 && slot.Device.Read(buf, 0) > 0; i++) { }
+        for (var i = 0; i < 32; i++)
+        {
+            var n = slot.Device.Read(buf, 0);
+            if (n <= 0) break;
+            if (logLabel is not null) ServiceLog.Info($"[galleon-sd] IN  {logLabel} (stale, dropped): {Hex(buf.AsSpan(0, n))}");
+        }
+    }
+
+    // Start of an onboard transaction or probe: drop queued replies, and after a failed run wait for the board to go quiet, because a reply
+    // it still owes would otherwise be read as the answer to the first command of this run.
+    private void SettleInput(Slot slot)
+    {
+        DrainInput(slot, "settle");
+        if (!slot.Ob.Unsettled) return;
+        slot.Ob.Unsettled = false;
+        var buf = new byte[InputBufferBytes];
+        for (var i = 0; i < MaxSettleReads; i++)
+        {
+            var n = slot.Device.Read(buf, SettleQuietMs);
+            if (n <= 0) break;
+            ServiceLog.Info($"[galleon-sd] IN  settle (stale, dropped): {Hex(buf.AsSpan(0, n))}");
+        }
     }
 
     private void LogWindowLocked(Slot slot, long now)

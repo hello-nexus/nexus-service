@@ -66,6 +66,18 @@ public class GalleonSdOnboardTests
         /// <summary>A handle turns busy once the total number of opens passes the count.</summary>
         public Dictionary<byte, int> BusyAfter { get; } = new();
         public int TotalOpens { get; private set; }
+        /// <summary>The board goes quiet this long (virtual ms) after a hardware-mode set; replies queue up in order and arrive once it passes.</summary>
+        public int QuietAfterHardwareMs { get; set; }
+        /// <summary>Same, after the close that commits a write on handle 2 (the layer list).</summary>
+        public int QuietAfterListCommitMs { get; set; }
+        /// <summary>The next close of a handle that committed a write answers an error status, once.</summary>
+        public byte? FailNextCommitCloseOnHandle { get; set; }
+        /// <summary>Active-profile replies served first, then the real index.</summary>
+        public Queue<int> ActiveIndexSequence { get; } = new();
+        public int PendingReplies => _replies.Count;
+        private int _quietMs;
+        public void Elapse(int ms) => _quietMs = Math.Max(0, _quietMs - ms);
+        public void InjectReply(byte[] reply) => _replies.Enqueue(reply);
         public Action? OnAnyWrite { get; set; }
         public const byte NotFound = 1;
         public const byte Busy = 3;
@@ -147,10 +159,12 @@ public class GalleonSdOnboardTests
             {
                 case GalleonSdProtocol.CmdSet:
                     if (w[4] == GalleonSdProtocol.PropMode) Modes.Add(w[6] == 2 ? "02" : "01");
+                    if (w[4] == GalleonSdProtocol.PropMode && w[6] == 1 && QuietAfterHardwareMs > 0) _quietMs = QuietAfterHardwareMs;
                     _replies.Enqueue(Reply(cmd, (byte)(forced ? 1 : 0)));
                     break;
                 case GalleonSdProtocol.CmdGet:
-                    _replies.Enqueue(Reply(cmd, 0, new[] { (byte)(w[4] == GalleonSdProtocol.PropActiveProfile ? ActiveIndex : 0) }));
+                    var served = w[4] == GalleonSdProtocol.PropActiveProfile && ActiveIndexSequence.Count > 0 ? ActiveIndexSequence.Dequeue() : ActiveIndex;
+                    _replies.Enqueue(Reply(cmd, 0, new[] { (byte)(w[4] == GalleonSdProtocol.PropActiveProfile ? served : 0) }));
                     break;
                 case GalleonSdProtocol.CmdStartTx:
                 {
@@ -241,7 +255,10 @@ public class GalleonSdOnboardTests
                         _closedWithWrite = true;
                     }
                     _open.Remove(h);
-                    _replies.Enqueue(Reply(cmd, (byte)(_closedWithWrite && FailWriteClose ? 1 : 0)));
+                    var failOnce = _closedWithWrite && FailNextCommitCloseOnHandle == h;
+                    if (failOnce) FailNextCommitCloseOnHandle = null;
+                    if (_closedWithWrite && h == 2 && QuietAfterListCommitMs > 0) _quietMs = QuietAfterListCommitMs;
+                    _replies.Enqueue(Reply(cmd, (byte)(failOnce || (_closedWithWrite && FailWriteClose) ? 1 : 0)));
                     _closedWithWrite = false;
                     break;
                 }
@@ -270,6 +287,15 @@ public class GalleonSdOnboardTests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            if (_quietMs > 0)
+            {
+                if (timeoutMs < _quietMs)
+                {
+                    _quietMs -= timeoutMs;
+                    return 0;
+                }
+                _quietMs = 0;
+            }
             if (!_replies.TryDequeue(out var r)) return 0;
             r.CopyTo(buffer);
             return r.Length;
@@ -340,7 +366,11 @@ public class GalleonSdOnboardTests
             Board.Writes.Clear();
         }
 
-        public void Advance(double seconds) => Clock += (long)(seconds * Stopwatch.Frequency);
+        public void Advance(double seconds)
+        {
+            Clock += (long)(seconds * Stopwatch.Frequency);
+            Board.Elapse((int)(seconds * 1000));
+        }
 
         /// <summary>Presents the frame, lets it settle past the debounce, and presents it again so the transaction runs.</summary>
         public void Settle(RgbColor[] frame)
@@ -670,13 +700,13 @@ public class GalleonSdOnboardTests
         var frame = Solid(Red);
 
         rig.Hub.SetSavedToDevice(true, frame);
-        rig.Advance(4.9);
+        rig.Advance(2.9);
         rig.Hub.SetSavedToDevice(true, frame);
         Assert.DoesNotContain(rig.Board.Tokens(), t => t.StartsWith("OPEN:", StringComparison.Ordinal));
 
         var other = Solid(Blue);
         rig.Hub.SetSavedToDevice(true, other);
-        rig.Advance(4.9);
+        rig.Advance(2.9);
         rig.Hub.SetSavedToDevice(true, other);
         Assert.DoesNotContain(rig.Board.Tokens(), t => t.StartsWith("OPEN:", StringComparison.Ordinal));
 
@@ -859,6 +889,143 @@ public class GalleonSdOnboardTests
 
         rig.Settle(Solid(Red));
 
+        Assert.DoesNotContain(rig.Board.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdCreate);
+        Assert.Equal("SET:01", rig.Board.Tokens()[^1]);
+    }
+
+    // ---- reply desync (customer bundle: the board goes quiet after a hardware-mode switch and a committed write) ----
+
+    // Residue the board leaves behind the status of a reply: bytes of an earlier, longer report.
+    private static byte[] PaddedReply(byte cmd)
+    {
+        var r = new byte[GalleonSdProtocol.WireLength];
+        r[3] = cmd;
+        var tail = System.Text.Encoding.ASCII.GetBytes("GALLEON 100 SD Default Profile");
+        tail.CopyTo(r, 40);
+        r[21] = 0x6D;
+        return r;
+    }
+
+    [Fact]
+    public void A_board_that_goes_quiet_after_the_hardware_switch_still_completes_the_whole_transaction()
+    {
+        var rig = new Rig();
+        rig.Board.QuietAfterHardwareMs = 400;
+
+        rig.Settle(Solid(Red));
+
+        var tokens = rig.Board.Tokens();
+        Assert.Contains("WRITE:h3", tokens);
+        Assert.Contains("OPEN:h1:000F", tokens);
+        Assert.Equal("SET:01", tokens[^1]);
+        Assert.False(rig.Record!.TailPending);
+        Assert.Equal(0, rig.Board.PendingReplies);
+        Assert.Equal(1, tokens.Count(t => t == "OPEN:h2:6D62"));
+    }
+
+    [Fact]
+    public void A_list_commit_that_answers_late_is_waited_for_and_does_not_abort()
+    {
+        var rig = new Rig();
+        rig.Board.QuietAfterListCommitMs = 400;
+
+        rig.Settle(Solid(Red));
+
+        var tokens = rig.Board.Tokens();
+        Assert.Contains("WRITE:h3", tokens);
+        Assert.False(rig.Record!.TailPending);
+        Assert.Equal(0, rig.Board.PendingReplies);
+    }
+
+    [Fact]
+    public void Replies_still_queued_from_an_aborted_run_are_not_taken_for_answers_to_the_next_run()
+    {
+        var rig = new Rig();
+        var frame = Solid(Red);
+        rig.Hub.SetSavedToDevice(true, frame);
+        rig.Advance(3.1);
+        // Logged order after an abort: the hardware-mode answer, the registry open answer, the abort hardware-mode answer.
+        rig.Board.InjectReply(PaddedReply(GalleonSdProtocol.CmdSet));
+        rig.Board.InjectReply(PaddedReply(GalleonSdProtocol.CmdStartTx));
+        rig.Board.InjectReply(PaddedReply(GalleonSdProtocol.CmdSet));
+        rig.Board.Writes.Clear();
+
+        rig.Hub.SetSavedToDevice(true, frame);
+
+        var tokens = rig.Board.Tokens().SkipWhile(t => t != "SET:02").ToArray();
+        Assert.Contains("WRITE:h3", tokens);
+        Assert.Equal("SET:01", tokens[^1]);
+        Assert.Equal(0, rig.Board.PendingReplies);
+        Assert.Equal(0, rig.Board.StrayCloses);
+        Assert.True(GalleonSdOnboardCodec.TryParseLayerList(rig.Board.Store[ListRes], out var refs) && refs.Contains((ushort)0x6D68));
+    }
+
+    [Fact]
+    public void A_tail_cut_short_at_the_list_close_is_finished_by_the_next_run_even_though_the_board_holds_the_layers()
+    {
+        var rig = new Rig();
+        var frame = Solid(Red);
+        rig.Board.FailNextCommitCloseOnHandle = 2;
+
+        rig.Settle(frame);
+
+        Assert.True(rig.Record!.TailPending);
+        Assert.DoesNotContain("WRITE:h3", rig.Board.Tokens());
+        Assert.Contains(0x6D68, GalleonSdOnboardCodec.TryParseLayerList(rig.Board.Store[ListRes], out var refs) ? refs.Select(r => (int)r) : Array.Empty<int>());
+
+        rig.Board.Writes.Clear();
+        rig.Advance(2);
+        rig.Hub.SetSavedToDevice(true, frame);
+
+        var tokens = rig.Board.Tokens();
+        Assert.Contains("WRITE:h3", tokens);
+        Assert.Contains("OPEN:h1:000F", tokens);
+        Assert.DoesNotContain(tokens, t => t.StartsWith("CREATE:", StringComparison.Ordinal));
+        Assert.False(rig.Record!.TailPending);
+    }
+
+    [Fact]
+    public void A_failed_transaction_is_retried_after_a_short_backoff_not_a_long_one()
+    {
+        var rig = new Rig();
+        rig.Board.RefuseOpen = (res, n) => res == ListRes && n >= 2;
+        var frame = Solid(Red);
+        rig.Settle(frame);
+        rig.Board.RefuseOpen = null;
+        var seen = rig.Board.Writes.Count;
+
+        rig.Advance(1.0);
+        rig.Hub.SetSavedToDevice(true, frame);
+        Assert.Equal(seen, rig.Board.Writes.Count);
+
+        rig.Advance(0.6);
+        rig.Hub.SetSavedToDevice(true, frame);
+        Assert.True(rig.Board.Writes.Count > seen);
+    }
+
+    [Fact]
+    public void An_active_profile_reply_outside_the_registry_is_asked_again_and_a_valid_second_answer_is_used()
+    {
+        var rig = new Rig();
+        rig.Board.ActiveIndexSequence.Enqueue(2);
+
+        rig.Settle(Solid(Red));
+
+        var tokens = rig.Board.Tokens();
+        Assert.Equal(2, tokens.Count(t => t == "GET:6E"));
+        Assert.Contains("WRITE:h3", tokens);
+    }
+
+    [Fact]
+    public void An_active_profile_reply_outside_the_registry_twice_aborts_with_nothing_written()
+    {
+        var rig = new Rig();
+        rig.Board.ActiveIndexSequence.Enqueue(2);
+        rig.Board.ActiveIndexSequence.Enqueue(2);
+
+        rig.Settle(Solid(Red));
+
+        Assert.Equal(2, rig.Board.Tokens().Count(t => t == "GET:6E"));
         Assert.DoesNotContain(rig.Board.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdCreate);
         Assert.Equal("SET:01", rig.Board.Tokens()[^1]);
     }
