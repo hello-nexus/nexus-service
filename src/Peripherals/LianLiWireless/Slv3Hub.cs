@@ -3432,12 +3432,8 @@ public sealed partial class Slv3Hub : IDisposable
         BeginUpload();
         try
         {
-            var sent = SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
-            if (sent)
-            {
-                DeviceWatch.NoteSent(macHex, effectIndexHex, _nowMs());
-            }
-            else
+            var sent = SendRgbDataParts(macHex, channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
+            if (!sent)
             {
                 DeviceWatch.NoteSendFailed(macHex);
             }
@@ -3465,7 +3461,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex)
+    private bool SendRgbDataParts(string macHex, byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex)
     {
         effectIndexHex = "";
         // The header gaps run with _lock RELEASED so the device-list poll keeps
@@ -3502,6 +3498,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
             }
             NoteConfigChangedLocked();
+            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs());
         }
 
         effectIndexHex = Convert.ToHexString(effectIndex);
