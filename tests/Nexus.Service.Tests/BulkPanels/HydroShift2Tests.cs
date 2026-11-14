@@ -128,6 +128,52 @@ public class HydroShift2Tests
         Assert.Equal(HydroShift2Protocol.Height, (png[20] << 24) | (png[21] << 16) | (png[22] << 8) | png[23]);
     }
 
+    [Fact]
+    public void Overlay_png_is_transparent_except_one_nearly_transparent_corner_pixel()
+    {
+        using var image = SkiaSharp.SKBitmap.Decode(HydroShift2Protocol.EmptyOverlayPng());
+
+        Assert.Equal(1, image.GetPixel(0, 0).Alpha);
+        Assert.Equal(0, image.GetPixel(1, 0).Alpha);
+        Assert.Equal(0, image.GetPixel(240, 240).Alpha);
+        Assert.Equal(0, image.GetPixel(479, 479).Alpha);
+    }
+
+    [Fact]
+    public void Reply_log_lets_the_first_lines_through_then_one_per_interval()
+    {
+        var log = new ReplyLog();
+
+        Assert.True(log.Due("a", 0));
+        Assert.True(log.Due("a", 10));
+        Assert.True(log.Due("a", 20));
+        Assert.False(log.Due("a", 30));
+        Assert.False(log.Due("a", 20 + ReplyLog.IntervalMs - 1));
+        Assert.True(log.Due("a", 20 + ReplyLog.IntervalMs));
+        Assert.True(log.Due("b", 30));
+
+        log.Reset();
+        Assert.True(log.Due("a", 40));
+    }
+
+    [Fact]
+    public void Logged_params_hex_blanks_the_radio_mac()
+    {
+        var hex = HydroShift2LcdDriver.HexPrefix(Reply(ParamsReplyHex), HydroShift2Protocol.CommandGetParams);
+
+        Assert.DoesNotContain("5ED6D8E566E1", hex, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith("FAC81400", hex);
+        Assert.Equal(80, hex.Length);
+    }
+
+    [Fact]
+    public void Logged_version_hex_keeps_the_firmware_string()
+    {
+        var hex = HydroShift2LcdDriver.HexPrefix(Reply(VersionReplyHex), HydroShift2Protocol.CommandGetVersion);
+
+        Assert.Contains("6C69616E6C696832735F303030315F30303237", hex);
+    }
+
     // ── driver ──
 
     [Fact]
@@ -146,6 +192,7 @@ public class HydroShift2Tests
                 HydroShift2Protocol.CommandGetVersion, HydroShift2Protocol.CommandStopPlay,
                 HydroShift2Protocol.CommandFrameRate, HydroShift2Protocol.CommandSetClock,
                 HydroShift2Protocol.CommandStopClock, HydroShift2Protocol.CommandPushPng,
+                HydroShift2Protocol.CommandPushJpeg,
             },
             pipe.Commands);
     }
@@ -429,8 +476,103 @@ public class HydroShift2Tests
         }
         Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
 
+        // Past the backoff steps the upload is parked rather than retried every cap.
         aio.Tick(125_000);
+        aio.Tick(85_000 + HydroShift2Aio.RingParkedRetryMs - 250);
+        Assert.Equal(5, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        aio.Tick(85_000 + HydroShift2Aio.RingParkedRetryMs);
         Assert.Equal(6, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void An_answered_upload_after_parking_resets_the_backoff()
+    {
+        var (aio, pipe) = Attached();
+        pipe.Silent = true;
+        aio.SetRing(Solid(255, 0, 0));
+        foreach (var t in new[] { 10_000, 15_000, 25_000, 45_000, 85_000 })
+        {
+            aio.Tick(t);
+        }
+        pipe.Silent = false;
+        var answered = 85_000 + HydroShift2Aio.RingParkedRetryMs;
+        aio.Tick(answered);
+        pipe.Silent = true;
+        aio.SetRing(Solid(0, 255, 0));
+        aio.Tick(answered + 2_000);
+        aio.Tick(answered + 2_000 + 4_750);
+        Assert.Equal(7, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+
+        aio.Tick(answered + 2_000 + 5_000);
+        Assert.Equal(8, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void The_overlay_wipe_is_pushed_again_on_a_slow_cadence_between_frames()
+    {
+        var (aio, pipe) = Attached();
+        aio.Tick(1_000);
+        var wipeAt = 1_000 + HydroShift2Aio.ConnectRewipeMs;
+        aio.Tick(wipeAt);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(wipeAt + HydroShift2Aio.OverlayRefreshMs - 250);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(wipeAt + HydroShift2Aio.OverlayRefreshMs);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(wipeAt + 2 * HydroShift2Aio.OverlayRefreshMs);
+        Assert.Equal(3, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void The_overlay_refresh_is_skipped_while_the_unit_shows_its_own_screen()
+    {
+        var (aio, pipe) = Attached(_ => true, _ => false);
+        aio.Tick(1_000);
+        aio.Tick(1_000 + 3 * HydroShift2Aio.OverlayRefreshMs);
+
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushPng, pipe.Commands);
+    }
+
+    [Fact]
+    public void An_unanswered_overlay_refresh_backs_off()
+    {
+        var (aio, pipe) = Attached();
+        aio.Tick(1_000);
+        var t = 1_000 + HydroShift2Aio.ConnectRewipeMs;
+        aio.Tick(t);
+        pipe.Silent = true;
+        t += HydroShift2Aio.OverlayRefreshMs;
+        aio.Tick(t);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(t + HydroShift2Aio.OverlayRefreshMs);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(t + 2 * HydroShift2Aio.OverlayRefreshMs);
+        Assert.Equal(3, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+    }
+
+    [Fact]
+    public void The_overlay_refresh_waits_out_the_stall_after_an_unanswered_ring_upload()
+    {
+        var (aio, pipe) = Attached();
+        aio.Tick(1_000);
+        var wipeAt = 1_000 + HydroShift2Aio.ConnectRewipeMs;
+        aio.Tick(wipeAt);
+        pipe.Silent = true;
+        aio.SetRing(Solid(255, 0, 0));
+        var ringAt = wipeAt + HydroShift2Aio.OverlayRefreshMs - 5_000;
+        aio.Tick(ringAt);
+        pipe.Silent = false;
+        aio.Tick(ringAt + 5_000);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
+
+        aio.Tick(ringAt + 20_000);
+        Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
     }
 
     [Fact]
@@ -596,7 +738,7 @@ public class HydroShift2Tests
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
 
         aio.Tick(40_000 + HydroShift2Aio.ResumeRewipeMs);
-        aio.Tick(100_000);
+        aio.Tick(40_000 + HydroShift2Aio.ResumeRewipeMs + 10_000);
         Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
     }
 
@@ -713,7 +855,7 @@ public class HydroShift2Tests
         aio.Tick(t);
         pipe.Silent = false;
         aio.Tick(t + HydroShift2Aio.RewipeRetryMs);
-        aio.Tick(t + 10 * HydroShift2Aio.RewipeRetryMs);
+        aio.Tick(t + 5 * HydroShift2Aio.RewipeRetryMs);
 
         Assert.Equal(2, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushPng));
     }

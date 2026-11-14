@@ -18,11 +18,15 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
     private const int ReplyTimeoutMs = 1000;
     private const int FrameRate = 30;
+    private const int DiagHexBytes = 40;
 
     /// <summary>Larger than one 512-byte reply, so the zero-length packet that ends it completes the same read.</summary>
     private readonly byte[] _reply = new byte[1024];
 
     private readonly Stopwatch _clock = new();
+    private readonly ReplyLog _replyLog = new();
+    private int _otherReplies;
+    private string? _lastOtherReply;
     private uint _lastTimestamp;
     private BgraJpegEncoder? _jpeg;
 
@@ -65,9 +69,10 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         _identified = true;
         _clock.Restart();
         _lastTimestamp = 0;
+        _replyLog.Reset();
 
         var version = Exchange(pipe, HydroShift2Protocol.CommandGetVersion, HydroShift2Protocol.EncodeCommand(
-            HydroShift2Protocol.CommandGetVersion, ReadOnlySpan<byte>.Empty, NextTimestamp()));
+            HydroShift2Protocol.CommandGetVersion, ReadOnlySpan<byte>.Empty, NextTimestamp()), "version");
         if (version is null)
         {
             ServiceLog.Warn($"[{HandlerId}] no reply to GetVersion");
@@ -75,8 +80,9 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         }
         Firmware = HydroShift2Protocol.DecodeVersion(version);
 
-        // StopPlay ends any video the panel was looping; SetClock sync-only plus StopClock
-        // keep the firmware clock face off the glass.
+        // L-Connect's apply order: StopPlay ends any video the panel was looping; SetClock
+        // sync-only plus StopClock keep the firmware clock face off the glass; then the
+        // transparent overlay and a black frame before any content.
         Command(pipe, HydroShift2Protocol.CommandStopPlay, ReadOnlySpan<byte>.Empty);
         Command(pipe, HydroShift2Protocol.CommandFrameRate, stackalloc byte[] { FrameRate });
         Exchange(pipe, HydroShift2Protocol.CommandSetClock, HydroShift2Protocol.EncodeSetClock(DateTime.Now, NextTimestamp()));
@@ -88,6 +94,12 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
 
         _jpeg?.Dispose();
         _jpeg = new BgraJpegEncoder(HydroShift2Protocol.Width, HydroShift2Protocol.Height);
+        var black = new byte[HydroShift2Protocol.Width * HydroShift2Protocol.Height * 4];
+        for (var i = 3; i < black.Length; i += 4)
+        {
+            black[i] = 255;
+        }
+        SendFrame(pipe, hid, black);
         ServiceLog.Info($"[{HandlerId}] firmware {Firmware ?? "unknown"}");
         return (HydroShift2Protocol.Width, HydroShift2Protocol.Height);
     }
@@ -129,7 +141,7 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     public HydroShift2Params? ReadParams(IBulkUsbPipe pipe)
     {
         var reply = Exchange(pipe, HydroShift2Protocol.CommandGetParams, HydroShift2Protocol.EncodeCommand(
-            HydroShift2Protocol.CommandGetParams, ReadOnlySpan<byte>.Empty, NextTimestamp()));
+            HydroShift2Protocol.CommandGetParams, ReadOnlySpan<byte>.Empty, NextTimestamp()), "params");
         return reply is null ? null : HydroShift2Protocol.DecodeParams(reply);
     }
 
@@ -153,12 +165,12 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     /// </summary>
     public bool ClearOverlay(IBulkUsbPipe pipe) =>
         Exchange(pipe, HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EncodeImage(
-            HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EmptyOverlayPng(), NextTimestamp())) is not null;
+            HydroShift2Protocol.CommandPushPng, HydroShift2Protocol.EmptyOverlayPng(), NextTimestamp()), "overlay wipe") is not null;
 
     /// <summary>Uploads a ring animation (packed RGB frames) for the firmware to loop. Call only under the hub's lock.</summary>
     public bool PushRing(IBulkUsbPipe pipe, ReadOnlySpan<byte> frames, int frameCount, byte intervalTicks) =>
         Exchange(pipe, HydroShift2Protocol.CommandPushRgb,
-            HydroShift2Protocol.EncodeRing(frames, frameCount, intervalTicks, NextTimestamp())) is not null;
+            HydroShift2Protocol.EncodeRing(frames, frameCount, intervalTicks, NextTimestamp()), "ring upload") is not null;
 
     private bool Command(IBulkUsbPipe pipe, byte command, ReadOnlySpan<byte> parameters) =>
         Exchange(pipe, command, HydroShift2Protocol.EncodeCommand(command, parameters, NextTimestamp())) is not null;
@@ -166,6 +178,52 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     /// <summary>Writes one command and returns its reply, or null when the write failed or nothing answered.</summary>
     private byte[]? Exchange(IBulkUsbPipe pipe, byte command, byte[] packet) =>
         pipe.Write(packet) ? ReadReply(pipe, command) : null;
+
+    /// <summary>As <see cref="Exchange(IBulkUsbPipe, byte, byte[])"/>, logging what came back under <paramref name="label"/>, rate limited.</summary>
+    private byte[]? Exchange(IBulkUsbPipe pipe, byte command, byte[] packet, string label)
+    {
+        _otherReplies = 0;
+        _lastOtherReply = null;
+        var wrote = pipe.Write(packet);
+        var reply = wrote ? ReadReply(pipe, command) : null;
+        LogReply(label, command, wrote, reply);
+        return reply;
+    }
+
+    private void LogReply(string label, byte command, bool wrote, byte[]? reply)
+    {
+        var failed = reply is null;
+        if (!_replyLog.Due(failed ? label + " failed" : label, Environment.TickCount64))
+        {
+            return;
+        }
+        if (reply is null)
+        {
+            var outcome = !wrote
+                ? "write failed"
+                : _otherReplies > 0 ? $"no echo, {_otherReplies} other reply bytes seen, last {_lastOtherReply}" : "timed out";
+            ServiceLog.Info($"[{HandlerId}] {label}: {outcome}");
+            return;
+        }
+        var parsed = command == HydroShift2Protocol.CommandGetParams && HydroShift2Protocol.DecodeParams(reply) is { } p
+            ? $" (coolant {p.CoolantC} C, pump {p.PumpRpm} rpm, fans {string.Join('/', p.FanRpm)} rpm)"
+            : "";
+        ServiceLog.Info($"[{HandlerId}] {label}: echo {HexPrefix(reply, command)}{parsed}");
+    }
+
+    /// <summary>The first bytes of a reply as hex; a GetParams reply has its radio MAC blanked.</summary>
+    internal static string HexPrefix(ReadOnlySpan<byte> reply, byte command)
+    {
+        var head = reply[..Math.Min(reply.Length, DiagHexBytes)].ToArray();
+        if (command == HydroShift2Protocol.CommandGetParams)
+        {
+            for (var i = 22; i < 28 && i < head.Length; i++)
+            {
+                head[i] = 0;
+            }
+        }
+        return Convert.ToHexString(head);
+    }
 
     /// <summary>
     /// The reply to <paramref name="command"/>. Replies from earlier commands that timed out
@@ -190,6 +248,45 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
             {
                 return _reply.AsSpan(0, read).ToArray();
             }
+            if (read > 0)
+            {
+                _otherReplies += read;
+                _lastOtherReply = HexPrefix(_reply.AsSpan(0, read), _reply[0]);
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Lets the first few lines per key through, then one per interval, so a reply logged on
+/// every poll or retry cannot flood the log.
+/// </summary>
+internal sealed class ReplyLog
+{
+    internal const int FirstAlways = 3;
+    internal const int IntervalMs = 60_000;
+
+    private readonly Dictionary<string, (int Count, long LastAt)> _seen = new();
+
+    public void Reset()
+    {
+        lock (_seen)
+        {
+            _seen.Clear();
+        }
+    }
+
+    public bool Due(string key, long now)
+    {
+        lock (_seen)
+        {
+            _seen.TryGetValue(key, out var entry);
+            if (entry.Count < FirstAlways || now - entry.LastAt >= IntervalMs)
+            {
+                _seen[key] = (entry.Count + 1, now);
+                return true;
+            }
+            return false;
         }
     }
 }

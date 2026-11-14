@@ -36,6 +36,23 @@ public sealed class HydroShift2Aio : BackgroundService
     private const int RingRetryMaxMs = 40_000;
 
     /// <summary>
+    /// A unit that ignored this many uploads in a row keeps ignoring them for minutes (measured), and each
+    /// try stalls the glass, so further tries are spaced this far apart instead of the backoff cap.
+    /// </summary>
+    internal const int RingFailuresBeforeParking = 4;
+    internal const int RingParkedRetryMs = 300_000;
+
+    /// <summary>
+    /// While streaming, the overlay wipe is pushed again this often between frames, so an overlay the
+    /// firmware held or redrew does not stay on the glass.
+    /// </summary>
+    internal const int OverlayRefreshMs = 30_000;
+    private const int OverlayRefreshParkedMs = 600_000;
+
+    /// <summary>After an unanswered ring upload the firmware keeps stalling for a while (measured), so the overlay refresh waits it out.</summary>
+    private const int RingStallSettleMs = 20_000;
+
+    /// <summary>
     /// At a cold boot the firmware draws its coolant overlay after the connect-time wipe, so the
     /// wipe is sent once more this long after the unit is first read.
     /// </summary>
@@ -70,6 +87,9 @@ public sealed class HydroShift2Aio : BackgroundService
     private long _lastRingAt;
     private long _ringHoldUntil;
     private int _ringRetryMs;
+    private int _ringFailures;
+    private long _overlayRefreshAt;
+    private int _overlayRefreshFailures;
     private bool _wirelessHeld;
     private bool _wasAvailable;
     private bool _driving;
@@ -208,6 +228,9 @@ public sealed class HydroShift2Aio : BackgroundService
             // Cleared even while the dongle owns the unit, so a reconnect starts without a hold.
             _ringHoldUntil = 0;
             _ringRetryMs = 0;
+            _ringFailures = 0;
+            _overlayRefreshAt = 0;
+            _overlayRefreshFailures = 0;
             _wirelessHeld = false;
             _overlayClear = false;
             _rewipeArmed = true;
@@ -287,7 +310,13 @@ public sealed class HydroShift2Aio : BackgroundService
                     _overlayClear = false;
                 }
                 var attempted = false;
-                if (!own && !_hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false) && attempted)
+                var wiped = !own && _hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false);
+                if (attempted)
+                {
+                    _overlayRefreshAt = now + OverlayRefreshMs;
+                    _overlayRefreshFailures = 0;
+                }
+                if (!wiped && attempted)
                 {
                     ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay wipe unanswered");
                     if (_ringResendAt != 0)
@@ -339,6 +368,35 @@ public sealed class HydroShift2Aio : BackgroundService
 
         SendPumpFanIfDue(now);
         SendRingIfDue(now);
+        SendOverlayRefreshIfDue(now);
+    }
+
+    /// <summary>
+    /// Pushes the wipe again on a slow cadence. It waits behind anything that already stalls the pipe
+    /// (a pending wipe, a ring upload or the settle after an unanswered one) and backs off itself when unanswered.
+    /// </summary>
+    private void SendOverlayRefreshIfDue(long now)
+    {
+        if (_overlayRefreshAt == 0 || now < _overlayRefreshAt || _rewipeAt != 0 || _overlayClear || _ringResendAt != 0
+            || now - _lastRingAt < (_ringFailures > 0 ? RingStallSettleMs : RingMinIntervalMs) || ShowsOwnScreen)
+        {
+            return;
+        }
+        var attempted = false;
+        var answered = _hub.Exchange(pipe => { attempted = true; return _driver.ClearOverlay(pipe); }, false);
+        if (!attempted)
+        {
+            return;
+        }
+        if (answered)
+        {
+            _overlayRefreshFailures = 0;
+            _overlayRefreshAt = now + OverlayRefreshMs;
+            return;
+        }
+        _overlayRefreshFailures++;
+        _overlayRefreshAt = now + Math.Min(OverlayRefreshMs << Math.Min(_overlayRefreshFailures, 5), OverlayRefreshParkedMs);
+        ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] overlay refresh unanswered ({_overlayRefreshFailures} in a row)");
     }
 
     private void SendPumpFanIfDue(long now)
@@ -397,12 +455,15 @@ public sealed class HydroShift2Aio : BackgroundService
         if (_hub.Exchange(pipe => _driver.PushRing(pipe, ring, frames, interval), false))
         {
             _ringRetryMs = 0;
+            _ringFailures = 0;
             return;
         }
-        // Retrying while the firmware still ignores uploads keeps the glass stalled, so back off.
-        _ringRetryMs = _ringRetryMs == 0 ? RingRetryMs : Math.Min(_ringRetryMs * 2, RingRetryMaxMs);
+        // Retrying while the firmware still ignores uploads keeps the glass stalled, so back off, then park.
+        _ringFailures++;
+        _ringRetryMs = _ringFailures > RingFailuresBeforeParking ? RingParkedRetryMs
+            : _ringRetryMs == 0 ? RingRetryMs : Math.Min(_ringRetryMs * 2, RingRetryMaxMs);
         _ringHoldUntil = now + _ringRetryMs;
-        ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] ring write unanswered; retrying in {_ringRetryMs / 1000} s");
+        ServiceLog.Warn($"[{HydroShift2LcdDriver.Id}] ring write unanswered ({_ringFailures} in a row); retrying in {_ringRetryMs / 1000} s");
         lock (_lock)
         {
             // A ring effect is set once, so an unanswered upload would never be tried again.

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Rendering;
+using SkiaSharp;
 
 namespace Nexus.Service.Peripherals.BulkPanels;
 
@@ -183,12 +184,15 @@ public static class HydroShift2Protocol
     }
 
     /// <summary>
-    /// A fully transparent panel-sized PNG. Pushed once at connect, it replaces the overlay
-    /// layer where the firmware draws its own coolant and pump readout over every JPEG.
+    /// A panel-sized PNG that replaces the overlay layer where the firmware draws its own
+    /// coolant and pump readout over every JPEG. One corner pixel carries alpha 1 so firmware
+    /// that treats an all-transparent PNG as nothing to draw still takes the push. The corner
+    /// lies outside the round glass, and a near-transparent black pixel is invisible on the square one.
     /// </summary>
     public static byte[] EmptyOverlayPng()
     {
         using var image = RenderKit.NewImage(Width, Height);
+        image.SetPixel(0, 0, new SKColor(0, 0, 0, 1));
         return RenderKit.EncodePng(image);
     }
 
