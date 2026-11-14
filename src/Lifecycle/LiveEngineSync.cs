@@ -135,6 +135,10 @@ public static class LiveEngineSync
                         saved = Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected(s.Animate.Templates, effect)
                             ?? new AnimateEffectState();
                     }
+                    else
+                    {
+                        saved = Nexus.Service.Lighting.AnimateTemplateDefaults.WithPresetParams(saved, Nexus.Service.Lighting.AnimateTemplateDefaults.ResolveSelected(s.Animate.Templates, effect));
+                    }
                     lighting.StartAnimate(new AnimateHeadlessStart
                     {
                         Effect = effect,

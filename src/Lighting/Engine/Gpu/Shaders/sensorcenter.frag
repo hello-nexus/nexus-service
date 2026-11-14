@@ -69,6 +69,6 @@ void main() {
     float span = 1.0 - clamp(u_colorize + S_COLORIZE, 0.0, 1.0);
     col = hsv2rgb(vec3(hue + (0.5 - k) * span, 1.0, 1.0)) * mix(1.0, v, (u_col_shade));
   }
-  col += fieldBg * (1.0 - fieldCover);
+  col += fieldBg * ((1.0 - fieldCover) * (u_col_shade));
   fragColor = vec4(finalize(col, hue), 1.0);
 }
