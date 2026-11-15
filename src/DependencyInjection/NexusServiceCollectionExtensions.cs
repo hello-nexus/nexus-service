@@ -276,6 +276,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
@@ -318,6 +320,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -371,6 +375,8 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.Galahad2LcdCoolingProvider.IsGalahad2LcdId, sp.GetRequiredService<Nexus.Service.Cooling.Galahad2LcdCoolingProvider>()),
@@ -410,6 +416,8 @@ public static class NexusServiceCollectionExtensions
                 Nexus.Service.Cooling.KrakenCoolingProvider.IsKrakenId, sp.GetRequiredService<Nexus.Service.Cooling.KrakenCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CoolingProvider.IsHydroShift2Id, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.RyujinCoolingProvider.IsRyujinId, sp.GetRequiredService<Nexus.Service.Cooling.RyujinCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.HydroShift2CurveCoolingProvider.IsHydroShift2CurveId, sp.GetRequiredService<Nexus.Service.Cooling.HydroShift2CurveCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
@@ -537,7 +545,11 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusMonitoringHistory(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Monitoring.History.NetworkRateReader>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
+        services.AddSingleton(sp =>
+        {
+            var config = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            return new Nexus.Service.Monitoring.History.DiskRateReader(() => config.Load().Monitoring.LiveDriveActivity);
+        });
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>
@@ -799,7 +811,24 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService<Nexus.Service.Lighting.IdleDim.IdleDimHost>();
 
         if (OperatingSystem.IsWindows())
+        {
+            // Windows only: the trigger needs the SMBus mutex, which the probe reports as n/a elsewhere.
+            services.AddSingleton(sp =>
+            {
+                var lifetime = sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>();
+                var flasher = sp.GetRequiredService<Nexus.Service.Devices.Firmware.FirmwareFlasher>();
+                var updates = sp.GetRequiredService<Nexus.Service.Update.UpdateService>();
+                return new Nexus.Service.Lifecycle.ResumeSelfRestart(
+                    System.IO.Path.Combine(Nexus.Service.Persistence.JsonConfigStore.ResolveDataDirectory(), "resume-self-restart.stamp"),
+                    () => Nexus.Service.Lifecycle.ResumeSelfRestart.Perform(
+                        () => flasher.IsFlashing,
+                        updates.TryHoldInstallGate,
+                        updates.ReleaseInstallGate,
+                        () => Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false),
+                        lifetime.StopApplication));
+            });
             services.AddHostedService<Nexus.Service.Lighting.Rgb.PowerEventListener>();
+        }
 
         // Session-lock blanking. One hosted service on every desktop platform;
         // which source it uses is a compile-time branch inside it.
@@ -1446,6 +1475,11 @@ public static class NexusServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Galahad2LightingFrameWriter>());
         services.AddHostedService<Nexus.Service.Peripherals.Galahad2.Galahad2ConnectionWorker>();
 
+        // ASUS ROG Ryujin III Extreme pump and fan: its own HID handle, apart from the LCD worker.
+        services.AddSingleton<Nexus.Service.Peripherals.Ryujin.RyujinCoolingHub>();
+        services.AddSingleton<Nexus.Service.Cooling.RyujinCoolingProvider>();
+        services.AddHostedService<Nexus.Service.Peripherals.Ryujin.RyujinCoolingWorker>();
+
         // Asiahorse Umbra V2 ARGB/PWM controller: hub + cooling provider + lighting + connection worker.
         services.AddSingleton<Nexus.Service.Peripherals.AsiahorseUmbra.UmbraHub>();
         services.AddSingleton<Nexus.Service.Cooling.AsiahorseUmbraCoolingProvider>();
@@ -1608,7 +1642,8 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                    holderLookup: Nexus.Service.Conflicts.AccessDeniedHolder.Find);
             });
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             {
@@ -1702,7 +1737,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                 glacialStreamHub,
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                holderLookup: Nexus.Service.Conflicts.AccessDeniedHolder.Find);
         });
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
@@ -1886,6 +1922,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiWirelessHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.LianLiFlexHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.Galahad2Handler>();
+        services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.RyujinExtremeHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.KrakenHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.NzxtFanControllerHandler>();
         services.AddSingleton<IDeviceHandler, Nexus.Service.Devices.Handlers.CorsairLinkHandler>();
@@ -2338,6 +2375,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.IEdgeSwipePolicy,
             Nexus.Service.Platform.Displays.WindowsEdgeSwipePolicy>();
         services.AddHostedService<Nexus.Service.Platform.Displays.TouchMappingGuardService>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.TouchDigitizerRecovery>();
         // Screen-mirror frames also flow through the helper - DXGI desktop
         // duplication is Session 0-blind, so the helper captures + downsamples
         // and pushes canvas-resolution RGB24 over the pipe.
@@ -2399,7 +2437,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter,
             Nexus.Service.Platform.Displays.NullTouchDigitizerDevnodeRestarter>();
 #endif
-        services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
+        services.AddSingleton(sp => new Nexus.Service.Platform.Displays.TouchMappingGuard(
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.ITouchMapSnapshotSource>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.IDigimonRegistryWriter>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter>(),
+            sp.GetService<Nexus.Service.Platform.Displays.IEdgeSwipePolicy>(),
+            recovery: sp.GetService<Nexus.Service.Platform.Displays.TouchDigitizerRecovery>()));
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface(

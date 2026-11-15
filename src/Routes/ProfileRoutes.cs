@@ -528,6 +528,7 @@ public static class ProfileRoutes
                     if (monitoring.SmartPollDefaultSeconds.HasValue)
                         s.Monitoring.SmartPollDefaultSeconds = SmartPollPolicy.ClampSeconds(monitoring.SmartPollDefaultSeconds.Value);
                     if (monitoring.SmartPollPerDrive.HasValue) s.Monitoring.SmartPollPerDrive = monitoring.SmartPollPerDrive.Value;
+                    if (monitoring.LiveDriveActivity.HasValue) s.Monitoring.LiveDriveActivity = monitoring.LiveDriveActivity.Value;
                 }
                 if (body.Cooling is { } cooling)
                 {

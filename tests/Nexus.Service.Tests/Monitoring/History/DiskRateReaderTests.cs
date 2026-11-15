@@ -90,4 +90,15 @@ public class DiskRateReaderTests
         Assert.True(second.ReadBytesPerSec is null || second.ReadBytesPerSec >= 0);
         Assert.True(second.WriteBytesPerSec is null || second.WriteBytesPerSec >= 0);
     }
+
+    [Fact]
+    public void Read_WithLiveActivityOff_ReturnsNullRatesEveryCall()
+    {
+        var reader = new DiskRateReader(() => false);
+
+        Assert.Null(reader.Read().ReadBytesPerSec);
+        var second = reader.Read();
+        Assert.Null(second.ReadBytesPerSec);
+        Assert.Null(second.WriteBytesPerSec);
+    }
 }
