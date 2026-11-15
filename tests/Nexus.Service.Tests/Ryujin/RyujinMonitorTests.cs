@@ -354,6 +354,61 @@ public class RyujinMonitorTests
         Assert.Equal(4, fake.Writes.ToArray().Count(w => w[1] == 0x5C && w[3] == 0x00));
     }
 
+    [Fact]
+    public async Task A_failed_upload_is_recorded_once_and_the_monitor_layout_comes_back()
+    {
+        var fake = new RyujinDeviceFake();
+        var avi = RyujinMediaAvi.Build(new[] { new byte[] { 1, 2, 3, 4 } });
+        var file = Path.Combine(Path.GetTempPath(), "ryujin-worker-" + Guid.NewGuid().ToString("N") + ".avi");
+        File.WriteAllBytes(file, avi);
+        var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(avi));
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Devices.RyujinDisplay.ScreenMode = "image";
+            s.Devices.RyujinDisplay.MediaSha = sha;
+        });
+        var gate = new DeviceControlGate(store);
+        var hub = new RyujinCoolingHub();
+        var worker = new RyujinCoolingWorker(
+            new FakeEnumerator(fake), hub, new RyujinCoolingProvider(hub), gate,
+            new HardwarePresence(new PresentUsb()), store, new StubSensorProvider(), new FailingBulkFactory())
+        {
+            MediaFile = () => file,
+        };
+        gate.SetEnabled("asus-ryujin-extreme", true);
+        try
+        {
+            await worker.StartAsync(CancellationToken.None);
+            Assert.True(SpinWait.SpinUntil(() => store.Load().Devices.RyujinDisplay.UploadFailedSha == sha, 20000));
+            Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5D && w[4] == 0x21) >= 2, 8000));
+            await worker.StopAsync(CancellationToken.None);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+
+        Assert.Equal("failed", hub.Upload.State);
+        // One fast and one paced attempt, then no more for the same file.
+        Assert.Equal(2, fake.Writes.ToArray().Count(w => w[1] == 0x71));
+    }
+
+    private sealed class FailingBulkFactory : IBulkUsbPipeFactory
+    {
+        public IBulkUsbPipe? Open(int vendorId, int productId, byte writePipeId, byte readPipeId) => new FailingPipe();
+    }
+
+    private sealed class FailingPipe : IBulkUsbPipe
+    {
+        public bool Write(ReadOnlySpan<byte> data) => false;
+        public bool Write(byte pipeId, ReadOnlySpan<byte> data) => false;
+        public int Read(Span<byte> buffer, int timeoutMs) => 0;
+        public void Dispose()
+        {
+        }
+    }
+
     private static (RyujinCoolingWorker worker, DeviceControlGate gate, RyujinCoolingHub hub) BuildWorker(FakeEnumerator enumerator, InMemoryConfigStore? existing = null)
     {
         var store = existing ?? new InMemoryConfigStore();

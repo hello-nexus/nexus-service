@@ -2474,6 +2474,9 @@ public sealed class RyujinDisplaySettings
 
     /// <summary>SHA-256 of the AVI the last successful upload left on the cooler; flash is only written when it differs from <see cref="MediaSha"/>.</summary>
     public string UploadedSha { get; set; } = "";
+
+    /// <summary>SHA-256 of the AVI whose last upload failed; it is not sent again until a new file is picked.</summary>
+    public string UploadFailedSha { get; set; } = "";
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>

@@ -26,6 +26,7 @@ internal sealed record RyujinUploadResult(bool Ok, string Message, int Chunks, d
 internal sealed class RyujinUploader
 {
     public const int DefaultAckTimeoutMs = 6000;
+    public const string AbortedMessage = "aborted";
     private const byte AnyReport = 0xFF;
     private const int MaxLoggedReports = 8;
 
@@ -33,9 +34,18 @@ internal sealed class RyujinUploader
     private readonly Action<string> _info;
     private readonly Action<string> _warn;
     private int _logged;
+    private int _keepalives;
 
     /// <summary>Longer than Armoury Crate's longest gap between chunks.</summary>
     public int AckTimeoutMs { get; init; } = DefaultAckTimeoutMs;
+
+    /// <summary>Called between chunks about every <see cref="KeepaliveMs"/>; the owner keeps duty and status flowing. Armoury Crate sent no HID during an upload.</summary>
+    public Action? Keepalive { get; init; }
+
+    public int KeepaliveMs { get; init; } = RyujinCoolingProtocol.KeepaliveMs;
+
+    /// <summary>Checked before each chunk; false aborts the upload.</summary>
+    public Func<bool>? KeepGoing { get; init; }
 
     /// <summary>How long to listen for the device's answer to the end command.</summary>
     public int EndWaitMs { get; init; } = 3000;
@@ -50,7 +60,7 @@ internal sealed class RyujinUploader
     public RyujinUploadResult Upload(byte[] avi, Action<int, int>? progress, CancellationToken ct)
     {
         var fast = Attempt(avi, paced: false, progress, ct);
-        if (fast.Ok || ct.IsCancellationRequested)
+        if (fast.Ok || ct.IsCancellationRequested || fast.Message == AbortedMessage)
         {
             return fast;
         }
@@ -65,6 +75,8 @@ internal sealed class RyujinUploader
         int total = RyujinUploadProtocol.ChunkCount(avi.Length);
         var clock = Stopwatch.StartNew();
         _logged = 0;
+        _keepalives = 0;
+        long nextKeepalive = Environment.TickCount64 + KeepaliveMs;
         Drain();
         _info($"[ryujin-upload] start mode={mode} bytes={avi.Length} chunks={total}");
 
@@ -90,9 +102,18 @@ internal sealed class RyujinUploader
         int acks = 0, sent = 0;
         foreach (var chunk in RyujinUploadProtocol.Chunks(avi))
         {
-            if (ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested || KeepGoing?.Invoke() == false)
             {
-                return Fail(mode, "cancelled", sent, clock);
+                return Fail(mode, AbortedMessage, sent, clock);
+            }
+            if (Keepalive is not null && Environment.TickCount64 >= nextKeepalive)
+            {
+                if (_keepalives++ == 0)
+                {
+                    _info("[ryujin-upload] keepalive poll during the upload (Armoury Crate sent none)");
+                }
+                Keepalive();
+                nextKeepalive = Environment.TickCount64 + KeepaliveMs;
             }
             long wrote = Stopwatch.GetTimestamp();
             if (!_link.WriteChunk(chunk))
@@ -134,7 +155,7 @@ internal sealed class RyujinUploader
             ? string.Create(CultureInfo.InvariantCulture, $"{ackMin:0.0}/{ackSum / acks:0.0}/{ackMax:0.0}")
             : "none";
         _info(string.Create(CultureInfo.InvariantCulture,
-            $"[ryujin-upload] done mode={mode} bytes={avi.Length} chunks={sent} total_ms={totalMs:0} kb_per_s={kbps:0.0} ack_ms_min_avg_max={ack} acks={acks}"));
+            $"[ryujin-upload] done mode={mode} bytes={avi.Length} chunks={sent} total_ms={totalMs:0} kb_per_s={kbps:0.0} ack_ms_min_avg_max={ack} acks={acks} keepalives={_keepalives}"));
         return new RyujinUploadResult(true, "ok", sent, totalMs);
     }
 
@@ -204,11 +225,13 @@ internal sealed class RyujinHidBulkLink : IRyujinUploadLink
 {
     private readonly Nexus.Service.Peripherals.Hid.IHidDevice _hid;
     private readonly Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipe _pipe;
+    private readonly Func<byte[]?>? _stashed;
 
-    public RyujinHidBulkLink(Nexus.Service.Peripherals.Hid.IHidDevice hid, Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipe pipe)
+    public RyujinHidBulkLink(Nexus.Service.Peripherals.Hid.IHidDevice hid, Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipe pipe, Func<byte[]?>? stashed = null)
     {
         _hid = hid;
         _pipe = pipe;
+        _stashed = stashed;
     }
 
     public bool WriteReport(byte[] report)
@@ -222,7 +245,15 @@ internal sealed class RyujinHidBulkLink : IRyujinUploadLink
     public bool WriteChunk(ReadOnlySpan<byte> chunk) =>
         _pipe.WriteCounted(RyujinUploadProtocol.BulkWritePipe, chunk) == chunk.Length;
 
-    public int ReadReport(Span<byte> buffer, int timeoutMs) => _hid.Read(buffer, timeoutMs);
+    public int ReadReport(Span<byte> buffer, int timeoutMs)
+    {
+        if (_stashed?.Invoke() is { } ack)
+        {
+            ack.AsSpan(0, Math.Min(ack.Length, buffer.Length)).CopyTo(buffer);
+            return Math.Min(ack.Length, buffer.Length);
+        }
+        return _hid.Read(buffer, timeoutMs);
+    }
 
     public void Pause(int ms) => Thread.Sleep(ms);
 }

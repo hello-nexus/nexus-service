@@ -71,6 +71,11 @@ public sealed class RyujinCoolingHub : IDisposable
 
     public RyujinSnapshot Snapshot => _snapshot;
 
+    private readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> _stashedAcks = new();
+
+    /// <summary>An upload acknowledgement a keepalive poll read before the uploader asked for it; null when none.</summary>
+    internal byte[]? TakeStashedAck() => _stashedAcks.TryDequeue(out var ack) ? ack : null;
+
     private volatile RyujinUploadState _upload = RyujinUploadState.Idle;
 
     public RyujinUploadState Upload
@@ -332,6 +337,10 @@ public sealed class RyujinCoolingHub : IDisposable
             // A reply to something else (a sensor text slot, say) is skipped without a mention.
             if (!RyujinCoolingProtocol.IsReplyTo(report, status))
             {
+                if (RyujinUploadProtocol.AckKind(report) != 0)
+                {
+                    _stashedAcks.Enqueue(report.ToArray());
+                }
                 continue;
             }
             if (status && RyujinCoolingProtocol.TryParseStatus(report, out var temp, out var pump, out var fan))

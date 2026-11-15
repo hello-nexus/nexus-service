@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Media;
 using Nexus.Service.Models;
@@ -41,55 +43,94 @@ public static partial class DevicesRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("Expected multipart/form-data"));
             }
-            var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
-            var file = form.Files.FirstOrDefault();
-            if (file is null || file.Length == 0)
+            if (ctx.Request.ContentLength is > RyujinMediaBodyLimit)
             {
-                return Results.BadRequest(ApiResponse.Fail("No file provided"));
+                return Results.BadRequest(ApiResponse.Fail("File too large"));
             }
-            if (file.Length > MediaImporter.MaxFileSize)
+            if (ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
             {
-                return Results.BadRequest(ApiResponse.Fail($"File too large (max {MediaImporter.MaxFileSize / 1024 / 1024} MB)"));
+                limit.MaxRequestBodySize = RyujinMediaBodyLimit;
             }
-            if (hub.Upload.State == "uploading")
+            if (hub.Upload.State == "uploading" || !RyujinMediaGate.Wait(0))
             {
-                return Results.BadRequest(ApiResponse.Fail("An upload is already running"));
+                return Results.Json(ApiResponse.Fail("A picture or GIF is already being processed"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status409Conflict);
             }
-            byte[] source;
-            using (var buffer = new MemoryStream())
+            try
             {
-                await file.CopyToAsync(buffer, ctx.RequestAborted);
-                source = buffer.ToArray();
+                var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+                var file = form.Files.FirstOrDefault();
+                if (file is null || file.Length == 0)
+                {
+                    return Results.BadRequest(ApiResponse.Fail("No file provided"));
+                }
+                if (file.Length > MediaImporter.MaxFileSize)
+                {
+                    return Results.BadRequest(ApiResponse.Fail($"File too large (max {MediaImporter.MaxFileSize / 1024 / 1024} MB)"));
+                }
+                var source = new byte[file.Length];
+                await using (var input = file.OpenReadStream())
+                {
+                    await input.ReadExactlyAsync(source, ctx.RequestAborted);
+                }
+                var encoded = await RyujinMediaEncoder.EncodeAsync(source, Path.GetExtension(file.FileName), ctx.RequestAborted);
+                if (!encoded.Ok)
+                {
+                    return Results.BadRequest(ApiResponse.Fail(encoded.Error ?? "Conversion failed"));
+                }
+                var avi = encoded.Avi!;
+                var sha = Convert.ToHexString(SHA256.HashData(avi));
+                var path = RyujinCoolingWorker.MediaPath();
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                var tmp = path + ".tmp";
+                try
+                {
+                    await File.WriteAllBytesAsync(tmp, avi, ctx.RequestAborted);
+                    File.Move(tmp, path, overwrite: true);
+                }
+                catch (IOException ex)
+                {
+                    ServiceLog.Warn($"[ryujin-upload] encoded file not saved: {ex.Message}");
+                    return Results.Json(ApiResponse.Fail("The stored file is in use; try again in a moment"), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status409Conflict);
+                }
+                ServiceLog.Info($"[ryujin-upload] picked {file.Length} byte source as {encoded.Frames} frame(s), {avi.Length} byte AVI");
+                var name = Path.GetFileName(file.FileName);
+                if (name.Length > RyujinMediaNameMax)
+                {
+                    name = name[..RyujinMediaNameMax];
+                }
+                // A pick always uploads: UploadedSha and UploadFailedSha are cleared even when the bytes match, so the user can force a re-send.
+                store.Update(s =>
+                {
+                    var d = s.Devices.RyujinDisplay;
+                    d.MediaName = name;
+                    d.MediaSha = sha;
+                    d.UploadedSha = "";
+                    d.UploadFailedSha = "";
+                    d.ScreenMode = RyujinCoolingWorker.ModeImage;
+                });
+                hub.Upload = RyujinUploadState.Idle;
+                hub.Wake.Release();
+                return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
             }
-            var encoded = await RyujinMediaEncoder.EncodeAsync(source, Path.GetExtension(file.FileName), ctx.RequestAborted);
-            if (!encoded.Ok)
+            finally
             {
-                return Results.BadRequest(ApiResponse.Fail(encoded.Error ?? "Conversion failed"));
+                RyujinMediaGate.Release();
             }
-            var avi = encoded.Avi!;
-            var sha = Convert.ToHexString(SHA256.HashData(avi));
-            var path = RyujinCoolingWorker.MediaPath();
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var tmp = path + ".tmp";
-            await File.WriteAllBytesAsync(tmp, avi, ctx.RequestAborted);
-            File.Move(tmp, path, overwrite: true);
-            ServiceLog.Info($"[ryujin-upload] picked {file.Length} byte source as {encoded.Frames} frame(s), {avi.Length} byte AVI");
-            // A pick always uploads: UploadedSha is cleared even when the bytes match, so the user can force a re-send.
-            store.Update(s =>
-            {
-                var d = s.Devices.RyujinDisplay;
-                d.MediaName = Path.GetFileName(file.FileName);
-                d.MediaSha = sha;
-                d.UploadedSha = "";
-                d.ScreenMode = RyujinCoolingWorker.ModeImage;
-            });
-            hub.Upload = RyujinUploadState.Idle;
-            hub.Wake.Release();
-            return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);
         }).DisableAntiforgery();
     }
 
-    internal static RyujinDisplayStateResponse BuildRyujinDisplayState(RyujinDisplaySettings settings, bool connected, RyujinUploadState? upload = null) => new()
+    private const long RyujinMediaBodyLimit = 50L * 1024 * 1024;
+    private const int RyujinMediaNameMax = 120;
+    private static readonly SemaphoreSlim RyujinMediaGate = new(1, 1);
+
+    internal static RyujinDisplayStateResponse BuildRyujinDisplayState(RyujinDisplaySettings settings, bool connected, RyujinUploadState? upload = null) => BuildRyujinDisplayStateCore(settings, connected, EffectiveUpload(settings, upload));
+
+    private static RyujinUploadState EffectiveUpload(RyujinDisplaySettings settings, RyujinUploadState? upload) =>
+        upload is { State: not "idle" } ? upload
+        : settings.MediaSha.Length > 0 && settings.UploadFailedSha == settings.MediaSha ? new RyujinUploadState("failed", 0, 0, "the last upload of this file failed")
+        : RyujinUploadState.Idle;
+
+    private static RyujinDisplayStateResponse BuildRyujinDisplayStateCore(RyujinDisplaySettings settings, bool connected, RyujinUploadState upload) => new()
     {
         IsConnected = connected,
         Brightness = settings.Brightness,
@@ -100,11 +141,12 @@ public static partial class DevicesRoutes
         ScreenMode = settings.ScreenMode == RyujinCoolingWorker.ModeImage ? RyujinCoolingWorker.ModeImage : RyujinCoolingWorker.ModeMonitor,
         MediaName = settings.MediaName,
         MediaHeld = settings.MediaSha.Length > 0 && settings.MediaSha == settings.UploadedSha,
-        UploadState = (upload ?? RyujinUploadState.Idle).State,
-        UploadSent = (upload ?? RyujinUploadState.Idle).Sent,
-        UploadTotal = (upload ?? RyujinUploadState.Idle).Total,
-        UploadMessage = (upload ?? RyujinUploadState.Idle).Message,
+        UploadState = upload.State,
+        UploadSent = upload.Sent,
+        UploadTotal = upload.Total,
+        UploadMessage = upload.Message,
     };
+
 
     internal static string? ValidateRyujinDisplay(RyujinDisplayRequest body)
     {

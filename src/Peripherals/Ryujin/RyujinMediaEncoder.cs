@@ -44,7 +44,15 @@ public static class RyujinMediaEncoder
         {
             var src = Path.Combine(dir, "source" + SafeExtension(extension));
             await File.WriteAllBytesAsync(src, source, ct).ConfigureAwait(false);
-            var (raw, decoded) = await DecodeAsync(src, dir, withFps: true, ct).ConfigureAwait(false);
+            var (raw, decoded) = (string.Empty, 0);
+            try
+            {
+                (raw, decoded) = await DecodeAsync(src, dir, withFps: true, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                decoded = 0;
+            }
             if (decoded == 0)
             {
                 (raw, decoded) = await DecodeAsync(src, dir, withFps: false, ct).ConfigureAwait(false);

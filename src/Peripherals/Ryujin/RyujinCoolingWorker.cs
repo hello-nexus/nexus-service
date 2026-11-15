@@ -139,6 +139,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         _appliedRotation = display.Rotation;
         _appliedCount = RyujinMonitorSensors.NormalizeCount(display.SensorCount);
         _appliedSlots = RyujinMonitorSensors.NormalizeSlots(display.Slots);
+        _failedSha = display.UploadFailedSha;
         if (!_hub.Send(RyujinMonitorProtocol.EncodeStartup(Now(), display.Rotation, display.Brightness, _appliedCount)))
         {
             ServiceLog.Warn("[asus-ryujin-cooling] startup sequence write failed");
@@ -190,9 +191,13 @@ public sealed class RyujinCoolingWorker : BackgroundService
             bool uploaded = false;
             if (wanted.UploadedSha != wanted.MediaSha)
             {
-                if (wanted.MediaSha == _failedSha || !UploadMedia(wanted.MediaSha, ct))
+                if (wanted.MediaSha == _failedSha || wanted.MediaSha == wanted.UploadFailedSha)
                 {
-                    return false;
+                    return _appliedMode == ModeImage && SelectMonitor(wanted);
+                }
+                if (!UploadMedia(wanted.MediaSha, ct))
+                {
+                    return _appliedMode == ModeImage && _gate.IsEnabled(RyujinCoolingProtocol.HandlerId) && SelectMonitor(wanted);
                 }
                 uploaded = true;
             }
@@ -206,61 +211,125 @@ public sealed class RyujinCoolingWorker : BackgroundService
             }
             return false;
         }
-        if (_appliedMode == ModeImage
-            && _hub.Send(RyujinMonitorProtocol.EncodeRotationChange(Now(), wanted.Rotation, wanted.Brightness, _appliedCount)))
+        return _appliedMode == ModeImage && SelectMonitor(wanted);
+    }
+
+    private bool SelectMonitor(RyujinDisplaySettings wanted)
+    {
+        if (!_hub.Send(RyujinMonitorProtocol.EncodeRotationChange(Now(), wanted.Rotation, wanted.Brightness, _appliedCount)))
         {
-            _appliedMode = ModeMonitor;
-            ServiceLog.Info("[asus-ryujin-cooling] hardware-monitor layout selected again");
-            return true;
+            return false;
         }
-        return false;
+        _appliedMode = ModeMonitor;
+        ServiceLog.Info("[asus-ryujin-cooling] hardware-monitor layout selected again");
+        return true;
     }
 
     private bool UploadMedia(string sha, CancellationToken ct)
     {
-        void Failed(string message)
+        try
         {
-            _failedSha = sha;
-            _hub.Upload = new RyujinUploadState("failed", 0, 0, message);
-            ServiceLog.Warn($"[ryujin-upload] not uploaded: {message}");
+            return UploadMediaCore(sha, ct);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            RecordFailure(sha, $"{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
 
+    private void RecordFailure(string sha, string message)
+    {
+        _failedSha = sha;
+        _hub.Upload = new RyujinUploadState("failed", 0, 0, message);
+        ServiceLog.Warn($"[ryujin-upload] not uploaded: {message}");
+        try
+        {
+            _store.Update(s => s.Devices.RyujinDisplay.UploadFailedSha = sha);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[ryujin-upload] failed upload not recorded: {ex.Message}");
+        }
+    }
+
+    private bool UploadMediaCore(string sha, CancellationToken ct)
+    {
         var path = MediaFile();
         if (!File.Exists(path))
         {
-            Failed("the encoded file is missing");
+            RecordFailure(sha, "the encoded file is missing");
             return false;
         }
         var avi = File.ReadAllBytes(path);
         if (!string.Equals(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(avi)), sha, StringComparison.OrdinalIgnoreCase))
         {
-            Failed("the encoded file does not match the picked one");
+            RecordFailure(sha, "the encoded file does not match the picked one");
             return false;
         }
         var device = _hub.Device;
-        using var pipe = _bulk?.Open(RyujinCoolingProtocol.VendorId, RyujinCoolingProtocol.ProductId, RyujinUploadProtocol.BulkWritePipe, RyujinUploadProtocol.BulkReadPipe);
+        bool denied = false;
+        var pipe = _bulk?.Open(RyujinCoolingProtocol.VendorId, RyujinCoolingProtocol.ProductId, RyujinUploadProtocol.BulkWritePipe, RyujinUploadProtocol.BulkReadPipe, out denied);
         if (device is null || pipe is null)
         {
-            Failed("the cooler's bulk interface cannot be opened (WinUSB is not bound to it)");
+            RecordFailure(sha, denied
+                ? "another program has the cooler's bulk interface open (close Armoury Crate and try again)"
+                : "the cooler's bulk interface cannot be opened (WinUSB is not bound to it)");
             return false;
         }
-        int total = RyujinUploadProtocol.ChunkCount(avi.Length);
-        _hub.Upload = new RyujinUploadState("uploading", 0, total, "");
-        if (!_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
+        using (pipe)
         {
-            Failed("the layout select write failed");
-            return false;
+            int total = RyujinUploadProtocol.ChunkCount(avi.Length);
+            _hub.Upload = new RyujinUploadState("uploading", 0, total, "");
+            if (!_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
+            {
+                RecordFailure(sha, "the layout select write failed");
+                return false;
+            }
+            _appliedMode = ModeImage;
+            var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe, _hub.TakeStashedAck), ServiceLog.Info, ServiceLog.Warn)
+            {
+                Keepalive = KeepaliveDuringUpload,
+                KeepGoing = () => _gate.IsEnabled(RyujinCoolingProtocol.HandlerId),
+            };
+            var result = uploader.Upload(avi, (sent, count) => _hub.Upload = new RyujinUploadState("uploading", sent, count, ""), ct);
+            if (!result.Ok)
+            {
+                if (result.Message == RyujinUploader.AbortedMessage && !_gate.IsEnabled(RyujinCoolingProtocol.HandlerId))
+                {
+                    _hub.Upload = new RyujinUploadState("failed", 0, 0, "Nexus control was turned off during the upload");
+                    ServiceLog.Warn("[ryujin-upload] stopped: Nexus control was turned off during the upload");
+                    return false;
+                }
+                RecordFailure(sha, result.Message);
+                return false;
+            }
+            _store.Update(s =>
+            {
+                s.Devices.RyujinDisplay.UploadedSha = sha;
+                s.Devices.RyujinDisplay.UploadFailedSha = "";
+            });
+            _hub.Upload = new RyujinUploadState("done", total, total, result.Message);
+            return true;
         }
-        var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe), ServiceLog.Info, ServiceLog.Warn);
-        var result = uploader.Upload(avi, (sent, count) => _hub.Upload = new RyujinUploadState("uploading", sent, count, ""), ct);
-        if (!result.Ok)
+    }
+
+    private void KeepaliveDuringUpload()
+    {
+        try
         {
-            Failed(result.Message);
-            return false;
+            _cooling.ReassertControl();
+            _hub.Flush();
+            _hub.Poll();
         }
-        _store.Update(s => s.Devices.RyujinDisplay.UploadedSha = sha);
-        _hub.Upload = new RyujinUploadState("done", total, total, result.Message);
-        return true;
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[ryujin-upload] keepalive during the upload failed: {ex.Message}");
+        }
     }
 
     /// <summary>Sends the settings the user changed since the last send: a rotation or sensor selection change re-selects the layout (and returns true so the next cycle sends the new sensor frames at once), a brightness change is the burst of three settings reports, each behind a DC.</summary>

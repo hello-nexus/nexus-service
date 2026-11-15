@@ -211,6 +211,38 @@ public class RyujinUploadTests
         Assert.Equal(2, log.Count(l => l.Contains("[ryujin-upload] failed")));
     }
 
+    [Fact]
+    public void A_keepalive_runs_between_chunks_and_is_logged_once()
+    {
+        var link = new FakeLink();
+        var log = new List<string>();
+        int calls = 0;
+        var uploader = new RyujinUploader(link, log.Add, log.Add) { AckTimeoutMs = 30, EndWaitMs = 30, KeepaliveMs = 0, Keepalive = () => calls++ };
+
+        var result = uploader.Upload(new byte[4096 * 3], null, CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(3, calls);
+        Assert.Single(log, l => l.Contains("keepalive poll during the upload"));
+        Assert.Contains(log, l => l.Contains("keepalives=3"));
+    }
+
+    [Fact]
+    public void Turning_control_off_aborts_the_upload_without_a_paced_retry()
+    {
+        var link = new FakeLink();
+        var log = new List<string>();
+        int checks = 0;
+        var uploader = new RyujinUploader(link, log.Add, log.Add) { AckTimeoutMs = 30, EndWaitMs = 30, KeepGoing = () => ++checks < 2 };
+
+        var result = uploader.Upload(new byte[4096 * 4], null, CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.Equal(RyujinUploader.AbortedMessage, result.Message);
+        Assert.Equal(1, link.Events.Count(e => e == "hid 71"));
+        Assert.Equal(1, link.Events.Count(e => e == "chunk"));
+    }
+
     // ---- encoder, against the real ffmpeg and turbojpeg when this machine has them ----
 
     [Fact]
