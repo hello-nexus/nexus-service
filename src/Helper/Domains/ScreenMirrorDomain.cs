@@ -82,14 +82,26 @@ public sealed class ScreenMirrorHandler
     {
         registry.Register("screenMirror.start", (env, _) =>
         {
-            if (env.Payload is null) return Task.FromResult(env.Ok());
-            var p = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ScreenMirrorStartPayload);
-            if (p is not null) _start(p.MonitorId, p.Width, p.Height);
+            if (env.Payload is null)
+            {
+                Nexus.Service.Platform.HelperLog.Write("[mirror-diag] screenMirror.start without payload");
+                return Task.FromResult(env.Ok());
+            }
+            try
+            {
+                var p = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.ScreenMirrorStartPayload);
+                Nexus.Service.Platform.HelperLog.Write($"[mirror-diag] screenMirror.start received parsed={p is not null}");
+                if (p is not null) _start(p.MonitorId, p.Width, p.Height);
+            }
+            catch (Exception ex)
+            {
+                Nexus.Service.Platform.HelperLog.Write($"[mirror-diag] screenMirror.start handler failed {ex.GetType().Name}: {ex.Message}");
+            }
             return Task.FromResult(env.Ok());
         });
         registry.Register("screenMirror.stop", (env, _) =>
         {
-            try { _stop(); } catch { }
+            try { _stop(); } catch (Exception ex) { Nexus.Service.Platform.HelperLog.Write($"[mirror-diag] screenMirror.stop failed {ex.GetType().Name}: {ex.Message}"); }
             return Task.FromResult(env.Ok());
         });
     }

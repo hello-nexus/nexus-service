@@ -114,9 +114,10 @@ public sealed class AudioMixerServiceTests
     }
 
     [Fact]
-    public void SavingAPresetCapturesEveryRunningStripAndTheMaster()
+    public void SavingAPresetCapturesEverySavedRunningStripAndTheMaster()
     {
-        var (mixer, _, _) = Build(Strip("game", 0.7, name: "Game"), Strip("discord", 0.4, name: "Discord"));
+        var (mixer, _, store) = Build(Strip("game", 0.7, name: "Game"), Strip("discord", 0.4, name: "Discord"));
+        SeedLevels(store, "game", "discord");
 
         var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
 
@@ -131,11 +132,24 @@ public sealed class AudioMixerServiceTests
     {
         var offDefault = Strip("recorder", 0.5, name: "Recorder");
         offDefault.OnDefault = false;
-        var (mixer, _, _) = Build(Strip("game", 0.7, name: "Game"), offDefault);
+        var (mixer, _, store) = Build(Strip("game", 0.7, name: "Game"), offDefault);
+        SeedLevels(store, "game", "recorder");
 
         var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
 
         Assert.Equal("game", Assert.Single(preset.Apps).Id);
+    }
+
+    [Fact]
+    public void SavingAPresetSkipsARunningAppWithNoSavedLevel()
+    {
+        var (mixer, _, store) = Build(Strip("game", 0.7, name: "Game"), Strip("nvcontainer", 0.0, name: "NVIDIA"));
+        SeedLevels(store, "game");
+
+        var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "Chatting" }).Preset!;
+
+        Assert.Equal("game", Assert.Single(preset.Apps).Id);
+        Assert.Equal(0.5, preset.MasterVolume);
     }
 
     [Fact]
@@ -233,6 +247,7 @@ public sealed class AudioMixerServiceTests
     public void PresetNamesAreCappedAndRenamedInPlace()
     {
         var (mixer, _, store) = Build(Strip("game", 0.7));
+        SeedLevels(store, "game");
         var preset = mixer.SavePreset(new SaveAudioMixerPresetBody { Name = "A very long preset name" }).Preset!;
         Assert.Equal(AudioMixerService.MaxPresetNameLength, preset.Name.Length);
 
@@ -409,6 +424,92 @@ public sealed class AudioMixerServiceTests
         Assert.DoesNotContain(("recorder", 0.25), sessions.VolumeWrites);
     }
 
+    [Fact]
+    public void StickyRestoreNeverReappliesAMute()
+    {
+        var (mixer, sessions, store) = Build(Strip("discord", 1.0));
+        mixer.SetVolume("discord", 0.6, commit: true);
+        mixer.SetMuted("discord", true);
+        sessions.VolumeWrites.Clear();
+        sessions.MuteWrites.Clear();
+
+        sessions.Replace();
+        sessions.Replace(Strip("discord", 1.0));
+
+        Assert.Contains(("discord", 0.6), sessions.VolumeWrites);
+        Assert.Empty(sessions.MuteWrites);
+        Assert.True(store.Load().AudioMixer.Levels["discord"].Muted);
+    }
+
+    [Fact]
+    public void StickyRestoreTargetsOnlyTheDefaultOutput()
+    {
+        var (mixer, sessions, _) = Build(Strip("game", 1.0));
+        mixer.SetVolume("game", 0.25, commit: true);
+        sessions.VolumeWrites.Clear();
+        sessions.DefaultOnlyFlags.Clear();
+
+        sessions.Replace();
+        sessions.Replace(Strip("game", 1.0));
+
+        Assert.True(Assert.Single(sessions.DefaultOnlyFlags));
+    }
+
+    [Fact]
+    public void ExplicitVolumeWritesStillCoverEveryOutput()
+    {
+        var (mixer, sessions, _) = Build(Strip("game", 1.0));
+
+        mixer.SetVolume("game", 0.4, commit: true);
+
+        Assert.False(Assert.Single(sessions.DefaultOnlyFlags));
+    }
+
+    [Fact]
+    public void ALegacyMutedLevelLoadsAndOnlyItsVolumeIsRestored()
+    {
+        var fake = new FakeSessions();
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.AudioMixer.Levels["discord"] = new AudioMixerLevelDto { Volume = 0.5, Muted = true });
+        _ = new AudioMixerService(fake, new FakeVolume(), new FakeDevices(), store, new MultiplexHub());
+
+        fake.Replace(Strip("discord", 1.0));
+
+        Assert.Contains(("discord", 0.5), fake.VolumeWrites);
+        Assert.Empty(fake.MuteWrites);
+    }
+
+    [Fact]
+    public void ApplyingAPresetMutesOnceButLeavesTheSavedMuteAlone()
+    {
+        var (mixer, sessions, store) = Build(Strip("discord", 1.0));
+        mixer.SetVolume("discord", 0.8, commit: true);
+        var preset = mixer.SavePreset(new SaveAudioMixerPresetBody
+        {
+            Name = "Quiet",
+            Apps = new List<AudioMixerPresetEntryDto>
+            {
+                new() { Id = "discord", Name = "Discord", Volume = 0.5, Muted = true },
+                new() { Id = "game", Name = "Game", Volume = 0.9, Muted = true },
+            },
+        }).Preset!;
+        sessions.MuteWrites.Clear();
+
+        mixer.ApplyPreset(preset.Id);
+
+        Assert.Contains(("discord", true), sessions.MuteWrites);
+        var levels = store.Load().AudioMixer.Levels;
+        Assert.False(levels["discord"].Muted);
+        Assert.Equal(0.5, levels["discord"].Volume);
+        Assert.False(levels["game"].Muted);
+    }
+
+    private static void SeedLevels(InMemoryConfigStore store, params string[] ids) =>
+        store.Update(s =>
+        {
+            foreach (var id in ids) s.AudioMixer.Levels[id] = new AudioMixerLevelDto { Volume = 1 };
+        });
+
     private static AudioSessionDto Strip(string id, double volume, string? name = null) => new()
     {
         Id = id,
@@ -552,7 +653,12 @@ public sealed class AudioMixerServiceTests
         }
 
         public IReadOnlyList<AudioSessionDto> GetSessions() => _sessions;
-        public void SetVolume(string id, double volume) => VolumeWrites.Add((id, volume));
+        public List<bool> DefaultOnlyFlags { get; } = new();
+        public void SetVolume(string id, double volume, bool defaultOnly = false)
+        {
+            VolumeWrites.Add((id, volume));
+            DefaultOnlyFlags.Add(defaultOnly);
+        }
         public void SetMuted(string id, bool muted) => MuteWrites.Add((id, muted));
         public void StartStreaming() { }
         public void StopStreaming() { }

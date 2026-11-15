@@ -113,7 +113,7 @@ public sealed class GalleonSdDialsFrameWriter : IHostedService, IDisposable
         var touched = SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
             settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
-            DateTime.UtcNow.Ticks, _identify, _buffers);
+            DateTime.UtcNow.Ticks, _identify, _buffers, _engine.Live);
         if (touched[GalleonSdLightingDeviceProvider.DialsSegment])
         {
             _hub.WriteFrame(_buffers[GalleonSdLightingDeviceProvider.DialsSegment]);

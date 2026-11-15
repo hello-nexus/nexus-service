@@ -216,7 +216,7 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
-    public void Cap_IsGlobalAcrossSources_LaterSourcesSkippedWhenFull()
+    public void Cap_IsGlobalAcrossSources_DropsTheTailOfTheSortOrder()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems - 10);
         var sub = Path.Combine(big, "sub");
@@ -234,11 +234,16 @@ public sealed class GalleryLibraryTests : IDisposable
 
         var result = lib.Enumerate();
 
-        // The parent folder and its subfolder together exceed the cap, so
-        // the parent fills it and the later sources are never reached.
+        // big/ sorts before other/, so by name ascending the cap drops other/.
         Assert.Equal(GalleryLibrary.MaxItems, result.Items.Count);
         Assert.True(result.Truncated);
         Assert.DoesNotContain(result.Items, i => i.Name.StartsWith("o", StringComparison.Ordinal));
+
+        // Descending puts other/ first, so it is kept and big/'s tail goes.
+        lib.SetSort(Sort(GallerySortKeys.Name, GallerySortDirections.Desc));
+        var descending = lib.Enumerate();
+        Assert.True(descending.Truncated);
+        Assert.Equal(5, descending.Items.Count(i => i.Name.StartsWith("o", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -294,7 +299,7 @@ public sealed class GalleryLibraryTests : IDisposable
     }
 
     [Fact]
-    public void Cap_OverCapFolderYieldsSortedStableSubset()
+    public void Cap_OverCapFolderKeepsTheFirstItemsInSortOrder()
     {
         var big = MakeDir("big", GalleryLibrary.MaxItems + 25);
         var lib = NewLibrary();
@@ -304,10 +309,304 @@ public sealed class GalleryLibraryTests : IDisposable
         var second = new GalleryLibrary(_rootDir).Enumerate();
 
         Assert.True(first.Truncated);
-        Assert.Equal(GalleryLibrary.MaxItems, first.Items.Count);
-        var names = first.Items.Select(i => i.Name).ToList();
-        Assert.Equal(names.OrderBy(n => n, NaturalStringComparer.Instance), names);
+        var expected = Enumerable.Range(0, GalleryLibrary.MaxItems + 25).Select(i => $"img{i:D5}.png").ToList();
+        Assert.Equal(expected.Take(GalleryLibrary.MaxItems), first.Items.Select(i => i.Name));
         Assert.Equal(first.Items.Select(i => i.Id), second.Items.Select(i => i.Id));
+    }
+
+    // ── Sort setting ─────────────────────────────────────────────────────────
+
+    private static string[] Names(GalleryLibrary lib) => lib.EnumerateItems().Select(i => i.Name).ToArray();
+
+    private static GallerySort Sort(string by, string direction) => new() { By = by, Direction = direction };
+
+    [Fact]
+    public void Sort_DefaultsToNameAscending_ByFullPathAcrossSources()
+    {
+        var other = Path.Combine(_tempDir, "other");
+        Directory.CreateDirectory(other);
+        File.WriteAllBytes(Path.Combine(other, "b10.png"), new byte[] { 1 });
+        WriteImage("b2.png");
+        WriteImage("c.png");
+        var lib = NewLibrary();
+        lib.AddReference(other, GallerySourceKinds.Folder);
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+
+        Assert.Equal(GallerySortKeys.Name, lib.GetSort().By);
+        Assert.Equal(GallerySortDirections.Asc, lib.GetSort().Direction);
+        // other/ sorts before photos/, so its b10 leads.
+        Assert.Equal(new[] { "b10.png", "b2.png", "c.png" }, Names(lib));
+    }
+
+    [Theory]
+    [InlineData(GallerySortDirections.Asc, new[] { "Trip/001.png", "Trip/002.png", "Wedding/001.png", "Wedding/002.png" })]
+    [InlineData(GallerySortDirections.Desc, new[] { "Wedding/002.png", "Wedding/001.png", "Trip/002.png", "Trip/001.png" })]
+    public void Sort_Name_KeepsSubfoldersGrouped(string direction, string[] expected)
+    {
+        foreach (var rel in new[] { "Wedding/002.png", "Trip/001.png", "Wedding/001.png", "Trip/002.png" })
+        {
+            Directory.CreateDirectory(Path.Combine(_photosDir, Path.GetDirectoryName(rel)!));
+            File.WriteAllBytes(Path.Combine(_photosDir, rel), new byte[] { 1 });
+        }
+
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Name, direction));
+
+        var order = lib.EnumerateItems()
+            .Select(i => Path.GetRelativePath(_photosDir, lib.ResolveItemPath(i.Id)!).Replace('\\', '/'))
+            .ToArray();
+        Assert.Equal(expected, order);
+    }
+
+    [Fact]
+    public void Sort_Modified_IsAppliedBeforeTheCap()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems + 1);
+        var newest = Path.Combine(big, "img00000.png");
+        var baseTime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var file in Directory.EnumerateFiles(big))
+        {
+            File.SetLastWriteTimeUtc(file, baseTime);
+        }
+
+        File.SetLastWriteTimeUtc(newest, baseTime.AddDays(1));
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Asc));
+
+        var result = lib.Enumerate();
+
+        // Oldest first: the one newer file is the tail the cap drops.
+        Assert.True(result.Truncated);
+        Assert.DoesNotContain(result.Items, i => i.Name == "img00000.png");
+        Assert.Null(lib.ResolveItemPath(GalleryLibrary.ItemIdForPath(newest)));
+    }
+
+    [Fact]
+    public void Sort_NameDescending_ReversesNaturalOrder()
+    {
+        foreach (var n in new[] { "1", "2", "10" })
+        {
+            WriteImage(n + ".png");
+        }
+
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+
+        Assert.True(lib.SetSort(Sort(GallerySortKeys.Name, GallerySortDirections.Desc)));
+        Assert.Equal(new[] { "10.png", "2.png", "1.png" }, Names(lib));
+    }
+
+    [Theory]
+    [InlineData(GallerySortDirections.Asc, new[] { "old.png", "mid.png", "new.png" })]
+    [InlineData(GallerySortDirections.Desc, new[] { "new.png", "mid.png", "old.png" })]
+    public void Sort_Modified_FollowsLastWriteTime(string direction, string[] expected)
+    {
+        var baseTime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(WriteImage("mid.png"), baseTime.AddDays(1));
+        File.SetLastWriteTimeUtc(WriteImage("new.png"), baseTime.AddDays(2));
+        File.SetLastWriteTimeUtc(WriteImage("old.png"), baseTime);
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+
+        Assert.True(lib.SetSort(Sort(GallerySortKeys.Modified, direction)));
+        Assert.Equal(expected, Names(lib));
+    }
+
+    [Fact]
+    public void Sort_Modified_TiesFallBackToNaturalName()
+    {
+        var time = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (var n in new[] { "10.png", "2.png", "1.png" })
+        {
+            File.SetLastWriteTimeUtc(WriteImage(n), time);
+        }
+
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Desc));
+
+        Assert.Equal(new[] { "1.png", "2.png", "10.png" }, Names(lib));
+    }
+
+    [Fact]
+    public void Sort_Modified_DanglingLinkDoesNotFailEnumeration()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var time = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(WriteImage("b.png"), time.AddDays(1));
+        File.SetLastWriteTimeUtc(WriteImage("a.png"), time);
+        File.CreateSymbolicLink(Path.Combine(_photosDir, "gone.png"), Path.Combine(_tempDir, "missing.png"));
+        var lib = NewLibrary();
+        lib.AddReference(_photosDir, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Desc));
+
+        var names = Names(lib);
+        Assert.Equal(new[] { "b.png", "a.png" }, names.Where(n => n != "gone.png").ToArray());
+        Assert.Contains("gone.png", names);
+    }
+
+    [Fact]
+    public void FileModifiedTicks_UnreadableOrMissingIsUnknown()
+    {
+        Assert.Equal(0, GalleryLibrary.FileModifiedTicks(Path.Combine(_tempDir, "missing.png")));
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var locked = Path.Combine(_tempDir, "locked");
+        Directory.CreateDirectory(locked);
+        var inside = Path.Combine(locked, "a.png");
+        File.WriteAllBytes(inside, new byte[] { 1 });
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+        try
+        {
+            Assert.Equal(0, GalleryLibrary.FileModifiedTicks(inside));
+        }
+        finally
+        {
+            File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    private GalleryLibrary LibraryWithDatedSources(long firstAdded, long secondAdded, long fileAdded)
+    {
+        var first = Path.Combine(_tempDir, "first");
+        var second = Path.Combine(_tempDir, "second");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        File.WriteAllBytes(Path.Combine(first, "f10.png"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(first, "f2.png"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(second, "s1.png"), new byte[] { 1 });
+        var single = WriteImage("single.png");
+
+        var lib = NewLibrary();
+        lib.AddReference(first, GallerySourceKinds.Folder);
+        lib.AddReference(second, GallerySourceKinds.Folder);
+        lib.AddReference(single, GallerySourceKinds.File);
+        var sources = lib.ListSources();
+        sources[0].AddedAtUnixMs = firstAdded;
+        sources[1].AddedAtUnixMs = secondAdded;
+        sources[2].AddedAtUnixMs = fileAdded;
+        File.WriteAllText(Path.Combine(_rootDir, "sources.json"), System.Text.Json.JsonSerializer.Serialize(
+            new GallerySourcesFile { Sources = sources },
+            Nexus.Service.Serialization.AppJsonContext.Default.GallerySourcesFile));
+        return NewLibrary();
+    }
+
+    [Theory]
+    [InlineData(GallerySortDirections.Asc, new[] { "s1.png", "single.png", "f2.png", "f10.png" })]
+    [InlineData(GallerySortDirections.Desc, new[] { "f2.png", "f10.png", "single.png", "s1.png" })]
+    public void Sort_Added_UsesSourceAddTime_FolderFilesTieOnNaturalName(string direction, string[] expected)
+    {
+        var lib = LibraryWithDatedSources(firstAdded: 3000, secondAdded: 1000, fileAdded: 2000);
+
+        Assert.True(lib.SetSort(Sort(GallerySortKeys.Added, direction)));
+        Assert.Equal(expected, Names(lib));
+    }
+
+    [Theory]
+    [InlineData(GallerySortDirections.Asc)]
+    [InlineData(GallerySortDirections.Desc)]
+    public void Sort_Added_SourcesWithoutAddTimeSortLast_InSourceOrder(string direction)
+    {
+        var lib = LibraryWithDatedSources(firstAdded: 0, secondAdded: 0, fileAdded: 2000);
+
+        lib.SetSort(Sort(GallerySortKeys.Added, direction));
+        Assert.Equal(new[] { "single.png", "f2.png", "f10.png", "s1.png" }, Names(lib));
+    }
+
+    [Fact]
+    public void Sort_PersistsAcrossInstances()
+    {
+        var lib = NewLibrary();
+        Assert.True(lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Desc)));
+
+        var reloaded = NewLibrary().GetSort();
+        Assert.Equal(GallerySortKeys.Modified, reloaded.By);
+        Assert.Equal(GallerySortDirections.Desc, reloaded.Direction);
+    }
+
+    [Fact]
+    public void Sort_SurvivesSourceAndPlaylistWrites()
+    {
+        var lib = NewLibrary();
+        lib.SetSort(Sort(GallerySortKeys.Added, GallerySortDirections.Desc));
+        lib.AddReference(WriteImage("a.png"), GallerySourceKinds.File);
+        lib.CreatePlaylist("Mix");
+
+        Assert.Equal(GallerySortKeys.Added, NewLibrary().GetSort().By);
+    }
+
+    [Theory]
+    [InlineData("size", GallerySortDirections.Asc)]
+    [InlineData(GallerySortKeys.Name, "up")]
+    [InlineData("", "")]
+    public void SetSort_RejectsUnknownValues_AndKeepsTheStoredOne(string by, string direction)
+    {
+        var lib = NewLibrary();
+        lib.SetSort(Sort(GallerySortKeys.Modified, GallerySortDirections.Desc));
+
+        Assert.False(lib.SetSort(Sort(by, direction)));
+        Assert.Equal(GallerySortKeys.Modified, NewLibrary().GetSort().By);
+    }
+
+    [Fact]
+    public void Sort_FileWithoutSortField_LoadsDefault()
+    {
+        Directory.CreateDirectory(_rootDir);
+        File.WriteAllText(Path.Combine(_rootDir, "sources.json"), "{\"sources\":[],\"playlists\":[]}");
+
+        var sort = NewLibrary().GetSort();
+        Assert.Equal(GallerySortKeys.Name, sort.By);
+        Assert.Equal(GallerySortDirections.Asc, sort.Direction);
+    }
+
+    [Fact]
+    public void Sort_OverCap_DescendingKeepsTheOtherEnd()
+    {
+        var big = MakeDir("big", GalleryLibrary.MaxItems + 25);
+        var lib = NewLibrary();
+        lib.AddReference(big, GallerySourceKinds.Folder);
+        lib.SetSort(Sort(GallerySortKeys.Name, GallerySortDirections.Desc));
+
+        var names = lib.EnumerateItems().Select(i => i.Name).ToList();
+
+        var expected = Enumerable.Range(25, GalleryLibrary.MaxItems).Reverse().Select(i => $"img{i:D5}.png");
+        Assert.Equal(expected, names);
+    }
+
+    [Fact]
+    public void ScanCeiling_StopsCollecting_AndReportsTruncated()
+    {
+        var dir = MakeDir("many", 30);
+        var lib = new GalleryLibrary(_rootDir) { ScanCeiling = 10 };
+        lib.AddReference(dir, GallerySourceKinds.Folder);
+        lib.AddReference(WriteImage("later.png"), GallerySourceKinds.File);
+
+        var result = lib.Enumerate();
+
+        Assert.True(result.Truncated);
+        Assert.Equal(10, result.Items.Count);
+        Assert.DoesNotContain(result.Items, i => i.Name == "later.png");
+        var names = result.Items.Select(i => i.Name).ToList();
+        Assert.Equal(names.OrderBy(n => n, NaturalStringComparer.Instance), names);
+    }
+
+    [Fact]
+    public void ScanCeiling_ExactlyAtCeilingIsNotTruncated()
+    {
+        var dir = MakeDir("ten", 10);
+        File.WriteAllText(Path.Combine(dir, "notes.txt"), "not media");
+        var lib = new GalleryLibrary(_rootDir) { ScanCeiling = 10 };
+        lib.AddReference(dir, GallerySourceKinds.Folder);
+
+        var result = lib.Enumerate();
+
+        Assert.False(result.Truncated);
+        Assert.Equal(10, result.Items.Count);
     }
 
     [Fact]

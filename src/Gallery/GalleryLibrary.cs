@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Enumeration;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -25,10 +26,13 @@ namespace Nexus.Service.Gallery;
 public sealed class GalleryLibrary
 {
     private const string SourcesFileName = "sources.json";
-    // One cap across every source (folders and single files). The walk stops
-    // at the first countable item past it; excluded files and duplicates of
-    // earlier sources are not countable.
+    // One cap across every source (folders and single files): the first this
+    // many items in sort order are kept. Excluded files and duplicates of
+    // earlier sources do not count.
     public const int MaxItems = 5000;
+    // Bounds the walk-then-sort: past this many eligible files the scan
+    // stops and the sort covers only what it collected.
+    public const int MaxScanItems = MaxItems * 10;
     public const int MaxPlaylists = 50;
     public const int MaxPlaylistNameLength = 48;
     // Per id list on one playlist, so a runaway client cannot grow
@@ -60,6 +64,7 @@ public sealed class GalleryLibrary
     private readonly object _lock = new();
     private List<GallerySource>? _sources;
     private List<GalleryPlaylist> _playlists = new();
+    private GallerySort _sort = new();
     private Dictionary<string, string> _itemPaths = new();
     // Bumped on every source mutation. EnumerateItems snapshots it and only
     // swaps its map in if no mutation happened mid-scan, so a slow scan can't
@@ -80,6 +85,9 @@ public sealed class GalleryLibrary
 
     public string RootDir { get; }
 
+    /// <summary>Tests lower it to exercise the ceiling without writing a full ceiling's worth of files.</summary>
+    internal int ScanCeiling { get; init; } = MaxScanItems;
+
     public static bool IsImageFile(string path)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
@@ -93,6 +101,24 @@ public sealed class GalleryLibrary
     }
 
     public static bool IsMediaFile(string path) => IsImageFile(path) || IsVideoFile(path);
+
+    private static bool IsMediaName(ReadOnlySpan<char> name)
+    {
+        var ext = Path.GetExtension(name);
+        foreach (var known in ImageExtensions)
+        {
+            if (ext.Equals(known, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        foreach (var known in VideoExtensions)
+        {
+            if (ext.Equals(known, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Stable item id: first 16 hex chars of SHA-256 of the canonical path.
@@ -203,6 +229,37 @@ public sealed class GalleryLibrary
             return true;
         }
     }
+
+    public GallerySort GetSort()
+    {
+        lock (_lock)
+        {
+            LoadSources();
+            return CloneSort(_sort);
+        }
+    }
+
+    /// <summary>False when either field is not a known value; nothing is stored then.</summary>
+    public bool SetSort(GallerySort sort)
+    {
+        if (!IsValidSort(sort))
+            return false;
+
+        lock (_lock)
+        {
+            var sources = LoadSources();
+            _sort = CloneSort(sort);
+            SaveSources(sources);
+            return true;
+        }
+    }
+
+    private static bool IsValidSort(GallerySort? sort) =>
+        sort is not null
+        && sort.By is GallerySortKeys.Name or GallerySortKeys.Modified or GallerySortKeys.Added
+        && sort.Direction is GallerySortDirections.Asc or GallerySortDirections.Desc;
+
+    private static GallerySort CloneSort(GallerySort s) => new() { By = s.By, Direction = s.Direction };
 
     public List<GalleryPlaylist> ListPlaylists()
     {
@@ -368,21 +425,22 @@ public sealed class GalleryLibrary
     }
 
     /// <summary>
-    /// Flatten all sources to the ordered item list (source order, then file
-    /// name). Duplicate paths across sources collapse to the first occurrence.
+    /// Flatten all sources to the item list in the stored <see cref="GallerySort"/>
+    /// order. Duplicate paths across sources collapse to the first occurrence.
     /// Refreshes the id → path map used by <see cref="ResolveItemPath"/>.
     /// </summary>
     public List<GalleryItem> EnumerateItems() => Enumerate().Items;
 
     /// <summary>
     /// <see cref="EnumerateItems"/> plus whether the global cap dropped items.
-    /// Sources are walked in persisted order and the walk stops once the cap is
-    /// exceeded; only the files kept from a folder are sorted, so the subset
-    /// kept from an over-cap folder is arbitrary but stable.
+    /// Every eligible file of every source, up to <see cref="MaxScanItems"/>, is
+    /// walked and sorted first, then the first <see cref="MaxItems"/> in sort
+    /// order are kept, so the cap drops the tail of the sorted list.
     /// </summary>
     public GalleryEnumeration Enumerate()
     {
         List<GallerySource> sources;
+        GallerySort sort;
         long generation;
         lock (_lock)
         {
@@ -390,50 +448,55 @@ public sealed class GalleryLibrary
             // the lock for seconds while ExcludeItem/RestoreExclusions mutate
             // the cached sources' lists under it.
             sources = LoadSources().Select(CloneSource).ToList();
+            sort = CloneSort(_sort);
             generation = _generation;
         }
 
-        var items = new List<GalleryItem>();
-        var paths = new Dictionary<string, string>();
-        var truncated = false;
+        var wantModified = sort.By == GallerySortKeys.Modified;
+        var candidates = new List<Candidate>();
+        // First source to reach a file owns it; excluded files never enter.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ceilingHit = false;
 
-        foreach (var source in sources)
+        for (var index = 0; index < sources.Count && !ceilingHit; index++)
         {
-            if (truncated)
-            {
-                break;
-            }
-
+            var source = sources[index];
             if (source.Kind == GallerySourceKinds.Folder)
             {
                 // Recursive: users point at e.g. a Pictures root whose images
-                // live in subfolders. Excluded files and files an earlier
-                // source already holds take no slot.
+                // live in subfolders. A folder whose walk fails contributes
+                // nothing.
                 var excluded = new HashSet<string>(source.Excluded, StringComparer.Ordinal);
-                var picked = new List<(string Full, string Id)>();
+                var found = new List<Candidate>();
+                var foundIds = new HashSet<string>(StringComparer.Ordinal);
                 try
                 {
-                    foreach (var file in Directory.EnumerateFiles(source.Path, "*", FolderScanOptions))
+                    // Same walk as Directory.EnumerateFiles; the entry carries the
+                    // write time from the directory read (free on Windows).
+                    var walk = new FileSystemEnumerable<(string Path, long Modified)>(
+                        source.Path,
+                        (ref FileSystemEntry e) => (e.ToSpecifiedFullPath(), wantModified ? EntryModifiedTicks(ref e) : 0),
+                        FolderScanOptions)
                     {
-                        if (!IsMediaFile(file))
-                        {
-                            continue;
-                        }
-
+                        ShouldIncludePredicate = (ref FileSystemEntry e) => !e.IsDirectory && IsMediaName(e.FileName),
+                    };
+                    foreach (var (file, fileModified) in walk)
+                    {
                         var full = Path.GetFullPath(file);
                         var id = ItemIdForPath(full);
-                        if (excluded.Contains(id) || paths.ContainsKey(id))
+                        if (excluded.Contains(id) || seen.Contains(id) || foundIds.Contains(id))
                         {
                             continue;
                         }
 
-                        if (items.Count + picked.Count >= MaxItems)
+                        if (candidates.Count + found.Count >= ScanCeiling)
                         {
-                            truncated = true;
+                            ceilingHit = true;
                             break;
                         }
 
-                        picked.Add((full, id));
+                        foundIds.Add(id);
+                        found.Add(new Candidate(full, id, source.Id, Path.GetFileName(full), fileModified, index));
                     }
                 }
                 catch
@@ -441,29 +504,46 @@ public sealed class GalleryLibrary
                     continue;
                 }
 
-                picked.Sort((x, y) => NaturalStringComparer.Instance.Compare(x.Full, y.Full));
-                foreach (var (full, id) in picked)
-                {
-                    AddItem(full, id, source.Id, name: null);
-                }
+                seen.UnionWith(foundIds);
+                candidates.AddRange(found);
             }
             else if (File.Exists(source.Path) && IsMediaFile(source.Path))
             {
                 var full = Path.GetFullPath(source.Path);
                 var id = ItemIdForPath(full);
-                if (paths.ContainsKey(id))
+                if (seen.Contains(id))
                 {
                     continue;
                 }
 
-                if (items.Count >= MaxItems)
+                if (candidates.Count >= ScanCeiling)
                 {
-                    truncated = true;
-                    continue;
+                    ceilingHit = true;
+                    break;
                 }
 
-                AddItem(full, id, source.Id, source.Name);
+                seen.Add(id);
+                var name = string.IsNullOrEmpty(source.Name) ? Path.GetFileName(full) : source.Name;
+                candidates.Add(new Candidate(full, id, source.Id, name, wantModified ? FileModifiedTicks(full) : 0, index));
             }
+        }
+
+        candidates.Sort(Comparer(sources, sort));
+        var truncated = ceilingHit || candidates.Count > MaxItems;
+        var kept = candidates.Count > MaxItems ? candidates.GetRange(0, MaxItems) : candidates;
+
+        var items = new List<GalleryItem>(kept.Count);
+        var paths = new Dictionary<string, string>(kept.Count);
+        foreach (var c in kept)
+        {
+            paths[c.Id] = c.Full;
+            items.Add(new GalleryItem
+            {
+                Id = c.Id,
+                Name = c.Name,
+                SourceId = c.SourceId,
+                Kind = IsVideoFile(c.Full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
+            });
         }
 
         lock (_lock)
@@ -480,20 +560,79 @@ public sealed class GalleryLibrary
             }
         }
 
-        return new GalleryEnumeration(items, truncated);
+        return new GalleryEnumeration(items, truncated, sort);
+    }
 
-        void AddItem(string full, string id, string sourceId, string? name)
+    /// <param name="Modified">Write-time ticks; 0 when unread or unreadable.</param>
+    /// <param name="SourceIndex">Position of the owning source in persisted order.</param>
+    private readonly record struct Candidate(string Full, string Id, string SourceId, string Name, long Modified, int SourceIndex);
+
+    // A missing file reads as the FILETIME epoch rather than throwing.
+    private static readonly long FileTimeEpochTicks = DateTime.FromFileTimeUtc(0).Ticks;
+
+    private static long KnownTicks(long ticks) => ticks > FileTimeEpochTicks ? ticks : 0;
+
+    // A dropped share or removed drive must not fail the whole enumeration.
+    private static long EntryModifiedTicks(ref FileSystemEntry e)
+    {
+        try
         {
-            if (paths.TryAdd(id, full))
-            {
-                items.Add(new GalleryItem
+            return KnownTicks(e.LastWriteTimeUtc.UtcTicks);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
+    internal static long FileModifiedTicks(string path)
+    {
+        try
+        {
+            return KnownTicks(File.GetLastWriteTimeUtc(path).Ticks);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Name order is the natural order of the full path, so subfolders stay
+    /// grouped; date modes break ties with it ascending. An unknown time (0)
+    /// sorts after every known one in both directions: a source with no add
+    /// time in persisted source order, a file with no readable write time by path.
+    /// </summary>
+    private static Comparison<Candidate> Comparer(List<GallerySource> sources, GallerySort sort)
+    {
+        var sign = sort.Direction == GallerySortDirections.Desc ? -1 : 1;
+        var natural = NaturalStringComparer.Instance;
+
+        switch (sort.By)
+        {
+            case GallerySortKeys.Modified:
+                return (x, y) =>
                 {
-                    Id = id,
-                    Name = string.IsNullOrEmpty(name) ? Path.GetFileName(full) : name,
-                    SourceId = sourceId,
-                    Kind = IsVideoFile(full) ? GalleryItemKinds.Video : GalleryItemKinds.Image,
-                });
-            }
+                    if ((x.Modified == 0) != (y.Modified == 0))
+                        return x.Modified == 0 ? 1 : -1;
+                    var c = x.Modified.CompareTo(y.Modified) * sign;
+                    return c != 0 ? c : natural.Compare(x.Full, y.Full);
+                };
+            case GallerySortKeys.Added:
+                var added = sources.Select(s => s.AddedAtUnixMs).ToArray();
+                return (x, y) =>
+                {
+                    var ax = added[x.SourceIndex];
+                    var ay = added[y.SourceIndex];
+                    if ((ax <= 0) != (ay <= 0))
+                        return ax <= 0 ? 1 : -1;
+                    var c = ax <= 0
+                        ? x.SourceIndex.CompareTo(y.SourceIndex)
+                        : ax.CompareTo(ay) * sign;
+                    return c != 0 ? c : natural.Compare(x.Full, y.Full);
+                };
+            default:
+                return (x, y) => natural.Compare(x.Full, y.Full) * sign;
         }
     }
 
@@ -576,6 +715,7 @@ public sealed class GalleryLibrary
                     return p;
                 })
                 .ToList() ?? new List<GalleryPlaylist>();
+            _sort = IsValidSort(parsed?.Sort) ? CloneSort(parsed!.Sort!) : new GallerySort();
             // Pre-exclusions builds stored uploaded copies as a distinct kind;
             // they're plain file references now (upload support is gone).
             foreach (var s in _sources)
@@ -591,6 +731,7 @@ public sealed class GalleryLibrary
             // Missing or corrupt file: start empty rather than failing boot.
             _sources = new List<GallerySource>();
             _playlists = new List<GalleryPlaylist>();
+            _sort = new GallerySort();
         }
 
         return _sources;
@@ -600,7 +741,7 @@ public sealed class GalleryLibrary
     {
         _sources = sources;
         Directory.CreateDirectory(RootDir);
-        var json = JsonSerializer.Serialize(new GallerySourcesFile { Sources = sources, Playlists = _playlists }, AppJsonContext.Default.GallerySourcesFile);
+        var json = JsonSerializer.Serialize(new GallerySourcesFile { Sources = sources, Playlists = _playlists, Sort = _sort }, AppJsonContext.Default.GallerySourcesFile);
         AtomicJsonFile.Write(Path.Combine(RootDir, SourcesFileName), json);
     }
 
@@ -612,4 +753,4 @@ public sealed class GalleryLibrary
 }
 
 /// <summary>Result of <see cref="GalleryLibrary.Enumerate"/>.</summary>
-public sealed record GalleryEnumeration(List<GalleryItem> Items, bool Truncated);
+public sealed record GalleryEnumeration(List<GalleryItem> Items, bool Truncated, GallerySort Sort);

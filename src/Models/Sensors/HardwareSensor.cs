@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace Nexus.Service.Models.Sensors;
 
@@ -28,6 +29,10 @@ public class HardwareSensor
     public SensorParent Parent { get; set; } = new();
     // get_sensors only (WhenWritingNull hides it elsewhere): HistoryIdMapping's id for query_sensor_history, or null.
     public string? HistoryId { get; set; }
+
+    /// <summary>True when the provider had no usable reading and the published <see cref="Value"/> is a placeholder zero (hold window over). Internal signal for threshold alerts; never on the wire.</summary>
+    [JsonIgnore]
+    public bool Stale { get; set; }
 
     /// <summary>
     /// Copy for varying one property without touching the instance a provider handed out.

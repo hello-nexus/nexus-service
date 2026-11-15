@@ -32,7 +32,6 @@ public sealed class DevSimEvents
     public const string GuardGpuHandback = "guard.gpuHandback";
     public const string HealthFanStall = "health.fanStall";
     public const string HealthPumpStall = "health.pumpStall";
-    public const string HealthSustainedHighTemp = "health.sustainedHighTemp";
     public const string HealthGpuThrottle = "health.gpuThrottle";
     public const string HealthGpuTdr = "health.gpuTdr";
     public const string HealthSmartWarning = "health.smartWarning";
@@ -60,7 +59,6 @@ public sealed class DevSimEvents
         new(GuardGpuHandback, "guard", "Thermal guard: GPU fan handed back"),
         new(HealthFanStall, "health", "Health: fan stall"),
         new(HealthPumpStall, "health", "Health: pump stall"),
-        new(HealthSustainedHighTemp, "health", "Health: sustained high temperature"),
         new(HealthGpuThrottle, "health", "Health: GPU throttling"),
         new(HealthGpuTdr, "health", "Health: GPU driver reset (TDR)"),
         new(HealthSmartWarning, "health", "Health: SMART warning"),
@@ -280,13 +278,13 @@ public sealed class DevSimEvents
 
     // ── Diagnostics health ──
 
-    private static HealthComponent Component(string id, string kind, string name, string status, string code, string summary, string detail) => new()
+    private static HealthComponent Component(string id, string kind, string name, string status, string code, string summary, string detail, Dictionary<string, string>? reasonParams = null) => new()
     {
         Id = id,
         Kind = kind,
         Name = name,
         Status = status,
-        Reasons = new List<HealthComponentReason> { new(code, status, summary, detail) },
+        Reasons = new List<HealthComponentReason> { new(code, status, summary, detail, reasonParams) },
     };
 
     /// <summary>The extra health components the active health sims contribute, with the real reason codes.</summary>
@@ -296,17 +294,14 @@ public sealed class DevSimEvents
         if (IsActive(HealthFanStall))
         {
             list.Add(Component("cooling:sim-fan", "cooling", "Simulated Fan #1", HealthStatuses.Act, "cooling.fanStall",
-                "Simulated Fan #1 reports 0 RPM while driven", "rpm=0 targetDuty=60% (simulated)"));
+                "Simulated Fan #1 reports 0 RPM while driven", "rpm=0 targetDuty=60% (simulated)",
+                new Dictionary<string, string> { ["rpm"] = "0", ["targetDuty"] = "60" }));
         }
         if (IsActive(HealthPumpStall))
         {
             list.Add(Component("cooling:sim-pump", "cooling", "Simulated AIO pump", HealthStatuses.Act, "cooling.pumpStall",
-                "Simulated AIO pump reports 0 RPM while driven", "rpm=0 targetDuty=70% (simulated)"));
-        }
-        if (IsActive(HealthSustainedHighTemp))
-        {
-            list.Add(Component("cooling", "cooling", "Cooling", HealthStatuses.Watch, "cooling.sustainedHighTemp",
-                "Simulated CPU recently ran above 90 C", "componentId=sim peakC=94.0 (simulated)"));
+                "Simulated AIO pump reports 0 RPM while driven", "rpm=0 targetDuty=70% (simulated)",
+                new Dictionary<string, string> { ["rpm"] = "0", ["targetDuty"] = "70" }));
         }
         if (IsActive(HealthGpuThrottle))
         {
@@ -395,7 +390,6 @@ public sealed class DevSimEvents
         {
             HealthFanStall => "cooling:sim-fan",
             HealthPumpStall => "cooling:sim-pump",
-            HealthSustainedHighTemp => "cooling",
             HealthGpuThrottle => "gpu:sim-throttle",
             HealthGpuTdr => "gpu:sim-tdr",
             HealthSmartWarning => "storage:sim-smart",

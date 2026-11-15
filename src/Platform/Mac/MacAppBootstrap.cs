@@ -90,7 +90,7 @@ internal static class MacAppBootstrap
         var diagAlerts = app.Services.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
         diagAlerts.AlertNeedsAttention += notice =>
         {
-            try { Nexus.Service.Notifications.NotificationGate.SendOrHold(() => MacNotify.Send(notice.Title, notice.Text)); }
+            try { Nexus.Service.Notifications.NotificationGate.SendOrHold(() => MacNotify.Send(notice.Title, notice.Text), notice.Urgent); }
             catch { /* best-effort */ }
         };
 

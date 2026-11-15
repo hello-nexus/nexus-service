@@ -85,6 +85,9 @@ public interface ISensorProvider
     string GetStorageBrandModel();
 
     IReadOnlyList<HardwareSensor> GetMotherboardSensors();
+
+    /// <summary>Motherboard sensors from the shared, floor-limited refresh only, for pollers that must not force the extra Super I/O update <see cref="GetMotherboardSensors"/> does. A provider with no such update returns the same list.</summary>
+    IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached() => GetMotherboardSensors();
     string GetMotherboardModel();
 
     /// <summary>

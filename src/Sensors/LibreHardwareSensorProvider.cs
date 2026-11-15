@@ -359,7 +359,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             }).ToList();
     }
 
-    public IReadOnlyList<HardwareSensor> GetMotherboardSensors()
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => ReadMotherboardSensors(updateSubHardware: true);
+
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached() => ReadMotherboardSensors(updateSubHardware: false);
+
+    private IReadOnlyList<HardwareSensor> ReadMotherboardSensors(bool updateSubHardware)
     {
         _lhm.Update();
         var mobo = FindHardware(HardwareType.Motherboard).FirstOrDefault();
@@ -370,7 +374,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         sensors.AddRange(MapSensors(mobo));
         foreach (var sub in mobo.SubHardware)
         {
-            sub.Update();
+            if (updateSubHardware) sub.Update();
             sensors.AddRange(MapSensors(sub));
         }
         return sensors;
@@ -517,7 +521,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     private static readonly SensorHoldLast Hold = new();
 
-    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), s.Value, Environment.TickCount64, out _);
+    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), LhmWalkWatch.Shared.Read(s.Value), Environment.TickCount64, out _);
 
     private static List<HardwareSensor> MapSensors(IHardware hw)
     {
@@ -530,8 +534,10 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         {
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
-            var value = Hold.Resolve(key, s.Value, now, out var missed);
-            if (missed && isGpu)
+            var reading = LhmWalkWatch.Shared.Read(s.Value);
+            var value = Hold.Resolve(key, reading, now, out var missed);
+            var stale = !missed && (reading is not { } raw || !float.IsFinite(raw));
+            if (missed && isGpu && !LhmWalkWatch.Shared.IsStale)
             {
                 var hwKey = hw.Identifier.ToString();
                 var count = Hold.NoteMiss(hwKey, now);
@@ -561,6 +567,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     FormattedMax = LhmDataSensors.Format(max, unit),
                     FormattedMin = LhmDataSensors.Format(min, unit),
                     Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                    Stale = stale,
                 };
             }
             return new HardwareSensor
@@ -576,6 +583,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 FormattedMax = FormatValue(max, s.SensorType),
                 FormattedMin = FormatValue(min, s.SensorType),
                 Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                Stale = stale,
             };
         }).ToList();
     }

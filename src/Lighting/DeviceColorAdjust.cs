@@ -150,11 +150,30 @@ public readonly struct DeviceColorAdjust
     /// </summary>
     public void Apply(byte sr, byte sg, byte sb, double mul, out byte or, out byte og, out byte ob)
     {
+        ApplyUnordered(sr, sg, sb, mul, out var cr, out var cg, out var cb);
+        switch (_order)
+        {
+            case 1: or = cr; og = cb; ob = cg; break;
+            case 2: or = cg; og = cr; ob = cb; break;
+            case 3: or = cg; og = cb; ob = cr; break;
+            case 4: or = cb; og = cr; ob = cg; break;
+            case 5: or = cb; og = cg; ob = cr; break;
+            default: or = cr; og = cg; ob = cb; break;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="Apply"/> without the final channel swap: the color the LED
+    /// is actually driven with, as the user perceives it. The dashboard preview
+    /// reads this so a GRB-wired strip still displays its true color.
+    /// </summary>
+    public void ApplyUnordered(byte sr, byte sg, byte sb, double mul, out byte cr, out byte cg, out byte cb)
+    {
         if (!HasEffect)
         {
-            or = ToByte(sr * (float)mul);
-            og = ToByte(sg * (float)mul);
-            ob = ToByte(sb * (float)mul);
+            cr = ToByte(sr * (float)mul);
+            cg = ToByte(sg * (float)mul);
+            cb = ToByte(sb * (float)mul);
             return;
         }
         float r = sr;
@@ -168,18 +187,9 @@ public readonly struct DeviceColorAdjust
             b = luma + (b - luma) * _saturation;
         }
         var m = (float)mul;
-        var cr = ToByte(r * _r * m);
-        var cg = ToByte(g * _g * m);
-        var cb = ToByte(b * _b * m);
-        switch (_order)
-        {
-            case 1: or = cr; og = cb; ob = cg; break;
-            case 2: or = cg; og = cr; ob = cb; break;
-            case 3: or = cg; og = cb; ob = cr; break;
-            case 4: or = cb; og = cr; ob = cg; break;
-            case 5: or = cb; og = cg; ob = cr; break;
-            default: or = cr; og = cg; ob = cb; break;
-        }
+        cr = ToByte(r * _r * m);
+        cg = ToByte(g * _g * m);
+        cb = ToByte(b * _b * m);
     }
 
     /// <summary>

@@ -36,6 +36,7 @@ public sealed class TryxPanoramaHub : IDisposable
     private readonly ITryxPanoramaPanelDiscovery _discovery;
     private readonly Func<TryxPanoramaPortInfo, ITryxPanoramaTransport> _transportFactory;
     private readonly ISensorProvider _sensors;
+    private readonly Func<Nexus.Service.Cooling.IFanControlProvider?>? _fans;
     private readonly IFpsProvider _fps;
     private readonly IConfigStore _configStore;
     private readonly object _lock = new();
@@ -52,8 +53,10 @@ public sealed class TryxPanoramaHub : IDisposable
         Func<TryxPanoramaPortInfo, ITryxPanoramaTransport> transportFactory,
         ISensorProvider sensors,
         IFpsProvider fps,
-        IConfigStore configStore)
+        IConfigStore configStore,
+        Func<Nexus.Service.Cooling.IFanControlProvider?>? fans = null)
     {
+        _fans = fans;
         _discovery = discovery;
         _transportFactory = transportFactory;
         _sensors = sensors;
@@ -64,6 +67,7 @@ public sealed class TryxPanoramaHub : IDisposable
         _overlay = new TryxOverlayConfig { Docked = saved.OverlayDocked };
         State.Brightness = saved.Brightness;
         LoadContent(saved, Array.Empty<string>());
+        TryxUserClockFormat.Warm();
     }
 
     private void LoadContent(TryxSettings saved, IReadOnlyList<string> customMedia)
@@ -1607,11 +1611,17 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         var items = _overlay.Items;
         var sources = GatherOverlaySources(items);
-        var wholeNumbers = _configStore.Load().Units.MonitoringWholeNumbers == true;
+        var units = _configStore.Load().Units;
+        var wholeNumbers = units.MonitoringWholeNumbers == true;
+        var now = DateTime.Now;
         var lines = new List<TryxOverlayLine>(items.Count);
         foreach (var item in items)
         {
-            lines.Add(new TryxOverlayLine(item.Label, ResolveSensorValue(item.Device, item.SensorId, wholeNumbers, sources)));
+            var value = item.Device == ClockDevice
+                ? FormatClockValue(item.SensorId, now, units.TimeFormat, units.DateFormat,
+                    units.TimeFormat == "system" && TryxUserClockFormat.SystemUses12Hour())
+                : ResolveSensorValue(item.Device, item.SensorId, wholeNumbers, sources);
+            lines.Add(new TryxOverlayLine(item.Label, value));
         }
         return lines;
     }
@@ -1621,8 +1631,10 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         var needExtras = false;
         var needNetwork = false;
+        var needHub = false;
         foreach (var item in items)
         {
+            needHub |= Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(item.Device);
             if (SensorSnapshotResolver.CategoryUsesExtras(item.Device))
             {
                 needExtras = true;
@@ -1634,6 +1646,10 @@ public sealed class TryxPanoramaHub : IDisposable
             return default;
         }
         var extras = _sensors.GetSensorExtras();
+        if (needHub)
+        {
+            Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
+        }
         return new SensorSnapshotSources(
             extras,
             NetworkSensors: needNetwork ? SensorSnapshotResolver.BuildNicNetworkSensors(extras.Nics) : null);
@@ -1662,6 +1678,71 @@ public sealed class TryxPanoramaHub : IDisposable
             : SensorSnapshotResolver.Resolve(_sensors, device, sensorId, sources);
         return sensor is null ? "--" : FormatSensorValue(sensor, wholeNumbers);
     }
+
+    internal const string ClockDevice = "clock";
+
+    // Each heartbeat resends the overlay, so a clock line needs no extra trigger. Under
+    // invariant globalization "system" time follows the signed-in user's own 12/24 hour
+    // choice (TryxUserClockFormat), passed in as systemUses12Hour; date falls back to the
+    // dashboard's system shape in English. Date patterns are the client-owned keys in
+    // nexus-web src/lib/units.ts.
+    private static readonly string[] ClockDatePatterns =
+    [
+        "ddd, d mmm", "ddd d mmm", "ddd, mmm d", "d mmm", "mmm d",
+        "ddd, d mmm yyyy", "d mmm yyyy", "mmm d, yyyy",
+        "dd/mm/yy", "dd/mm/yyyy", "mm/dd/yy", "mm/dd/yyyy", "dd-mm-yy", "dd-mm-yyyy", "dd.mm.yy", "dd.mm.yyyy",
+        "yyyy-mm-dd", "yyyy/mm/dd", "yyyy. m. d.", "yyyy年m月d日",
+    ];
+
+    internal static string FormatClockValue(string sensorId, DateTime now, string timeFormat, string dateFormat, bool systemUses12Hour = false)
+    {
+        switch (sensorId)
+        {
+            case "time":
+                return FormatClockTime(now, timeFormat, systemUses12Hour);
+            case "date":
+                return FormatClockDate(now, dateFormat);
+            case "datetime":
+                return FormatClockDate(now, dateFormat) + "  " + FormatClockTime(now, timeFormat, systemUses12Hour);
+            default:
+                return "--";
+        }
+    }
+
+    private static string FormatClockTime(DateTime now, string timeFormat, bool systemUses12Hour)
+    {
+        var twelve = timeFormat == "12h" || (timeFormat != "24h" && systemUses12Hour);
+        return now.ToString(twelve ? "h:mm tt" : "HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatClockDate(DateTime now, string dateFormat)
+    {
+        var pattern = Array.IndexOf(ClockDatePatterns, dateFormat) >= 0 ? dateFormat : "ddd, mmm d";
+        return ApplyDatePattern(pattern, now);
+    }
+
+    private static string ApplyDatePattern(string pattern, DateTime now)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder(pattern.Length + 8);
+        var i = 0;
+        while (i < pattern.Length)
+        {
+            if (StartsAt(pattern, i, "yyyy")) { sb.Append(now.Year.ToString("0000", inv)); i += 4; }
+            else if (StartsAt(pattern, i, "yy")) { sb.Append((now.Year % 100).ToString("00", inv)); i += 2; }
+            else if (StartsAt(pattern, i, "mmm")) { sb.Append(inv.DateTimeFormat.GetAbbreviatedMonthName(now.Month)); i += 3; }
+            else if (StartsAt(pattern, i, "mm")) { sb.Append(now.Month.ToString("00", inv)); i += 2; }
+            else if (pattern[i] == 'm') { sb.Append(now.Month.ToString(inv)); i++; }
+            else if (StartsAt(pattern, i, "ddd")) { sb.Append(inv.DateTimeFormat.GetAbbreviatedDayName(now.DayOfWeek)); i += 3; }
+            else if (StartsAt(pattern, i, "dd")) { sb.Append(now.Day.ToString("00", inv)); i += 2; }
+            else if (pattern[i] == 'd') { sb.Append(now.Day.ToString(inv)); i++; }
+            else { sb.Append(pattern[i]); i++; }
+        }
+        return sb.ToString();
+    }
+
+    private static bool StartsAt(string s, int i, string token)
+        => string.CompareOrdinal(s, i, token, 0, token.Length) == 0;
 
     private static HardwareSensor? FindById(IReadOnlyList<HardwareSensor> sensors, string id)
     {

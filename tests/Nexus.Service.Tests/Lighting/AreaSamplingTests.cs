@@ -317,7 +317,7 @@ public class AreaSamplingTests
     }
 
     [Fact]
-    public async Task LinearLightMean_OfHalfBlackHalfWhiteCell_IsAbout188()
+    public async Task PlainMean_OfHalfBlackHalfWhiteCell_Is127()
     {
         var dev = new DeviceFrame(0, "one", 1, x: 0, y: 0, w: 1000, h: 600);
         var leds = await RenderOnce(dev, c =>
@@ -331,7 +331,7 @@ public class AreaSamplingTests
                 }
             }
         }, area: true);
-        Assert.InRange(leds[0], 187, 189);
+        Assert.Equal(127, leds[0]);
     }
 
     [Fact]
@@ -341,7 +341,7 @@ public class AreaSamplingTests
         var plain = await RenderOnce(dev, c => { c.Clear(); c.SetPixel(10, 10, 255, 255, 255); }, area: false, fullFrame: true);
         var dev2 = new DeviceFrame(0, "one", 1, x: 400, y: 250, w: 100, h: 100);
         var area = await RenderOnce(dev2, c => { c.Clear(); c.SetPixel(10, 10, 255, 255, 255); }, area: true, fullFrame: true);
-        // one lit pixel of the whole canvas: the cell is the whole canvas, so the linear mean is tiny but not above the plain box read
+        // one lit pixel of the whole canvas: the cell is the whole canvas, so the mean is tiny but not above the plain box read
         Assert.True(area[0] <= 30);
         Assert.NotNull(plain);
     }
@@ -632,6 +632,49 @@ public class AreaSamplingTests
         map.Sample(px, 1, out var r1, out _, out _);
         Assert.Equal(r0, r1);
         Assert.NotEqual(0, r0);
+    }
+
+    [Fact]
+    public void Sample_IsTheTruncatingSrgbByteMean_OnEveryChannel()
+    {
+        using var engine = new LightingEngine();
+        Modes(engine, "m");
+        var dev = new DeviceFrame(0, "m", 1, 0, 0, 1000, 600);
+        var map = engine.AreaMapFor(dev, 160, 90)!;
+        var n = map.PixelCount(0);
+        Assert.True(n > 100);
+        // per channel, k of the owned pixels are 255 and the rest 0, with k picked so the mean's fraction is at least one half
+        static int PickK(int n, int from)
+        {
+            for (var k = from; k < n; k++)
+            {
+                var rem = 255 * k % n;
+                if (rem != 0 && rem * 2 >= n)
+                {
+                    return k;
+                }
+            }
+            throw new InvalidOperationException("no k");
+        }
+        var ks = new[] { PickK(n, n / 4), PickK(n, n / 2), PickK(n, n * 3 / 4) };
+        var px = new byte[160 * 90 * 3];
+        for (var j = 0; j < n; j++)
+        {
+            var o = map.Pix[map.Start[0] + j];
+            for (var c = 0; c < 3; c++)
+            {
+                px[o + c] = (byte)(j < ks[c] ? 255 : 0);
+            }
+        }
+        map.Sample(px, 0, out var r, out var g, out var b);
+        var got = new[] { r, g, b };
+        for (var c = 0; c < 3; c++)
+        {
+            var sum = 255L * ks[c];
+            Assert.NotEqual(0, sum % n);
+            Assert.Equal((byte)(sum / n), got[c]);
+            Assert.NotEqual((byte)((sum + n / 2) / n), got[c]);
+        }
     }
 
     [Fact]

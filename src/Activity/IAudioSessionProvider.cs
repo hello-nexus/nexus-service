@@ -19,8 +19,9 @@ public interface IAudioSessionProvider
 
     IReadOnlyList<AudioSessionDto> GetSessions();
 
-    /// <summary>Applies to every session the strip covers. <paramref name="volume"/> is 0-1.</summary>
-    void SetVolume(string id, double volume);
+    /// <summary>Applies to every session the strip covers, or only those on the
+    /// default output when <paramref name="defaultOnly"/> is set. <paramref name="volume"/> is 0-1.</summary>
+    void SetVolume(string id, double volume, bool defaultOnly = false);
 
     void SetMuted(string id, bool muted);
 
@@ -43,7 +44,7 @@ public sealed class StubAudioSessionProvider : IAudioSessionProvider
 
     public bool Supported => false;
     public IReadOnlyList<AudioSessionDto> GetSessions() => None;
-    public void SetVolume(string id, double volume) { }
+    public void SetVolume(string id, double volume, bool defaultOnly = false) { }
     public void SetMuted(string id, bool muted) { }
     public void StartStreaming() { }
     public void StopStreaming() { }

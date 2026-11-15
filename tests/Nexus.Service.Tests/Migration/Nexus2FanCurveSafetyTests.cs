@@ -252,11 +252,11 @@ public class Nexus2FanCurveSafetyTests
     // ── Cooler-owned, followed and guard-owned channels ──
 
     [Fact]
-    public void A_channel_on_a_cooler_the_presets_pin_is_skipped()
+    public void A_channel_on_a_cooler_is_a_valid_target_like_any_fan()
     {
         var hw = Hw.Y70();
         hw.Channels.First(c => c.Id == Fan0).IsAio = true;
-        Assert.Equal("unsupportedTarget", TargetReason(hw, N2.Pwm(1)));
+        Assert.Null(TargetReason(hw, N2.Pwm(1)));
     }
 
     [Fact]

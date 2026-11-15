@@ -124,6 +124,163 @@ public class AppProxyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Binary_body_arrives_byte_exact_as_base64()
+    {
+        var bytes = new byte[256];
+        for (int i = 0; i < bytes.Length; i++) bytes[i] = (byte)i;
+        var svc = MakeService(new BytesHandler("application/vnd.mapbox-vector-tile", bytes));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/tile" });
+        Assert.True(resp.Ok);
+        Assert.Null(resp.BodyText);
+        Assert.Null(resp.Body);
+        Assert.Equal(bytes, Convert.FromBase64String(resp.BodyBase64!));
+    }
+
+    [Fact]
+    public async Task Binary_body_over_cap_is_truncated_with_error()
+    {
+        var bytes = new byte[AppProxyService.MaxBinaryBodyBytes + 500];
+        var svc = MakeService(new BytesHandler("application/octet-stream", bytes));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/big" });
+        Assert.Contains("truncated", resp.Error);
+        Assert.Equal(AppProxyService.MaxBinaryBodyBytes, Convert.FromBase64String(resp.BodyBase64!).Length);
+    }
+
+    [Fact]
+    public async Task Binary_body_above_text_cap_but_within_binary_cap_is_delivered_whole()
+    {
+        var bytes = new byte[AppProxyService.MaxBodyBytes * 3];
+        new Random(7).NextBytes(bytes);
+        var svc = MakeService(new BytesHandler("application/vnd.mapbox-vector-tile", bytes));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/tile" });
+        Assert.True(resp.Ok);
+        Assert.Null(resp.Error);
+        Assert.Equal(bytes, Convert.FromBase64String(resp.BodyBase64!));
+    }
+
+    [Fact]
+    public async Task Rate_limit_blocks_the_request_after_the_cap_for_one_app_only()
+    {
+        var svc = new AppProxyService(new FreshClientFactory(new StubHandler("text/plain", "x")), _registry);
+        var req = new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/r" };
+        for (int i = 0; i < AppProxyService.MaxRequestsPerMinute; i++)
+        {
+            Assert.True((await svc.ExecuteAsync(req)).Ok);
+        }
+        var over = await svc.ExecuteAsync(req);
+        Assert.Contains("rate limit", over.Error);
+    }
+
+    [Fact]
+    public async Task Concurrency_is_bounded_per_app_and_a_waiter_proceeds_when_a_slot_frees()
+    {
+        var gate = new TaskCompletionSource();
+        var handler = new GatedHandler(gate.Task);
+        var svc = new AppProxyService(new FreshClientFactory(handler), _registry) { ConcurrencyWait = TimeSpan.FromMilliseconds(100) };
+        var req = new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/c" };
+        var running = new List<Task<AppProxyResponse>>();
+        for (int i = 0; i < AppProxyService.MaxConcurrentPerApp; i++) running.Add(svc.ExecuteAsync(req));
+        while (handler.Started < AppProxyService.MaxConcurrentPerApp) await Task.Delay(5);
+
+        var refused = await svc.ExecuteAsync(req);
+        Assert.Contains("concurrent", refused.Error);
+        Assert.Equal(AppProxyService.MaxConcurrentPerApp, handler.Started);
+
+        svc.ConcurrencyWait = TimeSpan.FromSeconds(30);
+        var waiter = svc.ExecuteAsync(req);
+        gate.SetResult();
+        Assert.True((await waiter).Ok);
+        foreach (var t in running) Assert.True((await t).Ok);
+    }
+
+    [Fact]
+    public async Task Handler_decodes_gzip_upstream_bodies_byte_exact()
+    {
+        var original = new byte[20_000];
+        new Random(11).NextBytes(original);
+        Array.Fill(original, (byte)7, 5000, 10_000);
+        using var gz = new MemoryStream();
+        using (var z = new System.IO.Compression.GZipStream(gz, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+        {
+            z.Write(original);
+        }
+        var compressed = gz.ToArray();
+
+        var port = FreePort();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        string? acceptEncoding = null;
+        var serve = Task.Run(async () =>
+        {
+            var ctx = await listener.GetContextAsync();
+            acceptEncoding = ctx.Request.Headers["Accept-Encoding"];
+            ctx.Response.ContentType = "application/vnd.mapbox-vector-tile";
+            ctx.Response.AddHeader("Content-Encoding", "gzip");
+            ctx.Response.ContentLength64 = compressed.Length;
+            await ctx.Response.OutputStream.WriteAsync(compressed);
+            ctx.Response.Close();
+        });
+
+        using var http = new HttpClient(AppProxyService.CreateHandler());
+        var got = await http.GetByteArrayAsync($"http://127.0.0.1:{port}/t");
+        await serve;
+        Assert.Equal(original, got);
+        Assert.Contains("gzip", acceptEncoding);
+    }
+
+    [Fact]
+    public void Handler_keeps_redirects_off_and_enables_all_decompression()
+    {
+        using var h = AppProxyService.CreateHandler();
+        Assert.False(h.AllowAutoRedirect);
+        Assert.Equal(DecompressionMethods.All, h.AutomaticDecompression);
+    }
+
+    private static int FreePort()
+    {
+        var l = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
+    }
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData("text/html")]
+    [InlineData("application/json")]
+    [InlineData("application/ld+json")]
+    [InlineData("application/xml")]
+    [InlineData("image/svg+xml")]
+    [InlineData("application/javascript")]
+    [InlineData("application/x-www-form-urlencoded")]
+    [InlineData("")]
+    public void Text_media_types_are_not_binary(string mediaType)
+    {
+        Assert.False(AppProxyService.IsBinaryMediaType(mediaType));
+    }
+
+    [Theory]
+    [InlineData("application/vnd.mapbox-vector-tile")]
+    [InlineData("application/octet-stream")]
+    [InlineData("image/png")]
+    [InlineData("application/x-protobuf")]
+    public void Other_media_types_are_binary(string mediaType)
+    {
+        Assert.True(AppProxyService.IsBinaryMediaType(mediaType));
+    }
+
+    [Fact]
+    public async Task Text_body_never_carries_base64()
+    {
+        var svc = MakeService(new StubHandler("text/plain", "hello"));
+        var resp = await svc.ExecuteAsync(new AppProxyRequest { AppId = "com.hellonexus.allowed", Url = "https://api.weather.gov/t" });
+        Assert.Equal("hello", resp.BodyText);
+        Assert.Null(resp.BodyBase64);
+    }
+
+    [Fact]
     public async Task Json_body_is_decoded_into_Body()
     {
         var svc = MakeService(new StubHandler("application/json", "{\"a\": [1, 2], \"b\": \"hi\"}"));
@@ -310,6 +467,27 @@ public class AppProxyServiceTests : IDisposable
         Assert.Equal("utf-8", capture.LastRequest.Content.Headers.ContentType!.CharSet);
     }
 
+    private sealed class GatedHandler : HttpMessageHandler
+    {
+        private readonly Task _gate;
+        private int _started;
+        public GatedHandler(Task gate) { _gate = gate; }
+        public int Started => Volatile.Read(ref _started);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _started);
+            await _gate;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("x", Encoding.UTF8, "text/plain") };
+        }
+    }
+
+    private sealed class FreshClientFactory : IHttpClientFactory
+    {
+        private readonly HttpMessageHandler _handler;
+        public FreshClientFactory(HttpMessageHandler handler) { _handler = handler; }
+        public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
+    }
+
     private sealed class StubHttpFactory : IHttpClientFactory
     {
         private readonly HttpClient _client;
@@ -330,6 +508,19 @@ public class AppProxyServiceTests : IDisposable
                 Content = new StringContent(_body, Encoding.UTF8, _contentType),
             };
             return Task.FromResult(msg);
+        }
+    }
+
+    private sealed class BytesHandler : HttpMessageHandler
+    {
+        private readonly string _contentType;
+        private readonly byte[] _body;
+        public BytesHandler(string contentType, byte[] body) { _contentType = contentType; _body = body; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var content = new ByteArrayContent(_body);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(_contentType);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
     }
 

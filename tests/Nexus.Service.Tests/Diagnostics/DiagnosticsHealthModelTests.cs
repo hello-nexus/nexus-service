@@ -31,7 +31,6 @@ public class DiagnosticsHealthModelTests
         MemoryTestResult? lastMemoryTest = null,
         PnpProblemSnapshot? pnp = null,
         IReadOnlyList<string>? knownGpuModels = null,
-        IReadOnlyList<TemperatureEpisode>? tempEpisodes = null,
         DateTime? generatedAtUtc = null,
         DiagnosticsSettings? diagnostics = null)
     {
@@ -45,7 +44,6 @@ public class DiagnosticsHealthModelTests
             knownGpuModels: knownGpuModels ?? Array.Empty<string>(),
             windowsSupported: true,
             generatedAtUtc: generatedAtUtc ?? T0,
-            tempEpisodes: tempEpisodes,
             diagnostics: diagnostics);
     }
 
@@ -162,31 +160,13 @@ public class DiagnosticsHealthModelTests
     }
 
     [Fact]
-    public void IgnoredDrive_TemperatureEpisode_DoesNotReachTheCoolingAggregate()
-    {
-        var episodes = new List<TemperatureEpisode>
-        {
-            new("storage:Z52AFCNF", "ST2000VX008", T0.AddMinutes(-10), T0, PeakC: 74.5, ThresholdC: 70, Kind: "storage"),
-            new("storage:OTHER", "Healthy", T0.AddMinutes(-10), T0, PeakC: 72.0, ThresholdC: 70, Kind: "storage"),
-        };
-        var settings = new DiagnosticsSettings { IgnoredComponents = new List<string> { "storage:Z52AFCNF" } };
-
-        var result = Compute(tempEpisodes: episodes, diagnostics: settings);
-
-        var cooling = Assert.Single(result.Components, c => c.Id == "cooling");
-        var reason = Assert.Single(cooling.Reasons);
-        Assert.Contains("componentId=storage:OTHER", reason.Detail);
-        Assert.Equal(HealthStatuses.Watch, result.Overall);
-    }
-
-    [Fact]
     public void BuildHealth_RecomputesWhenTheIgnoreListChanges_WithinTheCacheTtl()
     {
         var store = new InMemoryConfigStore();
         var model = new DiagnosticsHealthModel(
             new UnsupportedSmartHealthSource(), new CoolingStallDetector(), new GpuHealthMonitor(), new EventLogMonitor(),
             new MemoryDiagnosticOrchestrator(), new PnpProblemScanner(), new Mcp.McpTestHarness.StubSensorProvider(),
-            new InMemoryMetricsHistoryStore(), store);
+            store);
 
         var first = model.BuildHealth();
         Assert.Same(first, model.BuildHealth());
@@ -449,10 +429,10 @@ public class DiagnosticsHealthModelTests
     [Fact]
     public void OverallUnknown_OnlyWhenNoComponentProducedARealSignal()
     {
-        // Storage unsupported, memory/system gated off: the placeholder is the
+        // Storage unsupported, memory ignored and system gated off: the placeholder is the
         // only component, so there is nothing to be healthy about.
         var diagnostics = new DiagnosticsSettings();
-        diagnostics.Components.Ram = false;
+        diagnostics.IgnoredComponents.Add("memory");
         diagnostics.Components.System = false;
 
         var result = Compute(
@@ -494,40 +474,35 @@ public class DiagnosticsHealthModelTests
         Assert.Equal(HealthStatuses.Act, memory.Status);
     }
 
+    [Fact]
+    public void Memory_IsPresentOnWindows_EvenWhenTheLegacyRamToggleIsOff()
+    {
+        var diagnostics = new DiagnosticsSettings();
+        diagnostics.Components.Ram = false;
+
+        var result = Compute(diagnostics: diagnostics);
+
+        Assert.Single(result.Components, c => c.Kind == "memory");
+    }
+
+#if DEV_TOOLS
+    [Fact]
+    public void FilterSimulated_KeepsMemory_WhenTheLegacyRamToggleIsOff()
+    {
+        var diagnostics = new DiagnosticsSettings();
+        diagnostics.Components.Ram = false;
+        var memory = new HealthComponent { Id = "memory", Kind = "memory" };
+
+        var kept = DiagnosticsHealthModel.FilterSimulated(new[] { memory }, diagnostics);
+
+        Assert.Single(kept);
+    }
+#endif
+
     private static SmartSnapshot SmartSnapshotUnsupported() => new() { Supported = false, Drives = Array.Empty<SmartDriveInfo>() };
 
     [Fact]
-    public void SustainedHighTemp_OngoingEpisode_AddsWatchReasonToCoolingAggregate()
-    {
-        // Ends exactly at "now" - still hot at generation time.
-        var episode = new TemperatureEpisode("gpu:0", "RTX 5080", T0.AddHours(-1), T0, 91.5, 85, "gpu");
-
-        var result = Compute(tempEpisodes: new[] { episode });
-
-        var aggregate = Assert.Single(result.Components, c => c.Id == "cooling");
-        Assert.Equal(HealthStatuses.Watch, aggregate.Status);
-        var reason = Assert.Single(aggregate.Reasons);
-        Assert.Equal("cooling.sustainedHighTemp", reason.Code);
-        Assert.Equal(HealthStatuses.Watch, reason.Severity);
-        Assert.Contains("RTX 5080", reason.Summary);
-        Assert.Equal(HealthStatuses.Watch, result.Overall);
-    }
-
-    [Fact]
-    public void SustainedHighTemp_EpisodeEndedBeforeTheRecencyWindow_ProducesNoReason()
-    {
-        // Default linger is 0, so the recency window is one bucket (5 min);
-        // an episode that cooled 20 minutes ago is well outside it.
-        var episode = new TemperatureEpisode("gpu:0", "RTX 5080", T0.AddHours(-1), T0.AddMinutes(-20), 91.5, 85, "gpu");
-
-        var result = Compute(tempEpisodes: new[] { episode });
-
-        Assert.DoesNotContain(result.Components, c => c.Id == "cooling");
-        Assert.Equal(HealthStatuses.Ok, result.Overall);
-    }
-
-    [Fact]
-    public void SustainedHighTemp_NoEpisodes_AggregateOmittedWhenNoCoolingDevicesEither()
+    public void Cooling_NoDevices_AggregateOmitted()
     {
         var result = Compute();
 
@@ -535,48 +510,24 @@ public class DiagnosticsHealthModelTests
     }
 
     [Fact]
-    public void SustainedHighTemp_CombinesWithStalledPump_WorstStatusWins()
+    public void Cooling_StalledPump_AggregateStaysOk_AndNeverCarriesHeatReasons()
     {
         var cooling = new CoolingStallSnapshot(true, new List<CoolingStallDevice>
         {
             new("pump1", "Q60 Pump", "pump", 0, 60, CoolingStallStatuses.Stalled, T0),
         });
-        var episode = new TemperatureEpisode("cpu", "CPU", T0.AddHours(-1), T0, 92, 90, "cpu");
-
-        var result = Compute(cooling: cooling, tempEpisodes: new[] { episode });
+        var result = Compute(cooling: cooling);
 
         var stalled = Assert.Single(result.Components, c => c.Id == "cooling:pump1");
         Assert.Equal(HealthStatuses.Act, stalled.Status);
         var aggregate = Assert.Single(result.Components, c => c.Id == "cooling");
-        Assert.Equal(HealthStatuses.Watch, aggregate.Status);
+        Assert.Equal(HealthStatuses.Ok, aggregate.Status);
+        Assert.Empty(aggregate.Reasons);
         Assert.Equal(HealthStatuses.Act, result.Overall);
     }
 
     [Fact]
-    public void WarningLingerMinutes_KeepsAPastEpisodeVisibleWithinTheLingerWindow()
-    {
-        var diagnostics = new DiagnosticsSettings { WarningLingerMinutes = 30 };
-        var episode = new TemperatureEpisode("gpu:0", "RTX 5080", T0.AddHours(-1), T0.AddMinutes(-20), 91.5, 85, "gpu");
-
-        var result = Compute(tempEpisodes: new[] { episode }, diagnostics: diagnostics);
-
-        var aggregate = Assert.Single(result.Components, c => c.Id == "cooling");
-        Assert.Equal(HealthStatuses.Watch, aggregate.Status);
-    }
-
-    [Fact]
-    public void WarningLingerMinutes_DoesNotKeepAnEpisodeVisibleBeyondTheLingerWindow()
-    {
-        var diagnostics = new DiagnosticsSettings { WarningLingerMinutes = 30 };
-        var episode = new TemperatureEpisode("gpu:0", "RTX 5080", T0.AddHours(-1), T0.AddMinutes(-40), 91.5, 85, "gpu");
-
-        var result = Compute(tempEpisodes: new[] { episode }, diagnostics: diagnostics);
-
-        Assert.DoesNotContain(result.Components, c => c.Id == "cooling");
-    }
-
-    [Fact]
-    public void DisabledStorageComponent_ExcludedFromStatusAndOverall()
+    public void RetiredStorageToggle_IsIgnoredAndTheDriveStillReports()
     {
         var smart = new SmartSnapshot
         {
@@ -600,43 +551,12 @@ public class DiagnosticsHealthModelTests
 
         var result = Compute(smart: smart, diagnostics: diagnostics);
 
-        Assert.DoesNotContain(result.Components, c => c.Kind == "storage");
-        Assert.Equal(HealthStatuses.Ok, result.Overall);
+        Assert.Contains(result.Components, c => c.Kind == "storage");
+        Assert.Equal(HealthStatuses.Act, result.Overall);
     }
 
     [Fact]
-    public void DisabledCpuComponent_ExcludesCpuTempEpisodeFromCoolingAggregate()
-    {
-        var diagnostics = new DiagnosticsSettings();
-        diagnostics.Components.Cpu = false;
-        var episode = new TemperatureEpisode("cpu", "CPU", T0.AddHours(-1), T0, 95, 90, "cpu");
-
-        var result = Compute(tempEpisodes: new[] { episode }, diagnostics: diagnostics);
-
-        Assert.DoesNotContain(result.Components, c => c.Id == "cooling");
-        Assert.Equal(HealthStatuses.Ok, result.Overall);
-    }
-
-    [Fact]
-    public void DisabledCoolingComponent_ExcludesStallDevices_ButNotOtherKindsTempWarnings()
-    {
-        var cooling = new CoolingStallSnapshot(true, new List<CoolingStallDevice>
-        {
-            new("pump1", "Q60 Pump", "pump", 0, 60, CoolingStallStatuses.Stalled, T0),
-        });
-        var diagnostics = new DiagnosticsSettings();
-        diagnostics.Components.Cooling = false;
-        var episode = new TemperatureEpisode("gpu:0", "RTX 5080", T0.AddHours(-1), T0, 95, 85, "gpu");
-
-        var result = Compute(cooling: cooling, tempEpisodes: new[] { episode }, diagnostics: diagnostics);
-
-        Assert.DoesNotContain(result.Components, c => c.Id == "cooling:pump1");
-        var aggregate = Assert.Single(result.Components, c => c.Id == "cooling");
-        Assert.Equal(HealthStatuses.Watch, aggregate.Status);
-    }
-
-    [Fact]
-    public void DisabledGpuComponent_ExcludesGpuThrottleComponent()
+    public void RetiredGpuToggle_IsIgnoredAndThrottleStillReports()
     {
         var gpu = new GpuHealthSnapshot(true, new List<GpuInfo>
         {
@@ -647,7 +567,6 @@ public class DiagnosticsHealthModelTests
 
         var result = Compute(gpu: gpu, diagnostics: diagnostics);
 
-        Assert.DoesNotContain(result.Components, c => c.Kind == "gpu");
-        Assert.Equal(HealthStatuses.Ok, result.Overall);
+        Assert.Contains(result.Components, c => c.Kind == "gpu");
     }
 }

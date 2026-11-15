@@ -77,6 +77,16 @@ public sealed class StrimerHub : IDisposable
         }
     }
 
+    /// <summary>Latches the zones in <paramref name="mask"/>, bit n being zone n.</summary>
+    public bool SendApplyLatchMask(int mask)
+    {
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            return WriteCommand(StrimerProtocol.BuildApplyLatchMask(mask));
+        }
+    }
+
     /// <summary>Hands the cable to the motherboard ARGB input (on) or back to the host (off).</summary>
     public bool SendArgbSync(bool on)
     {

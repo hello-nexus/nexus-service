@@ -58,6 +58,8 @@ public sealed class TryxStatusResponse
     public TryxOverlaySnapshot? Overlay { get; set; }
     public TryxSlideshowSnapshot? Slideshow { get; set; }
     public bool SleepWhenLocked { get; set; }
+    // The signed-in user's resolved 12h clock, which the overlay "system" time format follows.
+    public bool SystemClock12h { get; set; }
 }
 
 public sealed class TryxMediaImportResponse
@@ -199,6 +201,7 @@ public static class TryxRoutes
                 },
                 Slideshow = BuildSlideshowSnapshot(hub.Slideshow),
                 SleepWhenLocked = hub.SleepWhenLocked,
+                SystemClock12h = TryxUserClockFormat.SystemUses12Hour(),
             };
             return Results.Json(resp, AppJsonContext.Default.TryxStatusResponse);
         });

@@ -43,8 +43,10 @@ public class ThermalGuardEngineTests
             h?.Invoke();
             return Array.Empty<TemperatureSource>();
         }
+        public readonly HashSet<string> MissingSensors = new();
         public float? ReadTemperature(string sensorId) =>
-            sensorId == "boom" ? throw new InvalidOperationException("sensor failure") : CpuTemp;
+            sensorId == "boom" ? throw new InvalidOperationException("sensor failure")
+            : MissingSensors.Contains(sensorId) ? null : CpuTemp;
         public readonly List<(string Id, int Duty)> Order = new();
         public int SetFanSpeed(string channelId, int dutyPercent)
         {
@@ -532,6 +534,40 @@ public class ThermalGuardEngineTests
         Trip(engine, fans, clock);
         Assert.Equal(100, LastDuty(fans, "f1"));
         Assert.Equal(100, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void ATrippedGuardOutranksTheMissingSourceFallback()
+    {
+        var (engine, fans, store, clock) = Build();
+        fans.MissingSensors.Add("qx");
+        store.Update(s =>
+        {
+            s.Cooling.Curves.Clear();
+            s.Cooling.Curves.Add(new CurveDocument
+            {
+                Id = "c-f1",
+                Name = "c-f1",
+                Type = "Linear",
+                Input = new CurveInputDocument { Id = "qx", Type = "Temperature" },
+                Outputs = { new CurveOutputDocument { Id = "f1", Type = "Fan" } },
+                Linear = new LinearCurveData { ResponseTime = 0, MinTemp = 20, MaxTemp = 60, MinSpeed = 20, MaxSpeed = 60 },
+            });
+        });
+
+        Trip(engine, fans, clock);
+        for (var i = 0; i < 4; i++)
+        {
+            clock[0] += 1000;
+            engine.Tick();
+        }
+
+        var trip = store.Load().Cooling.LastThermalTrip;
+        Assert.NotNull(trip);
+        Assert.Null(trip!.EndedAtUtcMs);
+        // The source has been missing past the grace, yet the fan runs at the guard's duty, never the fallback's.
+        Assert.Equal(100, fans.Order.Last(o => o.Id == "f1").Duty);
+        Assert.DoesNotContain(fans.Order.Skip(fans.Order.FindLastIndex(o => o.Id == "f1" && o.Duty == 100)), o => o.Id == "f1" && o.Duty == 70);
     }
 
     [Fact]
@@ -1676,6 +1712,92 @@ public class ThermalGuardEngineTests
         guard2.WatchdogCheck(mono2[0] + 121_000);
         Assert.Equal(0, fans2.ReleaseAllCalls);
         Assert.Equal(100, LastDuty(fans2, "f1"));
+    }
+
+    [Fact]
+    public void Watchdog_StillDrivesCoolingMode_WhenTicksKeepCompletingOnReadingsThatStoppedRefreshing()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        var fresh = true;
+        guard.ReadingsFresh = () => fresh;
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+
+        // The engine keeps ticking on cached values while the walk is overdue.
+        fresh = false;
+        for (var i = 0; i < 12; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+        }
+        guard.WatchdogCheck(mono[0]);
+
+        Assert.Equal(100, LastDuty(fans, "f1"));
+        Assert.Equal(100, LastDuty(fans, "f2"));
+    }
+
+    [Fact]
+    public void ContinuousHotStall_KeepsFansAtFullForTheWholeStall_ThenCurvesResumeOnFreshReadings()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        var fresh = true;
+        guard.ReadingsFresh = () => fresh;
+        fans.CpuTemp = 85f;
+        e.Tick();
+        guard.TickCompleted();
+
+        fresh = false;
+        var drivenAfterFire = -1;
+        for (var i = 0; i < 40; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+            guard.WatchdogCheck(mono[0]);
+            if (drivenAfterFire < 0 && LastDuty(fans, "f1") == 100)
+            {
+                drivenAfterFire = fans.Driven.Count;
+            }
+            if (drivenAfterFire >= 0)
+            {
+                Assert.Equal(100, LastDuty(fans, "f1"));
+                Assert.Equal(100, LastDuty(fans, "f2"));
+            }
+        }
+
+        Assert.True(drivenAfterFire >= 0, "the watchdog never drove cooling mode");
+        Assert.Equal(drivenAfterFire, fans.Driven.Count);
+
+        fresh = true;
+        mono[0] += 1000;
+        e.Tick();
+        guard.TickCompleted();
+
+        Assert.True(fans.Driven.Count > drivenAfterFire, "curves did not resume after fresh readings");
+    }
+
+    [Fact]
+    public void Watchdog_StaysQuiet_WhenTicksCompleteOnFreshReadings()
+    {
+        var (_, fans, store, _) = Build();
+        var (e, guard, mono) = WatchdogRig(fans, store);
+        guard.ReadingsFresh = () => true;
+        fans.CpuTemp = 85f;
+        for (var i = 0; i < 12; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+            guard.TickCompleted();
+        }
+        var before = fans.Driven.Count;
+
+        guard.WatchdogCheck(mono[0]);
+
+        Assert.Equal(before, fans.Driven.Count);
     }
 
     [Fact]

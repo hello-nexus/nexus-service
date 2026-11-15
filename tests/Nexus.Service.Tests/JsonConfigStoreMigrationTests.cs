@@ -26,6 +26,74 @@ public class JsonConfigStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_DropsPerGpuIgnoreEntriesFromAFileAtTheFirstHealthChecksGeneration()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "diagnostics": {
+            "notifications": { "enabled": true },
+            "ignoredComponents": [ "gpu:0", "storage:Z52AFCNF", "gpu:1", "cooling:pump-1" ],
+            "builtInSensorsVersion": 2,
+            "healthChecksVersion": 1
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var diagnostics = store.Load().Diagnostics;
+            Assert.Equal(new[] { "storage:Z52AFCNF", "cooling:pump-1" }, diagnostics.IgnoredComponents);
+            Assert.Equal(Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.HealthChecksVersion, diagnostics.HealthChecksVersion);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+
+        var reopened = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.Equal(new[] { "storage:Z52AFCNF", "cooling:pump-1" }, reopened.Load().Diagnostics.IgnoredComponents);
+        }
+        finally
+        {
+            reopened.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_KeepsPerGpuIgnoreEntriesOnlyUntilTheMigrationRuns_AndPendingChoicesSurviveFromGenerationZero()
+    {
+        var json = $$"""
+        {
+          "schemaVersion": {{NexusSettings.CurrentSchemaVersion}},
+          "diagnostics": {
+            "notifications": { "enabled": true },
+            "components": { "cpu": true, "gpu": false, "storage": true, "ram": true, "cooling": false, "system": true },
+            "ignoredComponents": [ "gpu:0" ]
+          }
+        }
+        """;
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var diagnostics = store.Load().Diagnostics;
+            Assert.Empty(diagnostics.IgnoredComponents);
+            Assert.True(diagnostics.Components.Gpu);
+            Assert.True(diagnostics.PendingFansOff);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
     public void Load_NoOpOnAlreadyV5()
     {
         var v5Json = """
@@ -1101,6 +1169,138 @@ public class JsonConfigStoreMigrationTests : IDisposable
         finally
         {
             reloaded.Dispose();
+        }
+    }
+
+    [Theory]
+    [InlineData("""{ "schemaVersion": 32, "diagnostics": { "notifications": { "enabled": false, "highTemp": true } } }""", false, false)]
+    [InlineData("""{ "schemaVersion": 32, "diagnostics": { "notifications": { "enabled": true, "highTemp": true } } }""", true, true)]
+    [InlineData("""{ "schemaVersion": 32, "diagnostics": { "notifications": { "highTemp": true } } }""", false, false)]
+    [InlineData("""{ "schemaVersion": 32, "diagnostics": { } }""", false, false)]
+    [InlineData("""{ "schemaVersion": 32 }""", false, false)]
+    [InlineData("""{ "schemaVersion": 33 }""", false, false)]
+    public void Load_KeepsTheStoredNotificationSwitchAndNeverTurnsAnOlderFileOn(string json, bool enabled, bool builtInNotify)
+    {
+        File.WriteAllText(_settingsPath, json);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var d = store.Load().Diagnostics;
+            Assert.Equal(enabled, d.Notifications.Enabled);
+            Assert.All(d.SensorAlerts.Where(r => r.BuiltIn is not null), r => Assert.Equal(builtInNotify, r.NotifyDesktop));
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_NewInstallTurnsNotificationsOnAndSeedsNoTemplates()
+    {
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var d = store.Load().Diagnostics;
+            Assert.True(d.Notifications.Enabled);
+            Assert.Empty(d.SensorAlerts);
+            Assert.Equal(Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.PerDeviceVersion, d.BuiltInSensorsVersion);
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    // Shaped like a 3.1.9 settings.json: schema 32, the retired temperature fields set to non-default values, no sensorAlerts.
+    private const string Shipped319Diagnostics = """
+        {
+          "schemaVersion": 32,
+          "diagnostics": {
+            "thresholds": { "cpuC": 95, "gpuC": 85, "storageC": 65, "ramC": 60 },
+            "warningLingerMinutes": 30,
+            "notifications": { "enabled": true, "highTemp": true, "storageHealth": true, "cooling": true, "memoryTest": true, "systemDevices": true, "gpuThrottle": true, "cooldownMinutes": 45 },
+            "components": { "cpu": true, "gpu": false, "storage": true, "ram": true, "cooling": true, "system": true },
+            "ignoredComponents": []
+          }
+        }
+        """;
+
+    [Fact]
+    public void Load_319FileSeedsBuiltInsFromTheRetiredFields()
+    {
+        File.WriteAllText(_settingsPath, Shipped319Diagnostics);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var d = store.Load().Diagnostics;
+            Assert.True(d.Notifications.Enabled);
+            Assert.Equal(45, d.Notifications.CooldownMinutes);
+            var byId = d.SensorAlerts.ToDictionary(r => r.Id);
+            // CPU limit was edited and stays; GPU monitoring was off so its built-in starts disabled; storage was edited; memory sat at the old default and takes the new one.
+            Assert.Equal(95, byId["builtin-cpu"].High);
+            Assert.True(byId["builtin-cpu"].Enabled);
+            Assert.False(byId["builtin-gpu"].Enabled);
+            Assert.Equal(65, byId["builtin-storage"].High);
+            Assert.Equal(75, byId["builtin-ram"].High);
+            Assert.All(d.SensorAlerts, r => Assert.True(r.NotifyDesktop));
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_319FileWithTheHighTempCategoryOffSeedsSilentBuiltIns()
+    {
+        File.WriteAllText(_settingsPath, Shipped319Diagnostics.Replace("\"highTemp\": true", "\"highTemp\": false"));
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            Assert.All(store.Load().Diagnostics.SensorAlerts, r => Assert.False(r.NotifyDesktop));
+        }
+        finally
+        {
+            store.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Load_UnreleasedMainFileKeepsItsSensorRulesAndFrozenFields()
+    {
+        File.WriteAllText(_settingsPath, """
+            {
+              "schemaVersion": 32,
+              "diagnostics": {
+                "notifications": { "enabled": false, "highTemp": true, "sensorAlerts": false, "sensorCooldownMinutes": 15, "cooldownMinutes": 60 },
+                "sensorAlerts": [
+                  { "id": "u1", "enabled": true, "sensor": { "category": "cpu", "id": "cpu/1", "name": "Core", "type": "Temperature", "parentName": "CPU" },
+                    "high": 77, "raiseAfterSeconds": 9, "clearAfterSeconds": 3, "severity": "act", "notifyDesktop": true, "showInHealth": false, "repeatMinutes": 20 }
+                ]
+              }
+            }
+            """);
+
+        var store = new JsonConfigStore(_settingsPath);
+        try
+        {
+            var d = store.Load().Diagnostics;
+            Assert.False(d.Notifications.Enabled);
+            Assert.False(d.Notifications.SensorAlerts);
+            Assert.Equal(15, d.Notifications.SensorCooldownMinutes);
+            var rule = d.SensorAlerts.Single(r => r.Id == "u1");
+            Assert.Equal(9, rule.RaiseAfterSeconds);
+            Assert.Equal("act", rule.Severity);
+            Assert.Equal(77, rule.High);
+            Assert.Equal(4, d.SensorAlerts.Count(r => r.BuiltIn is not null));
+        }
+        finally
+        {
+            store.Dispose();
         }
     }
 }

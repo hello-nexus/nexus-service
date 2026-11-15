@@ -332,6 +332,28 @@ public class DeviceInventoryMapperTests
     }
 
     [Fact]
+    public void Ryujin_360_is_labelled_as_the_lcd()
+    {
+        var row = DeviceInventoryMapper.FromRyujin("asus-ryujin-lcd", true, 0x0B05, 0x1AA2, null)!;
+        Assert.Equal("asus:ryujin-lcd", row.ModelKey);
+        Assert.Equal("ROG Ryujin LCD", row.Model);
+        Assert.Equal("asus-ryujin-lcd:1aa2", row.Key);
+        Assert.Equal(0x1AA2, row.Pid);
+    }
+
+    [Fact]
+    public void Ryujin_extreme_is_its_own_row_under_its_own_key()
+    {
+        var row = DeviceInventoryMapper.FromRyujinExtreme(true, "204432745532")!;
+        Assert.Equal("asus:ryujin-3-extreme-lcd", row.ModelKey);
+        Assert.Equal("ROG Ryujin III Extreme", row.Model);
+        Assert.Equal("asus-ryujin-extreme:204432745532", row.Key);
+        Assert.Equal(0x1BCB, row.Pid);
+        Assert.Equal("asus-ryujin-extreme:1bcb", DeviceInventoryMapper.FromRyujinExtreme(true, null)!.Key);
+        Assert.Null(DeviceInventoryMapper.FromRyujinExtreme(false, null));
+    }
+
+    [Fact]
     public void Response_serializes_camel_case_and_omits_unknown_fields()
     {
         var json = JsonSerializer.Serialize(
@@ -450,6 +472,23 @@ public class DeviceInventoryMapperTests
 
         Assert.Equal(new[] { "lianli:tl-lcd-wireless", "lianli:uni-fan-tl-lcd", "lianli:sl-lcd" }, keys);
         Assert.NotEqual(DeviceInventoryMapper.FromTlLcd(1)!.ModelKey, keys[0]);
+    }
+
+    [Theory]
+    [InlineData(0x1011, "tryx:panorama")]
+    [InlineData(0x1021, "tryx:panorama-se")]
+    [InlineData(0x1061, "tryx:panorama-se")]
+    [InlineData(0x1031, "tryx:panorama-waterblock")]
+    [InlineData(0x10A1, "tryx:panorama-waterblock")]
+    [InlineData(0x10B1, "tryx:panorama-v2")]
+    public void Tryx_panorama_pids_key_by_vendor_and_model_as_coolers(int pid, string modelKey)
+    {
+        var catalog = Nexus.Service.Peripherals.LightingDevicesCatalog.All;
+
+        var row = Assert.Single(DeviceInventoryMapper.FromUsb(new[] { Usb(0x391A, pid) }, new Nexus.Service.Devices.IDeviceHandler[0], new HashSet<string>(), new HashSet<(int, int)>(), catalog));
+
+        Assert.Equal(modelKey, row.ModelKey);
+        Assert.Equal("cooler", row.Category);
     }
 
     [Fact]
