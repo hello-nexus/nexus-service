@@ -13,6 +13,12 @@ public sealed record RyujinSnapshot(double LiquidTempC, int PumpRpm, int FanRpm,
     public static readonly RyujinSnapshot Empty = new(0, 0, 0, -1, -1, false);
 }
 
+/// <summary>Progress of the stored-media upload, read by the display route; State is idle, uploading, done or failed.</summary>
+public sealed record RyujinUploadState(string State, int Sent, int Total, string Message)
+{
+    public static readonly RyujinUploadState Idle = new("idle", 0, 0, "");
+}
+
 /// <summary>
 /// Owns the cooler's own HID handle. It is separate from the LCD's handle so pump and fan work
 /// whether or not the bulk side ever opens. Callers only record the duty they want; the worker
@@ -64,6 +70,26 @@ public sealed class RyujinCoolingHub : IDisposable
     public string? Serial { get { lock (_stateLock) { return _device?.Serial; } } }
 
     public RyujinSnapshot Snapshot => _snapshot;
+
+    private volatile RyujinUploadState _upload = RyujinUploadState.Idle;
+
+    public RyujinUploadState Upload
+    {
+        get => _upload;
+        set => _upload = value;
+    }
+
+    /// <summary>The attached HID handle for the worker thread's upload, which reads its own acknowledgements.</summary>
+    internal IHidDevice? Device
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _device;
+            }
+        }
+    }
 
     /// <summary>True while the last status reply is recent enough to trust the temperature and speeds.</summary>
     public bool StatusFresh

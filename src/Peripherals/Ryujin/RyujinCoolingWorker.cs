@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Media;
+using Nexus.Service.Peripherals.BulkPanels;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -31,11 +34,22 @@ public sealed class RyujinCoolingWorker : BackgroundService
     private readonly HardwarePresence _presence;
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
+    private readonly IBulkUsbPipeFactory? _bulk;
 
     private int _appliedBrightness;
     private int _appliedRotation;
     private int _appliedCount = RyujinMonitorSensors.MaxCount;
     private string[] _appliedSlots = RyujinMonitorSensors.DefaultSlots;
+    private string _appliedMode = ModeMonitor;
+    private string _failedSha = "";
+
+    public const string ModeMonitor = "monitor";
+    public const string ModeImage = "image";
+
+    /// <summary>Where the encoded AVI of the picked file is kept.</summary>
+    internal static string MediaPath() => Path.Combine(MediaLibrary.DeviceStoreDir("asus-ryujin-extreme"), "media.avi");
+
+    internal Func<string> MediaFile { get; set; } = MediaPath;
 
     /// <summary>Gate decisions made so far; a test waits on it instead of sleeping.</summary>
     internal int GateChecks => Volatile.Read(ref _gateChecks);
@@ -46,8 +60,9 @@ public sealed class RyujinCoolingWorker : BackgroundService
 
     public RyujinCoolingWorker(
         IHidEnumerator hid, RyujinCoolingHub hub, RyujinCoolingProvider cooling, DeviceControlGate gate, HardwarePresence presence,
-        IConfigStore store, ISensorProvider sensors)
+        IConfigStore store, ISensorProvider sensors, IBulkUsbPipeFactory? bulk = null)
     {
+        _bulk = bulk;
         _hid = hid;
         _hub = hub;
         _cooling = cooling;
@@ -130,12 +145,13 @@ public sealed class RyujinCoolingWorker : BackgroundService
             return;
         }
         ServiceLog.Info("[asus-ryujin-cooling] hardware-monitor layout selected");
+        _appliedMode = ModeMonitor;
 
         int failures = 0;
         long nextCycle = 0;
         while (!ct.IsCancellationRequested && _gate.IsEnabled(RyujinCoolingProtocol.HandlerId))
         {
-            if (ApplyDisplayChange())
+            if (ApplyScreenMode(ct) | ApplyDisplayChange())
             {
                 nextCycle = 0;
             }
@@ -161,6 +177,92 @@ public sealed class RyujinCoolingWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Switches between the monitor layout and the stored picture. Flash is written only when the picked file
+    /// differs from what the last successful upload left there; a failed upload is not retried until a new pick.
+    /// Returns true after the monitor layout is selected again, so the next cycle sends the sensor frames at once.
+    /// </summary>
+    private bool ApplyScreenMode(CancellationToken ct)
+    {
+        var wanted = _store.Load().Devices.RyujinDisplay;
+        if (wanted.ScreenMode == ModeImage && wanted.MediaSha.Length > 0)
+        {
+            bool uploaded = false;
+            if (wanted.UploadedSha != wanted.MediaSha)
+            {
+                if (wanted.MediaSha == _failedSha || !UploadMedia(wanted.MediaSha, ct))
+                {
+                    return false;
+                }
+                uploaded = true;
+            }
+            if (uploaded || _appliedMode != ModeImage)
+            {
+                if (_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
+                {
+                    _appliedMode = ModeImage;
+                    ServiceLog.Info($"[asus-ryujin-cooling] stored-media layout selected, held={(uploaded ? "after upload" : "from an earlier upload")}");
+                }
+            }
+            return false;
+        }
+        if (_appliedMode == ModeImage
+            && _hub.Send(RyujinMonitorProtocol.EncodeRotationChange(Now(), wanted.Rotation, wanted.Brightness, _appliedCount)))
+        {
+            _appliedMode = ModeMonitor;
+            ServiceLog.Info("[asus-ryujin-cooling] hardware-monitor layout selected again");
+            return true;
+        }
+        return false;
+    }
+
+    private bool UploadMedia(string sha, CancellationToken ct)
+    {
+        void Failed(string message)
+        {
+            _failedSha = sha;
+            _hub.Upload = new RyujinUploadState("failed", 0, 0, message);
+            ServiceLog.Warn($"[ryujin-upload] not uploaded: {message}");
+        }
+
+        var path = MediaFile();
+        if (!File.Exists(path))
+        {
+            Failed("the encoded file is missing");
+            return false;
+        }
+        var avi = File.ReadAllBytes(path);
+        if (!string.Equals(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(avi)), sha, StringComparison.OrdinalIgnoreCase))
+        {
+            Failed("the encoded file does not match the picked one");
+            return false;
+        }
+        var device = _hub.Device;
+        using var pipe = _bulk?.Open(RyujinCoolingProtocol.VendorId, RyujinCoolingProtocol.ProductId, RyujinUploadProtocol.BulkWritePipe, RyujinUploadProtocol.BulkReadPipe);
+        if (device is null || pipe is null)
+        {
+            Failed("the cooler's bulk interface cannot be opened (WinUSB is not bound to it)");
+            return false;
+        }
+        int total = RyujinUploadProtocol.ChunkCount(avi.Length);
+        _hub.Upload = new RyujinUploadState("uploading", 0, total, "");
+        if (!_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
+        {
+            Failed("the layout select write failed");
+            return false;
+        }
+        var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe), ServiceLog.Info, ServiceLog.Warn);
+        var result = uploader.Upload(avi, (sent, count) => _hub.Upload = new RyujinUploadState("uploading", sent, count, ""), ct);
+        if (!result.Ok)
+        {
+            Failed(result.Message);
+            return false;
+        }
+        _store.Update(s => s.Devices.RyujinDisplay.UploadedSha = sha);
+        _hub.Upload = new RyujinUploadState("done", total, total, result.Message);
+        return true;
+    }
+
     /// <summary>Sends the settings the user changed since the last send: a rotation or sensor selection change re-selects the layout (and returns true so the next cycle sends the new sensor frames at once), a brightness change is the burst of three settings reports, each behind a DC.</summary>
     private bool ApplyDisplayChange()
     {
@@ -177,6 +279,10 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 _appliedBrightness = wanted.Brightness;
                 _appliedCount = wantedCount;
                 _appliedSlots = wantedSlots;
+                if (_appliedMode == ModeImage)
+                {
+                    _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia());
+                }
                 return sensorsChanged;
             }
         }
@@ -194,6 +300,10 @@ public sealed class RyujinCoolingWorker : BackgroundService
 
     private IReadOnlyList<byte[]> BuildSensorFrames()
     {
+        if (_appliedMode == ModeImage)
+        {
+            return Array.Empty<byte[]>();
+        }
         var snap = _hub.Snapshot;
         bool fresh = _hub.StatusFresh;
         return RyujinMonitorFrames.Build(
