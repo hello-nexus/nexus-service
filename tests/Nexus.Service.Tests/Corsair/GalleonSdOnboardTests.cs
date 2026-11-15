@@ -1647,20 +1647,28 @@ public class GalleonSdOnboardTests
     }
 
     [Fact]
-    public void A_blocked_reason_change_raises_the_changed_event_once_per_change()
+    public void A_blocked_reason_change_raises_the_changed_event_off_the_io_lock_and_coalesces()
     {
         var rig = new Rig();
         var raised = 0;
-        rig.Hub.SavedBlockedChanged += () => raised++;
+        var reentered = new ManualResetEventSlim();
+        rig.Hub.SavedBlockedChanged += () =>
+        {
+            // Calls back into the hub; would deadlock if raised under its I/O lock on the writing thread.
+            _ = rig.Hub.SavedBlockedReason;
+            rig.Hub.FallBackToLive();
+            Interlocked.Increment(ref raised);
+            reentered.Set();
+        };
         rig.Board.BusyHandles.Add(0);
         rig.Hub.WriteFrame(Solid(Red));
 
         rig.Settle(Solid(Blue));
         rig.Settle(Solid(Blue));
-        Assert.Equal(1, raised);
 
-        rig.Hub.SetSavedToDevice(false);
-        Assert.Equal(2, raised);
+        Assert.True(reentered.Wait(5000));
+        Assert.Equal(GalleonSdHub.SavedBlockedForeignHost, rig.Hub.SavedBlockedReason);
+        Assert.InRange(Volatile.Read(ref raised), 1, 2);
     }
 
     [Fact]

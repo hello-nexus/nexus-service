@@ -134,14 +134,21 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
     /// <summary>Why saved colors cannot be written right now (<see cref="SavedBlockedForeignHost"/>, <see cref="SavedBlockedWriteFailed"/>, <see cref="SavedBlockedWriteCap"/>), else null. Read lock-free; cleared when saving is turned off, for a foreign host once handle 0 opens again, and for write-cap once the window frees (<see cref="TryClearWriteCap"/>).</summary>
     public string? SavedBlockedReason => _savedBlocked;
 
-    /// <summary>Raised when <see cref="SavedBlockedReason"/> changes, so the lighting card state can be republished. May run under the hub's I/O lock; handlers must not block or call back into the hub.</summary>
+    /// <summary>Raised on a thread-pool thread after <see cref="SavedBlockedReason"/> changes, never under the hub's I/O lock; bursts coalesce into one raise, so subscribers read the current reason.</summary>
     public event Action? SavedBlockedChanged;
+
+    private int _blockedNotifyQueued;
 
     private void SetBlocked(string? value, bool onlyIfClear = false)
     {
         var old = onlyIfClear ? Interlocked.CompareExchange(ref _savedBlocked, value, null) : Interlocked.Exchange(ref _savedBlocked, value);
         if (onlyIfClear ? old is not null : old == value) return;
-        try { SavedBlockedChanged?.Invoke(); } catch { /* subscriber failures shouldn't bubble */ }
+        if (Interlocked.Exchange(ref _blockedNotifyQueued, 1) != 0) return;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            Volatile.Write(ref _blockedNotifyQueued, 0);
+            try { SavedBlockedChanged?.Invoke(); } catch { /* subscriber failures shouldn't bubble */ }
+        });
     }
 
     /// <summary>

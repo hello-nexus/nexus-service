@@ -31,7 +31,6 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         _dials = dials;
         _store = store;
         _identify = identify;
-        _hub.SavedBlockedChanged += OnConnectionChanged;
     }
 
     public bool IsConnected => _hub.IsConnected || (_dials?.IsConnected ?? false);
