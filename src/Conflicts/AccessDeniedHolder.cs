@@ -17,7 +17,11 @@ public static class AccessDeniedHolder
         ["lian-li-l-connect"] = new[] { "L-Connect-Service", "L-Connect-Service-Watcher" },
     };
 
-    public static string? Find(string handlerId) => Find(handlerId, IsProcessRunning);
+    public static string? Find(string handlerId)
+    {
+        HashSet<string>? running = null;
+        return Find(handlerId, name => (running ??= RunningNames()).Contains(name));
+    }
 
     internal static string? Find(string handlerId, Func<string, bool> processRunning)
     {
@@ -48,20 +52,24 @@ public static class AccessDeniedHolder
         return null;
     }
 
-    private static bool IsProcessRunning(string name)
+    /// <summary>One process list per lookup, matched against every candidate name.</summary>
+    private static HashSet<string> RunningNames()
     {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var procs = Process.GetProcessesByName(name);
-            foreach (var p in procs)
+            foreach (var p in Process.GetProcesses())
             {
-                p.Dispose();
+                using (p)
+                {
+                    names.Add(p.ProcessName);
+                }
             }
-            return procs.Length > 0;
         }
         catch
         {
-            return false;
+            // An unreadable process list leaves the holder unknown.
         }
+        return names;
     }
 }

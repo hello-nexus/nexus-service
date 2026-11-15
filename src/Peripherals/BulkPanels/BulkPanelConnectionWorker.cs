@@ -57,7 +57,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 if (!_gate.IsClaimed(driver.HandlerId))
                 {
-                    _hub.SetOpenAccessDenied(false);
+                    ClearAccessDenied();
                     _hub.SetOpenFailed(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -65,7 +65,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
 
                 if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
-                    _hub.SetOpenAccessDenied(false);
+                    ClearAccessDenied();
                     _hub.SetOpenFailed(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -133,7 +133,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             catch (Exception ex)
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
-                _hub.SetOpenAccessDenied(false);
+                ClearAccessDenied();
                 _hub.SetOpenFailed(!sessionOpened);
                 await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
@@ -165,9 +165,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             denied |= pidDenied;
             if (pipe is not null)
             {
-                _hub.SetOpenAccessDenied(false);
-                _hub.SetOpenAccessHolder(null);
-                _loggedHolder = null;
+                ClearAccessDenied();
                 return true;
             }
             hid?.Dispose();
@@ -183,7 +181,14 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
         return false;
     }
 
-    /// <summary>True when the holder differs from the last one logged, so a 5 s retry loop logs once per state.</summary>
+    private void ClearAccessDenied()
+    {
+        _hub.SetOpenAccessDenied(false);
+        _hub.SetOpenAccessHolder(null);
+        _loggedHolder = null;
+    }
+
+    /// <summary>True when the holder differs from the last one logged, so a retry loop logs once per state.</summary>
     internal static bool ShouldLogHolder(ref string? logged, string? holder)
     {
         if (string.Equals(holder, logged, StringComparison.Ordinal))
