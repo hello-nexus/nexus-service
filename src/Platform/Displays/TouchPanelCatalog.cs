@@ -51,6 +51,16 @@ public static class TouchPanelCatalog
         new(KnownPanelDisplays.XeneonEdgeFamily, new[] { "CRXED00" }, XeneonEdgeDigitizerIds, XeneonEdgeCompanionUsbIds),
     };
 
+    /// <summary>VID/PIDs of every companion-scoped entry's hub sibling (e.g. the Edge's control endpoint).</summary>
+    public static IEnumerable<UsbId> CompanionUsbIds()
+    {
+        foreach (var entry in Entries)
+        {
+            if (!entry.IsCompanionScoped) continue;
+            foreach (var id in entry.CompanionUsbIds!) yield return id;
+        }
+    }
+
     public static TouchPanelCatalogEntry? MatchDisplay(string monitorInterfacePath)
     {
         if (string.IsNullOrEmpty(monitorInterfacePath)) return null;
