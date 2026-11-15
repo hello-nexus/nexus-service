@@ -197,7 +197,7 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
             }
             EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, Cb, IntPtr.Zero);
 
-            var snapshot = new TouchMapSnapshot();
+            var snapshot = new TouchMapSnapshot { TouchInputEnabled = ReadTouchInputEnabled() };
             foreach (var (id, manufacturer, model, monitorInterfacePath) in monitorsById.Values)
             {
                 // A non-interface DeviceID (older driver, no EDD_GET_DEVICE_INTERFACE_NAME
@@ -214,16 +214,25 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
             }
 
             uint count = 0;
-            if (GetPointerDevices(ref count, null) && count > 0)
+            // A failed query must stay distinguishable from "no touch device":
+            // only a call that succeeded may report PointerQueryOk.
+            var countOk = GetPointerDevices(ref count, null);
+            if (countOk && count == 0) snapshot.PointerQueryOk = true;
+            if (countOk && count > 0)
             {
                 var devices = new POINTER_DEVICE_INFO[count];
                 if (GetPointerDevices(ref count, devices))
                 {
+                    snapshot.PointerQueryOk = true;
                     for (var i = 0; i < count && i < devices.Length; i++)
                     {
                         if (devices[i].pointerDeviceType != POINTER_DEVICE_TYPE_TOUCH) continue;
                         var interfacePath = ReadRawInputDeviceName(devices[i].device);
-                        if (string.IsNullOrEmpty(interfacePath)) continue;
+                        if (string.IsNullOrEmpty(interfacePath))
+                        {
+                            snapshot.UnnamedTouchPointers++;
+                            continue;
+                        }
                         var associatedId = devices[i].monitor != IntPtr.Zero
                             && monitorsById.TryGetValue(devices[i].monitor, out var m)
                                 ? m.Id
@@ -249,6 +258,35 @@ public sealed class WindowsDisplayTopologyProvider : IDisplayTopologyProvider
         finally
         {
             RestoreThreadDpiContext(previousContext);
+        }
+    }
+
+    /// <summary>
+    /// The Windows touch toggle lives in the interactive user's hive (this
+    /// runs in the user-session helper). A missing value is the default (on);
+    /// any read problem or non-DWORD data returns false so callers fail closed.
+    /// </summary>
+    private static bool ReadTouchInputEnabled()
+    {
+        try
+        {
+            // "Turn off Tablet PC touch input" policy, machine or user: nonzero in either wins.
+            const string policyKey = @"Software\Policies\Microsoft\TabletPC";
+            foreach (var hive in new[] { Registry.LocalMachine, Registry.CurrentUser })
+            {
+                using var policy = hive.OpenSubKey(policyKey);
+                var off = policy?.GetValue("TurnOffTouchInput");
+                if (off is null) continue;
+                if (off is not int offValue || offValue != 0) return false;
+            }
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Wisp\Touch");
+            var value = key?.GetValue("TouchGate");
+            if (value is null) return true;
+            return value is int gate && gate != 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 

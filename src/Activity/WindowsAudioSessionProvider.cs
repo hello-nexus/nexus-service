@@ -46,10 +46,10 @@ public sealed class WindowsAudioSessionProvider : IAudioSessionProvider, IDispos
         lock (_lock) { return _snapshot; }
     }
 
-    public void SetVolume(string id, double volume)
+    public void SetVolume(string id, double volume, bool defaultOnly = false)
     {
         if (id.Length == 0) return;
-        AudioMixerCommands.SetAsync(_helper, id, Math.Clamp(volume, 0, 1), null).ObserveFaults();
+        AudioMixerCommands.SetAsync(_helper, id, Math.Clamp(volume, 0, 1), null, defaultOnly).ObserveFaults();
     }
 
     public void SetMuted(string id, bool muted)

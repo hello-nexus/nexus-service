@@ -297,6 +297,354 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
     }
 
+    [Theory]
+    [InlineData(0xA103)]
+    [InlineData(0xA105)]
+    public void Sl_v2_merged_runway_sends_order_quantities_then_channel_0_and_writes_no_other_port(int pid)
+    {
+        AttachMerged(pid, "runway");
+
+        _writer.Tick();
+
+        Assert.Equal(7, Calls.Count);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x00, 0x01, 0x02, 0x03, 0x08 }, Calls[0].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x03, 0x00, 0x00, 0x00 }, Calls[1].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x13, 0x00, 0x00, 0x00 }, Calls[2].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x22, 0x00, 0x00, 0x00 }, Calls[3].Bytes);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x60, 0x30, 0x00, 0x00, 0x00 }, Calls[4].Bytes);
+        var color = Calls[5];
+        Assert.Equal(HubTransportSpy.CallKind.OutputReport, color.Kind);
+        Assert.Equal(0x30, color.Bytes[1]);
+        Assert.Equal(new byte[] { 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0, 0, 0, 0, 0, 0 }, color.Bytes[2..14]);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x2B, 0x00, 0x00, 0x00, 0x00 }, Calls[6].Bytes);
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] is 0x34 or 0x32);
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] is 0x11 or 0x12 or 0x13);
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60);
+    }
+
+    [Theory]
+    [InlineData("meteor", 0x2A)]
+    [InlineData("runway", 0x2B)]
+    [InlineData("tide", 0x2C)]
+    [InlineData("mixing", 0x2D)]
+    [InlineData("stackMultiColor", 0x2E)]
+    public void Sl_v2_merged_effects_commit_their_merged_byte_on_channel_0(string mode, byte expected)
+    {
+        AttachMerged(0xA103, mode);
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, expected, 0x00, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_merged_commit_carries_speed_direction_and_brightness()
+    {
+        AttachMerged(0xA103, "stackMultiColor");
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Speed = 4;
+            s.Devices.LianLiLighting.Direction = 1;
+            s.Devices.LianLiLighting.Brightness = 2;
+        });
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x2E, 0xFE, 0x01, 0x02, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_merged_animation_follows_the_saved_port_order()
+    {
+        AttachMerged(0xA103, "tide");
+        _store.Update(s => s.Devices.LianLiLighting.MergeOrder = new List<int> { 3, 2, 1, 0 });
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
+    }
+
+    private static bool IsDarkParkOf(HubTransportSpy.Call color, HubTransportSpy.Call commit, int port) =>
+        color.Kind == HubTransportSpy.CallKind.OutputReport
+        && color.Bytes[1] == (0x30 | port)
+        && color.Bytes[2..].All(b => b == 0)
+        && commit.Bytes.AsSpan().SequenceEqual(new byte[] { 0xE0, (byte)(0x10 | port), 0x01, 0x00, 0x00, 0x08, 0x00 });
+
+    [Fact]
+    public void Sl_v2_turning_merge_off_parks_only_the_port_without_fans_then_recommits_the_rest()
+    {
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.Merge = false);
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] is 0x34 or 0x63);
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 3));
+        Assert.Equal(new byte[] { 0x10, 0x11, 0x12 }, Calls.Skip(2).Where(c => c.IsSetFeature && c.Bytes[2] == 0x1C).Select(c => c.Bytes[1]).ToArray());
+        var commits = Calls.Skip(2).Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x1C).ToArray();
+        Assert.Equal(3, commits.Length);
+        foreach (var commit in commits)
+        {
+            var at = Calls.IndexOf(commit);
+            Assert.Equal(HubTransportSpy.CallKind.OutputReport, Calls[at - 1].Kind);
+            Assert.Equal(0x30 | (commit.Bytes[1] & 0x0F), Calls[at - 1].Bytes[1]);
+        }
+        Assert.Single(Calls, c => c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x04);
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_startup_with_every_port_controlled_sends_no_exit_commits()
+    {
+        Attach(0xA103, port: 0, fans: 3);
+        _store.Update(s =>
+        {
+            for (var p = 0; p < 4; p++) s.Devices.LianLi.SetFans(p, 3);
+        });
+        _engine.UpdateDevices(new[] { new DeviceFrame(0, "lianli:port0", 16, 0, 0, 1, 1, 0) });
+        SetMode("tide");
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+        Assert.DoesNotContain(Calls, c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[2..].All(b => b == 0));
+    }
+
+    [Fact]
+    public void Sl_v2_leaving_merge_for_custom_parks_every_controlled_port_dark_then_latches()
+    {
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+
+        SetMode("custom");
+        _writer.Tick();
+
+        for (var p = 0; p < 3; p++)
+        {
+            Assert.True(IsDarkParkOf(Calls[2 * p], Calls[2 * p + 1], p));
+        }
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[6].Bytes);
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x34);
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x33);
+    }
+
+    [Fact]
+    public void Sl_v2_assumes_a_merge_at_attach_and_after_resume_so_custom_exits_it()
+    {
+        Attach(0xA103, port: 0, fans: 3);
+        SetMode("custom");
+        _writer.Tick();
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 0));
+
+        _spy.Calls.Clear();
+        _writer.Tick();
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+
+        _hub.OnSystemResumed();
+        _spy.Calls.Clear();
+        _writer.Tick();
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+    }
+
+    [Fact]
+    public void Sl_v2_rejected_custom_exit_backs_off_and_keeps_the_flag()
+    {
+        UseFakeClock();
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+        SetMode("custom");
+        _spy.RejectAfter = 0;
+
+        _writer.Tick();
+        Assert.Equal(HubTransportSpy.CallKind.OutputReport, Calls[0].Kind);
+        Assert.All(Calls[0].Bytes[2..], b => Assert.Equal(0, b));
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+
+        _spy.Calls.Clear();
+        _writer.Tick();
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+
+        _spy.RejectAfter = -1;
+        _spy.Calls.Clear();
+        Advance(5000);
+        _writer.Tick();
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 0));
+    }
+
+    private void AttachTwoPorts(string mode)
+    {
+        Attach(0xA103, port: 0, fans: 3);
+        _store.Update(s =>
+        {
+            s.Devices.LianLi.SetFans(1, 3);
+            s.Devices.LianLiLighting.Mode = mode;
+            s.Devices.UncontrolledLightingDevices.Add("lianli:port1");
+        });
+    }
+
+    private bool TouchesPort(int port) => Calls.Any(c =>
+        (c.IsSetFeature && c.Bytes[1] == (0x10 | port) && c.Bytes[2] != 0x60)
+        || (c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == (0x30 | port)));
+
+    [Theory]
+    [InlineData("tide")]
+    [InlineData("custom")]
+    public void Sl_v2_never_writes_an_uncontrolled_port_at_start_or_resume(string mode)
+    {
+        AttachTwoPorts(mode);
+
+        _writer.Tick();
+        Assert.False(TouchesPort(1));
+        Assert.True(TouchesPort(0));
+
+        _hub.OnSystemResumed();
+        _spy.Calls.Clear();
+        _writer.Tick();
+        Assert.False(TouchesPort(1));
+    }
+
+    [Fact]
+    public void Sl_v2_resume_in_a_firmware_mode_parks_the_ports_without_fans_only()
+    {
+        Attach(0xA103, port: 0, fans: 3);
+        SetMode("tide");
+        _writer.Tick();
+
+        _hub.OnSystemResumed();
+        _spy.Calls.Clear();
+        _writer.Tick();
+
+        var parks = Calls.Select((c, i) => (c, i)).Where(x => x.c.Kind == HubTransportSpy.CallKind.OutputReport && x.c.Bytes[2..].All(b => b == 0)).ToArray();
+        Assert.Equal(new[] { 0x31, 0x32, 0x33 }, parks.Select(x => (int)x.c.Bytes[1]).ToArray());
+        foreach (var (color, at) in parks)
+        {
+            Assert.True(IsDarkParkOf(color, Calls[at + 1], color.Bytes[1] & 0x0F));
+        }
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_a_commit_rejected_after_the_park_keeps_the_exit_pending_for_custom()
+    {
+        UseFakeClock();
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+        _store.Update(s => s.Devices.LianLiLighting.Merge = false);
+        _spy.RejectAfter = 2;
+
+        _writer.Tick();
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 3));
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x04);
+
+        _spy.RejectAfter = -1;
+        _spy.Calls.Clear();
+        SetMode("custom");
+        Advance(5000);
+        _writer.Tick();
+
+        for (var p = 0; p < 3; p++)
+        {
+            Assert.True(IsDarkParkOf(Calls[2 * p], Calls[2 * p + 1], p));
+        }
+    }
+
+    [Fact]
+    public void Sl_v2_changing_the_merge_order_sends_no_exit_commits()
+    {
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+
+        _store.Update(s => s.Devices.LianLiLighting.MergeOrder = new List<int> { 3, 2, 1, 0 });
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x63, 0x03, 0x02, 0x01, 0x00, 0x08 }, Calls[0].Bytes);
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+    }
+
+    [Fact]
+    public void Sl_infinity_never_takes_the_port_commit_exit()
+    {
+        AttachMerged(0xA102, "runway");
+        _writer.Tick();
+        _store.Update(s => s.Devices.LianLiLighting.Mode = "custom");
+        _spy.Calls.Clear();
+
+        _writer.Tick();
+
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x34, 0x00, 0x00, 0x00, 0x00 }, Calls[0].Bytes);
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
+    }
+
+    [Fact]
+    public void Sl_v2_leaving_merge_with_every_port_uncontrolled_parks_only_the_empty_port()
+    {
+        AttachMerged(0xA103, "runway");
+        _writer.Tick();
+        _spy.Calls.Clear();
+
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Merge = false;
+            foreach (var id in new[] { "lianli:port0", "lianli:port1", "lianli:port2" }) s.Devices.UncontrolledLightingDevices.Add(id);
+        });
+        _writer.Tick();
+
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 3));
+        Assert.DoesNotContain(Calls, c => c.Bytes[1] is 0x30 or 0x31 or 0x32 or 0x10 or 0x11 or 0x12);
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Sl_v2_merge_on_a_mode_without_a_merged_variant_commits_per_port()
+    {
+        AttachMerged(0xA103, "staggered");
+
+        _writer.Tick();
+
+        Assert.DoesNotContain(Calls, c => c.Bytes[2] == 0x63);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x18);
+    }
+
+    [Fact]
+    public void Sl_v2_static_scales_its_colors_by_the_brightness_step()
+    {
+        AttachMerged(0xA103, "static");
+        _store.Update(s =>
+        {
+            s.Devices.LianLiLighting.Merge = false;
+            s.Devices.LianLiLighting.Colors = new List<string> { "#FF8040" };
+            s.Devices.LianLiLighting.Brightness = 2;
+        });
+
+        _writer.Tick();
+
+        var color = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x30).Bytes;
+        Assert.Equal(new byte[] { 0x7F, 0x20, 0x40 }, color[2..5]);
+        Assert.Contains(Calls, c => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x02);
+    }
+
+    [Theory]
+    [InlineData(0x00, 200)]
+    [InlineData(0x01, 150)]
+    [InlineData(0x02, 100)]
+    [InlineData(0x03, 50)]
+    [InlineData(0x08, 0)]
+    [InlineData(0x55, 200)]
+    public void Brightness_scaling_follows_the_hardware_steps(byte brightnessByte, byte expected)
+    {
+        var colors = new byte[] { 200 };
+
+        LianLiLightingFrameWriter.ScaleByBrightness(colors, brightnessByte);
+
+        Assert.Equal(expected, colors[0]);
+    }
+
     // ── Per-port and per-ring looks ──
 
     private static LianLiEffectSettings Effect(string mode, params string[] colors) =>

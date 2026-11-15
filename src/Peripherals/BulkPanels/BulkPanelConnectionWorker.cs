@@ -30,11 +30,14 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
     private readonly BulkPanelHub _hub;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
+    private readonly Func<string, string?>? _holderLookup;
+    private string? _loggedHolder;
 
     public BulkPanelConnectionWorker(
         IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence,
-        int connectPollMs = 5000, int presencePollMs = 2000)
+        int connectPollMs = 5000, int presencePollMs = 2000, Func<string, string?>? holderLookup = null)
     {
+        _holderLookup = holderLookup;
         _connectPollMs = connectPollMs;
         _presencePollMs = presencePollMs;
         _hid = hid;
@@ -54,7 +57,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             {
                 if (!_gate.IsClaimed(driver.HandlerId))
                 {
-                    _hub.SetOpenAccessDenied(false);
+                    ClearAccessDenied();
                     _hub.SetOpenFailed(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -62,7 +65,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
 
                 if (!_presence.UsbPresent(driver.VendorId, driver.ProductIds))
                 {
-                    _hub.SetOpenAccessDenied(false);
+                    ClearAccessDenied();
                     _hub.SetOpenFailed(false);
                     await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
@@ -130,7 +133,7 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             catch (Exception ex)
             {
                 ServiceLog.Error($"[{driver.HandlerId}] worker error: {ex.Message}");
-                _hub.SetOpenAccessDenied(false);
+                ClearAccessDenied();
                 _hub.SetOpenFailed(!sessionOpened);
                 await Task.Delay(_connectPollMs, stoppingToken).ConfigureAwait(false);
             }
@@ -162,14 +165,38 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             denied |= pidDenied;
             if (pipe is not null)
             {
-                _hub.SetOpenAccessDenied(false);
+                ClearAccessDenied();
                 return true;
             }
             hid?.Dispose();
             hid = null;
         }
         _hub.SetOpenAccessDenied(denied);
+        var holder = denied ? _holderLookup?.Invoke(driver.HandlerId) : null;
+        _hub.SetOpenAccessHolder(holder);
+        if (ShouldLogHolder(ref _loggedHolder, holder) && holder is not null)
+        {
+            ServiceLog.Info($"[{driver.HandlerId}] open denied while {holder} is running; it is the likely holder");
+        }
         return false;
+    }
+
+    private void ClearAccessDenied()
+    {
+        _hub.SetOpenAccessDenied(false);
+        _hub.SetOpenAccessHolder(null);
+        _loggedHolder = null;
+    }
+
+    /// <summary>True when the holder differs from the last one logged, so a retry loop logs once per state.</summary>
+    internal static bool ShouldLogHolder(ref string? logged, string? holder)
+    {
+        if (string.Equals(holder, logged, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        logged = holder;
+        return true;
     }
 
     private IHidDevice? OpenHid(int vendorId, int productId, bool forInput)
