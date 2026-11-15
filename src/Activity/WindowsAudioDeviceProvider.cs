@@ -74,6 +74,8 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         {
             list.Outputs.AddRange(Enumerate(enumPtr, EDataFlow.eRender, "output"));
             list.Inputs.AddRange(Enumerate(enumPtr, EDataFlow.eCapture, "input"));
+            foreach (var d in Enumerate(enumPtr, EDataFlow.eRender, "output", DEVICE_STATE_ALL)) list.KnownOutputIds.Add(d.Id);
+            foreach (var d in Enumerate(enumPtr, EDataFlow.eCapture, "input", DEVICE_STATE_ALL)) list.KnownInputIds.Add(d.Id);
         }
         finally { Release(enumPtr); }
         return list;
@@ -341,7 +343,7 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         }
     }
 
-    private static IEnumerable<AudioDevice> Enumerate(IntPtr enumPtr, EDataFlow flow, string direction)
+    private static IEnumerable<AudioDevice> Enumerate(IntPtr enumPtr, EDataFlow flow, string direction, int stateMask = DEVICE_STATE_ACTIVE)
     {
         var result = new List<AudioDevice>();
         string defaultId = "";
@@ -350,7 +352,7 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
             try { defaultId = GetId(defDev); } finally { Release(defDev); }
         }
 
-        if (EnumAudioEndpoints(enumPtr, flow, DEVICE_STATE_ACTIVE, out var coll) < 0 || coll == IntPtr.Zero)
+        if (EnumAudioEndpoints(enumPtr, flow, stateMask, out var coll) < 0 || coll == IntPtr.Zero)
             return result;
         try
         {
@@ -486,6 +488,7 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
     private const int ClsCtxInprocServer = 0x1;
     private const int STGM_READ = 0x0;
     private const int DEVICE_STATE_ACTIVE = 0x1;
+    private const int DEVICE_STATE_ALL = 0xF;
 
     private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
     private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }

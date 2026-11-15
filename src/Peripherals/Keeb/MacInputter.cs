@@ -22,6 +22,7 @@ namespace Nexus.Service.Peripherals.Keeb;
 public sealed class MacInputter : IInputterProvider
 {
     private bool _warned;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _warnedKeys = new(StringComparer.Ordinal);
 
     public void Send(InputterBody body)
     {
@@ -39,7 +40,10 @@ public sealed class MacInputter : IInputterProvider
             var vk = ParseKey(stroke.Key);
             if (vk == 0xFFFF)
             {
-                ServiceLog.Warn($"[inputter-mac] key {stroke.Key} has no macOS key code, stroke skipped");
+                if (_warnedKeys.TryAdd(stroke.Key, 0))
+                {
+                    ServiceLog.Warn($"[inputter-mac] key {stroke.Key} has no macOS key code, stroke skipped");
+                }
                 continue;
             }
 

@@ -25,9 +25,14 @@ public sealed class ElgatoProfileTranslator
     private const int MaxDials = 6;
     /// <summary>Multimedia's actionIdx for the dial's system volume control.</summary>
     private const int MultimediaVolumeDialIdx = 18;
+    /// <summary>Report reason for a volume dial whose device binding became the system default.</summary>
+    private const string DeviceResetNote = "deviceReset";
 
     private readonly DeckImageStore _images;
     private readonly IAudioDeviceProvider? _devices;
+    // Read once per Translate, not per dial.
+    private AudioDeviceList? _deviceList;
+    private bool _deviceListRead;
 
     public ElgatoProfileTranslator(DeckImageStore images, IAudioDeviceProvider? devices = null)
     {
@@ -37,6 +42,8 @@ public sealed class ElgatoProfileTranslator
 
     public (DeckConfig Config, ElgatoImportReport Report) Translate(ElgatoProfile profile)
     {
+        _deviceList = null;
+        _deviceListRead = false;
         var (cols, rows, _) = ElgatoModelCatalog.Resolve(profile.Model, profile.MaxColSeen, profile.MaxRowSeen);
         var report = new ElgatoImportReport();
         var config = new DeckConfig();
@@ -408,13 +415,15 @@ public sealed class ElgatoProfileTranslator
     private (DeckDial, bool, string?, string?) BuildDialStack(ElgatoActionData action)
     {
         var entries = new List<DeckDial>();
+        string? stackNote = null;
         foreach (var child in action.Children)
         {
-            var (entryAction, _, _) = TryBuildDialAction(child);
+            var (entryAction, _, childNote) = TryBuildDialAction(child);
             if (entryAction is null)
             {
                 continue;
             }
+            stackNote ??= childNote;
             var entry = BuildDialFace(child);
             entry.Action = entryAction;
             entries.Add(entry);
@@ -432,7 +441,7 @@ public sealed class ElgatoProfileTranslator
         }
 
         var result = entries.Count == 1 ? entries[0] : new DeckDial { Stack = entries };
-        return (result, true, dropped > 0 ? "multiStep" : null, dropped > 0 ? $"{dropped} step(s) dropped" : null);
+        return (result, true, dropped > 0 ? "multiStep" : stackNote, dropped > 0 ? $"{dropped} step(s) dropped" : null);
     }
 
     /// <summary>
@@ -453,9 +462,15 @@ public sealed class ElgatoProfileTranslator
             case ElgatoActionTypes.KeyBrightness:
                 return (new DeckDialAction { Type = DeckDialTypes.DeckBrightness }, null, null);
             case ElgatoActionTypes.VolumeOutput:
-                return (new DeckDialAction { Type = DeckDialTypes.Volume, Step = ReadVolumeStep(action.Settings), DeviceId = ReadDeviceId(action.Settings, false) }, null, null);
+            {
+                var (outId, outReset) = ReadDeviceId(action.Settings, false);
+                return (new DeckDialAction { Type = DeckDialTypes.Volume, Step = ReadVolumeStep(action.Settings), DeviceId = outId }, null, outReset ? DeviceResetNote : null);
+            }
             case ElgatoActionTypes.VolumeInput:
-                return (new DeckDialAction { Type = DeckDialTypes.MicVolume, Step = ReadVolumeStep(action.Settings), DeviceId = ReadDeviceId(action.Settings, true) }, null, null);
+            {
+                var (inId, inReset) = ReadDeviceId(action.Settings, true);
+                return (new DeckDialAction { Type = DeckDialTypes.MicVolume, Step = ReadVolumeStep(action.Settings), DeviceId = inId }, null, inReset ? DeviceResetNote : null);
+            }
             case ElgatoActionTypes.SpotifyDial:
                 return BuildSpotifyDialAction(action);
             case ElgatoActionTypes.KeysAdaptor:
@@ -541,27 +556,43 @@ public sealed class ElgatoProfileTranslator
 
     /// <summary>
     /// The chosen endpoint id; null for the system default so the dial keeps following it. An id this
-    /// machine does not list (the profile came from another PC) also becomes the default. With no
-    /// device list to check against, the id is kept.
+    /// machine has never seen (the profile came from another PC) becomes the default and is flagged
+    /// as reset; a known endpoint that is unplugged or disabled keeps its id. With no readable device
+    /// list the id is kept.
     /// </summary>
-    private string? ReadDeviceId(JsonElement settings, bool capture)
+    private (string? Id, bool Reset) ReadDeviceId(JsonElement settings, bool capture)
     {
         var id = ElgatoJson.GetString(settings, "deviceId");
         if (string.IsNullOrEmpty(id) || id == "default")
         {
-            return null;
+            return (null, false);
         }
-        List<AudioDevice>? known = null;
-        try
+        if (!_deviceListRead)
         {
-            var list = _devices?.ListDevices();
-            known = list is null ? null : capture ? list.Inputs : list.Outputs;
+            _deviceListRead = true;
+            try
+            {
+                _deviceList = _devices?.ListDevices();
+            }
+            catch (Exception)
+            {
+                _deviceList = null;
+            }
         }
-        catch (Exception)
+        var list = _deviceList;
+        if (list is null)
         {
-            return id;
+            return (id, false);
         }
-        return known is { Count: > 0 } && !known.Exists(d => string.Equals(d.Id, id, StringComparison.Ordinal)) ? null : id;
+        var detected = capture ? list.Inputs : list.Outputs;
+        var known = capture ? list.KnownInputIds : list.KnownOutputIds;
+        if (detected.Count == 0 && known.Count == 0)
+        {
+            return (id, false);
+        }
+        var seen = detected.Exists(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase)) ||
+            known.Exists(k => string.Equals(k, id, StringComparison.OrdinalIgnoreCase));
+        return seen ? (id, false) : (null, true);
     }
 
     /// <summary>Volume Controller stores volumeStep as a numeric string; a number is tolerated.</summary>
@@ -759,7 +790,13 @@ public sealed class ElgatoProfileTranslator
             case ElgatoActionTypes.Open:
             {
                 var built = BuildOpenAction(action);
-                return built is not null ? (built, null, null) : (null, "open", null);
+                if (built is not null)
+                {
+                    return (built, null, null);
+                }
+                // A path that exists but is not a local rooted one (UNC, device, relative) is refused, not "missing".
+                var rawPath = StripOuterQuotes(ElgatoJson.GetString(action.Settings, "path") ?? "");
+                return (null, rawPath.Length > 0 ? "unsupported" : "open", null);
             }
             case ElgatoActionTypes.OpenApp:
             {
@@ -1086,14 +1123,14 @@ public sealed class ElgatoProfileTranslator
             return null;
         }
         var path = StripOuterQuotes(raw);
-        if (path.Length == 0)
+        if (path.Length == 0 || !IsLocalRootedPath(path))
         {
             return null;
         }
         // A .app bundle is a directory on disk, but the OS "open" launches it
         // like a file - never route it to openFolder.
         var isDir = !path.EndsWith(".app", StringComparison.OrdinalIgnoreCase) &&
-            (path.EndsWith('/') || path.EndsWith('\\') || (Path.IsPathRooted(path) && Directory.Exists(path)));
+            (path.EndsWith('/') || path.EndsWith('\\') || Directory.Exists(path));
         return new DeckAction { Type = isDir ? "openFolder" : "openFile", Path = path };
     }
 

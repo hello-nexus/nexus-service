@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 using Nexus.Service.Models;
 
 namespace Nexus.Service.Models.Activity;
@@ -20,6 +21,11 @@ public sealed class AudioDeviceList : ApiResponse
     /// <summary>Saved user order of endpoint ids, including ones not currently detected.</summary>
     public List<string> OutputOrder { get; set; } = new();
     public List<string> InputOrder { get; set; } = new();
+    /// <summary>Every endpoint id this PC has ever registered, including unplugged and disabled ones. Empty when the provider cannot tell; in-process only.</summary>
+    [JsonIgnore]
+    public List<string> KnownOutputIds { get; set; } = new();
+    [JsonIgnore]
+    public List<string> KnownInputIds { get; set; } = new();
     /// <summary>Spatial sound on the default output. Unsupported off Windows.</summary>
     public AudioSpatialState Spatial { get; set; } = new();
 }
