@@ -56,9 +56,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly Nexus.Service.Sockets.MultiplexHub? _hub;
     private readonly SmartActiveFlip _smartActive;
     private readonly HashSet<string> _smartSeeded = new(StringComparer.Ordinal);
-    // Guarded by _updateLock. Last walk tick each drive was updated, used only while live drive activity is off.
     // Set only around a user-initiated health refresh, so a live-activity-off walk reads every drive then.
     private volatile bool _explicitStorageRefresh;
+    // Guarded by _updateLock. Last walk tick each drive was updated, used only while live drive activity is off.
     private readonly Dictionary<string, long> _storageUpdatedAt = new(StringComparer.Ordinal);
     private volatile bool _spdActive;
     private volatile bool _settingSeen;
@@ -427,7 +427,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                             // unless SMART is due; the update that runs then reads SMART too.
                             var id = hw.Identifier.ToString();
                             long? last = _storageUpdatedAt.TryGetValue(id, out var t) ? t : null;
-                            if (!SmartPollDemand.ShouldUpdateStorage(false, cycles, last, now, forceStorage))
+                            if (!SmartPollDemand.StorageUpdateDue(cycles, last, now, forceStorage))
                             {
                                 if (cycles == uint.MaxValue) _storageUpdatedAt.Remove(id);
                                 continue;

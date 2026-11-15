@@ -81,13 +81,6 @@ internal sealed class SmartPollDemand
         forcedWalk && (liveActivity || explicitRefresh);
 
     /// <summary>
-    /// True when a storage device gets its Update() this walk. With live activity on it always does;
-    /// off, only when SMART is due.
-    /// </summary>
-    public static bool ShouldUpdateStorage(bool liveActivity, uint cycles, long? lastUpdateMs, long nowMs, bool force) =>
-        liveActivity || StorageUpdateDue(cycles, lastUpdateMs, nowMs, force);
-
-    /// <summary>
     /// With live drive activity off, a drive is updated (and so touched) only when its SMART read is due.
     /// <paramref name="cycles"/> is the value <see cref="Cycles"/> returned; never-read drives are never due.
     /// <paramref name="lastUpdateMs"/> is null for a drive not updated since it last became needed.
