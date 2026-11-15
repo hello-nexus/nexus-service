@@ -476,7 +476,8 @@ public static class ConflictAppCatalog
             AlsoCategory = "cooling",
             AlsoHandlers = new[] { "lianli", "lianli2", "lianli3", "lianli4", "lianli-tl", "lianli-wireless", "lianli-flex", "lianli-aio", "lianli-hydroshift2", "lianli-hydroshift2-curve" },
             DisplayHandlers = new[] { "lianli-hydroshift-lcd", "lianli-galahad2-lcd", "lianli-screen88", "lianli-hydroshift2", "lianli-hydroshift2-curve", "lianli-tl-lcd", "lianli-wireless", "lianli-flex" },
-            ProcessNames = new[] { "L-Connect 3", "L-Connect", "LConnect3", "LConnect" },
+            ProcessNames = new[] { "L-Connect 3", "L-Connect", "LConnect3", "LConnect", "L-Connect-Service", "L-Connect-Service-Watcher" },
+            // The SYSTEM services hold the HydroShift II and wireless dongle with no UI running.
             // Watcher first so it cannot restart the main service.
             WindowsServiceNames = new[] { "LConnectServiceWatcher", "LConnectService" },
         },

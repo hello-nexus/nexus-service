@@ -1638,7 +1638,8 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                    appRunning: sp.GetService<Nexus.Service.Conflicts.ConflictWatcher>() is { } conflictWatcher ? conflictWatcher.IsAppRunning : null);
             });
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             {
@@ -1732,7 +1733,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                 glacialStreamHub,
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                appRunning: sp.GetService<Nexus.Service.Conflicts.ConflictWatcher>() is { } conflictWatcher ? conflictWatcher.IsAppRunning : null);
         });
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             new Nexus.Service.Panel.Streams.BulkPanelDiscovery(

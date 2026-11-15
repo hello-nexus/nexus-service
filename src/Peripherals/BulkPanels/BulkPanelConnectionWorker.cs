@@ -30,11 +30,13 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
     private readonly BulkPanelHub _hub;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
+    private readonly Func<string, bool>? _appRunning;
 
     public BulkPanelConnectionWorker(
         IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence,
-        int connectPollMs = 5000, int presencePollMs = 2000)
+        int connectPollMs = 5000, int presencePollMs = 2000, Func<string, bool>? appRunning = null)
     {
+        _appRunning = appRunning;
         _connectPollMs = connectPollMs;
         _presencePollMs = presencePollMs;
         _hid = hid;
@@ -169,7 +171,26 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             hid = null;
         }
         _hub.SetOpenAccessDenied(denied);
+        if (denied)
+        {
+            var holder = RunningHolderName(driver.HandlerId, _appRunning);
+            if (holder is not null)
+            {
+                ServiceLog.Info($"[{driver.HandlerId}] open denied while {holder} is running; it is the likely holder");
+            }
+        }
         return false;
+    }
+
+    /// <summary>Display name of the conflict app that claims this handler's device family, when it is running.</summary>
+    internal static string? RunningHolderName(string handlerId, Func<string, bool>? appRunning)
+    {
+        var appId = DeviceControlPolicy.ConflictAppFor(handlerId);
+        if (appId is null || appRunning is null || !appRunning(appId))
+        {
+            return null;
+        }
+        return Conflicts.ConflictWatcher.FindById(appId)?.DisplayName;
     }
 
     private IHidDevice? OpenHid(int vendorId, int productId, bool forInput)
