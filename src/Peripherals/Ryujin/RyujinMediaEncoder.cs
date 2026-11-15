@@ -51,6 +51,7 @@ public static class RyujinMediaEncoder
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                ServiceLog.Warn($"[ryujin-upload] fps decode failed, trying a single frame: {ex.Message}");
                 decoded = 0;
             }
             if (decoded == 0)

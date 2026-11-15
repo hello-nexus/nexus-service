@@ -156,6 +156,14 @@ public class RyujinUploadTests
         }
 
         public void Pause(int ms) => Pauses.Add(ms);
+
+        public int Clears { get; private set; }
+
+        public void ClearInbound()
+        {
+            Clears++;
+            _inbound.Clear();
+        }
     }
 
     private static (RyujinUploader Uploader, List<string> Log) Build(FakeLink link)
@@ -212,6 +220,32 @@ public class RyujinUploadTests
     }
 
     [Fact]
+    public void Every_attempt_starts_by_dropping_held_over_reports()
+    {
+        var link = new FakeLink { Acks = false };
+        var (uploader, _) = Build(link);
+
+        uploader.Upload(new byte[4096], null, CancellationToken.None);
+
+        Assert.Equal(2, link.Clears);
+    }
+
+    [Fact]
+    public void A_cancelled_upload_reports_cancelled_and_does_not_retry()
+    {
+        var link = new FakeLink();
+        var (uploader, _) = Build(link);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var result = uploader.Upload(new byte[4096], null, cts.Token);
+
+        Assert.False(result.Ok);
+        Assert.Equal(RyujinUploadAbort.Cancelled, result.Abort);
+        Assert.Equal(1, link.Events.Count(e => e == "hid 71"));
+    }
+
+    [Fact]
     public void A_keepalive_runs_between_chunks_and_is_logged_once()
     {
         var link = new FakeLink();
@@ -233,12 +267,13 @@ public class RyujinUploadTests
         var link = new FakeLink();
         var log = new List<string>();
         int checks = 0;
-        var uploader = new RyujinUploader(link, log.Add, log.Add) { AckTimeoutMs = 30, EndWaitMs = 30, KeepGoing = () => ++checks < 2 };
+        var uploader = new RyujinUploader(link, log.Add, log.Add) { AckTimeoutMs = 30, EndWaitMs = 30, AbortCheck = () => ++checks < 2 ? RyujinUploadAbort.None : RyujinUploadAbort.ControlOff };
 
         var result = uploader.Upload(new byte[4096 * 4], null, CancellationToken.None);
 
         Assert.False(result.Ok);
         Assert.Equal(RyujinUploader.AbortedMessage, result.Message);
+        Assert.Equal(RyujinUploadAbort.ControlOff, result.Abort);
         Assert.Equal(1, link.Events.Count(e => e == "hid 71"));
         Assert.Equal(1, link.Events.Count(e => e == "chunk"));
     }

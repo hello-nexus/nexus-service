@@ -15,9 +15,16 @@ internal interface IRyujinUploadLink
     int ReadReport(Span<byte> buffer, int timeoutMs);
 
     void Pause(int ms);
+
+    /// <summary>Drops any inbound report held over from an earlier attempt.</summary>
+    void ClearInbound()
+    {
+    }
 }
 
-internal sealed record RyujinUploadResult(bool Ok, string Message, int Chunks, double TotalMs);
+internal enum RyujinUploadAbort { None, Cancelled, ControlOff, DeviceFailure }
+
+internal sealed record RyujinUploadResult(bool Ok, string Message, int Chunks, double TotalMs, RyujinUploadAbort Abort = RyujinUploadAbort.None);
 
 /// <summary>
 /// Sends one AVI as fast as the device acknowledges it, and repeats it paced like Armoury Crate when that
@@ -44,8 +51,8 @@ internal sealed class RyujinUploader
 
     public int KeepaliveMs { get; init; } = RyujinCoolingProtocol.KeepaliveMs;
 
-    /// <summary>Checked before each chunk; false aborts the upload.</summary>
-    public Func<bool>? KeepGoing { get; init; }
+    /// <summary>Checked before each chunk; anything but None aborts the upload with that reason, decided at that moment.</summary>
+    public Func<RyujinUploadAbort>? AbortCheck { get; init; }
 
     /// <summary>How long to listen for the device's answer to the end command.</summary>
     public int EndWaitMs { get; init; } = 3000;
@@ -60,7 +67,7 @@ internal sealed class RyujinUploader
     public RyujinUploadResult Upload(byte[] avi, Action<int, int>? progress, CancellationToken ct)
     {
         var fast = Attempt(avi, paced: false, progress, ct);
-        if (fast.Ok || ct.IsCancellationRequested || fast.Message == AbortedMessage)
+        if (fast.Ok || fast.Abort != RyujinUploadAbort.DeviceFailure)
         {
             return fast;
         }
@@ -76,6 +83,7 @@ internal sealed class RyujinUploader
         var clock = Stopwatch.StartNew();
         _logged = 0;
         _keepalives = 0;
+        _link.ClearInbound();
         long nextKeepalive = Environment.TickCount64 + KeepaliveMs;
         Drain();
         _info($"[ryujin-upload] start mode={mode} bytes={avi.Length} chunks={total}");
@@ -102,9 +110,10 @@ internal sealed class RyujinUploader
         int acks = 0, sent = 0;
         foreach (var chunk in RyujinUploadProtocol.Chunks(avi))
         {
-            if (ct.IsCancellationRequested || KeepGoing?.Invoke() == false)
+            var abort = ct.IsCancellationRequested ? RyujinUploadAbort.Cancelled : AbortCheck?.Invoke() ?? RyujinUploadAbort.None;
+            if (abort != RyujinUploadAbort.None)
             {
-                return Fail(mode, AbortedMessage, sent, clock);
+                return Fail(mode, AbortedMessage, sent, clock, abort);
             }
             if (Keepalive is not null && Environment.TickCount64 >= nextKeepalive)
             {
@@ -213,10 +222,10 @@ internal sealed class RyujinUploader
         }
     }
 
-    private RyujinUploadResult Fail(string mode, string message, int sent, Stopwatch clock)
+    private RyujinUploadResult Fail(string mode, string message, int sent, Stopwatch clock, RyujinUploadAbort abort = RyujinUploadAbort.DeviceFailure)
     {
         _warn($"[ryujin-upload] failed mode={mode} chunks_sent={sent} total_ms={clock.Elapsed.TotalMilliseconds:0} reason={message}");
-        return new RyujinUploadResult(false, message, sent, clock.Elapsed.TotalMilliseconds);
+        return new RyujinUploadResult(false, message, sent, clock.Elapsed.TotalMilliseconds, abort);
     }
 }
 
@@ -256,4 +265,11 @@ internal sealed class RyujinHidBulkLink : IRyujinUploadLink
     }
 
     public void Pause(int ms) => Thread.Sleep(ms);
+
+    public void ClearInbound()
+    {
+        while (_stashed?.Invoke() is not null)
+        {
+        }
+    }
 }

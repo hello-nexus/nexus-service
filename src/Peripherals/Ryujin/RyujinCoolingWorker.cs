@@ -41,10 +41,13 @@ public sealed class RyujinCoolingWorker : BackgroundService
     private int _appliedCount = RyujinMonitorSensors.MaxCount;
     private string[] _appliedSlots = RyujinMonitorSensors.DefaultSlots;
     private string _appliedMode = ModeMonitor;
-    private string _failedSha = "";
 
     public const string ModeMonitor = "monitor";
     public const string ModeImage = "image";
+    public const string ReasonFailed = "failed";
+    public const string ReasonControlOff = "controlOff";
+    public const string ReasonBulkUnavailable = "bulkUnavailable";
+    public const string ReasonBulkInUse = "bulkInUse";
 
     /// <summary>Where the encoded AVI of the picked file is kept.</summary>
     internal static string MediaPath() => Path.Combine(MediaLibrary.DeviceStoreDir("asus-ryujin-extreme"), "media.avi");
@@ -139,7 +142,6 @@ public sealed class RyujinCoolingWorker : BackgroundService
         _appliedRotation = display.Rotation;
         _appliedCount = RyujinMonitorSensors.NormalizeCount(display.SensorCount);
         _appliedSlots = RyujinMonitorSensors.NormalizeSlots(display.Slots);
-        _failedSha = display.UploadFailedSha;
         if (!_hub.Send(RyujinMonitorProtocol.EncodeStartup(Now(), display.Rotation, display.Brightness, _appliedCount)))
         {
             ServiceLog.Warn("[asus-ryujin-cooling] startup sequence write failed");
@@ -191,7 +193,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
             bool uploaded = false;
             if (wanted.UploadedSha != wanted.MediaSha)
             {
-                if (wanted.MediaSha == _failedSha || wanted.MediaSha == wanted.UploadFailedSha)
+                if (wanted.MediaSha == wanted.UploadFailedSha)
                 {
                     return _appliedMode == ModeImage && SelectMonitor(wanted);
                 }
@@ -242,10 +244,9 @@ public sealed class RyujinCoolingWorker : BackgroundService
         }
     }
 
-    private void RecordFailure(string sha, string message)
+    private void RecordFailure(string sha, string message, string reason = ReasonFailed)
     {
-        _failedSha = sha;
-        _hub.Upload = new RyujinUploadState("failed", 0, 0, message);
+        _hub.Upload = new RyujinUploadState("failed", 0, 0, message, reason);
         ServiceLog.Warn($"[ryujin-upload] not uploaded: {message}");
         try
         {
@@ -271,51 +272,69 @@ public sealed class RyujinCoolingWorker : BackgroundService
             RecordFailure(sha, "the encoded file does not match the picked one");
             return false;
         }
-        var device = _hub.Device;
         bool denied = false;
-        var pipe = _bulk?.Open(RyujinCoolingProtocol.VendorId, RyujinCoolingProtocol.ProductId, RyujinUploadProtocol.BulkWritePipe, RyujinUploadProtocol.BulkReadPipe, out denied);
+        using var pipe = _bulk?.Open(RyujinCoolingProtocol.VendorId, RyujinCoolingProtocol.ProductId, RyujinUploadProtocol.BulkWritePipe, RyujinUploadProtocol.BulkReadPipe, out denied);
+        var device = _hub.Device;
         if (device is null || pipe is null)
         {
-            RecordFailure(sha, denied
-                ? "another program has the cooler's bulk interface open (close Armoury Crate and try again)"
-                : "the cooler's bulk interface cannot be opened (WinUSB is not bound to it)");
+            if (denied)
+            {
+                RecordFailure(sha, "another program has the cooler's bulk interface open (close Armoury Crate and try again)", ReasonBulkInUse);
+            }
+            else
+            {
+                RecordFailure(sha, "the cooler's bulk interface cannot be opened (WinUSB is not bound to it)", ReasonBulkUnavailable);
+            }
             return false;
         }
-        using (pipe)
+        int total = RyujinUploadProtocol.ChunkCount(avi.Length);
+        _hub.Upload = new RyujinUploadState("uploading", 0, total, "");
+        if (!_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
         {
-            int total = RyujinUploadProtocol.ChunkCount(avi.Length);
-            _hub.Upload = new RyujinUploadState("uploading", 0, total, "");
-            if (!_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
-            {
-                RecordFailure(sha, "the layout select write failed");
-                return false;
-            }
-            _appliedMode = ModeImage;
-            var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe, _hub.TakeStashedAck), ServiceLog.Info, ServiceLog.Warn)
-            {
-                Keepalive = KeepaliveDuringUpload,
-                KeepGoing = () => _gate.IsEnabled(RyujinCoolingProtocol.HandlerId),
-            };
-            var result = uploader.Upload(avi, (sent, count) => _hub.Upload = new RyujinUploadState("uploading", sent, count, ""), ct);
-            if (!result.Ok)
-            {
-                if (result.Message == RyujinUploader.AbortedMessage && !_gate.IsEnabled(RyujinCoolingProtocol.HandlerId))
-                {
-                    _hub.Upload = new RyujinUploadState("failed", 0, 0, "Nexus control was turned off during the upload");
-                    ServiceLog.Warn("[ryujin-upload] stopped: Nexus control was turned off during the upload");
-                    return false;
-                }
-                RecordFailure(sha, result.Message);
-                return false;
-            }
-            _store.Update(s =>
-            {
-                s.Devices.RyujinDisplay.UploadedSha = sha;
-                s.Devices.RyujinDisplay.UploadFailedSha = "";
-            });
-            _hub.Upload = new RyujinUploadState("done", total, total, result.Message);
-            return true;
+            RecordFailure(sha, "the layout select write failed");
+            return false;
         }
+        _appliedMode = ModeImage;
+        var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe, _hub.TakeStashedAck), ServiceLog.Info, ServiceLog.Warn)
+        {
+            Keepalive = KeepaliveDuringUpload,
+            AbortCheck = () => _gate.IsEnabled(RyujinCoolingProtocol.HandlerId) ? RyujinUploadAbort.None : RyujinUploadAbort.ControlOff,
+        };
+        RyujinUploadResult result;
+        _hub.BeginAckCapture();
+        try
+        {
+            result = uploader.Upload(avi, (sent, count) => _hub.Upload = new RyujinUploadState("uploading", sent, count, ""), ct);
+        }
+        finally
+        {
+            _hub.EndAckCapture();
+        }
+        if (!result.Ok)
+        {
+            switch (result.Abort)
+            {
+                case RyujinUploadAbort.ControlOff:
+                    _hub.Upload = new RyujinUploadState("failed", 0, 0, "Nexus control was turned off during the upload", ReasonControlOff);
+                    ServiceLog.Warn("[ryujin-upload] stopped: Nexus control was turned off during the upload");
+                    break;
+                case RyujinUploadAbort.Cancelled:
+                    _hub.Upload = RyujinUploadState.Idle;
+                    ServiceLog.Info("[ryujin-upload] stopped: the service is shutting down");
+                    break;
+                default:
+                    RecordFailure(sha, result.Message);
+                    break;
+            }
+            return false;
+        }
+        _store.Update(s =>
+        {
+            s.Devices.RyujinDisplay.UploadedSha = sha;
+            s.Devices.RyujinDisplay.UploadFailedSha = "";
+        });
+        _hub.Upload = new RyujinUploadState("done", total, total, result.Message);
+        return true;
     }
 
     private void KeepaliveDuringUpload()

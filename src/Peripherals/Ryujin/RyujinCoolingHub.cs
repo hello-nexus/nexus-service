@@ -14,7 +14,7 @@ public sealed record RyujinSnapshot(double LiquidTempC, int PumpRpm, int FanRpm,
 }
 
 /// <summary>Progress of the stored-media upload, read by the display route; State is idle, uploading, done or failed.</summary>
-public sealed record RyujinUploadState(string State, int Sent, int Total, string Message)
+public sealed record RyujinUploadState(string State, int Sent, int Total, string Message, string Reason = "")
 {
     public static readonly RyujinUploadState Idle = new("idle", 0, 0, "");
 }
@@ -76,6 +76,22 @@ public sealed class RyujinCoolingHub : IDisposable
     /// <summary>An upload acknowledgement a keepalive poll read before the uploader asked for it; null when none.</summary>
     internal byte[]? TakeStashedAck() => _stashedAcks.TryDequeue(out var ack) ? ack : null;
 
+    private const int MaxStashedAcks = 64;
+    private volatile bool _capturingAcks;
+
+    /// <summary>Starts keeping acknowledgements that a keepalive poll reads; only an upload attempt wants them.</summary>
+    internal void BeginAckCapture()
+    {
+        _stashedAcks.Clear();
+        _capturingAcks = true;
+    }
+
+    internal void EndAckCapture()
+    {
+        _capturingAcks = false;
+        _stashedAcks.Clear();
+    }
+
     private volatile RyujinUploadState _upload = RyujinUploadState.Idle;
 
     public RyujinUploadState Upload
@@ -117,6 +133,7 @@ public sealed class RyujinCoolingHub : IDisposable
         {
             _device?.Dispose();
             _device = device;
+            EndAckCapture();
             _snapshot = RyujinSnapshot.Empty;
             ResetSession();
             _connected = true;
@@ -140,6 +157,7 @@ public sealed class RyujinCoolingHub : IDisposable
         lock (_stateLock)
         {
             _connected = false;
+            EndAckCapture();
             _snapshot = RyujinSnapshot.Empty;
             ResetSession();
             _device?.Dispose();
@@ -337,7 +355,7 @@ public sealed class RyujinCoolingHub : IDisposable
             // A reply to something else (a sensor text slot, say) is skipped without a mention.
             if (!RyujinCoolingProtocol.IsReplyTo(report, status))
             {
-                if (RyujinUploadProtocol.AckKind(report) != 0)
+                if (_capturingAcks && RyujinUploadProtocol.AckKind(report) != 0 && _stashedAcks.Count < MaxStashedAcks)
                 {
                     _stashedAcks.Enqueue(report.ToArray());
                 }

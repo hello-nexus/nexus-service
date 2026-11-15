@@ -45,7 +45,7 @@ public static partial class DevicesRoutes
             }
             if (ctx.Request.ContentLength is > RyujinMediaBodyLimit)
             {
-                return Results.BadRequest(ApiResponse.Fail("File too large"));
+                return Results.Json(ApiResponse.Fail(RyujinTooLargeMessage), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status413PayloadTooLarge);
             }
             if (ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
             {
@@ -57,15 +57,23 @@ public static partial class DevicesRoutes
             }
             try
             {
-                var form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+                Microsoft.AspNetCore.Http.IFormCollection form;
+                try
+                {
+                    form = await ctx.Request.ReadFormAsync(ctx.RequestAborted);
+                }
+                catch (Exception ex) when (ex is Microsoft.AspNetCore.Http.BadHttpRequestException { StatusCode: StatusCodes.Status413PayloadTooLarge } or InvalidDataException)
+                {
+                    return Results.Json(ApiResponse.Fail(RyujinTooLargeMessage), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status413PayloadTooLarge);
+                }
                 var file = form.Files.FirstOrDefault();
                 if (file is null || file.Length == 0)
                 {
                     return Results.BadRequest(ApiResponse.Fail("No file provided"));
                 }
-                if (file.Length > MediaImporter.MaxFileSize)
+                if (file.Length > RyujinMediaBodyLimit)
                 {
-                    return Results.BadRequest(ApiResponse.Fail($"File too large (max {MediaImporter.MaxFileSize / 1024 / 1024} MB)"));
+                    return Results.Json(ApiResponse.Fail(RyujinTooLargeMessage), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status413PayloadTooLarge);
                 }
                 var source = new byte[file.Length];
                 await using (var input = file.OpenReadStream())
@@ -96,7 +104,8 @@ public static partial class DevicesRoutes
                 var name = Path.GetFileName(file.FileName);
                 if (name.Length > RyujinMediaNameMax)
                 {
-                    name = name[..RyujinMediaNameMax];
+                    int cut = char.IsHighSurrogate(name[RyujinMediaNameMax - 1]) ? RyujinMediaNameMax - 1 : RyujinMediaNameMax;
+                    name = name[..cut];
                 }
                 // A pick always uploads: UploadedSha and UploadFailedSha are cleared even when the bytes match, so the user can force a re-send.
                 store.Update(s =>
@@ -121,13 +130,14 @@ public static partial class DevicesRoutes
 
     private const long RyujinMediaBodyLimit = 50L * 1024 * 1024;
     private const int RyujinMediaNameMax = 120;
+    private static readonly string RyujinTooLargeMessage = $"File too large (max {RyujinMediaBodyLimit / 1024 / 1024} MB)";
     private static readonly SemaphoreSlim RyujinMediaGate = new(1, 1);
 
     internal static RyujinDisplayStateResponse BuildRyujinDisplayState(RyujinDisplaySettings settings, bool connected, RyujinUploadState? upload = null) => BuildRyujinDisplayStateCore(settings, connected, EffectiveUpload(settings, upload));
 
     private static RyujinUploadState EffectiveUpload(RyujinDisplaySettings settings, RyujinUploadState? upload) =>
         upload is { State: not "idle" } ? upload
-        : settings.MediaSha.Length > 0 && settings.UploadFailedSha == settings.MediaSha ? new RyujinUploadState("failed", 0, 0, "the last upload of this file failed")
+        : settings.MediaSha.Length > 0 && settings.UploadFailedSha == settings.MediaSha ? new RyujinUploadState("failed", 0, 0, "the last upload of this file failed", RyujinCoolingWorker.ReasonFailed)
         : RyujinUploadState.Idle;
 
     private static RyujinDisplayStateResponse BuildRyujinDisplayStateCore(RyujinDisplaySettings settings, bool connected, RyujinUploadState upload) => new()
@@ -145,8 +155,8 @@ public static partial class DevicesRoutes
         UploadSent = upload.Sent,
         UploadTotal = upload.Total,
         UploadMessage = upload.Message,
+        UploadReason = upload.Reason,
     };
-
 
     internal static string? ValidateRyujinDisplay(RyujinDisplayRequest body)
     {
@@ -232,4 +242,5 @@ public sealed class RyujinDisplayStateResponse
     public int UploadSent { get; set; }
     public int UploadTotal { get; set; }
     public string UploadMessage { get; set; } = "";
+    public string UploadReason { get; set; } = "";
 }
