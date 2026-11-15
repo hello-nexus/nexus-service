@@ -69,7 +69,7 @@ public class Np50LegacyDutyTests
 
         now += 60_000;
         provider.SetFanSpeed(LegacyId, 40);
-        Assert.Empty(t.Snapshot().Where(IsModeFrame));
+        Assert.DoesNotContain(t.Snapshot(), IsModeFrame);
 
         now += 60_000;
         Assert.True(hub.ReassertLegacyDutyIfDue());
@@ -196,7 +196,7 @@ public class Np50LegacyDutyTests
             return hub.SetLegacyFanSpeed(20);
         });
         Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
-        Assert.False(write.Wait(100));
+        Assert.NotSame(write, await Task.WhenAny(write, Task.Delay(100)));
         Assert.Empty(t.Snapshot());
 
         release.Set();
