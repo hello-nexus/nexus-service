@@ -1589,6 +1589,81 @@ public class GalleonSdOnboardTests
     }
 
     [Fact]
+    public void Undo_after_a_gone_profile_clears_the_pending_tail_so_a_later_run_does_not_rewrite_the_profile()
+    {
+        var rig = new Rig();
+        ReplaceBoardWithDanglingList(rig.Board);
+        SeedStaleRecord(rig);
+        rig.Store.Update(s => s.Devices.GalleonOnboard["SN1"].TailPending = true);
+
+        rig.Hub.SetSavedToDevice(false);
+
+        Assert.Empty(rig.Record!.Owned);
+        Assert.False(rig.Record.TailPending);
+    }
+
+    private static void HitWriteCap(Rig rig)
+    {
+        for (var i = 0; i < 40 && rig.Hub.SavedBlockedReason is null; i++)
+        {
+            rig.Settle(Solid(new RgbColor((byte)(10 + ((i * 13) % 200)), 0, 0)));
+        }
+        Assert.Equal(GalleonSdHub.SavedBlockedWriteCap, rig.Hub.SavedBlockedReason);
+    }
+
+    [Fact]
+    public void The_write_cap_block_clears_when_the_window_frees_and_saved_writes_resume()
+    {
+        var rig = new Rig();
+        HitWriteCap(rig);
+        rig.Hub.FallBackToLive();
+        Assert.False(rig.Hub.TryClearWriteCap());
+        Assert.Equal(GalleonSdHub.SavedBlockedWriteCap, rig.Hub.SavedBlockedReason);
+
+        rig.Advance(3601);
+
+        Assert.True(rig.Hub.TryClearWriteCap());
+        Assert.Null(rig.Hub.SavedBlockedReason);
+        rig.Board.Written.Clear();
+        rig.Settle(Solid(Blue));
+        Assert.NotEmpty(OnboardWrites(rig));
+        Assert.Null(rig.Hub.SavedBlockedReason);
+    }
+
+    [Fact]
+    public void Turning_saved_mode_off_and_on_does_not_reset_the_transaction_history()
+    {
+        var rig = new Rig();
+        HitWriteCap(rig);
+
+        rig.Hub.SetSavedToDevice(false);
+        Assert.Null(rig.Hub.SavedBlockedReason);
+        rig.Board.Written.Clear();
+        rig.Board.Writes.Clear();
+        rig.Settle(Solid(Blue));
+
+        Assert.Equal(GalleonSdHub.SavedBlockedWriteCap, rig.Hub.SavedBlockedReason);
+        Assert.DoesNotContain(rig.Board.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdCreate);
+    }
+
+    [Fact]
+    public void A_blocked_reason_change_raises_the_changed_event_once_per_change()
+    {
+        var rig = new Rig();
+        var raised = 0;
+        rig.Hub.SavedBlockedChanged += () => raised++;
+        rig.Board.BusyHandles.Add(0);
+        rig.Hub.WriteFrame(Solid(Red));
+
+        rig.Settle(Solid(Blue));
+        rig.Settle(Solid(Blue));
+        Assert.Equal(1, raised);
+
+        rig.Hub.SetSavedToDevice(false);
+        Assert.Equal(2, raised);
+    }
+
+    [Fact]
     public void A_listed_entry_that_refuses_open_on_a_busy_handle_is_not_taken_for_opaque()
     {
         var rig = new Rig();

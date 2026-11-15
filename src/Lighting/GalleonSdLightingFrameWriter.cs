@@ -95,6 +95,8 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
             _hub.SetSavedToDevice(false);
         }
         // Onboard writes cannot run (foreign host, gave up, cap): stream live instead of leaving the board on its own defaults.
+        // A write-cap block ends by itself once the transaction window frees; saved mode resumes then.
+        if (wanted && _hub.SavedBlockedReason == GalleonSdHub.SavedBlockedWriteCap) _hub.TryClearWriteCap();
         var blocked = wanted && _hub.SavedBlockedReason is not null;
         if (blocked)
         {

@@ -131,8 +131,35 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
 
     public int Version => Volatile.Read(ref _version);
 
-    /// <summary>Why saved colors cannot be written right now (<see cref="SavedBlockedForeignHost"/>, <see cref="SavedBlockedWriteFailed"/>, <see cref="SavedBlockedWriteCap"/>), else null. Read lock-free; cleared when saving is turned off, or for a foreign host once handle 0 opens again.</summary>
+    /// <summary>Why saved colors cannot be written right now (<see cref="SavedBlockedForeignHost"/>, <see cref="SavedBlockedWriteFailed"/>, <see cref="SavedBlockedWriteCap"/>), else null. Read lock-free; cleared when saving is turned off, for a foreign host once handle 0 opens again, and for write-cap once the window frees (<see cref="TryClearWriteCap"/>).</summary>
     public string? SavedBlockedReason => _savedBlocked;
+
+    /// <summary>Raised when <see cref="SavedBlockedReason"/> changes, so the lighting card state can be republished. May run under the hub's I/O lock; handlers must not block or call back into the hub.</summary>
+    public event Action? SavedBlockedChanged;
+
+    private void SetBlocked(string? value, bool onlyIfClear = false)
+    {
+        var old = onlyIfClear ? Interlocked.CompareExchange(ref _savedBlocked, value, null) : Interlocked.Exchange(ref _savedBlocked, value);
+        if (onlyIfClear ? old is not null : old == value) return;
+        try { SavedBlockedChanged?.Invoke(); } catch { /* subscriber failures shouldn't bubble */ }
+    }
+
+    /// <summary>
+    /// While the reason is write-cap, clears it once the transaction window has room again, so the writer resumes saved mode.
+    /// Does not spend a slot; the next write pass does. Returns true when the reason is now clear.
+    /// </summary>
+    public bool TryClearWriteCap()
+    {
+        if (_savedBlocked != SavedBlockedWriteCap) return _savedBlocked is null;
+        lock (_io)
+        {
+            var slot = _slot;
+            if (slot is null || _savedBlocked != SavedBlockedWriteCap) return _savedBlocked is null;
+            if (!CapAllows(slot.Ob, _clock(), record: false)) return false;
+            SetBlocked(null);
+            return true;
+        }
+    }
 
     public const string SavedBlockedForeignHost = "foreign-host";
     public const string SavedBlockedWriteFailed = "write-failed";
@@ -288,7 +315,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             if (!saved)
             {
                 slot.SavedMode = false;
-                _savedBlocked = null;
+                SetBlocked(null);
                 if (undo) UndoOnboardIfNeededLocked(slot);
                 return;
             }
@@ -391,7 +418,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
         ReleaseLocked(slot);
         try { slot.Device.Dispose(); } catch { /* best effort */ }
         _slot = null;
-        _savedBlocked = null;
+        SetBlocked(null);
         Volatile.Write(ref _snapshot, null);
         Interlocked.Increment(ref _version);
         ServiceLog.Info($"[galleon-sd] released serial={slot.Info.Serial} frames={slot.FramesSent}");
@@ -688,7 +715,7 @@ public sealed partial class GalleonSdHub : IGalleonLightingHub, IDisposable
             slot.HandleSettled = true;
             slot.NegotiationFailures = 0;
             slot.ForeignHandle = accepted.Value != 0 && handle0Refused;
-            if (!slot.ForeignHandle && _savedBlocked == SavedBlockedForeignHost) _savedBlocked = null;
+            if (!slot.ForeignHandle && _savedBlocked == SavedBlockedForeignHost) SetBlocked(null);
             ServiceLog.Info($"[galleon-sd] direct handle {slot.Handle} (start reply parsed={last.Parsed} status={last.Status:X2})");
         }
 

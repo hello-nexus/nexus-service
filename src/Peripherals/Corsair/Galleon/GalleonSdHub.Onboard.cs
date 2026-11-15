@@ -20,7 +20,7 @@ public sealed partial class GalleonSdHub
 {
     private const double DebounceMs = 3000;
     private const double MinTxGapMs = 5000;
-    // A failed transaction is retried soon: the board's replies come back in order, so a stall clears within about a second.
+    // A failed transaction is retried soon: the board's replies come back in order, so a stall clears quickly.
     private const double MinRetryMs = 1500;
     private const double TxBudgetMs = 6000;
     private const double AnimatedLogMs = 15_000;
@@ -100,7 +100,6 @@ public sealed partial class GalleonSdHub
             Failures = 0;
             GaveUp = false;
             LastLayers = null;
-            TxStamps = new List<long>();
             CapLogged = false;
             ReRun = false;
             LayersLogged = false;
@@ -151,7 +150,7 @@ public sealed partial class GalleonSdHub
         if (ob.GaveUp) return;
         if (slot.NegotiationFailures > 0 || slot.ForeignHandle)
         {
-            _savedBlocked = SavedBlockedForeignHost;
+            SetBlocked(SavedBlockedForeignHost);
             if (!ob.ForeignLogged)
             {
                 ob.ForeignLogged = true;
@@ -188,9 +187,9 @@ public sealed partial class GalleonSdHub
             ob.DoneVersion = ob.FrameVersion;
             return;
         }
-        if (!CapAllows(ob, now))
+        if (!CapAllows(ob, now, record: true))
         {
-            _savedBlocked ??= SavedBlockedWriteCap;
+            SetBlocked(SavedBlockedWriteCap, onlyIfClear: true);
             return;
         }
         var bodies = desired.Select(GalleonSdOnboardCodec.BuildLayerBody).ToList();
@@ -216,7 +215,7 @@ public sealed partial class GalleonSdHub
         if (ob.Failures >= MaxOnboardFailures)
         {
             ob.GaveUp = true;
-            _savedBlocked = SavedBlockedWriteFailed;
+            SetBlocked(SavedBlockedWriteFailed);
             ServiceLog.Error($"[galleon-sd-onboard] giving up writing saved colors after {ob.Failures} failed transactions; toggle saved colors off and on to retry");
         }
     }
@@ -234,8 +233,8 @@ public sealed partial class GalleonSdHub
         return true;
     }
 
-    // Long-window cap on transaction attempts; logs once per window it is hit.
-    private bool CapAllows(OnboardState ob, long now)
+    // Long-window cap on transaction attempts; logs once per window it is hit. The history survives re-begins of saved mode, so toggling or a cleared block cannot exceed it. record false only checks.
+    private bool CapAllows(OnboardState ob, long now, bool record)
     {
         var day = (long)(24 * 3600.0 * Stopwatch.Frequency);
         var hour = (long)(3600.0 * Stopwatch.Frequency);
@@ -251,7 +250,7 @@ public sealed partial class GalleonSdHub
             return false;
         }
         ob.CapLogged = false;
-        ob.TxStamps.Add(now);
+        if (record) ob.TxStamps.Add(now);
         return true;
     }
 
@@ -903,6 +902,7 @@ public sealed partial class GalleonSdHub
             ServiceLog.Warn("[galleon-sd-onboard] the recorded profile is no longer in the registry; nothing to undo there");
             rec.Owned = new List<GalleonOwnedLayer>();
             rec.WrittenListB64 = "";
+            rec.TailPending = false;
             _onboard.Save(serial, rec, flush: true);
             return true;
         }

@@ -164,6 +164,28 @@ public class GalleonSdWriterAndWorkerTests
     }
 
     [Fact]
+    public void A_blocked_keyboard_still_reports_the_toggle_on_and_carries_the_reason_separately()
+    {
+        var rig = new KeyboardRig();
+        var unit = rig.Hub.Attached!;
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string> { unit.DeviceId });
+
+        var blocked = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load(), GalleonSdHub.SavedBlockedForeignHost);
+        Assert.All(blocked, c => Assert.True(c.SavedToDevice));
+        Assert.All(blocked, c => Assert.Equal(GalleonSdHub.SavedBlockedForeignHost, c.SavedToDeviceReason));
+
+        var clear = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load());
+        Assert.All(clear, c => Assert.True(c.SavedToDevice));
+        Assert.All(clear, c => Assert.Null(c.SavedToDeviceReason));
+
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string>());
+        var off = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load(), GalleonSdHub.SavedBlockedForeignHost);
+        Assert.All(off, c => Assert.False(c.SavedToDevice));
+        Assert.All(off, c => Assert.Null(c.SavedToDeviceReason));
+        rig.Hub.Dispose();
+    }
+
+    [Fact]
     public void Keyboard_writer_with_no_effect_never_touches_the_board()
     {
         var rig = new KeyboardRig();

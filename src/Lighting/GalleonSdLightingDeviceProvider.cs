@@ -31,6 +31,7 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
         _dials = dials;
         _store = store;
         _identify = identify;
+        _hub.SavedBlockedChanged += OnConnectionChanged;
     }
 
     public bool IsConnected => _hub.IsConnected || (_dials?.IsConnected ?? false);
@@ -115,7 +116,7 @@ public sealed class GalleonSdLightingDeviceProvider : ILightingDeviceProvider, I
             ControlHandlerId = GalleonSdProtocol.HandlerId,
             ZoneCustomizable = true,
             SaveToDeviceSupported = !dials,
-            SavedToDevice = !dials && settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId) && savedBlockedReason is null,
+            SavedToDevice = !dials && settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId),
             SavedToDeviceReason = dials ? null : (settings.Devices.SaveToDeviceLightingDevices.Contains(deviceId) ? savedBlockedReason : null),
         };
     }
