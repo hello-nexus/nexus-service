@@ -58,6 +58,13 @@ public sealed class BulkPanelHub : IDisposable
 
     public void SetOpenAccessDenied(bool denied) => _openAccessDenied = denied;
 
+    private volatile string? _openAccessHolder;
+
+    /// <summary>Conflict app id likely holding the device after a denied open; diagnostic only, null when unknown.</summary>
+    public string? OpenAccessHolder => _openAccessHolder;
+
+    public void SetOpenAccessHolder(string? appId) => _openAccessHolder = appId;
+
     /// <summary>True once an open of the present panel was attempted and failed, until it opens or Nexus Control or the panel goes away.</summary>
     public bool OpenFailed => _openFailed;
 

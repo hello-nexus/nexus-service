@@ -30,13 +30,14 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
     private readonly BulkPanelHub _hub;
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
-    private readonly Func<string, bool>? _appRunning;
+    private readonly Func<string, string?>? _holderLookup;
+    private string? _loggedHolder;
 
     public BulkPanelConnectionWorker(
         IHidEnumerator hid, IBulkUsbPipeFactory pipes, BulkPanelHub hub, DeviceControlGate gate, HardwarePresence presence,
-        int connectPollMs = 5000, int presencePollMs = 2000, Func<string, bool>? appRunning = null)
+        int connectPollMs = 5000, int presencePollMs = 2000, Func<string, string?>? holderLookup = null)
     {
-        _appRunning = appRunning;
+        _holderLookup = holderLookup;
         _connectPollMs = connectPollMs;
         _presencePollMs = presencePollMs;
         _hid = hid;
@@ -165,32 +166,32 @@ public sealed class BulkPanelConnectionWorker : BackgroundService
             if (pipe is not null)
             {
                 _hub.SetOpenAccessDenied(false);
+                _hub.SetOpenAccessHolder(null);
+                _loggedHolder = null;
                 return true;
             }
             hid?.Dispose();
             hid = null;
         }
         _hub.SetOpenAccessDenied(denied);
-        if (denied)
+        var holder = denied ? _holderLookup?.Invoke(driver.HandlerId) : null;
+        _hub.SetOpenAccessHolder(holder);
+        if (ShouldLogHolder(ref _loggedHolder, holder) && holder is not null)
         {
-            var holder = RunningHolderName(driver.HandlerId, _appRunning);
-            if (holder is not null)
-            {
-                ServiceLog.Info($"[{driver.HandlerId}] open denied while {holder} is running; it is the likely holder");
-            }
+            ServiceLog.Info($"[{driver.HandlerId}] open denied while {holder} is running; it is the likely holder");
         }
         return false;
     }
 
-    /// <summary>Display name of the conflict app that claims this handler's device family, when it is running.</summary>
-    internal static string? RunningHolderName(string handlerId, Func<string, bool>? appRunning)
+    /// <summary>True when the holder differs from the last one logged, so a 5 s retry loop logs once per state.</summary>
+    internal static bool ShouldLogHolder(ref string? logged, string? holder)
     {
-        var appId = DeviceControlPolicy.ConflictAppFor(handlerId);
-        if (appId is null || appRunning is null || !appRunning(appId))
+        if (string.Equals(holder, logged, StringComparison.Ordinal))
         {
-            return null;
+            return false;
         }
-        return Conflicts.ConflictWatcher.FindById(appId)?.DisplayName;
+        logged = holder;
+        return true;
     }
 
     private IHidDevice? OpenHid(int vendorId, int productId, bool forInput)
