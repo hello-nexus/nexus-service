@@ -71,6 +71,12 @@ internal sealed class RyujinUploader
         {
             return fast;
         }
+        var stop = ct.IsCancellationRequested ? RyujinUploadAbort.Cancelled : AbortCheck?.Invoke() ?? RyujinUploadAbort.None;
+        if (stop != RyujinUploadAbort.None)
+        {
+            _warn($"[ryujin-upload] fast attempt failed ({fast.Message}); no paced retry, the upload was stopped");
+            return fast;
+        }
         _warn($"[ryujin-upload] fast attempt failed ({fast.Message}); retrying paced like Armoury Crate");
         var paced = Attempt(avi, paced: true, progress, ct);
         return paced with { Message = paced.Ok ? "ok after paced fallback" : paced.Message };
