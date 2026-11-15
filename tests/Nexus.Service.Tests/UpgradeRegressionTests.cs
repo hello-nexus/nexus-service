@@ -36,6 +36,12 @@ public class UpgradeRegressionTests : IDisposable
         "ui.lightingDashboardMode", "ui.coolingDashboardMode",
     };
 
+    // Fields added after the captures were taken: a load may add them at their default, never change anything else.
+    private static readonly Dictionary<string, (string Key, JsonNode Default)[]> AddedDefaults = new()
+    {
+        ["monitoring"] = new[] { ("liveDriveActivity", (JsonNode)JsonValue.Create(true)!) },
+    };
+
     private static JsonNode? At(JsonNode root, string path)
     {
         var node = root;
@@ -60,7 +66,20 @@ public class UpgradeRegressionTests : IDisposable
             {
                 continue;
             }
-            Assert.True(JsonNode.DeepEquals(before, At(loaded, path)), $"{label}: {path} changed on load");
+            var after = At(loaded, path);
+            if (AddedDefaults.TryGetValue(path, out var added) && before is JsonObject beforeObj && after is JsonObject afterObj)
+            {
+                afterObj = (JsonObject)afterObj.DeepClone();
+                foreach (var (key, def) in added)
+                {
+                    if (!beforeObj.ContainsKey(key) && afterObj[key] is { } v && JsonNode.DeepEquals(v, def))
+                    {
+                        afterObj.Remove(key);
+                    }
+                }
+                after = afterObj;
+            }
+            Assert.True(JsonNode.DeepEquals(before, after), $"{label}: {path} changed on load");
             compared++;
         }
         return compared;
