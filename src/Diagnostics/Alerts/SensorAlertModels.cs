@@ -12,6 +12,8 @@ public static class SensorAlertStates
     public const string Pending = "pending";
     public const string Active = "active";
     public const string Unavailable = "unavailable";
+    /// <summary>The rule's switch is off: its reading is still recorded and reported, nothing alerts.</summary>
+    public const string Off = "off";
 }
 
 /// <summary>Runtime state of one rule. Not persisted.</summary>
@@ -26,6 +28,18 @@ public sealed class SensorAlertState
     public double? Extreme { get; set; }
     /// <summary>"above" | "below" while pending or active.</summary>
     public string? Direction { get; set; }
+    /// <summary>The limit that was crossed, while pending or active.</summary>
+    public double? Threshold { get; set; }
+    /// <summary>
+    /// The alert still waiting for the user after its value came back inside the limit: ISO 8601 UTC time it ended.
+    /// The Ended* fields describe that finished episode. Null once it is dismissed (acknowledge) or a day after it ended.
+    /// </summary>
+    public string? EndedAt { get; set; }
+    public double? EndedPeak { get; set; }
+    public double? EndedThreshold { get; set; }
+    /// <summary>"above" | "below".</summary>
+    public string? EndedDirection { get; set; }
+    /// <summary>Active: the user dismissed the banner and health entry. Not set for an ended alert; dismissing that one clears the Ended* fields.</summary>
     public bool Acknowledged { get; set; }
 }
 
@@ -47,6 +61,22 @@ public sealed class SensorAlertsResponse
     public List<SensorAlertHistoryEntry> History { get; set; } = new();
 }
 
+/// <summary>409 body when a custom rule would track a sensor another rule already tracks.</summary>
+public sealed class SensorAlreadyTrackedResponse
+{
+    public const string ErrorCode = "sensor_already_tracked";
+
+    public bool Error { get; set; } = true;
+    public string Msg { get; set; } = "";
+    public string Code { get; set; } = ErrorCode;
+    /// <summary>Id of the rule that already tracks the sensor.</summary>
+    public string RuleId { get; set; } = "";
+    /// <summary>Display name of that rule: the device name for a built-in, else the sensor's name.</summary>
+    public string RuleName { get; set; } = "";
+    /// <summary>True when the existing rule is a built-in.</summary>
+    public bool BuiltIn { get; set; }
+}
+
 /// <summary>Inline payload of the diagnostics/alerts topic.</summary>
 public sealed class SensorAlertsFrame
 {
@@ -56,12 +86,13 @@ public sealed class SensorAlertsFrame
 /// <summary>Rule limits, validation and the per-type clear hysteresis.</summary>
 public static class SensorAlertRules
 {
-    public const int MaxRules = 10;
+    /// <summary>Watchlist entries in all, built-ins (temperatures and fans) included. Only adding a user rule is refused at the cap; built-ins are never refused.</summary>
+    public const int MaxRules = 50;
     public const int MaxSeconds = 600;
+    /// <summary>How long a finished alert stays on the Summary banner and in health until the user dismisses it.</summary>
+    public static readonly TimeSpan EndedLinger = TimeSpan.FromHours(24);
     public const string Watch = "watch";
     public const string Act = "act";
-
-    private static readonly int[] AllowedRepeats = { 0, 5, 15, 60 };
 
     /// <summary>
     /// Whether two refs name the same sensor, so a series keeps its history. Ids decide. The one exception is a
@@ -74,11 +105,52 @@ public static class SensorAlertRules
         && string.Equals(a.Type, b.Type, StringComparison.OrdinalIgnoreCase)
         && (a.Id == b.Id || (!bIdResolves && a.Name == b.Name && a.ParentName == b.ParentName));
 
+    /// <summary>
+    /// The rule other than <paramref name="excludeId"/> that already tracks <paramref name="candidate"/>: a user rule by its
+    /// stored sensor, a built-in by the sensor currently feeding it (<see cref="SensorAlertRule.Source"/>; a drive or a memory mean has none).
+    /// An id match decides. Only when the candidate's id does not resolve (a stale id from a client) can a name and parent
+    /// match stand in, and only when it names exactly one rule: twin sensors share both, so more than one match is a guess and tracks nothing.
+    /// </summary>
+    public static SensorAlertRule? FindTracker(SensorRef candidate, bool candidateIdResolves, IEnumerable<SensorAlertRule> rules, string? excludeId)
+    {
+        SensorAlertRule? byName = null;
+        var nameMatches = 0;
+        foreach (var rule in rules)
+        {
+            if (rule.Id == excludeId)
+            {
+                continue;
+            }
+            var other = rule.BuiltIn is not null ? rule.Source?.Sensor : rule.Sensor;
+            if (other is null || other.Category != candidate.Category || !string.Equals(other.Type, candidate.Type, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (!string.IsNullOrEmpty(candidate.Id) && other.Id == candidate.Id)
+            {
+                return rule;
+            }
+            if (!candidateIdResolves && !string.IsNullOrEmpty(candidate.Name) && other.Name == candidate.Name && other.ParentName == candidate.ParentName)
+            {
+                byName = rule;
+                nameMatches++;
+            }
+        }
+        return nameMatches == 1 ? byName : null;
+    }
+
+    public static SensorAlreadyTrackedResponse AlreadyTracked(SensorAlertRule existing) => new()
+    {
+        Msg = $"'{SensorAlertText.DisplayName(existing)}' is already tracked.",
+        RuleId = existing.Id,
+        RuleName = SensorAlertText.DisplayName(existing),
+        BuiltIn = existing.BuiltIn is not null,
+    };
+
     /// <summary>Clamps the delay fields in place. Run before <see cref="Validate"/> and before storing.</summary>
     public static void Normalize(SensorAlertRule rule)
     {
         rule.RaiseAfterSeconds = Math.Clamp(rule.RaiseAfterSeconds, 0, MaxSeconds);
-        rule.ClearAfterSeconds = Math.Clamp(rule.ClearAfterSeconds, 0, MaxSeconds);
         rule.Sensor ??= new SensorRef();
         rule.Sensor.Category ??= "";
         rule.Sensor.Id ??= "";
@@ -96,8 +168,20 @@ public static class SensorAlertRules
         {
             return "A sensor with a category, type and id or name is required.";
         }
+        if (rule.BuiltIn is not null)
+        {
+            // The built-in's sensor is synthetic and fixed; BuiltInSensorRules.Pin put it there.
+            if (!BuiltInSensorRules.IsKind(rule.BuiltIn) || sensor.Category != BuiltInSensorRules.Category)
+            {
+                return "Unknown built-in sensor.";
+            }
+        }
+        else if (sensor.Category == BuiltInSensorRules.Category)
+        {
+            return "Built-in sensors cannot be created.";
+        }
         // The fps source lives outside the sensor provider, so a rule on it could never resolve.
-        if (sensor.Category == "fps" || !SensorSnapshotResolver.IsSupportedCategory(sensor.Category))
+        else if (sensor.Category == "fps" || !SensorSnapshotResolver.IsSupportedCategory(sensor.Category))
         {
             return $"Unknown sensor category '{sensor.Category}'.";
         }
@@ -112,10 +196,6 @@ public static class SensorAlertRules
         if (rule.Severity != Watch && rule.Severity != Act)
         {
             return "Severity must be 'watch' or 'act'.";
-        }
-        if (Array.IndexOf(AllowedRepeats, rule.RepeatMinutes) < 0)
-        {
-            return "Repeat must be 0, 5, 15 or 60 minutes.";
         }
         return null;
     }

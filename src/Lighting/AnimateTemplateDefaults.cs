@@ -60,7 +60,7 @@ public static class AnimateTemplateDefaults
         if (templates is not null && templates.TryGetValue(effect, out var bundle) && bundle is not null
             && bundle.Slots is { } slots && slot < slots.Count && slots[slot] is { } stored)
         {
-            return stored;
+            return WithPresetParams(stored, Slot(effect, slot));
         }
         return Slot(effect, slot);
     }
@@ -76,6 +76,10 @@ public static class AnimateTemplateDefaults
         if (!states.TryGetValue(effect, out var look) || look is null)
         {
             look = ResolveSelected(lighting.Animate.Templates, effect) ?? new AnimateEffectState();
+        }
+        else
+        {
+            look = WithPresetParams(look, ResolveSelected(lighting.Animate.Templates, effect));
         }
         var start = new Nexus.Service.Models.Lighting.AnimateHeadlessStart
         {
@@ -127,7 +131,7 @@ public static class AnimateTemplateDefaults
         foreach (var (effect, state) in animate.States)
         {
             if (state is null
-                || (ResolveSelected(animate.Templates, effect) is { } look && StateEquals(state, look)))
+                || (ResolveSelected(animate.Templates, effect) is { } look && StateEquals(WithPresetParams(state, look), look)))
             {
                 redundant.Add(effect);
             }
@@ -186,7 +190,7 @@ public static class AnimateTemplateDefaults
                 var def = defaults.Slots.Count == 0
                     ? null
                     : defaults.Slots[Math.Clamp(i, 0, defaults.Slots.Count - 1)];
-                isDefault[i] = def is not null && (slot is null || StateEquals(slot, def));
+                isDefault[i] = def is not null && (slot is null || StateEquals(WithPresetParams(slot, def), def));
                 allDefault &= isDefault[i];
             }
             if (allDefault && bundle.Selected == 0)
@@ -243,6 +247,28 @@ public static class AnimateTemplateDefaults
             }
         }
         return SensorBinding.MapEquals(a.Sensors, b.Sensors);
+    }
+
+    /// <summary>Params the shipped presets gained after slots were stored; a stored state lacking one takes the preset's value, as nexus-web's mergeTemplates does.</summary>
+    private static readonly string[] BackfilledParams = { "u_fill_bgHue", "u_fill_bgSat", "u_fill_bgVal" };
+
+    /// <summary><paramref name="state"/> with each backfilled param it lacks taken from <paramref name="preset"/>; the same instance when none is missing.</summary>
+    public static AnimateEffectState WithPresetParams(AnimateEffectState state, AnimateEffectState? preset)
+    {
+        if (preset?.Params is not { } presetParams
+            || !BackfilledParams.Any(n => presetParams.ContainsKey(n) && state.Params?.ContainsKey(n) != true))
+        {
+            return state;
+        }
+        var filled = CloneState(state);
+        foreach (var name in BackfilledParams)
+        {
+            if (presetParams.TryGetValue(name, out var value))
+            {
+                filled.Params.TryAdd(name, value);
+            }
+        }
+        return filled;
     }
 
     private static AnimateEffectState CloneState(AnimateEffectState s) => new()

@@ -16,7 +16,7 @@ namespace Nexus.Service.Cooling;
 /// Applying Silent / Balanced / Turbo / Max ensures a single shared "preset
 /// curve" exists with id `preset-{name}`, attaches every non-pinned fan to
 /// it, and detaches those fans from any user curve. User curves are NOT
-/// deleted. Pinned channels (pumps by default, or any channel the user
+/// deleted. Pinned channels (pumps and GPU fans by default, or any channel the user
 /// pinned via <see cref="IsPinned"/>) are exempt and keep whatever already
 /// drives them.
 ///
@@ -50,14 +50,17 @@ public static class FanProfiles
     /// <item>GPU fans, because a preset curve reads a CPU temperature sensor
     /// (<see cref="PreferredInput"/>), so pointing it at the graphics card's
     /// fans tracks the wrong die.</item>
-    /// <item>Every channel on an AIO, radiator fans included - the cooler ships
-    /// its own curve and owns the loop.</item>
+    /// <item>HydroShift II fans, which share one frame with the pump.</item>
     /// </list>
-    /// Each of these keeps whatever already drives it; the user can still pin
-    /// or unlock any of them from the fan card.
+    /// Every other fan channel, including hub, AIO radiator and Q-series fan
+    /// ports, follows the active preset. Each pinned channel keeps whatever
+    /// already drives it; the user can still pin or unlock any channel from the
+    /// fan card.
     /// </summary>
     public static bool IsPinnedByDefault(FanChannel ch) =>
-        ch.Kind == FanKinds.Pump || ch.IsGpu || ch.IsAio;
+        ch.Kind == FanKinds.Pump || ch.IsGpu
+        // HydroShift II sends the pump and fans in one frame, so driving a fan changes the pump.
+        || HydroShift2CoolingProvider.IsHydroShift2Id(ch.Id);
 
     /// <summary>
     /// Write ch's pin override, collapsing to "no entry" when the requested

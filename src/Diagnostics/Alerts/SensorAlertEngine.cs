@@ -11,7 +11,10 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Diagnostics.Alerts;
 
 /// <summary>One resolved reading. Valid is false for a missing, stale, non-finite or implausible sensor.</summary>
-internal readonly record struct SensorSample(bool Valid, double Value, string Units);
+internal readonly record struct SensorSample(bool Valid, double Value, string Units, string Source = "");
+
+/// <summary>A finished alert the user has not dismissed yet. Time is wall clock, for display and the expiry.</summary>
+internal sealed record EndedAlert(DateTimeOffset EndedUtc, double Peak, double Threshold, string Direction);
 
 [Flags]
 internal enum SensorAlertEffect
@@ -19,7 +22,6 @@ internal enum SensorAlertEffect
     None = 0,
     Raised = 1,
     Cleared = 2,
-    Repeated = 4,
     /// <summary>The reported state changed; subscribers should refetch.</summary>
     Changed = 8,
 }
@@ -38,11 +40,14 @@ internal sealed class SensorAlertRuntime
     public DateTimeOffset? InvalidSince;
     public DateTimeOffset? InvalidSinceUtc;
     public DateTimeOffset? ClearSince;
-    public DateTimeOffset LastNotified;
     public string Units = "";
     public string Reported = SensorAlertStates.Ok;
     public SensorAlertRule? Config;
     public SensorAlertHistoryEntry? Episode;
+    /// <summary>Set when an unacknowledged alert clears; kept until dismissed or it ages out. A new raise or a rule edit drops it.</summary>
+    public EndedAlert? Ended;
+    /// <summary>Device a built-in's reading comes from (hottest GPU or drive); empty otherwise.</summary>
+    public string Source = "";
 
     public void ResetToOk()
     {
@@ -65,6 +70,7 @@ internal sealed class SensorAlertRuntime
 /// </summary>
 public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensorSeriesSource
 {
+    private static readonly TimeSpan ClearDelay = TimeSpan.FromSeconds(5);
     internal static readonly TimeSpan UnavailableAfter = TimeSpan.FromSeconds(10);
     private const int MaxHistory = 100;
     private static readonly TimeSpan SmartInterval = TimeSpan.FromMinutes(1);
@@ -76,6 +82,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private readonly IConfigStore _store;
     private readonly ISensorProvider _sensors;
+    private readonly Nexus.Service.Diagnostics.Storage.ISmartHealthSource? _drives;
+    private readonly Nexus.Service.Cooling.IFanControlProvider? _fans;
     private readonly TimeProvider _time;
     private readonly long _stamp0;
     private readonly DateTimeOffset _wall0;
@@ -139,8 +147,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     /// <summary>
     /// Readings of the enabled rules from the latest tick, for the sample second <paramref name="tsSec"/>.
-    /// Empty once that tick is older than the max age, and for a rule that was deleted, disabled or
-    /// re-pointed since the tick.
+    /// Empty once that tick is older than the max age, and for a rule that was deleted or
+    /// re-pointed since the tick. A disabled rule still records: the switch only controls alerting.
     /// </summary>
     public IReadOnlyList<Nexus.Service.Monitoring.History.SensorSeriesReading> CurrentReadings(long tsSec)
     {
@@ -159,7 +167,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         IEnumerable<SensorAlertRule>? rules,
         List<Nexus.Service.Monitoring.History.SensorSeriesReading> into)
     {
-        var current = (rules ?? Enumerable.Empty<SensorAlertRule>()).Where(r => r.Enabled).ToDictionary(r => r.Id, StringComparer.Ordinal);
+        var current = (rules ?? Enumerable.Empty<SensorAlertRule>()).ToDictionary(r => r.Id, StringComparer.Ordinal);
         foreach (var e in entries)
         {
             if (current.TryGetValue(e.RuleId, out var rule) && SensorAlertRules.SameSensor(e.Sensor, rule.Sensor, bIdResolves: true))
@@ -169,20 +177,33 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    /// <summary>Delivers a notice; the second argument is ignoreMaster.</summary>
-    public Action<DiagnosticsAlertNotice, bool>? NoticeSink { get; set; }
+    /// <summary>Delivers a notice. The second argument is the shared-cooldown key.</summary>
+    public Action<DiagnosticsAlertNotice, string>? NoticeSink { get; set; }
+
+    /// <summary>Set by DI to the phone push path; called on a raise of a rule with NotifyMobile, with the same notice and key as <see cref="NoticeSink"/>.</summary>
+    public Action<DiagnosticsAlertNotice, string>? MobileSink { get; set; }
 
     /// <summary>Raised after a transition or a rule change, never for a plain value update.</summary>
     public event Action? Changed;
 
-    public SensorAlertEngine(IConfigStore store, ISensorProvider sensors) : this(store, sensors, TimeProvider.System)
+    public SensorAlertEngine(IConfigStore store, ISensorProvider sensors, Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null, Nexus.Service.Cooling.IFanControlProvider? fans = null)
+        : this(store, sensors, TimeProvider.System, null, drives, fans)
     {
     }
 
-    internal SensorAlertEngine(IConfigStore store, ISensorProvider sensors, TimeProvider time, TimeSpan? startupHold = null)
+    internal SensorAlertEngine(
+        IConfigStore store, ISensorProvider sensors, TimeProvider time, TimeSpan? startupHold = null,
+        Nexus.Service.Diagnostics.Storage.ISmartHealthSource? drives = null,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null)
     {
         _store = store;
         _sensors = sensors;
+        _cpuMax = new CpuMaxCache(
+            () => _sensors.GetCpuModel(),
+            () => _sensors.GetCpuTjMaxC(),
+            ex => Warn("builtin-cpumax", $"[sensor-alerts] CPU maximum lookup failed: {ex.Message}", Mono()));
+        _drives = drives;
+        _fans = fans;
         _time = time;
         _stamp0 = time.GetTimestamp();
         _wall0 = time.GetUtcNow();
@@ -269,7 +290,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 open.Direction = st.Direction ?? open.Direction;
                 open.Threshold = (st.Direction == "below" ? rule.Low : rule.High) ?? open.Threshold;
             }
-            effect |= StepActive(rule, v, now, st);
+            effect |= StepActive(rule, v, now, stamp, st);
             return Finish(st, now, effect);
         }
 
@@ -279,23 +300,27 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             st.Phase = SensorAlertStates.Active;
             st.PhaseSince = now;
             st.PhaseSinceUtc = stamp;
-            st.LastNotified = now;
             st.ClearSince = null;
             st.Acknowledged = false;
+            st.Ended = null;
             effect |= SensorAlertEffect.Raised;
         }
         return Finish(st, now, effect);
     }
 
-    private static SensorAlertEffect StepActive(SensorAlertRule rule, double v, DateTimeOffset now, SensorAlertRuntime st)
+    private static SensorAlertEffect StepActive(SensorAlertRule rule, double v, DateTimeOffset now, DateTimeOffset wall, SensorAlertRuntime st)
     {
         var hyst = SensorAlertRules.Hysteresis(rule);
         var inside = (rule.High is not { } hi || v <= hi - hyst) && (rule.Low is not { } lo || v >= lo + hyst);
         if (inside)
         {
             st.ClearSince ??= now;
-            if (now - st.ClearSince.Value >= TimeSpan.FromSeconds(rule.ClearAfterSeconds))
+            if (now - st.ClearSince.Value >= ClearDelay)
             {
+                // An alert the user already dismissed leaves nothing behind.
+                st.Ended = st.Acknowledged
+                    ? null
+                    : new EndedAlert(wall, st.Extreme ?? v, (st.Direction == "below" ? rule.Low : rule.High) ?? 0, st.Direction ?? "above");
                 st.ResetToOk();
                 return SensorAlertEffect.Cleared;
             }
@@ -303,13 +328,36 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
 
         st.ClearSince = null;
-        if (rule.RepeatMinutes > 0 && !st.Acknowledged && now - st.LastNotified >= TimeSpan.FromMinutes(rule.RepeatMinutes))
-        {
-            st.LastNotified = now;
-            return SensorAlertEffect.Repeated;
-        }
         return SensorAlertEffect.None;
     }
+
+    /// <summary>Keeps the reading of a disabled rule current without any alert logic. Returns whether the reported state changed.</summary>
+    private static bool StepDisabled(SensorSample sample, DateTimeOffset now, DateTimeOffset wall, SensorAlertRuntime st)
+    {
+        if (sample.Valid)
+        {
+            st.InvalidSince = null;
+            st.InvalidSinceUtc = null;
+            st.Value = sample.Value;
+            st.Units = sample.Units;
+        }
+        else
+        {
+            st.InvalidSince ??= now;
+            st.InvalidSinceUtc ??= wall;
+            st.Value = null;
+        }
+        var reported = DisabledReported(st, now);
+        if (reported == st.Reported)
+        {
+            return false;
+        }
+        st.Reported = reported;
+        return true;
+    }
+
+    private static string DisabledReported(SensorAlertRuntime st, DateTimeOffset now) =>
+        st.InvalidSince is { } since && now - since >= UnavailableAfter ? SensorAlertStates.Unavailable : SensorAlertStates.Off;
 
     private static SensorAlertEffect Finish(SensorAlertRuntime st, DateTimeOffset now, SensorAlertEffect effect)
     {
@@ -397,7 +445,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             return new SensorSample(false, 0, "");
         }
-        return new SensorSample(IsUsable(found), found.Value, found.Units);
+        return new SensorSample(IsUsable(found), found.Value, found.Units, found.Parent.Name);
     }
 
     private static bool IsUsable(HardwareSensor s)
@@ -415,36 +463,89 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
-    private (List<SensorAlertRule> Rules, bool Fahrenheit) Snapshot()
+    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit)
     {
+        public void Deconstruct(out List<SensorAlertRule> rules, out bool fahrenheit)
+        {
+            rules = Rules;
+            fahrenheit = Fahrenheit;
+        }
+    }
+
+    private Snap Snapshot()
+    {
+        var builtIns = BuiltIns().Devices;
+        // Also here, not only on a tick: a settings reset removes the stored rules while the detected devices stay.
+        SeedBuiltIns(builtIns);
+        var devices = builtIns.ToDictionary(d => BuiltInSensorRules.RuleId(d.SeriesId), StringComparer.Ordinal);
+        foreach (var (id, detected) in devices)
+        {
+            _knownDevices[id] = detected;
+        }
         var rules = new List<SensorAlertRule>();
+        var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
         _store.Read(s =>
         {
+            var ignored = s.Diagnostics.IgnoredComponents;
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
                 {
-                    rules.Add(rule.Clone());
+                    if (rule.BuiltIn is null)
+                    {
+                        rules.Add(rule.Clone());
+                    }
+                    // A device missing from one pass (a failed read, a dropped sensor) keeps its entry as last seen, so its state is not torn down.
+                    else if (devices.TryGetValue(rule.Id, out var device) || _knownDevices.TryGetValue(rule.Id, out device))
+                    {
+                        var copy = rule.Clone();
+                        copy.Sensor.Name = device.Name;
+                        copy.Source = device.Source;
+                        // A fan's on/off is the Cooling page's stall-monitoring toggle, so the ignore list decides, not the stored flag.
+                        if (device.Kind == BuiltInSensorRules.FanSpeed)
+                        {
+                            copy.Enabled = ignored?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+                        }
+                        builtInRules.Add(copy);
+                    }
                 }
             }
             fahrenheit = string.Equals(s.Units.MonitoringTempUnit, "f", StringComparison.OrdinalIgnoreCase);
         });
-        return (rules, fahrenheit);
+        // Built-ins first, in the Cooling chart's order.
+        builtInRules.Sort((a, b) =>
+        {
+            var byKind = BuiltInSensorRules.KindRank(BuiltInSensorRules.SeriesId(a.Id)) - BuiltInSensorRules.KindRank(BuiltInSensorRules.SeriesId(b.Id));
+            return byKind != 0 ? byKind : string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
+        });
+        builtInRules.AddRange(rules);
+        return new Snap(builtInRules, fahrenheit);
     }
 
-    /// <summary>The configured rules, as copies.</summary>
+    /// <summary>The configured rules, as copies: the built-ins of every device seen since startup (one missing now reads unavailable), then the user's.</summary>
     public List<SensorAlertRule> Rules() => Snapshot().Rules;
 
-    /// <summary>Evaluates every enabled rule once. Does nothing, and reads no sensor, without one.</summary>
+    /// <summary>The devices that have a built-in entry: those detected now plus any seen since startup that this pass missed.</summary>
+    public IReadOnlyList<BuiltInDevice> BuiltInDevices()
+    {
+        var detected = BuiltIns().Devices;
+        var seen = detected.Select(d => BuiltInSensorRules.RuleId(d.SeriesId)).ToHashSet(StringComparer.Ordinal);
+        var absent = _knownDevices.Where(kv => !seen.Contains(kv.Key)).Select(kv => kv.Value).ToList();
+        return absent.Count == 0 ? detected : detected.Concat(absent).ToList();
+    }
+
+    /// <summary>Refreshes the detected devices, then steps every rule once.</summary>
     public void Tick()
     {
-        var (rules, fahrenheit) = Snapshot();
+        RefreshBuiltIns();
+        var snap = Snapshot();
+        var (rules, fahrenheit) = snap;
         var now = Mono();
         var changed = ReconcileCore(rules, now);
 
-        var enabled = rules.Where(r => r.Enabled).ToList();
-        var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify)>();
+        var enabled = rules;
+        var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify, string Key, bool Mobile)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
         var readings = new List<SeriesEntry>(enabled.Count);
         if (enabled.Count > 0)
@@ -467,17 +568,29 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     {
                         heals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, healed));
                     }
-                    if (sample.Valid && double.IsFinite(sample.Value))
+                    // A built-in's series is the monitoring history's own, so it is not recorded twice.
+                    if (rule.BuiltIn is null && sample.Valid && double.IsFinite(sample.Value))
                     {
                         // A healed id is the same sensor, so the entry carries it and compares equal to the rule once the heal lands.
                         readings.Add(new SeriesEntry(rule.Id, sample.Value, healed is null ? rule.Sensor : WithId(rule.Sensor, healed)));
                     }
+                    if (sample.Valid)
+                    {
+                        st.Source = sample.Source;
+                    }
+                    // The switch controls alerting only: a disabled rule is read and recorded but never stepped.
+                    if (!rule.Enabled)
+                    {
+                        changed |= StepDisabled(sample, now, wall, st);
+                        continue;
+                    }
                     var effect = Step(rule, sample, now, st, wall);
-                    changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, notices);
+                    changed |= ApplyEffect(rule, st, effect, wall, fahrenheit, snap, notices);
                 }
             }
         }
 
+        changed |= ExpireEnded(_time.GetUtcNow());
         Volatile.Write(ref _series, new SeriesSnapshot(now, readings));
         if (heals.Count > 0)
         {
@@ -485,17 +598,38 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
         // After the heal, so a healed id already matches the stored rule.
         DropStaleSeries();
-        foreach (var (notice, notify) in notices)
+        foreach (var (notice, notify, key, mobile) in notices)
         {
             if (notify)
             {
-                DeliverNotice(notice);
+                DeliverNotice(notice, key);
+            }
+            if (mobile)
+            {
+                DeliverMobile(notice, key);
             }
         }
         if (changed)
         {
             Changed?.Invoke();
         }
+    }
+
+    private bool ExpireEnded(DateTimeOffset wall)
+    {
+        var any = false;
+        lock (_lock)
+        {
+            foreach (var st in _states.Values)
+            {
+                if (st.Ended is { } ended && wall - ended.EndedUtc >= SensorAlertRules.EndedLinger)
+                {
+                    st.Ended = null;
+                    any = true;
+                }
+            }
+        }
+        return any;
     }
 
     private Dictionary<string, IReadOnlyList<HardwareSensor>> ReadCategories(List<SensorAlertRule> enabled, DateTimeOffset now)
@@ -531,6 +665,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private IReadOnlyList<HardwareSensor> ReadCategory(string category, SensorSnapshotSources sources, DateTimeOffset now)
     {
+        if (category == BuiltInSensorRules.Category)
+        {
+            return BuiltIns().Sensors;
+        }
         // Drive temperatures exist only under smart, and each read wakes sleeping drives, so it is sampled slowly.
         if (category == "smart")
         {
@@ -550,6 +688,301 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return SensorSnapshotResolver.GetCategorySensors(_sensors, category, sources);
     }
 
+    private sealed record BuiltInSnapshot(IReadOnlyList<BuiltInDevice> Devices, IReadOnlyList<HardwareSensor> Sensors);
+
+    private BuiltInSnapshot? _builtIns;
+
+    // Every device detected since the process started, by rule id; values are replaced whole, never mutated.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, BuiltInDevice> _knownDevices = new(StringComparer.Ordinal);
+
+    private BuiltInSnapshot BuiltIns() => Volatile.Read(ref _builtIns) ?? RefreshBuiltIns();
+
+    /// <summary>
+    /// Detects the devices the Cooling temperature history plots, each read the way the sampler reads it: the CPU package
+    /// (else the first CPU temperature), each GPU's core temperature, each drive with a SMART temperature (the cache, so no
+    /// drive wakes) and the mean of the memory-module sensors. Each source reads on its own, so one failure leaves the others
+    /// live.
+    /// </summary>
+    private BuiltInSnapshot RefreshBuiltIns()
+    {
+        var empty = new BuiltInSnapshot(Array.Empty<BuiltInDevice>(), Array.Empty<HardwareSensor>());
+        var migrated = false;
+        _store.Read(s => migrated = s.Diagnostics.BuiltInSensorsVersion >= BuiltInSensorRules.PerDeviceVersion);
+        // Settings that never went through BuiltInSensorRules.Ensure have no legacy templates yet, so nothing is detected or read.
+        if (!migrated)
+        {
+            return empty;
+        }
+        var devices = new List<BuiltInDevice>();
+        var sensors = new List<HardwareSensor>();
+        var now = Mono();
+        // One value per pass, shared by the CPU and an integrated GPU.
+        var cpuMax = _cpuMax.Get()?.MaxC;
+        TryDiscover(devices, sensors, "cpu", now, (d, s) => DiscoverCpu(d, s, cpuMax));
+        TryDiscover(devices, sensors, "gpu", now, (d, s) => DiscoverGpus(d, s, cpuMax));
+        TryDiscover(devices, sensors, "memory", now, DiscoverMemory);
+        TryDiscover(devices, sensors, "storage", now, DiscoverDrives);
+        TryDiscover(devices, sensors, "fans", now, DiscoverFans);
+        ApplyPendingIgnores(devices);
+        var snapshot = new BuiltInSnapshot(devices, sensors);
+        Volatile.Write(ref _builtIns, snapshot);
+        return snapshot;
+    }
+
+    /// <summary>The window after the startup hold in which late-enumerating hubs and slow drives still get the retired "off" choice.</summary>
+    private static readonly TimeSpan PendingSettle = TimeSpan.FromMinutes(5);
+
+    private readonly HashSet<string> _pendingApplied = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Applies the retired cooling and storage health toggles to each fan and drive the first time it appears. No hub or drive
+    /// source has a ready signal (the sensor provider's only covers its own walk), so the flags clear once a bounded window
+    /// after the startup hold has passed, not on the first enumeration.
+    /// </summary>
+    private void ApplyPendingIgnores(IReadOnlyList<BuiltInDevice> devices)
+    {
+        var fans = false;
+        var drives = false;
+        _store.Read(s => (fans, drives) = (s.Diagnostics.PendingFansOff, s.Diagnostics.PendingDrivesOff));
+        if (!fans && !drives)
+        {
+            return;
+        }
+        var settled = _time.GetElapsedTime(_stamp0) >= PendingSettle + (_startupHold ?? Nexus.Service.Lifecycle.StartupDelayGate.Configured);
+        var fresh = new List<string>();
+        lock (_pendingApplied)
+        {
+            if (fans)
+            {
+                foreach (var d in devices.Where(d => d.Kind == BuiltInSensorRules.FanSpeed))
+                {
+                    if (_pendingApplied.Add(d.ComponentId))
+                    {
+                        fresh.Add(d.ComponentId);
+                    }
+                }
+            }
+            if (drives && _drives?.Snapshot() is { Supported: true } smart)
+            {
+                foreach (var drive in smart.Drives)
+                {
+                    if (_pendingApplied.Add(drive.Id))
+                    {
+                        fresh.Add(drive.Id);
+                    }
+                }
+            }
+        }
+        if (fresh.Count == 0 && !settled)
+        {
+            return;
+        }
+        try
+        {
+            _store.Update(s =>
+            {
+                var ignored = s.Diagnostics.IgnoredComponents ??= new List<string>();
+                foreach (var id in fresh.Where(id => !ignored.Contains(id, StringComparer.Ordinal)))
+                {
+                    ignored.Add(id);
+                }
+                if (settled)
+                {
+                    s.Diagnostics.PendingFansOff = false;
+                    s.Diagnostics.PendingDrivesOff = false;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            lock (_pendingApplied)
+            {
+                _pendingApplied.ExceptWith(fresh);
+            }
+            Warn("health-migration", $"[sensor-alerts] applying the retired health toggles failed: {ex.Message}", Mono());
+        }
+    }
+
+    private void SeedBuiltIns(IReadOnlyList<BuiltInDevice> devices)
+    {
+        var missing = false;
+        _store.Read(s =>
+        {
+            var have = new Dictionary<string, SensorAlertRule>(StringComparer.Ordinal);
+            foreach (var r in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
+            {
+                have.TryAdd(r.Id, r);
+            }
+            missing = devices.Any(d => !have.TryGetValue(BuiltInSensorRules.RuleId(d.SeriesId), out var r) || BuiltInSensorRules.CpuDefaultStale(r, d));
+        });
+        if (!missing)
+        {
+            return;
+        }
+        try
+        {
+            _store.Update(s =>
+            {
+                var list = s.Diagnostics.SensorAlerts ??= new List<SensorAlertRule>();
+                foreach (var device in devices)
+                {
+                    var existing = list.FirstOrDefault(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId));
+                    if (existing is null)
+                    {
+                        list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics));
+                    }
+                    else if (BuiltInSensorRules.CpuDefaultStale(existing, device))
+                    {
+                        BuiltInSensorRules.RefreshCpuDefault(existing, device);
+                    }
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Warn("builtin-seed", $"[sensor-alerts] built-in seeding failed: {ex.Message}", Mono());
+        }
+    }
+
+    private void TryDiscover(List<BuiltInDevice> devices, List<HardwareSensor> sensors, string key, DateTimeOffset now, Action<List<BuiltInDevice>, List<HardwareSensor>> discover)
+    {
+        try
+        {
+            discover(devices, sensors);
+        }
+        catch (Exception ex)
+        {
+            Warn("builtin-" + key, $"[sensor-alerts] built-in {key} read failed: {ex.Message}", now);
+        }
+    }
+
+    private void DiscoverCpu(List<BuiltInDevice> devices, List<HardwareSensor> sensors, double? cpuMaxC)
+    {
+        var temp = Nexus.Service.Monitoring.History.SystemMetricsSource.FindSensor(_sensors.GetCpuSensors(), "Temperature", "Package");
+        if (temp is null)
+        {
+            return;
+        }
+        var name = Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveCpuTempName(_sensors.GetCpuModel());
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.CpuTemp, BuiltInSensorRules.CpuSeriesId, name, false, "", SingleSource("cpu", temp, name), cpuMaxC), temp.Value, temp.Stale);
+    }
+
+    private readonly CpuMaxCache _cpuMax;
+
+    private void DiscoverGpus(List<BuiltInDevice> devices, List<HardwareSensor> sensors, double? cpuMaxC)
+    {
+        foreach (var gpu in _sensors.GetGpus())
+        {
+            var temp = Nexus.Service.Monitoring.History.SystemMetricsSource.FindSensor(gpu.Sensors, "Temperature", "Core");
+            if (temp is null)
+            {
+                continue;
+            }
+            var seriesId = BuiltInSensorRules.GpuSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(gpu.Id);
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.GpuTemp, seriesId, gpu.Name, gpu.Integrated, gpu.Id, SingleSource("gpu", temp, gpu.Name), gpu.Integrated ? cpuMaxC : null), temp.Value, temp.Stale);
+        }
+    }
+
+    private void DiscoverMemory(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    {
+        var usable = Nexus.Service.Monitoring.History.SystemMetricsSource.FindRamTempSensors(_sensors.GetMemorySensors());
+        if (usable.Count == 0)
+        {
+            return;
+        }
+        var fresh = usable.Where(IsUsable).ToList();
+        var value = fresh.Count == 0 ? float.NaN : fresh.Average(x => x.Value);
+        // One contributing sensor is that sensor; several are a mean no single sensor id describes.
+        var source = fresh.Count == 1
+            ? SingleSource("memory", fresh[0], "Memory")
+            : new BuiltInSource { Kind = "average", Sensors = fresh.Select(x => Ref("memory", x)).ToList(), HardwareName = "Memory" };
+        Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.RamTemp, BuiltInSensorRules.MemorySeriesId, "Memory Temperature", false, "", source), value, fresh.Count == 0);
+    }
+
+    private void DiscoverDrives(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    {
+        if (_drives?.Snapshot() is not { Supported: true } smart)
+        {
+            return;
+        }
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var drive in smart.Drives.Where(d => d.TemperatureC is not null).OrderBy(d => d.Id, StringComparer.Ordinal))
+        {
+            var seriesId = BuiltInSensorRules.DriveSeriesPrefix + Nexus.Service.Routes.MonitoringHistoryRoutes.ResolveUniqueSanitizedId(drive.Id, used);
+            // The SMART health poll, not an LHM sensor of the picker's smart category, so there is no picker id to give.
+            var source = new BuiltInSource { Kind = "drive", Sensor = null, HardwareName = drive.Name };
+            Add(devices, sensors, new BuiltInDevice(BuiltInSensorRules.StorageTemp, seriesId, drive.Name, false, drive.Id, source), (float)drive.TemperatureC!.Value, false);
+        }
+    }
+
+    /// <summary>One entry per fan or pump channel, keyed like the monitoring history's fan RPM series ("fan:" plus the sanitized channel id).</summary>
+    private void DiscoverFans(List<BuiltInDevice> devices, List<HardwareSensor> sensors)
+    {
+        if (_fans is null)
+        {
+            return;
+        }
+        // Read once per refresh, and only when a channel has a tach sensor to look up.
+        IReadOnlyList<HardwareSensor>? gpuTachs = null;
+        IReadOnlyList<HardwareSensor>? boardTachs = null;
+        foreach (var ch in _fans.GetFanChannels())
+        {
+            var seriesId = BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id);
+            if (devices.Any(d => d.SeriesId == seriesId))
+            {
+                continue;
+            }
+            BuiltInSource source;
+            var hardware = ch.DeviceName ?? ch.Name;
+            // The tach sensor behind a motherboard or graphics card channel when the picker lists it; a hub channel has none.
+            HardwareSensor? tach = null;
+            if (!string.IsNullOrEmpty(ch.RpmSensorId))
+            {
+                var list = ch.IsGpu
+                    ? gpuTachs ??= _sensors.GetGpus().SelectMany(g => g.Sensors).ToList()
+                    : boardTachs ??= _sensors.GetMotherboardSensorsCached();
+                tach = list.FirstOrDefault(x => x.Id == ch.RpmSensorId);
+            }
+            source = tach is null
+                ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware }
+                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
+            var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, ch.Name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
+            // A channel with no readable tach has no value, as in the history.
+            Add(devices, sensors, device, ch.RpmUnavailable ? float.NaN : ch.Rpm, ch.RpmUnavailable);
+        }
+    }
+
+    private static SensorRef Ref(string category, HardwareSensor s) => new()
+    {
+        Category = category,
+        Id = s.Id,
+        Name = s.Name,
+        Type = s.Type,
+        ParentName = s.Parent.Name,
+    };
+
+    private static BuiltInSource SingleSource(string category, HardwareSensor s, string hardwareName) => new()
+    {
+        Kind = "sensor",
+        Sensor = Ref(category, s),
+        HardwareName = hardwareName,
+    };
+
+    private static void Add(List<BuiltInDevice> devices, List<HardwareSensor> sensors, BuiltInDevice device, float value, bool stale)
+    {
+        devices.Add(device);
+        sensors.Add(new HardwareSensor
+        {
+            Id = device.SeriesId,
+            Name = device.Name,
+            Type = BuiltInSensorRules.SensorType(device.Kind),
+            Value = value,
+            Units = BuiltInSensorRules.Units(device.Kind),
+            Stale = stale,
+            Parent = new SensorParent { Id = device.SeriesId, Name = device.Name },
+        });
+    }
+
     private void Warn(string key, string message, DateTimeOffset now)
     {
         if (_warnings.ShouldLog(key, now))
@@ -564,7 +997,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         SensorAlertEffect effect,
         DateTimeOffset now,
         bool fahrenheit,
-        List<(DiagnosticsAlertNotice, bool)> notices)
+        Snap snap,
+        List<(DiagnosticsAlertNotice, bool, string, bool)> notices)
     {
         if (effect == SensorAlertEffect.None)
         {
@@ -589,9 +1023,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 _history.RemoveAt(0);
             }
         }
-        if ((effect & (SensorAlertEffect.Raised | SensorAlertEffect.Repeated)) != 0)
+        if ((effect & SensorAlertEffect.Raised) != 0)
         {
-            notices.Add((BuildNotice(rule, st, fahrenheit), rule.NotifyDesktop));
+            notices.Add((BuildNotice(rule, st, fahrenheit), rule.NotifyDesktop, "alert:" + rule.Id, rule.NotifyMobile));
         }
         if ((effect & SensorAlertEffect.Cleared) != 0)
         {
@@ -604,11 +1038,23 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return (effect & (SensorAlertEffect.Raised | SensorAlertEffect.Cleared | SensorAlertEffect.Changed)) != 0;
     }
 
-    private void DeliverNotice(DiagnosticsAlertNotice notice)
+    private void DeliverMobile(DiagnosticsAlertNotice notice, string key)
     {
         try
         {
-            NoticeSink?.Invoke(notice, true);
+            MobileSink?.Invoke(notice, key);
+        }
+        catch (Exception ex)
+        {
+            Warn("mobile", $"[sensor-alerts] mobile push failed: {ex.Message}", Mono());
+        }
+    }
+
+    private void DeliverNotice(DiagnosticsAlertNotice notice, string key)
+    {
+        try
+        {
+            NoticeSink?.Invoke(notice, key);
         }
         catch (Exception ex)
         {
@@ -678,6 +1124,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 st.InvalidSinceUtc = null;
                 st.Value = null;
                 st.Reported = SensorAlertStates.Ok;
+                st.Ended = null;
                 st.Config = rule.Clone();
                 changed = true;
             }
@@ -712,16 +1159,27 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    /// <summary>Marks an active alert as seen; its health component goes away until it clears and raises again.</summary>
+    /// <summary>Dismisses an active alert (its banner and health entry go until it raises again) or a finished one that is still waiting for the user.</summary>
     public bool Acknowledge(string ruleId)
     {
         lock (_lock)
         {
-            if (!_states.TryGetValue(ruleId, out var st) || st.Phase != SensorAlertStates.Active || st.Acknowledged)
+            if (!_states.TryGetValue(ruleId, out var st))
             {
                 return false;
             }
-            st.Acknowledged = true;
+            if (st.Phase == SensorAlertStates.Active && !st.Acknowledged)
+            {
+                st.Acknowledged = true;
+            }
+            else if (st.Ended is not null)
+            {
+                st.Ended = null;
+            }
+            else
+            {
+                return false;
+            }
         }
         Changed?.Invoke();
         return true;
@@ -736,14 +1194,14 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         Changed?.Invoke();
     }
 
-    /// <summary>States of the enabled rules; a disabled rule has nothing to report.</summary>
+    /// <summary>States of every rule. A disabled rule reports its reading with the off state, or unavailable with no value.</summary>
     public List<SensorAlertState> States()
     {
-        var enabled = Snapshot().Rules.Where(r => r.Enabled).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
+        var enabledById = Snapshot().Rules.ToDictionary(r => r.Id, r => r.Enabled, StringComparer.Ordinal);
         var now = Mono();
         lock (_lock)
         {
-            return _states.Where(kv => enabled.Contains(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now)).ToList();
+            return _states.Where(kv => enabledById.ContainsKey(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now, enabledById[kv.Key])).ToList();
         }
     }
 
@@ -765,9 +1223,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now)
+    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now, bool enabled)
     {
-        var reported = Reported(st, now);
+        var reported = enabled ? Reported(st, now) : DisabledReported(st, now);
         var since = reported switch
         {
             SensorAlertStates.Unavailable => st.InvalidSinceUtc,
@@ -783,57 +1241,76 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             Since = since is { } s ? Iso(s) : null,
             Extreme = inEpisode ? st.Extreme : null,
             Direction = inEpisode ? st.Direction : null,
+            Threshold = inEpisode && st.Config is { } cfg ? (st.Direction == "below" ? cfg.Low : cfg.High) : null,
+            EndedAt = st.Ended is { } ended ? Iso(ended.EndedUtc) : null,
+            EndedPeak = st.Ended?.Peak,
+            EndedThreshold = st.Ended?.Threshold,
+            EndedDirection = st.Ended?.Direction,
             Acknowledged = st.Acknowledged,
         };
     }
 
-    /// <summary>One component per active, unacknowledged rule that opted into health.</summary>
+    /// <summary>
+    /// One component per rule that opted into health and is either active and not acknowledged (the rule's severity) or
+    /// finished and not yet dismissed (watch, like the thermal guard, until it ages out).
+    /// </summary>
     internal List<HealthComponent> HealthComponents()
     {
-        var (rules, fahrenheit) = Snapshot();
+        var snap = Snapshot();
+        var (rules, fahrenheit) = snap;
+        var wall = _time.GetUtcNow();
         var result = new List<HealthComponent>();
         lock (_lock)
         {
             foreach (var rule in rules)
             {
-                if (!rule.Enabled || !rule.ShowInHealth || !_states.TryGetValue(rule.Id, out var st)
-                    || st.Config is not { } cfg || !cfg.SameConfig(rule)
-                    || st.Phase != SensorAlertStates.Active || st.Acknowledged)
+                if (!rule.Enabled || !_states.TryGetValue(rule.Id, out var st)
+                    || st.Config is not { } cfg || !cfg.SameConfig(rule))
                 {
                     continue;
                 }
-                var severity = rule.Severity == SensorAlertRules.Act ? HealthStatuses.Act : HealthStatuses.Watch;
-                var text = SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit);
-                result.Add(new HealthComponent
+                if (st.Phase == SensorAlertStates.Active && !st.Acknowledged)
                 {
-                    Id = $"alert:{rule.Id}",
-                    Kind = "alerts",
-                    Name = SensorAlertText.DisplayName(rule.Sensor),
-                    Status = severity,
-                    Reasons = new List<HealthComponentReason>
-                    {
-                        new("alerts.sensorThreshold", severity, text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={st.Direction}",
-                            ThresholdParams(rule, st)),
-                    },
-                });
+                    var severity = rule.Severity == SensorAlertRules.Act ? HealthStatuses.Act : HealthStatuses.Watch;
+                    var text = SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit, st.Source);
+                    result.Add(Component(rule, severity, "alerts.sensorThreshold", text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={st.Direction}",
+                        ThresholdParams(rule, st)));
+                }
+                else if (st.Ended is { } ended && wall - ended.EndedUtc < SensorAlertRules.EndedLinger)
+                {
+                    var text = SensorAlertText.DescribeEnded(rule, ended, fahrenheit, st.Source, st.Units);
+                    result.Add(Component(rule, HealthStatuses.Watch, "alerts.sensorThresholdEnded", text, $"ruleId={rule.Id} category={rule.Sensor.Category} direction={ended.Direction}",
+                        EndedParams(rule, ended, st.Units, st.Source)));
+                }
             }
         }
         return result;
     }
 
+    private static HealthComponent Component(SensorAlertRule rule, string severity, string code, string text, string detail, Dictionary<string, string> p) => new()
+    {
+        Id = $"alert:{rule.Id}",
+        Kind = "alerts",
+        Name = SensorAlertText.DisplayName(rule),
+        Status = severity,
+        Reasons = new List<HealthComponentReason> { new(code, severity, text, detail, p) },
+    };
+
     // Values are native units (temperature in Celsius); the UI converts for display.
     private static Dictionary<string, string> ThresholdParams(SensorAlertRule rule, SensorAlertRuntime st)
     {
-        var p = new Dictionary<string, string>
+        var p = BaseParams(rule, st.Source, st.Units);
+        p["direction"] = st.Direction ?? "";
+        p["value"] = (st.Value ?? st.Extreme ?? 0).ToString(CultureInfo.InvariantCulture);
+        p["active"] = "true";
+        if (st.Extreme is { } peak)
         {
-            ["ruleId"] = rule.Id,
-            ["category"] = rule.Sensor.Category,
-            ["direction"] = st.Direction ?? "",
-            ["type"] = rule.Sensor.Type,
-            ["sensorName"] = rule.Sensor.Name,
-            ["value"] = (st.Value ?? st.Extreme ?? 0).ToString(CultureInfo.InvariantCulture),
-            ["units"] = st.Units,
-        };
+            p["peak"] = peak.ToString(CultureInfo.InvariantCulture);
+        }
+        if (st.PhaseSinceUtc is { } since)
+        {
+            p["since"] = since.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+        }
         if ((st.Direction == "below" ? rule.Low : rule.High) is { } threshold)
         {
             p["threshold"] = threshold.ToString(CultureInfo.InvariantCulture);
@@ -841,12 +1318,45 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return p;
     }
 
+    private static Dictionary<string, string> EndedParams(SensorAlertRule rule, EndedAlert ended, string units, string source)
+    {
+        var p = BaseParams(rule, source, units);
+        p["direction"] = ended.Direction;
+        p["active"] = "false";
+        p["peak"] = ended.Peak.ToString(CultureInfo.InvariantCulture);
+        p["threshold"] = ended.Threshold.ToString(CultureInfo.InvariantCulture);
+        p["ended"] = ended.EndedUtc.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+        return p;
+    }
+
+    private static Dictionary<string, string> BaseParams(SensorAlertRule rule, string source, string units)
+    {
+        var p = new Dictionary<string, string>
+        {
+            ["ruleId"] = rule.Id,
+            ["category"] = rule.Sensor.Category,
+            ["type"] = rule.Sensor.Type,
+            ["sensorName"] = rule.Sensor.Name,
+            ["units"] = units,
+        };
+        if (rule.BuiltIn is not null)
+        {
+            p["builtIn"] = rule.BuiltIn;
+        }
+        if (source.Length > 0 && rule.BuiltIn is null)
+        {
+            p["sourceName"] = source;
+        }
+        return p;
+    }
+
     private static DiagnosticsAlertNotice BuildNotice(SensorAlertRule rule, SensorAlertRuntime st, bool fahrenheit) =>
         new(
             "Sensor alert",
-            SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit),
+            SensorAlertText.Describe(rule, st.Direction, st.Value ?? st.Extreme ?? 0, st.Units, fahrenheit, st.Source),
             NoticeKind,
-            Urgent: rule.Severity == SensorAlertRules.Act);
+            Urgent: rule.Severity == SensorAlertRules.Act,
+            Severity: rule.Severity);
 
     private static string Iso(DateTimeOffset t) => t.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 }
@@ -877,18 +1387,28 @@ internal sealed class LogThrottle
 internal static class SensorAlertText
 {
     /// <summary>The sensor's name with its type appended unless the name already says it.</summary>
+    internal static string DisplayName(SensorAlertRule rule) => rule.BuiltIn is not null ? rule.Sensor.Name : DisplayName(rule.Sensor);
+
     internal static string DisplayName(SensorRef sensor) =>
         sensor.Name.EndsWith(sensor.Type, StringComparison.OrdinalIgnoreCase) || sensor.Type.Length == 0
             ? sensor.Name
             : $"{sensor.Name} {sensor.Type}";
 
     /// <summary>The toast sentence: name, direction, limit, hold time and the current reading.</summary>
-    internal static string Describe(SensorAlertRule rule, string? direction, double value, string units, bool fahrenheit)
+    internal static string Describe(SensorAlertRule rule, string? direction, double value, string units, bool fahrenheit, string source = "")
     {
         var below = direction == "below";
         var threshold = (below ? rule.Low : rule.High) ?? 0;
         var delay = rule.RaiseAfterSeconds > 0 ? $" for {rule.RaiseAfterSeconds} s" : "";
-        return $"{DisplayName(rule.Sensor)} {(below ? "below" : "above")} {Format(threshold, rule.Sensor.Type, units, fahrenheit)}{delay} (now {Format(value, rule.Sensor.Type, units, fahrenheit)})";
+        return $"{DisplayName(rule)} {(below ? "below" : "above")} {Format(threshold, rule.Sensor.Type, units, fahrenheit)}{delay} (now {Format(value, rule.Sensor.Type, units, fahrenheit)})";
+    }
+
+    /// <summary>The sentence for a finished alert that still waits for the user.</summary>
+    internal static string DescribeEnded(SensorAlertRule rule, EndedAlert ended, bool fahrenheit, string source, string units)
+    {
+        var type = rule.Sensor.Type;
+        var below = ended.Direction == "below";
+        return $"{DisplayName(rule)} was {(below ? "below" : "above")} {Format(ended.Threshold, type, units, fahrenheit)} (peak {Format(ended.Peak, type, units, fahrenheit)}), back to normal";
     }
 
     internal static string Format(double value, string type, string units, bool fahrenheit)

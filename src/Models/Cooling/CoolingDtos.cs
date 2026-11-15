@@ -164,7 +164,7 @@ public sealed class FanChannel
     public bool Controlled { get; set; } = true;
     /// <summary>Duty points added to whatever drives this channel, in [-100,100]. Computed from settings; 0 when the channel has none. Surfaced so an imported offset is never invisible on the card.</summary>
     public int Offset { get; set; }
-    /// <summary>True when this channel belongs to an all-in-one liquid cooler - derived from the device exposing a pump head, not from its name. Read from hardware, like <see cref="IsGpu"/>; drives the default in <see cref="Nexus.Service.Cooling.FanProfiles.IsPinnedByDefault"/>.</summary>
+    /// <summary>True when this channel belongs to an all-in-one liquid cooler - derived from the device exposing a pump head, not from its name. Read from hardware, like <see cref="IsGpu"/>.</summary>
     public bool IsAio { get; set; }
     /// <summary>True when this channel is a fan on the graphics card, decided by the hardware the provider enumerated it from (LibreHardwareMonitor GpuNvidia/GpuAmd/GpuIntel on Windows, NVML on Linux) - never by its name. Read from hardware, unlike <see cref="Role"/>; drives the default in <see cref="Nexus.Service.Cooling.FanProfiles.IsPinnedByDefault"/>.</summary>
     public bool IsGpu { get; set; }

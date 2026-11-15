@@ -1278,7 +1278,7 @@ public sealed class CoolingSettings
     public Dictionary<string, int> ManualSpeeds { get; set; } = new();
     /// <summary>Per-channel duty offset in points, added to whatever a curve computes for that channel and clamped at the write. Absent entry means 0.</summary>
     public Dictionary<string, int> FanOffsets { get; set; } = new();
-    /// <summary>Per-channel pin override keyed by channel ID. A pinned channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An absent entry defaults to pinned for pumps, unpinned otherwise; see <see cref="Nexus.Service.Cooling.FanProfiles.IsPinned"/>.</summary>
+    /// <summary>Per-channel pin override keyed by channel ID. A pinned channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An absent entry defaults to pinned for pumps and GPU fans, unpinned otherwise; see <see cref="Nexus.Service.Cooling.FanProfiles.IsPinned"/>.</summary>
     public Dictionary<string, bool> FanPinOverrides { get; set; } = new();
     /// <summary>Pre-rename name of <see cref="FanPinOverrides"/>. Read only so an older settings file or profile still loads; <see cref="Nexus.Service.Lighting.PinMigration"/> folds it into the new field and clears it.</summary>
     public Dictionary<string, bool>? FanLockOverrides { get; set; }
@@ -1701,6 +1701,8 @@ public sealed class DevicesSettings
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
     public DeepCoolMystiqueSettings DeepCoolMystique { get; set; } = new();
+    /// <summary>What the ROG Ryujin III Extreme's screen is set to. The device cannot be read back, so this is what Nexus last sent, not a reading.</summary>
+    public RyujinDisplaySettings RyujinDisplay { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2294,9 +2296,26 @@ public sealed class StrimerLightingSettings
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
+    /// <summary>Palette shared by every mode before each mode kept its own; moved into <see cref="ModeColors"/> by <c>StrimerEffectsMigration</c> and empty afterwards.</summary>
     public List<string> Colors { get; set; } = new();
+    /// <summary>Each mode's own palette by mode key.</summary>
+    public Dictionary<string, List<string>> ModeColors { get; set; } = new();
+    /// <summary>Each mode's own speed level by mode key; a mode with no entry starts at its own default.</summary>
+    public Dictionary<string, int> ModeSpeeds { get; set; } = new();
+    /// <summary>Cables ("ch0" 24-pin, "ch1" 8-pin) and single ports ("p0".."p11") that play their own effect instead of the shared one.</summary>
+    public Dictionary<string, StrimerTargetLook> Targets { get; set; } = new();
     /// <summary>The cable plays the motherboard ARGB header through the controller's sync cable instead of Nexus.</summary>
     public bool ArgbSync { get; set; }
+}
+
+/// <summary>The effect one cable or port plays in place of the shared one.</summary>
+public sealed class StrimerTargetLook
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Direction { get; set; }
+    public int Brightness { get; set; } = 4;
+    public Dictionary<string, int> ModeSpeeds { get; set; } = new();
+    public Dictionary<string, List<string>> ModeColors { get; set; } = new();
 }
 
 /// <summary>The HydroShift II pump ring: "canvas" follows the Lighting page, any other mode is a ring effect the pump head plays on its own.</summary>
@@ -2427,6 +2446,22 @@ public sealed class GlacialLcdSettings
         }
         return copy;
     }
+}
+
+/// <summary>What the ROG Ryujin III Extreme's screen is set to, as Nexus last sent it.</summary>
+public sealed class RyujinDisplaySettings
+{
+    /// <summary>Armoury Crate's default, and the value assumed until the user changes it.</summary>
+    public int Brightness { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorProtocol.DefaultBrightness;
+
+    /// <summary>0 or 90, the two values Armoury Crate sends.</summary>
+    public int Rotation { get; set; }
+
+    /// <summary>How many readings the screen shows, from MinCount to MaxCount.</summary>
+    public int SensorCount { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.MaxCount;
+
+    /// <summary>Sensor ids, one per screen slot; only the first <see cref="SensorCount"/> are shown.</summary>
+    public List<string> Slots { get; set; } = new(Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.DefaultSlots);
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>

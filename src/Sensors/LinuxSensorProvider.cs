@@ -180,16 +180,14 @@ public sealed class LinuxSensorProvider : ISensorProvider
                 {
                     continue;
                 }
-                foreach (var suffix in new[] { "_crit", "_max" })
+                // Only the critical trip point: some k10temp builds expose a fixed value as the max that is not the part's limit.
+                foreach (var input in Directory.EnumerateFiles(hwmonDir, "temp*_input"))
                 {
-                    foreach (var input in Directory.EnumerateFiles(hwmonDir, "temp*_input"))
+                    var index = Path.GetFileName(input).Replace("temp", "").Replace("_input", "");
+                    var milli = ParseFloat(TryRead(Path.Combine(hwmonDir, $"temp{index}_crit")));
+                    if (milli > 0)
                     {
-                        var index = Path.GetFileName(input).Replace("temp", "").Replace("_input", "");
-                        var milli = ParseFloat(TryRead(Path.Combine(hwmonDir, $"temp{index}{suffix}")));
-                        if (milli > 0)
-                        {
-                            return milli / 1000f;
-                        }
+                        return milli / 1000f;
                     }
                 }
             }

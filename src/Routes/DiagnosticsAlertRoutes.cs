@@ -9,6 +9,7 @@ using Nexus.Service.Models;
 using Nexus.Service.Monitoring.History;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Routes;
 
@@ -30,30 +31,51 @@ public static class DiagnosticsAlertRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail("A rule is required."));
             }
+            if (body.BuiltIn is not null)
+            {
+                return Results.BadRequest(ApiResponse.Fail("Built-in sensors cannot be created."));
+            }
             SensorAlertRules.Normalize(body);
             if (SensorAlertRules.Validate(body) is { } error)
             {
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
+            body.Source = null;
+            body.SeededHigh = null;
             body.Id = Guid.NewGuid().ToString("N");
+            // Read outside the store lock: it can walk hardware.
+            var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
+            var candidateResolves = engine.IdResolves(body.Sensor);
+            SensorAlertRule? tracker = null;
             var full = false;
             store.Update(s =>
             {
                 s.Diagnostics.SensorAlerts ??= new List<SensorAlertRule>();
-                if (s.Diagnostics.SensorAlerts.Count >= SensorAlertRules.MaxRules)
+                tracker = SensorAlertRules.FindTracker(body.Sensor, candidateResolves, builtIns.Concat(s.Diagnostics.SensorAlerts.Where(r => r.BuiltIn is null)), null);
+                if (tracker is not null)
+                {
+                    return;
+                }
+                // The cap counts every listed entry: the user's rules plus the built-ins listed.
+                if (s.Diagnostics.SensorAlerts.Count(r => r.BuiltIn is null) + builtIns.Count >= SensorAlertRules.MaxRules)
                 {
                     full = true;
                     return;
                 }
                 s.Diagnostics.SensorAlerts.Add(body);
             });
+            if (tracker is not null)
+            {
+                return Results.Conflict(SensorAlertRules.AlreadyTracked(tracker));
+            }
             if (full)
             {
-                return Results.Conflict(ApiResponse.Fail($"At most {SensorAlertRules.MaxRules} rules are allowed."));
+                // The 409 body is SensorAlreadyTrackedResponse's declared one; the cap case is its Error and Msg subset, with no Code.
+                return Results.Conflict(ApiResponse.Fail($"At most {SensorAlertRules.MaxRules} Watchlist entries are allowed."));
             }
             engine.Reconcile();
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
-        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status409Conflict);
+        }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
         app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {
@@ -62,6 +84,24 @@ public static class DiagnosticsAlertRoutes
                 return Results.BadRequest(ApiResponse.Fail("A rule is required."));
             }
             body.Id = id;
+            body.Source = null;
+            if (BuiltInSensorRules.IsBuiltInId(id))
+            {
+                // Identity and sensor come from the stored rule, never the client; only a detected device has one.
+                if (engine.Rules().FirstOrDefault(r => r.Id == id && r.BuiltIn is not null) is not { } current)
+                {
+                    return Results.NotFound(ApiResponse.Fail("Unknown rule."));
+                }
+                BuiltInSensorRules.Pin(body, current);
+            }
+            else if (body.BuiltIn is not null)
+            {
+                return Results.BadRequest(ApiResponse.Fail("Built-in sensors cannot be created."));
+            }
+            else
+            {
+                body.SeededHigh = null;
+            }
             SensorAlertRules.Normalize(body);
             if (SensorAlertRules.Validate(body) is { } error)
             {
@@ -69,6 +109,8 @@ public static class DiagnosticsAlertRoutes
             }
             // Read outside the store lock: it can walk hardware.
             var bodyIdResolves = engine.IdResolves(body.Sensor);
+            var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
+            SensorAlertRule? tracker = null;
             var found = false;
             var sensorChanged = false;
             store.Update(s =>
@@ -80,9 +122,26 @@ public static class DiagnosticsAlertRoutes
                     return;
                 }
                 sensorChanged = !SensorAlertRules.SameSensor(list[index].Sensor, body.Sensor, bodyIdResolves);
-                list[index] = body;
+                // Only a re-point is checked, so a rule that already duplicated another keeps its limits editable. A built-in's sensor is pinned.
+                if (sensorChanged && body.BuiltIn is null)
+                {
+                    tracker = SensorAlertRules.FindTracker(body.Sensor, bodyIdResolves, builtIns.Concat(list.Where(r => r.BuiltIn is null)), id);
+                    if (tracker is not null)
+                    {
+                        return;
+                    }
+                }
+                list[index] = body.Clone();
                 found = true;
+                if (body.BuiltIn == BuiltInSensorRules.FanSpeed && engine.BuiltInDevices().FirstOrDefault(d => BuiltInSensorRules.RuleId(d.SeriesId) == id) is { } fan)
+                {
+                    BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, body.Enabled);
+                }
             });
+            if (tracker is not null)
+            {
+                return Results.Conflict(SensorAlertRules.AlreadyTracked(tracker));
+            }
             if (!found)
             {
                 return Results.NotFound(ApiResponse.Fail("Unknown rule."));
@@ -92,11 +151,17 @@ public static class DiagnosticsAlertRoutes
                 DropHistory(id, history, buffer);
             }
             engine.Reconcile();
+            // The stored copy has no source; the response carries the one feeding the rule now.
+            body.Source = engine.Rules().FirstOrDefault(r => r.Id == id)?.Source;
             return Results.Ok(body);
-        }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound);
+        }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
         app.MapDelete("/diagnostics/alerts/{id}", (string id, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
         {
+            if (BuiltInSensorRules.IsBuiltInId(id))
+            {
+                return Results.Conflict(ApiResponse.Fail("Built-in sensors can be turned off, not deleted."));
+            }
             var removed = false;
             store.Update(s => removed = s.Diagnostics.SensorAlerts?.RemoveAll(r => r.Id == id) > 0);
             if (removed)
@@ -105,11 +170,39 @@ public static class DiagnosticsAlertRoutes
             }
             engine.Reconcile();
             return Results.NoContent();
-        }).Produces(StatusCodes.Status204NoContent);
+        }).Produces(StatusCodes.Status204NoContent).Produces<ApiResponse>(StatusCodes.Status409Conflict);
+
+        // Writes the factory state back (the series is kept: it is the same sensor). No id resets every built-in.
+        app.MapPost("/diagnostics/alerts/builtins/reset", (string? id, IConfigStore store, SensorAlertEngine engine) =>
+        {
+            var devices = engine.BuiltInDevices().Where(d => string.IsNullOrEmpty(id) || BuiltInSensorRules.RuleId(d.SeriesId) == id).ToList();
+            if (!string.IsNullOrEmpty(id) && devices.Count == 0)
+            {
+                return Results.NotFound(ApiResponse.Fail("Unknown built-in sensor."));
+            }
+            store.Update(s =>
+            {
+                var list = s.Diagnostics.SensorAlerts ??= new List<SensorAlertRule>();
+                foreach (var device in devices)
+                {
+                    var index = list.FindIndex(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId));
+                    if (index >= 0)
+                    {
+                        list[index] = BuiltInSensorRules.Defaults(device);
+                        if (device.Kind == BuiltInSensorRules.FanSpeed)
+                        {
+                            BuiltInSensorRules.SetFanEnabled(s.Diagnostics, device, true);
+                        }
+                    }
+                }
+            });
+            engine.Reconcile();
+            return Results.Ok(new SensorAlertsResponse { Rules = engine.Rules(), States = engine.States(), History = engine.History() });
+        }).Produces<SensorAlertsResponse>().Produces<ApiResponse>(StatusCodes.Status404NotFound);
 
         app.MapGet("/diagnostics/alerts/history-series", (
             long? from, long? to, int? maxPoints, string? ruleId,
-            IConfigStore store, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
+            IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, ISensorProvider sensors) =>
         {
             if (from is null || to is null || to < from)
             {
@@ -132,7 +225,7 @@ public static class DiagnosticsAlertRoutes
             {
                 foreach (var rule in s.Diagnostics.SensorAlerts ?? new List<SensorAlertRule>())
                 {
-                    if (string.IsNullOrEmpty(ruleId) || rule.Id == ruleId)
+                    if (rule.BuiltIn is null && (string.IsNullOrEmpty(ruleId) || rule.Id == ruleId))
                     {
                         names[rule.Id] = rule.Sensor.Name;
                     }
@@ -145,6 +238,20 @@ public static class DiagnosticsAlertRoutes
                 var tail = buffer.SnapshotRange(fromSec, toSec);
                 var db = history.QuerySensorSeriesDecimated(fromSec, toSec, step, names.Keys.ToHashSet(StringComparer.Ordinal));
                 var series = new List<MetricSeriesWire>();
+                // A built-in plots the monitoring history's own series, relabeled with its rule id.
+                var builtIns = engine.Rules().Where(r => r.BuiltIn is not null && (string.IsNullOrEmpty(ruleId) || r.Id == ruleId)).ToList();
+                if (builtIns.Count > 0)
+                {
+                    var wanted = builtIns.ToDictionary(r => BuiltInSensorRules.SeriesId(r.Id), StringComparer.Ordinal);
+                    var monitoring = MonitoringHistoryRoutes.QueryHistory(fromSec, toSec, step, clamped, wanted.Keys.ToHashSet(StringComparer.Ordinal), history, buffer, sensors);
+                    foreach (var rule in builtIns)
+                    {
+                        if (monitoring.Series.FirstOrDefault(x => x.Id == BuiltInSensorRules.SeriesId(rule.Id)) is { Points.Count: > 0 } found)
+                        {
+                            series.Add(new MetricSeriesWire { Id = rule.Id, Kind = "sensorAlert", Name = rule.Sensor.Name, Points = found.Points });
+                        }
+                    }
+                }
                 foreach (var (id, name) in names.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                 {
                     var dbPoints = db.Where(sl => sl.SeriesId == id).Select(sl => (sl.Slot, (double?)sl.Avg, (double?)sl.Max));

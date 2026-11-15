@@ -12,7 +12,7 @@ using Xunit;
 
 namespace Nexus.Service.Tests.Diagnostics.Alerts;
 
-public class SensorAlertEngineTests
+public partial class SensorAlertEngineTests
 {
     private sealed class FakeTime : TimeProvider
     {
@@ -37,6 +37,7 @@ public class SensorAlertEngineTests
         public int CpuReads { get; private set; }
         public int ExtrasReads { get; private set; }
         public int SmartReads { get; private set; }
+        public IReadOnlyList<HardwareSensor> Mobo { get; set; } = Array.Empty<HardwareSensor>();
         public int MoboFullReads { get; private set; }
         public int MoboCachedReads { get; private set; }
         public Action? OnCpuRead { get; set; }
@@ -45,7 +46,7 @@ public class SensorAlertEngineTests
         public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached()
         {
             MoboCachedReads++;
-            return Array.Empty<HardwareSensor>();
+            return Mobo;
         }
 
         public string GetCpuModel() => "TestCPU";
@@ -58,8 +59,11 @@ public class SensorAlertEngineTests
         public (bool Healthy, float DistanceToTJMax) GetCpuHealth() => (true, 20f);
         public IReadOnlyList<string> GetGpuModels() => Array.Empty<string>();
         public IReadOnlyList<HardwareSensor> GetGpuSensors() => Array.Empty<HardwareSensor>();
-        public IReadOnlyList<GpuReadout> GetGpus() => Array.Empty<GpuReadout>();
-        public IReadOnlyList<HardwareSensor> GetMemorySensors() => Array.Empty<HardwareSensor>();
+        public List<GpuReadout> Gpus { get; } = new();
+        public IReadOnlyList<GpuReadout> GetGpus() => Gpus;
+        public IReadOnlyList<HardwareSensor> Memory { get; set; } = Array.Empty<HardwareSensor>();
+        public Func<IReadOnlyList<HardwareSensor>>? MemoryRead { get; set; }
+        public IReadOnlyList<HardwareSensor> GetMemorySensors() => MemoryRead?.Invoke() ?? Memory;
         public string GetMemoryTotalFormatted() => "32 GB";
         public string GetRamBrandModel() => "";
         public Dictionary<string, StorageComponent> Storage { get; } = new();
@@ -83,19 +87,44 @@ public class SensorAlertEngineTests
         public Task ReadyAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
+    private sealed class StubSmart : Nexus.Service.Diagnostics.Storage.ISmartHealthSource
+    {
+        public List<Nexus.Service.Diagnostics.Storage.SmartDriveInfo> Drives { get; } = new();
+        public Nexus.Service.Diagnostics.Storage.SmartSnapshot Snapshot() => new() { Supported = true, Drives = Drives.ToList() };
+        public void ForceRefresh() { }
+    }
+
+    private sealed class StubFans : Nexus.Service.Cooling.IFanControlProvider
+    {
+        public List<Nexus.Service.Models.Cooling.FanChannel> Channels { get; } = new();
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => Channels.ToList();
+        public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public System.Threading.Tasks.Task<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<Nexus.Service.Models.Cooling.FanCalibrationProgress> progress, System.Threading.CancellationToken ct)
+            => System.Threading.Tasks.Task.FromResult<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>>(Array.Empty<Nexus.Service.Models.Cooling.FanCalibration>());
+    }
+
     private sealed class Rig
     {
         public FakeTime Time { get; } = new();
         public InMemoryConfigStore Store { get; } = new();
         public StubSensors Sensors { get; } = new();
         public SensorAlertEngine Engine { get; }
-        public List<(DiagnosticsAlertNotice Notice, bool IgnoreMaster)> Notices { get; } = new();
+        public List<(DiagnosticsAlertNotice Notice, string Key)> Notices { get; } = new();
         public int ChangedCount { get; private set; }
+
+        public StubSmart Smart { get; } = new();
+        public StubFans Fans { get; } = new();
 
         public Rig(TimeSpan? startupHold = null)
         {
-            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold);
-            Engine.NoticeSink = (n, ignore) => Notices.Add((n, ignore));
+            Engine = new SensorAlertEngine(Store, Sensors, Time, startupHold, Smart, Fans);
+            Engine.NoticeSink = (n, key) => Notices.Add((n, key));
             Engine.Changed += () => ChangedCount++;
         }
 
@@ -268,19 +297,6 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Step_repeat_renotifies_on_the_interval_only_while_breached()
-    {
-        var rule = TempRule(raise: 0);
-        rule.RepeatMinutes = 5;
-        var st = Fresh();
-        SensorAlertEngine.Step(rule, Ok(90), T0, st);
-
-        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(4), st));
-        Assert.True(SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(5), st).HasFlag(SensorAlertEffect.Repeated));
-        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(6), st));
-    }
-
-    [Fact]
     public void Step_no_repeat_means_once_per_episode()
     {
         var rule = TempRule(raise: 0);
@@ -329,11 +345,12 @@ public class SensorAlertEngineTests
         rig.Seconds(3);
 
         Assert.Equal(SensorAlertStates.Active, rig.State());
-        var (notice, ignoreMaster) = Assert.Single(rig.Notices);
-        Assert.True(ignoreMaster);
+        var (notice, key) = Assert.Single(rig.Notices);
+        Assert.Equal("alert:r1", key);
         Assert.Equal("sensorAlert", notice.Kind);
         Assert.Equal("CPU Package Temperature above 80 °C for 3 s (now 90 °C)", notice.Text);
         Assert.False(notice.Urgent);
+        Assert.Equal("watch", notice.Severity);
     }
 
     [Fact]
@@ -351,7 +368,7 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_act_severity_is_urgent_and_notifyDesktop_off_stays_silent()
+    public void Engine_act_severity_is_urgent_watch_is_not_and_notifyDesktop_off_stays_silent()
     {
         var rig = new Rig();
         var loud = TempRule(raise: 0, id: "r1");
@@ -366,6 +383,7 @@ public class SensorAlertEngineTests
 
         var (notice, _) = Assert.Single(rig.Notices);
         Assert.True(notice.Urgent);
+        Assert.Equal("act", notice.Severity);
         Assert.Equal(SensorAlertStates.Active, rig.State("r2"));
     }
 
@@ -373,13 +391,13 @@ public class SensorAlertEngineTests
     public void Engine_writes_history_and_clears_with_hysteresis()
     {
         var rig = new Rig();
-        rig.AddRule(TempRule(raise: 0, clear: 2));
+        rig.AddRule(TempRule(raise: 0, clear: 5));
         rig.SetTemp(90);
         rig.Seconds(1);
         rig.SetTemp(95);
         rig.Seconds(1);
         rig.SetTemp(78);
-        rig.Seconds(3);
+        rig.Seconds(7);
 
         Assert.Equal(SensorAlertStates.Ok, rig.State());
         var entry = Assert.Single(rig.Engine.History());
@@ -474,7 +492,7 @@ public class SensorAlertEngineTests
 
         rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
         rig.Seconds(1);
-        Assert.Empty(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Off, rig.State());
 
         rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = true);
         rig.Sensors.Cpu = Array.Empty<HardwareSensor>();
@@ -501,21 +519,18 @@ public class SensorAlertEngineTests
         Assert.True(rig.Engine.States().Single().Acknowledged);
 
         rig.SetTemp(60);
-        rig.Seconds(1);
+        rig.Seconds(7);
         rig.SetTemp(90);
         rig.Seconds(1);
         Assert.Single(rig.Engine.HealthComponents());
     }
 
     [Fact]
-    public void Engine_showInHealth_off_and_act_severity_map_to_components()
+    public void Engine_act_severity_maps_to_an_act_component()
     {
         var rig = new Rig();
-        var hidden = TempRule(raise: 0, id: "r1");
-        hidden.ShowInHealth = false;
         var act = TempRule(raise: 0, id: "r2");
         act.Severity = "act";
-        rig.AddRule(hidden);
         rig.AddRule(act);
         rig.SetTemp(90);
 
@@ -524,6 +539,35 @@ public class SensorAlertEngineTests
         var component = Assert.Single(rig.Engine.HealthComponents());
         Assert.Equal("alert:r2", component.Id);
         Assert.Equal(HealthStatuses.Act, component.Status);
+    }
+
+    [Fact]
+    public void Engine_rule_stored_with_showInHealth_false_still_produces_the_component()
+    {
+        var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-sensor-alerts-" + Guid.NewGuid().ToString("N")[..8] + ".json");
+        try
+        {
+            var seed = new JsonConfigStore(path);
+            seed.Update(s => s.Diagnostics.SensorAlerts.Add(TempRule(raise: 0, id: "r1")));
+            seed.FlushNow();
+            System.IO.File.WriteAllText(path, System.IO.File.ReadAllText(path).Replace("\"showInHealth\": true", "\"showInHealth\": false"));
+
+            var loaded = new JsonConfigStore(path).Load().Diagnostics.SensorAlerts.Single(r => r.Id == "r1");
+            Assert.True(loaded.ShowInHealth);
+
+            var rig = new Rig();
+            var stored = TempRule(raise: 0, id: "r1");
+            stored.ShowInHealth = false;
+            rig.AddRule(stored);
+            rig.SetTemp(90);
+            rig.Seconds(1);
+
+            Assert.Equal("alert:r1", Assert.Single(rig.Engine.HealthComponents()).Id);
+        }
+        finally
+        {
+            try { System.IO.File.Delete(path); } catch { }
+        }
     }
 
     [Fact]
@@ -573,7 +617,7 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_without_enabled_rules_reads_no_sensors()
+    public void Engine_reads_sensors_for_a_disabled_rule_so_it_keeps_recording()
     {
         var rig = new Rig();
         var off = TempRule();
@@ -582,8 +626,7 @@ public class SensorAlertEngineTests
 
         rig.Seconds(3);
 
-        Assert.Equal(0, rig.Sensors.CpuReads);
-        Assert.Equal(0, rig.Sensors.ExtrasReads);
+        Assert.Equal(3, rig.Sensors.CpuReads);
     }
 
     [Fact]
@@ -632,7 +675,7 @@ public class SensorAlertEngineTests
             rig.SetTemp(90);
             rig.Seconds(1);
             rig.SetTemp(60);
-            rig.Seconds(1);
+            rig.Seconds(7);
         }
         Assert.Equal(100, rig.Engine.History().Count);
 
@@ -645,19 +688,18 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Engine_repeat_renotifies_while_active()
+    public void Engine_does_not_renotify_while_the_alert_stays_active()
     {
         var rig = new Rig();
-        var rule = TempRule(raise: 0);
-        rule.RepeatMinutes = 5;
-        rig.AddRule(rule);
+        rig.AddRule(TempRule(raise: 0));
         rig.SetTemp(90);
 
         rig.Seconds(1);
-        rig.Time.Advance(TimeSpan.FromMinutes(5));
+        rig.Time.Advance(TimeSpan.FromHours(3));
         rig.Engine.Tick();
+        rig.Seconds(5);
 
-        Assert.Equal(2, rig.Notices.Count);
+        Assert.Single(rig.Notices);
     }
 
     // ---- validation and persistence ----
@@ -673,16 +715,13 @@ public class SensorAlertEngineTests
     }
 
     [Theory]
-    [InlineData("loud", 0, false)]
-    [InlineData("watch", 7, false)]
-    [InlineData("act", 15, true)]
-    [InlineData("watch", 0, true)]
-    [InlineData("watch", 60, true)]
-    public void Validate_severity_and_repeat(string severity, int repeat, bool valid)
+    [InlineData("loud", false)]
+    [InlineData("act", true)]
+    [InlineData("watch", true)]
+    public void Validate_severity(string severity, bool valid)
     {
         var rule = TempRule();
         rule.Severity = severity;
-        rule.RepeatMinutes = repeat;
 
         Assert.Equal(valid, SensorAlertRules.Validate(rule) is null);
     }
@@ -708,7 +747,7 @@ public class SensorAlertEngineTests
         SensorAlertRules.Normalize(rule);
 
         Assert.Equal(0, rule.RaiseAfterSeconds);
-        Assert.Equal(600, rule.ClearAfterSeconds);
+        Assert.Equal(5, rule.ClearAfterSeconds);
     }
 
     [Fact]
@@ -720,22 +759,20 @@ public class SensorAlertEngineTests
             var store = new JsonConfigStore(path);
             var rule = TempRule(low: 10, high: null, raise: 7, clear: 9);
             rule.Severity = "act";
-            rule.RepeatMinutes = 15;
-            rule.ShowInHealth = false;
             store.Update(s => s.Diagnostics.SensorAlerts.Add(rule));
             store.FlushNow();
 
             var loaded = new JsonConfigStore(path).Load().Diagnostics.SensorAlerts;
 
-            var back = Assert.Single(loaded);
+            var back = Assert.Single(loaded, r => r.BuiltIn is null);
             Assert.Equal("r1", back.Id);
             Assert.Equal(10, back.Low);
             Assert.Null(back.High);
             Assert.Equal(7, back.RaiseAfterSeconds);
-            Assert.Equal(9, back.ClearAfterSeconds);
+            Assert.Equal(5, back.ClearAfterSeconds);
             Assert.Equal("act", back.Severity);
-            Assert.Equal(15, back.RepeatMinutes);
-            Assert.False(back.ShowInHealth);
+            Assert.Equal(0, back.RepeatMinutes);
+            Assert.True(back.ShowInHealth);
             Assert.Equal("cpu/temp", back.Sensor.Id);
             Assert.Equal("CPU", back.Sensor.ParentName);
         }
@@ -779,7 +816,6 @@ public class SensorAlertEngineTests
             new Nexus.Service.Diagnostics.Memory.MemoryDiagnosticOrchestrator(),
             new Nexus.Service.Diagnostics.SystemInfo.PnpProblemScanner(),
             rig.Sensors,
-            new Nexus.Service.Monitoring.History.InMemoryMetricsHistoryStore(),
             rig.Store,
             rig.Engine);
 
@@ -827,21 +863,45 @@ public class SensorAlertEngineTests
         rig.Seconds(3);
 
         Assert.Empty(rig.Notices);
-        Assert.Empty(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Off, rig.State());
         Assert.Empty(rig.Engine.HealthComponents());
     }
 
     [Fact]
-    public void Engine_disabled_rules_have_no_state_or_health_component()
+    public void A_disabled_rule_reports_its_value_in_the_off_state_and_raises_nothing()
     {
         var rig = new Rig();
-        rig.AddRule(TempRule(raise: 0));
-        rig.SetTemp(90);
-        rig.Seconds(1);
+        var off = TempRule(raise: 0);
+        off.Enabled = false;
+        rig.AddRule(off);
+        rig.SetTemp(95);
 
-        rig.Store.Update(s => s.Diagnostics.SensorAlerts[0].Enabled = false);
+        rig.Seconds(3);
 
-        Assert.Empty(rig.Engine.States());
+        var state = Assert.Single(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Off, state.State);
+        Assert.Equal(95, state.Value);
+        Assert.Null(state.Direction);
+        Assert.Empty(rig.Notices);
+        Assert.Empty(rig.Engine.HealthComponents());
+        Assert.Empty(rig.Engine.History());
+    }
+
+    [Fact]
+    public void A_disabled_rule_with_no_reading_is_unavailable_with_no_value_and_not_a_problem()
+    {
+        var rig = new Rig();
+        var off = TempRule(raise: 0);
+        off.Enabled = false;
+        rig.AddRule(off);
+        rig.Sensors.Cpu = Array.Empty<HardwareSensor>();
+
+        rig.Seconds(15);
+
+        var state = Assert.Single(rig.Engine.States());
+        Assert.Equal(SensorAlertStates.Unavailable, state.State);
+        Assert.Null(state.Value);
+        Assert.Empty(rig.Notices);
         Assert.Empty(rig.Engine.HealthComponents());
     }
 
@@ -875,7 +935,7 @@ public class SensorAlertEngineTests
         Assert.Equal(since, rig.Engine.States().Single().Since);
 
         rig.SetTemp(60);
-        rig.Seconds(1);
+        rig.Seconds(6);
         var entry = Assert.Single(rig.Engine.History());
         Assert.Equal(since, entry.StartedUtc);
         Assert.Equal(rig.Time.GetUtcNow().UtcDateTime.ToString("O"), entry.EndedUtc);
@@ -948,18 +1008,6 @@ public class SensorAlertEngineTests
         var fps = TempRule();
         fps.Sensor.Category = "fps";
         Assert.NotNull(SensorAlertRules.Validate(fps));
-    }
-
-    [Fact]
-    public void Step_repeat_stops_after_acknowledge()
-    {
-        var rule = TempRule(raise: 0);
-        rule.RepeatMinutes = 5;
-        var st = Fresh();
-        SensorAlertEngine.Step(rule, Ok(90), T0, st);
-        st.Acknowledged = true;
-
-        Assert.Equal(SensorAlertEffect.None, SensorAlertEngine.Step(rule, Ok(90), T0.AddMinutes(6), st));
     }
 
     [Fact]
@@ -1041,6 +1089,29 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
+    public void A_tracked_memory_load_sensor_is_recorded_like_any_other()
+    {
+        var rig = new Rig();
+        rig.Sensors.Memory = new[]
+        {
+            new HardwareSensor { Id = "/ram/load/0", Name = "Memory", Type = "Load", Value = 33.3f, Units = "%", Parent = new SensorParent { Id = "ram", Name = "Total Memory" } },
+        };
+        rig.AddRule(new SensorAlertRule
+        {
+            Id = "mem",
+            Enabled = true,
+            Sensor = new SensorRef { Category = "memory", Id = "/ram/load/0", Name = "Memory", Type = "Load", ParentName = "Total Memory" },
+            RaiseAfterSeconds = 5,
+            Severity = SensorAlertRules.Watch,
+        });
+        rig.Seconds(1);
+
+        var reading = Assert.Single(rig.Engine.CurrentReadings(0));
+        Assert.Equal("mem", reading.Id);
+        Assert.Equal(33.3f, (float)reading.Value);
+    }
+
+    [Fact]
     public void Every_enabled_rule_contributes_its_reading_with_or_without_bounds()
     {
         var rig = new Rig();
@@ -1056,7 +1127,7 @@ public class SensorAlertEngineTests
     }
 
     [Fact]
-    public void A_disabled_rule_is_not_recorded()
+    public void A_disabled_rule_is_still_recorded()
     {
         var rig = new Rig();
         var off = TempRule(low: null, high: null, id: "off");
@@ -1066,7 +1137,7 @@ public class SensorAlertEngineTests
         rig.SetTemp(50);
         rig.Seconds(1);
 
-        Assert.Equal(new[] { "on" }, rig.Engine.CurrentReadings(0).Select(r => r.Id).ToArray());
+        Assert.Equal(new[] { "off", "on" }, rig.Engine.CurrentReadings(0).Select(r => r.Id).OrderBy(i => i).ToArray());
     }
 
     [Fact]

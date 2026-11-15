@@ -92,12 +92,14 @@ public static class StrimerProtocol
     public static byte[] BuildApplyLatch(int gpuZoneCount = GpuZoneCount)
     {
         var gpu = NormalizeGpuZoneCount(gpuZoneCount);
-        var mask = ((1 << AtxZoneCount) - 1) | (((1 << gpu) - 1) << AtxZoneCount);
-        return new byte[]
-        {
-            ReportId, 0x2C, (byte)((mask >> 8) & 0xFF), (byte)(mask & 0xFF), 0x00, 0x00, 0x00, 0x00,
-        };
+        return BuildApplyLatchMask(((1 << AtxZoneCount) - 1) | (((1 << gpu) - 1) << AtxZoneCount));
     }
+
+    /// <summary>Apply-latch for an explicit zone mask, bit n being zone n.</summary>
+    public static byte[] BuildApplyLatchMask(int mask) => new byte[]
+    {
+        ReportId, 0x2C, (byte)((mask >> 8) & 0xFF), (byte)(mask & 0xFF), 0x00, 0x00, 0x00, 0x00,
+    };
 
     // 24-Pin ATX hardware zone for segment index seg (0-5).
     public static int AtxZone(int seg) => seg;

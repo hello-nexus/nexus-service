@@ -1,5 +1,6 @@
 #if WINDOWS
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Vortice.DXGI;
 using Vortice.Direct3D;
@@ -9,51 +10,113 @@ namespace Nexus.Service.Lighting.Capture;
 
 public sealed class DxgiScreenCapture : IDisposable
 {
+    private const string Tag = "[mirror-diag]";
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
+    private IDXGIOutput1? _output1;
     private IDXGIOutputDuplication? _duplication;
     private ID3D11Texture2D? _stagingTexture;
+    private int _stagingW, _stagingH;
     private int _screenW, _screenH;
     private int _surfW, _surfH, _rotation = DesktopRotation.Identity;
-    private bool _frameAcquired, _disposed;
+    private bool _frameAcquired, _disposed, _hasImage;
+    private MirrorGpuDownsampler? _gpu;
+    private int _downW, _downH;
+    private bool _gpuFailed, _frameOnGpu, _pathLogged, _regridLogged;
+    private byte[]? _gpuRgb;
 
     public bool IsInitialized => _duplication is not null;
-    /// <summary>A non-timeout AcquireNextFrame failure (ACCESS_LOST); the instance never recovers and must be re-created.</summary>
+    /// <summary>A non-timeout AcquireNextFrame failure (ACCESS_LOST and friends); recover with <see cref="TryRecreateDuplication"/> or a new instance.</summary>
     public bool IsLost { get; private set; }
+    /// <summary>The loss needs a new D3D device, not just a new duplication.</summary>
+    public bool NeedsFullRebuild { get; private set; }
+    /// <summary>Receives [mirror-diag] lines; the helper points it at its log.</summary>
+    public Action<string>? Diag { get; set; }
+    /// <summary>Log an init failure line; the helper turns it off for repeat retries.</summary>
+    public bool LogInitFailure { get; set; } = true;
+    /// <summary>When set, a frame with no desktop image change skips the copy and AcquireFrame returns false.</summary>
+    public bool SkipPointerOnlyFrames { get; set; }
     /// <summary>Desktop-oriented size (what the user sees), not the native surface size.</summary>
     public int ScreenWidth => _screenW;
     public int ScreenHeight => _screenH;
 
+    private static double ElapsedMs(long startTicks) => (Stopwatch.GetTimestamp() - startTicks) * 1000.0 / Stopwatch.Frequency;
+
+    private static int HrOf(Exception ex) => ex is SharpGen.Runtime.SharpGenException sg ? sg.ResultCode.Code : ex.HResult;
+
+    private static string Hr(int hr) => DxgiErrorClassifier.Describe(hr);
+
     public bool Initialize(uint outputIndex = 0)
     {
+        var step = "CreateDXGIFactory1";
         try
         {
             using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
-            factory.EnumAdapters1(0u, out var adapter);
-            // null feature-levels = let D3D pick its default set; the binding's param isn't nullable-annotated.
-            D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport, null!, out _device, out _, out _context);
-            if (_device is null || _context is null) { adapter.Dispose(); return false; }
-            adapter.EnumOutputs(outputIndex, out var output);
-            adapter.Dispose();
-            var desc = output.Description;
+            step = "EnumAdapters1";
+            var r = factory.EnumAdapters1(0u, out var adapter);
+            if (r.Failure) return InitFail(step, r.Code, null);
+            IDXGIOutput? output = null;
+            string adapterName;
+            var outputCount = 1;
+            try
+            {
+                step = "D3D11CreateDevice";
+                // null feature-levels = let D3D pick its default set; the binding's param isn't nullable-annotated.
+                r = D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport, null!, out _device, out _, out _context);
+                if (r.Failure || _device is null || _context is null) return InitFail(step, r.Failure ? r.Code : DxgiErrorClassifier.Fail, null);
+                adapterName = adapter.Description1.Description;
+                step = "EnumOutputs";
+                r = adapter.EnumOutputs(outputIndex, out output);
+                if (r.Failure) return InitFail(step, r.Code, null);
+                while (adapter.EnumOutputs((uint)outputCount, out var extra).Success) { extra.Dispose(); outputCount++; }
+            }
+            finally { adapter.Dispose(); }
+            var desc = output!.Description;
             _screenW = desc.DesktopCoordinates.Right - desc.DesktopCoordinates.Left;
             _screenH = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
-            using var output1 = output.QueryInterface<IDXGIOutput1>();
-            output.Dispose();
-            _duplication = output1.DuplicateOutput(_device);
-            _rotation = (int)_duplication.Description.Rotation;
-            if (_rotation < DesktopRotation.Identity || _rotation > DesktopRotation.Rotate270) _rotation = DesktopRotation.Identity;
-            // A rotated output duplicates in native orientation: the surface has the axes swapped.
-            if (DesktopRotation.SwapsAxes(_rotation)) { _surfW = _screenH; _surfH = _screenW; }
-            else { _surfW = _screenW; _surfH = _screenH; }
-            CreateStaging();
+            step = "QueryInterface IDXGIOutput1";
+            try { _output1 = output.QueryInterface<IDXGIOutput1>(); }
+            finally { output.Dispose(); }
+            step = "DuplicateOutput";
+            _duplication = _output1.DuplicateOutput(_device);
+            ApplyDuplicationGeometry();
+            var dm = _duplication.Description.ModeDescription;
+            var c = desc.DesktopCoordinates;
+            Diag?.Invoke($"{Tag} init output={outputIndex}/{outputCount} device={desc.DeviceName} coords={c.Left},{c.Top},{c.Right},{c.Bottom} rotation={desc.Rotation} attached={(bool)desc.AttachedToDesktop} adapter=\"{adapterName}\" dup={dm.Width}x{dm.Height} format={dm.Format} refresh={dm.RefreshRate.Numerator}/{dm.RefreshRate.Denominator}");
             return true;
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[dxgi-capture] init failed: {ex.Message}"); Dispose(); return false; }
+        catch (Exception ex) { return InitFail(step, HrOf(ex), ex); }
     }
 
-    private void CreateStaging()
+    /// <summary>Sets the grid the consumer reads; each frame is then shrunk on the GPU so only that many pixels are mapped.</summary>
+    public void ConfigureDownsample(int width, int height)
     {
+        _downW = width;
+        _downH = height;
+    }
+
+    private bool InitFail(string step, int hr, Exception? ex)
+    {
+        var detail = ex is null ? "" : $" {ex.GetType().Name}: {ex.Message}";
+        if (LogInitFailure) Diag?.Invoke($"{Tag} init failed step={step} hr={Hr(hr)}{detail}");
+        Console.Error.WriteLine($"[dxgi-capture] init failed at {step}: {Hr(hr)}{detail}");
+        Dispose();
+        return false;
+    }
+
+    /// <summary>Reads rotation and surface orientation from the current duplication and output.</summary>
+    private void ApplyDuplicationGeometry()
+    {
+        _rotation = (int)_duplication!.Description.Rotation;
+        if (_rotation < DesktopRotation.Identity || _rotation > DesktopRotation.Rotate270) _rotation = DesktopRotation.Identity;
+        // A rotated output duplicates in native orientation: the surface has the axes swapped.
+        if (DesktopRotation.SwapsAxes(_rotation)) { _surfW = _screenH; _surfH = _screenW; }
+        else { _surfW = _screenW; _surfH = _screenH; }
+    }
+
+    private void EnsureStaging()
+    {
+        if (_stagingTexture is not null && _stagingW == _surfW && _stagingH == _surfH) return;
         _stagingTexture?.Dispose();
         _stagingTexture = null;
         _stagingTexture = _device!.CreateTexture2D(new Texture2DDescription
@@ -62,49 +125,161 @@ public sealed class DxgiScreenCapture : IDisposable
             Format = Format.B8G8R8A8_UNorm, SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Staging, CPUAccessFlags = CpuAccessFlags.Read,
         });
+        _stagingW = _surfW; _stagingH = _surfH;
+        _hasImage = false;
     }
 
-    public bool AcquireFrame(uint timeoutMs = 0)
+    private void MarkLost(string step, int hr, Exception? ex)
     {
-        if (_duplication is null || _context is null || _stagingTexture is null) return false;
-        if (_frameAcquired) ReleaseFrame();
-        var duplicationFrameHeld = false;
+        IsLost = true;
+        _frameAcquired = false;
+        var removed = 0;
+        try { removed = _device?.DeviceRemovedReason.Code ?? 0; } catch { }
+        NeedsFullRebuild = removed != 0 || DxgiErrorClassifier.Classify(hr) == DxgiFailureAction.RebuildDevice;
+        var detail = ex is null ? "" : $" {ex.GetType().Name}: {ex.Message}";
+        Diag?.Invoke($"{Tag} lost at {step} hr={Hr(hr)} deviceRemovedReason={Hr(removed)} action={(NeedsFullRebuild ? "rebuild-device" : "recreate-duplication")}{detail}");
+    }
+
+    /// <summary>
+    /// Replaces only the IDXGIOutputDuplication on the existing device and output. On failure the
+    /// instance stays lost and <see cref="NeedsFullRebuild"/> is set.
+    /// </summary>
+    public bool TryRecreateDuplication()
+    {
+        if (_disposed || _device is null || _output1 is null) return false;
+        var t0 = Stopwatch.GetTimestamp();
+        var step = "DuplicateOutput";
         try
         {
-            var result = _duplication.AcquireNextFrame(timeoutMs, out _, out var resource);
-            if (result.Failure)
-            {
-                if (result.Code != Vortice.DXGI.ResultCode.WaitTimeout.Code) IsLost = true;
-                return false;
-            }
-            duplicationFrameHeld = true;
-            using var tex = resource!.QueryInterface<ID3D11Texture2D>();
-            // CopyResource silently does nothing on a size mismatch, which leaves the staging texture black.
-            var td = tex.Description;
-            if ((int)td.Width != _surfW || (int)td.Height != _surfH)
-            {
-                _surfW = (int)td.Width; _surfH = (int)td.Height;
-                CreateStaging();
-            }
-            _context.CopyResource(_stagingTexture!, tex);
-            _context.Flush();
-            _duplication.ReleaseFrame();
-            duplicationFrameHeld = false;
-            resource.Dispose();
-            _frameAcquired = true;
+            _frameAcquired = false;
+            _duplication?.Dispose();
+            _duplication = null;
+            _duplication = _output1.DuplicateOutput(_device);
+            step = "Output description";
+            var c = _output1.Description.DesktopCoordinates;
+            _screenW = c.Right - c.Left;
+            _screenH = c.Bottom - c.Top;
+            ApplyDuplicationGeometry();
+            // The first frame of a new duplication must always be copied.
+            _hasImage = false;
+            IsLost = false;
+            NeedsFullRebuild = false;
+            var dm = _duplication.Description.ModeDescription;
+            Diag?.Invoke($"{Tag} duplication recreated in {ElapsedMs(t0):F1}ms dup={dm.Width}x{dm.Height} rotation={_rotation}");
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            _duplication?.Dispose();
+            _duplication = null;
             IsLost = true;
-            if (duplicationFrameHeld) { try { _duplication.ReleaseFrame(); } catch { } }
+            NeedsFullRebuild = true;
+            Diag?.Invoke($"{Tag} recreate failed at {step} hr={Hr(HrOf(ex))} {ex.GetType().Name}: {ex.Message}; falling back to full rebuild");
             return false;
         }
     }
 
+    public bool AcquireFrame(uint timeoutMs = 0)
+    {
+        if (_duplication is null || _context is null) return false;
+        if (_frameAcquired) ReleaseFrame();
+        var duplicationFrameHeld = false;
+        var step = "AcquireNextFrame";
+        try
+        {
+            var result = _duplication.AcquireNextFrame(timeoutMs, out var info, out var resource);
+            if (result.Failure)
+            {
+                if (result.Code == DxgiErrorClassifier.WaitTimeout) return false;
+                MarkLost(step, result.Code, null);
+                return false;
+            }
+            duplicationFrameHeld = true;
+            if (SkipPointerOnlyFrames && info.AccumulatedFrames == 0 && _hasImage)
+            {
+                step = "ReleaseFrame";
+                _duplication.ReleaseFrame();
+                duplicationFrameHeld = false;
+                resource?.Dispose();
+                return false;
+            }
+            step = "QueryInterface ID3D11Texture2D";
+            using var tex = resource!.QueryInterface<ID3D11Texture2D>();
+            var td = tex.Description;
+            if ((int)td.Width != _surfW || (int)td.Height != _surfH)
+            {
+                _surfW = (int)td.Width; _surfH = (int)td.Height;
+                _hasImage = false;
+            }
+            _frameOnGpu = false;
+            if (_downW > 0 && _downH > 0 && !_gpuFailed)
+            {
+                step = "GpuDownsample";
+                try
+                {
+                    _gpu ??= new MirrorGpuDownsampler(_device!, _context);
+                    _gpu.Downsample(tex, _downW, _downH, _surfW, _surfH, _rotation);
+                    _frameOnGpu = true;
+                    LogPathOnce("gpu");
+                }
+                catch (Exception ex)
+                {
+                    _gpuFailed = true;
+                    Diag?.Invoke($"{Tag} gpu downsample unavailable, using cpu path {ex.GetType().Name}: {ex.Message}");
+                    _gpu?.Dispose();
+                    _gpu = null;
+                }
+            }
+            if (!_frameOnGpu)
+            {
+                step = "CopyResource";
+                EnsureStaging();
+                _context.CopyResource(_stagingTexture!, tex);
+                LogPathOnce("cpu");
+            }
+            _context.Flush();
+            step = "ReleaseFrame";
+            _duplication.ReleaseFrame();
+            duplicationFrameHeld = false;
+            resource.Dispose();
+            _frameAcquired = true;
+            _hasImage = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (duplicationFrameHeld) { try { _duplication.ReleaseFrame(); } catch { } }
+            MarkLost(step, HrOf(ex), ex);
+            return false;
+        }
+    }
+
+    private void LogPathOnce(string path)
+    {
+        if (_pathLogged) return;
+        _pathLogged = true;
+        Diag?.Invoke($"{Tag} capture path={path} grid={_downW}x{_downH} surface={_surfW}x{_surfH}");
+    }
+
+    /// <summary>
+    /// The frame on the GPU was shrunk to the configured grid. A consumer that
+    /// asks for another size gets no frame this tick and the grid follows it.
+    /// </summary>
+    private bool RegridForConsumer(int w, int h)
+    {
+        if (!_regridLogged)
+        {
+            _regridLogged = true;
+            Diag?.Invoke($"{Tag} consumer grid {w}x{h} differs from {_downW}x{_downH}, regridding");
+        }
+        ConfigureDownsample(w, h);
+        _hasImage = false;
+        return false;
+    }
+
     public byte[]? ReadRegion(int x, int y, int w, int h)
     {
-        if (!_frameAcquired || _context is null || _stagingTexture is null) return null;
+        if (!_frameAcquired || _frameOnGpu || _context is null || _stagingTexture is null) return null;
         x = Math.Clamp(x, 0, _screenW - 1); y = Math.Clamp(y, 0, _screenH - 1);
         w = Math.Clamp(w, 1, _screenW - x); h = Math.Clamp(h, 1, _screenH - y);
         try
@@ -141,8 +316,10 @@ public sealed class DxgiScreenCapture : IDisposable
     /// </summary>
     public unsafe bool BlitToBuffer(byte[] dst, int dstW, int dstH)
     {
-        if (!_frameAcquired || _context is null || _stagingTexture is null) return false;
+        if (!_frameAcquired || _context is null) return false;
         if (dst.Length < dstW * dstH * 3) return false;
+        if (_frameOnGpu) return dstW == _downW && dstH == _downH ? TryReadGpu(dst, dstW, dstH) : RegridForConsumer(dstW, dstH);
+        if (_stagingTexture is null) return false;
         try
         {
             var mapped = _context.Map(_stagingTexture, 0, MapMode.Read);
@@ -173,9 +350,30 @@ public sealed class DxgiScreenCapture : IDisposable
         catch { return false; }
     }
 
+    private bool TryReadGpu(byte[] dst, int w, int h)
+    {
+        try
+        {
+            return _gpu is not null && _gpu.ReadRgb(dst, w, h);
+        }
+        catch { return false; }
+    }
+
     public unsafe bool BlitToCanvas(Engine.CanvasBuffer canvas)
     {
-        if (!_frameAcquired || _context is null || _stagingTexture is null) return false;
+        if (!_frameAcquired || _context is null) return false;
+        if (_frameOnGpu)
+        {
+            if (canvas.Width != _downW || canvas.Height != _downH) return RegridForConsumer(canvas.Width, canvas.Height);
+            var rgb = _gpuRgb is { } r && r.Length == canvas.Width * canvas.Height * 3 ? r : (_gpuRgb = new byte[canvas.Width * canvas.Height * 3]);
+            if (!TryReadGpu(rgb, canvas.Width, canvas.Height)) return false;
+            for (int y = 0, i = 0; y < canvas.Height; y++)
+            {
+                for (int x = 0; x < canvas.Width; x++, i += 3) canvas.SetPixel(x, y, rgb[i], rgb[i + 1], rgb[i + 2]);
+            }
+            return true;
+        }
+        if (_stagingTexture is null) return false;
         try
         {
             var mapped = _context.Map(_stagingTexture, 0, MapMode.Read);
@@ -209,7 +407,7 @@ public sealed class DxgiScreenCapture : IDisposable
     public void Dispose()
     {
         if (_disposed) return; _disposed = true;
-        ReleaseFrame(); _duplication?.Dispose(); _stagingTexture?.Dispose(); _context?.Dispose(); _device?.Dispose();
+        ReleaseFrame(); _duplication?.Dispose(); _output1?.Dispose(); _gpu?.Dispose(); _stagingTexture?.Dispose(); _context?.Dispose(); _device?.Dispose();
     }
 }
 #endif
