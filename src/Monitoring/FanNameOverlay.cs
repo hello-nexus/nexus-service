@@ -46,6 +46,24 @@ internal sealed class FanNameOverlay
         }
     }
 
+    /// <summary>Null when nothing is renamed or no channels are known.</summary>
+    public static FanNameOverlay? Build(IReadOnlyList<FanChannel>? channels, Dictionary<string, string> names) =>
+        channels is null || names.Count == 0 ? null : new FanNameOverlay(channels, names);
+
+    /// <summary>The renamed names by tach sensor id, first channel winning a shared tach; null when none.</summary>
+    public Dictionary<string, string>? TachNames()
+    {
+        Dictionary<string, string>? map = null;
+        foreach (var (tach, ch) in _byTach)
+        {
+            if (Custom(ch.Id) is { } name)
+            {
+                (map ??= new Dictionary<string, string>(StringComparer.Ordinal))[tach] = name;
+            }
+        }
+        return map;
+    }
+
     /// <summary>Null when nothing is renamed or the channels cannot be read, so the common case never walks them.</summary>
     public static FanNameOverlay? Build(IConfigStore store, IFanControlProvider? fans)
     {
@@ -94,26 +112,30 @@ internal sealed class FanNameOverlay
         var output = new List<SensorAlertRule>(rules.Count);
         foreach (var rule in rules)
         {
-            if (rule.BuiltIn == BuiltInSensorRules.FanSpeed && _byRuleId.TryGetValue(rule.Id, out var ch))
-            {
-                output.Add(Project(rule, ch));
-            }
-            else if (rule.BuiltIn is null && TachName(rule.Sensor.Id) is { } tachName)
-            {
-                var copy = rule.Clone();
-                copy.Sensor.Name = tachName;
-                output.Add(copy);
-            }
-            else
-            {
-                output.Add(rule);
-            }
+            output.Add(Project(rule));
         }
         return output;
     }
 
-    /// <summary>The renamed name of the fan whose tach sensor has this id, or null.</summary>
-    public string? TachName(string sensorId) => !string.IsNullOrEmpty(sensorId) && _byTach.TryGetValue(sensorId, out var ch) ? Custom(ch.Id) : null;
+    /// <summary>The rule itself when nothing applies, else a relabeled copy.</summary>
+    public SensorAlertRule Project(SensorAlertRule rule)
+    {
+        if (rule.BuiltIn == BuiltInSensorRules.FanSpeed && _byRuleId.TryGetValue(rule.Id, out var ch))
+        {
+            return Project(rule, ch);
+        }
+        if (rule.BuiltIn is null && TachName(rule.Sensor) is { } tachName)
+        {
+            var copy = rule.Clone();
+            copy.Sensor.Name = tachName;
+            return copy;
+        }
+        return rule;
+    }
+
+    /// <summary>The renamed name of the fan whose tach is this fan sensor, or null.</summary>
+    public string? TachName(SensorRef sensor) =>
+        string.Equals(sensor.Type, "Fan", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(sensor.Id) && _byTach.TryGetValue(sensor.Id, out var ch) ? Custom(ch.Id) : null;
 
     /// <summary>The display name of a built-in fan rule, or null to keep it.</summary>
     public string? RuleName(string ruleId) => _byRuleId.TryGetValue(ruleId, out var ch) ? Custom(ch.Id) : null;

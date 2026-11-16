@@ -414,10 +414,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     private static double Extend(string? direction, double? extreme, double v) =>
         extreme is not { } e ? v : direction == "below" ? Math.Min(e, v) : Math.Max(e, v);
 
-    /// <summary>
-    /// The sensor a rule points at, or an invalid sample. <paramref name="healedId"/> is set when the sensor was found by name and its id differs from the stored one.
-    /// <paramref name="fanHeaderNames"/> (Cooling renames by tach id) lets the id pass also accept the renamed name, and <see cref="SensorSample.HealedName"/> then carries the hardware name to store; the name pass matches hardware names only.
-    /// </summary>
+    /// <summary>The sensor a rule points at, or an invalid sample; <paramref name="healedId"/> is set when only a name match found it under another id, and <paramref name="fanHeaderNames"/> lets the id pass accept a Cooling name, reported as <see cref="SensorSample.HealedName"/>.</summary>
     internal static SensorSample Resolve(IReadOnlyList<HardwareSensor> list, SensorRef reference, out string? healedId, IReadOnlyDictionary<string, string>? fanHeaderNames = null)
     {
         healedId = null;
@@ -488,7 +485,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 return null;
             }
             var channels = (reuseTickChannels ? Volatile.Read(ref _fanChannels) : null) ?? _fans.GetFanChannels();
-            return Nexus.Service.Monitoring.FanSensorNames.BuildMap(channels, names);
+            return Nexus.Service.Monitoring.FanNameOverlay.Build(channels, names)?.TachNames();
         }
         catch (Exception ex)
         {
@@ -512,8 +509,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
-    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit)
+    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, Nexus.Service.Monitoring.FanNameOverlay? Overlay = null)
     {
+        /// <summary>The rule as the user reads it in toasts, health and history: Cooling fan names applied to a copy.</summary>
+        public SensorAlertRule Display(SensorAlertRule rule) => Overlay?.Project(rule) ?? rule;
+
         public void Deconstruct(out List<SensorAlertRule> rules, out bool fahrenheit)
         {
             rules = Rules;
@@ -534,8 +534,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var rules = new List<SensorAlertRule>();
         var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
+        Dictionary<string, string> fanNames = new();
         _store.Read(s =>
         {
+            fanNames = Nexus.Service.Cooling.CoolingSnapshots.FanNames(s.Cooling);
             var ignored = s.Diagnostics.IgnoredComponents;
             if (s.Diagnostics.SensorAlerts is { } list)
             {
@@ -569,7 +571,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return byKind != 0 ? byKind : string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
         });
         builtInRules.AddRange(rules);
-        return new Snap(builtInRules, fahrenheit);
+        return new Snap(builtInRules, fahrenheit, _fans is null ? null : Nexus.Service.Monitoring.FanNameOverlay.Build(Volatile.Read(ref _fanChannels), fanNames));
     }
 
     /// <summary>The configured rules, as copies: the built-ins of every device seen since startup (one missing now reads unavailable), then the user's.</summary>
@@ -1086,7 +1088,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
         if ((effect & SensorAlertEffect.Raised) != 0)
         {
-            notices.Add((BuildNotice(rule, st, fahrenheit), rule.NotifyDesktop, "alert:" + rule.Id, rule.NotifyMobile));
+            notices.Add((BuildNotice(snap.Display(rule), st, fahrenheit), rule.NotifyDesktop, "alert:" + rule.Id, rule.NotifyMobile));
         }
         if ((effect & SensorAlertEffect.Cleared) != 0)
         {
@@ -1306,12 +1308,17 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>Newest first.</summary>
     public List<SensorAlertHistoryEntry> History()
     {
+        // Entries keep the hardware name; the current Cooling name is applied on read, so clearing a rename restores them all.
+        var snap = Snapshot();
+        var shown = snap.Overlay is null
+            ? new Dictionary<string, string>()
+            : snap.Rules.Where(r => !ReferenceEquals(snap.Display(r), r)).ToDictionary(r => r.Id, r => snap.Display(r).Sensor.Name, StringComparer.Ordinal);
         lock (_lock)
         {
             return _history.AsEnumerable().Reverse().Select(h => new SensorAlertHistoryEntry
             {
                 RuleId = h.RuleId,
-                SensorName = h.SensorName,
+                SensorName = shown.TryGetValue(h.RuleId, out var display) ? display : h.SensorName,
                 Direction = h.Direction,
                 StartedUtc = h.StartedUtc,
                 EndedUtc = h.EndedUtc,
@@ -1360,10 +1367,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var result = new List<HealthComponent>();
         lock (_lock)
         {
-            foreach (var rule in rules)
+            foreach (var stored in rules)
             {
+                var rule = snap.Display(stored);
                 if (!rule.Enabled || !_states.TryGetValue(rule.Id, out var st)
-                    || st.Config is not { } cfg || !cfg.SameConfig(rule))
+                    || st.Config is not { } cfg || !cfg.SameConfig(stored))
                 {
                     continue;
                 }

@@ -177,7 +177,7 @@ public class FanNameOverlayTests
         Assert.Equal("CPU fan", shown[0].Sensor.Name);
         Assert.Equal("Fan #1", custom.Sensor.Name);
         Assert.Same(other, shown[1]);
-        Assert.Equal("CPU fan", FanNameOverlay.Build(store, fans)!.TachName("/lpc/fan/1"));
+        Assert.Equal("CPU fan", FanNameOverlay.Build(store, fans)!.TachName(custom.Sensor));
     }
 
     [Fact]
@@ -189,5 +189,26 @@ public class FanNameOverlayTests
         Rename(store, "/lpc/ctl-1", "Second");
 
         Assert.Equal("First", FanNameOverlay.Build(store, fans)!.SeriesName("fan:lpc-ctl-1"));
+    }
+
+    [Fact]
+    public void Only_a_fan_typed_sensor_takes_a_tach_rename()
+    {
+        var (store, fans) = Rig();
+        Rename(store, "/lpc/ctl/1", "CPU fan");
+        var temperature = new SensorRef { Category = "motherboard", Id = "/lpc/fan/1", Name = "Fan #1", Type = "Temperature" };
+
+        Assert.Null(FanNameOverlay.Build(store, fans)!.TachName(temperature));
+    }
+
+    [Fact]
+    public void The_tach_map_keeps_the_first_channel_when_two_share_a_tach()
+    {
+        var (store, fans) = Rig();
+        fans.Channels.Add(new FanChannel { Id = "/lpc/ctl/2", Name = "Fan #2", RpmSensorId = "/lpc/fan/1" });
+        Rename(store, "/lpc/ctl/1", "First");
+        Rename(store, "/lpc/ctl/2", "Second");
+
+        Assert.Equal("First", FanNameOverlay.Build(store, fans)!.TachNames()!["/lpc/fan/1"]);
     }
 }

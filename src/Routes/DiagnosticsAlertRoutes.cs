@@ -231,7 +231,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     if (rule.BuiltIn is null && (string.IsNullOrEmpty(ruleId) || rule.Id == ruleId))
                     {
-                        names[rule.Id] = fanOverlay?.TachName(rule.Sensor.Id) ?? rule.Sensor.Name;
+                        names[rule.Id] = fanOverlay?.TachName(rule.Sensor) ?? rule.Sensor.Name;
                     }
                 }
             });

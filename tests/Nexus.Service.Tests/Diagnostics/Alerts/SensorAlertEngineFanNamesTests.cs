@@ -307,4 +307,64 @@ public partial class SensorAlertEngineTests
         Assert.Equal(SensorAlertStates.Active, state.State);
         Assert.Single(rig.Notices);
     }
+
+    [Fact]
+    public void A_stalled_renamed_fan_raises_a_notice_health_entry_and_history_with_the_cooling_name_and_clearing_restores_it()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(new FanChannel { Id = "fan1", Name = "Rear", Rpm = 500 }));
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+        Rename(rig, "fan1", "Back fan");
+
+        rig.Seconds(10);
+
+        Assert.StartsWith("Back fan below", Assert.Single(rig.Notices).Notice.Text);
+        var component = Assert.Single(rig.Engine.HealthComponents(), x => x.Id == "alert:" + FanRule("fan1"));
+        Assert.Equal("Back fan", component.Name);
+        Assert.StartsWith("Back fan below", component.Reasons[0].Summary);
+        Assert.Equal("Back fan", component.Reasons[0].Params!["sensorName"]);
+        Assert.Equal("Back fan", rig.Engine.History().Single().SensorName);
+        Assert.Equal("Rear", rig.Store.Load().Diagnostics.SensorAlerts.Single(r => r.Id == FanRule("fan1")).Sensor.Name);
+        Assert.Equal(SensorAlertStates.Active, StateOf(rig, FanRule("fan1")).State);
+
+        Rename(rig, "fan1", null);
+
+        Assert.Equal("Rear", rig.Engine.HealthComponents().Single(x => x.Id == "alert:" + FanRule("fan1")).Name);
+        Assert.Equal("Rear", rig.Engine.History().Single().SensorName);
+    }
+
+    [Fact]
+    public void A_custom_rule_on_a_renamed_tach_raises_with_the_cooling_name_and_a_cleared_rename_goes_back_to_raw()
+    {
+        var rig = BoardFanRig();
+        Rename(rig, BoardFanId, "CPU fan");
+        var rule = BoardFanRule("Fan #1");
+        rule.Low = 1500;
+        rule.RaiseAfterSeconds = 0;
+        rig.AddRule(rule);
+        rig.Seconds(2);
+
+        Assert.StartsWith("CPU fan below", rig.Notices.Single().Notice.Text);
+        Assert.Equal("CPU fan", rig.Engine.History().Single().SensorName);
+
+        Rename(rig, BoardFanId, null);
+        rig.Seconds(1);
+
+        Assert.StartsWith("Fan #1", rig.Engine.HealthComponents().Single(x => x.Id == "alert:custom-fan").Reasons[0].Summary);
+        Assert.Equal("Fan #1", rig.Engine.History().Single().SensorName);
+    }
+
+    [Fact]
+    public void The_engine_rename_map_keeps_the_first_channel_when_two_share_a_tach()
+    {
+        var rig = BoardFanRig();
+        rig.Fans.Channels.Add(new FanChannel { Id = "/lpc/ctl/2", Name = "Other", RpmSensorId = BoardTachId });
+        Rename(rig, BoardFanId, "First");
+        Rename(rig, "/lpc/ctl/2", "Second");
+        rig.AddRule(BoardFanRule("First"));
+
+        rig.Seconds(2);
+
+        Assert.Equal(1200, StateOf(rig, "custom-fan").Value);
+        Assert.Equal("Fan #1", rig.Store.Load().Diagnostics.SensorAlerts.Single(r => r.Id == "custom-fan").Sensor.Name);
+    }
 }
