@@ -496,9 +496,10 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Theory]
-    [InlineData(1, 132, 1, 450)]
-    [InlineData(8, 798, 3, 2195)]
-    public void WindowPlan_stretches_frames_only_when_a_round_of_uploads_outgrows_the_air(int chains, int leds, int stretch, int cycleMs)
+    [InlineData(1, 132, 1, 700)]
+    [InlineData(5, 702, 5, 3699)]
+    [InlineData(8, 798, 6, 4391)]
+    public void WindowPlan_sizes_the_round_to_half_the_air_budget(int chains, int leds, int stretch, int cycleMs)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
         Assert.Equal(stretch, plan.Stretch);

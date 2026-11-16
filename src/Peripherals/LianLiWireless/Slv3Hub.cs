@@ -1137,6 +1137,8 @@ public sealed partial class Slv3Hub : IDisposable
         {
             Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
             Diag.EndPoll(nowMs, gotList: false);
+            // No RX answer is coming, so this time is blind, not unseen.
+            _blindSinceMs ??= nowMs;
             return false;
         }
         if (_rx is not { IsOpen: true })
