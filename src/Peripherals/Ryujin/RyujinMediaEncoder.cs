@@ -82,6 +82,7 @@ public static class RyujinMediaEncoder
     private static async Task<RyujinEncodeResult> CompressAsync(string raw, int decoded, CancellationToken ct)
     {
         int count = decoded == 1 || await AllIdenticalAsync(raw, decoded, ct).ConfigureAwait(false) ? 1 : decoded;
+        bool variantLogged = false;
         foreach (int quality in Qualities)
         {
             var jpegs = new List<byte[]>(count);
@@ -91,12 +92,17 @@ public static class RyujinMediaEncoder
             for (int i = 0; i < count && total <= MaxAviBytes; i++)
             {
                 await stream.ReadExactlyAsync(frame, ct).ConfigureAwait(false);
-                var jpeg = TurboJpegOneShot.TryCompress(frame, RyujinMediaAvi.Width, RyujinMediaAvi.Height, TurboJpeg.PixelFormatRgbx, quality);
+                var jpeg = TurboJpegOneShot.TryCompress(frame, RyujinMediaAvi.Width, RyujinMediaAvi.Height, TurboJpeg.PixelFormatRgbx, quality, optimize: true, out bool optimized);
                 if (jpeg is null)
                 {
                     return new(null, 0, "The JPEG encoder is unavailable.");
                 }
                 jpeg = RyujinMediaAvi.WithComment(jpeg);
+                if (!variantLogged)
+                {
+                    variantLogged = true;
+                    ServiceLog.Info($"[ryujin-upload] jpeg variant: huffman={(optimized ? "optimized" : "standard (optimize refused)")}, JFIF APP0 stripped, Lavc comment, merged DQT/DHT, 4:2:0 baseline");
+                }
                 jpegs.Add(jpeg);
                 total += 8 + jpeg.Length + (jpeg.Length & 1) + 16;
             }

@@ -157,19 +157,79 @@ internal static class RyujinMediaAvi
         return ms.ToArray();
     }
 
-    /// <summary>Inserts the comment segment Armoury Crate's frames carry straight after the SOI of a baseline JPEG.</summary>
+    /// <summary>
+    /// Rewrites a baseline JPEG's header the way Armoury Crate's frames carry it: SOI, the Lavc comment, DQT, one DHT
+    /// holding every table, SOF0, SOS. The JFIF APP0 is dropped; one DQT table used by every component.
+    /// </summary>
     public static byte[] WithComment(byte[] jpeg)
     {
-        if (jpeg.Length < 2 || jpeg[0] != 0xFF || jpeg[1] != 0xD8)
+        if (jpeg.Length < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8)
         {
             return jpeg;
         }
-        var result = new byte[jpeg.Length + JpegComment.Length];
-        result[0] = 0xFF;
-        result[1] = 0xD8;
-        JpegComment.CopyTo(result, 2);
-        Array.Copy(jpeg, 2, result, 2 + JpegComment.Length, jpeg.Length - 2);
-        return result;
+        var dqt = new List<byte>();
+        var dht = new List<byte>();
+        byte[]? sof = null;
+        int at = 2;
+        while (at + 4 <= jpeg.Length && jpeg[at] == 0xFF)
+        {
+            byte marker = jpeg[at + 1];
+            int length = (jpeg[at + 2] << 8) | jpeg[at + 3];
+            if (marker == 0xDA)
+            {
+                break;
+            }
+            if (at + 2 + length > jpeg.Length)
+            {
+                return jpeg;
+            }
+            var body = jpeg.AsSpan(at + 4, length - 2);
+            switch (marker)
+            {
+                case 0xDB:
+                    dqt.AddRange(body.ToArray());
+                    break;
+                case 0xC4:
+                    dht.AddRange(body.ToArray());
+                    break;
+                case 0xC0:
+                    sof = jpeg.AsSpan(at, 2 + length).ToArray();
+                    break;
+                case 0xE0:
+                    break;
+                default:
+                    return jpeg;
+            }
+            at += 2 + length;
+        }
+        if (sof is null || dqt.Count == 0 || dht.Count == 0 || at >= jpeg.Length)
+        {
+            return jpeg;
+        }
+        using var ms = new MemoryStream(jpeg.Length + JpegComment.Length);
+        ms.WriteByte(0xFF);
+        ms.WriteByte(0xD8);
+        ms.Write(JpegComment);
+        // Armoury Crate's frames carry one quantization table that all three components select.
+        WriteSegment(ms, 0xDB, dqt.GetRange(0, Math.Min(65, dqt.Count)));
+        for (int comp = 12; comp < sof.Length; comp += 3)
+        {
+            sof[comp] = 0;
+        }
+        WriteSegment(ms, 0xC4, dht);
+        ms.Write(sof);
+        ms.Write(jpeg, at, jpeg.Length - at);
+        return ms.ToArray();
+    }
+
+    private static void WriteSegment(Stream s, byte marker, List<byte> body)
+    {
+        s.WriteByte(0xFF);
+        s.WriteByte(marker);
+        int length = body.Count + 2;
+        s.WriteByte((byte)(length >> 8));
+        s.WriteByte((byte)length);
+        s.Write(body.ToArray());
     }
 
     private static byte[] BuildComment()

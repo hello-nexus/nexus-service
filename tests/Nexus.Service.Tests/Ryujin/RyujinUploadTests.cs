@@ -57,14 +57,73 @@ public class RyujinUploadTests
         Assert.Throws<ArgumentException>(() => RyujinMediaAvi.Build(Array.Empty<byte[]>()));
     }
 
-    [Fact]
-    public void Jpeg_comment_matches_the_captured_frame_opening()
+    private static List<string> Markers(byte[] jpeg)
     {
-        // First 21 bytes of the capture's first frame: SOI, COM "Lavc58.134.100".
-        var commented = RyujinMediaAvi.WithComment(new byte[] { 0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x43 });
+        var list = new List<string> { "SOI" };
+        int at = 2;
+        while (at + 4 <= jpeg.Length)
+        {
+            byte m = jpeg[at + 1];
+            list.Add(m switch { 0xFE => "COM", 0xDB => "DQT", 0xC4 => "DHT", 0xC0 => "SOF0", 0xE0 => "APP0", 0xDA => "SOS", _ => m.ToString("X2") });
+            if (m == 0xDA)
+            {
+                break;
+            }
+            at += 2 + ((jpeg[at + 2] << 8) | jpeg[at + 3]);
+        }
+        return list;
+    }
 
-        Assert.Equal(Convert.FromHexString("FFD8FFFE00114C6176633538 2E3133342E31303000".Replace(" ", "")), commented.AsSpan(0, 21).ToArray());
-        Assert.Equal(new byte[] { 0xFF, 0xDB, 0x00, 0x43 }, commented.AsSpan(21).ToArray());
+    [Fact]
+    public void Our_frame_header_has_the_marker_sequence_of_a_frame_from_the_captured_upload()
+    {
+        var ac = Fixture("ac-frame0-head.bin");
+        var rgbx = new byte[RyujinMediaAvi.Width * RyujinMediaAvi.Height * 4];
+        var rnd = new Random(3);
+        for (int i = 0; i < rgbx.Length; i += 4)
+        {
+            rgbx[i] = (byte)(i / 4 % 251);
+            rgbx[i + 1] = (byte)rnd.Next(256);
+            rgbx[i + 2] = (byte)(i / 4 / 640);
+            rgbx[i + 3] = 255;
+        }
+        var raw = Nexus.Service.Rendering.TurboJpegOneShot.TryCompress(rgbx, 640, 480, Nexus.Service.Rendering.TurboJpeg.PixelFormatRgbx, 75, optimize: true, out bool optimized);
+        if (raw is null)
+        {
+            return;
+        }
+
+        Assert.True(optimized, "the bundled turbojpeg accepts TJPARAM_OPTIMIZE");
+        var ours = RyujinMediaAvi.WithComment(raw);
+
+        Assert.Equal(new[] { "SOI", "COM", "DQT", "DHT", "SOF0", "SOS" }, Markers(ac));
+        Assert.Equal(Markers(ac), Markers(ours));
+        Assert.Equal(ac.AsSpan(0, 21).ToArray(), ours.AsSpan(0, 21).ToArray());
+        // SOF0: 8-bit, 480 high, 640 wide, three components with 4:2:0 sampling.
+        int at = FindMarker(ours, 0xC0);
+        Assert.Equal(ac.AsSpan(FindMarker(ac, 0xC0), 19).ToArray(), ours.AsSpan(at, 19).ToArray());
+    }
+
+    private static int FindMarker(byte[] jpeg, byte marker)
+    {
+        int at = 2;
+        while (at + 4 <= jpeg.Length)
+        {
+            if (jpeg[at + 1] == marker)
+            {
+                return at;
+            }
+            at += 2 + ((jpeg[at + 2] << 8) | jpeg[at + 3]);
+        }
+        return -1;
+    }
+
+    [Fact]
+    public void A_jpeg_without_the_expected_segments_is_left_alone()
+    {
+        var odd = new byte[] { 0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xDA, 0x00, 0x02 };
+
+        Assert.Equal(odd, RyujinMediaAvi.WithComment(odd));
     }
 
     // ---- command frames and chunking, against the captured interrupt and bulk transfers ----

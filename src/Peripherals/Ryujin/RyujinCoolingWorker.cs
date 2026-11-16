@@ -205,7 +205,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
             }
             if (uploaded || _appliedMode != ModeImage)
             {
-                if (_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
+                if (BounceToStoredMedia())
                 {
                     _appliedMode = ModeImage;
                     ServiceLog.Info($"[asus-ryujin-cooling] stored-media layout selected, held={(uploaded ? "after upload" : "from an earlier upload")}");
@@ -215,6 +215,21 @@ public sealed class RyujinCoolingWorker : BackgroundService
         }
         return _appliedMode == ModeImage && SelectMonitor(wanted);
     }
+
+    /// <summary>Selects the monitor layout, waits, then the stored media, so the screen opens the file afresh instead of treating the select as no change.</summary>
+    private bool BounceToStoredMedia()
+    {
+        if (!_hub.Send(RyujinMonitorProtocol.EncodeSelectMonitorLayout()))
+        {
+            return false;
+        }
+        Thread.Sleep(BounceDwellMs);
+        ServiceLog.Info("[ryujin-upload] bounce: monitor layout, then the stored-media layout");
+        return _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia());
+    }
+
+    /// <summary>Test-build experiment: how long the monitor layout is held before the stored media is selected.</summary>
+    internal int BounceDwellMs { get; set; } = 1000;
 
     private bool SelectMonitor(RyujinDisplaySettings wanted)
     {

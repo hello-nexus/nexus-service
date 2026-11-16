@@ -19,6 +19,8 @@ internal static unsafe class TurboJpegOneShot
     private static readonly object Gate = new();
     private static IntPtr _handle;
     private static int _quality;
+    private static bool _optimize;
+    private static bool _optimizeRejected;
     private static byte[] _out = Array.Empty<byte>();
     private static bool _failureLogged;
 
@@ -27,8 +29,16 @@ internal static unsafe class TurboJpegOneShot
     /// one of the TJPF_* values on <see cref="TurboJpeg"/>). Returns null when turbojpeg is
     /// unavailable or the compress call fails, so the caller uses its Skia path.
     /// </summary>
-    public static byte[]? TryCompress(ReadOnlySpan<byte> pixels, int width, int height, int pixelFormat, int quality)
+    public static byte[]? TryCompress(ReadOnlySpan<byte> pixels, int width, int height, int pixelFormat, int quality) =>
+        TryCompress(pixels, width, height, pixelFormat, quality, optimize: false, out _);
+
+    /// <summary>
+    /// As above; <paramref name="optimize"/> asks for per-image Huffman tables. <paramref name="optimized"/> is
+    /// false when the library refused the parameter, in which case the standard tables were used.
+    /// </summary>
+    public static byte[]? TryCompress(ReadOnlySpan<byte> pixels, int width, int height, int pixelFormat, int quality, bool optimize, out bool optimized)
     {
+        optimized = false;
         if (width <= 0 || height <= 0 || pixels.Length < (long)width * height * 4)
         {
             return null;
@@ -41,6 +51,20 @@ internal static unsafe class TurboJpegOneShot
             {
                 return null;
             }
+            bool wantOptimize = optimize && !_optimizeRejected;
+            if (_optimize != wantOptimize)
+            {
+                if (TurboJpeg.tj3Set(handle, TurboJpeg.ParamOptimize, wantOptimize ? 1 : 0) == 0)
+                {
+                    _optimize = wantOptimize;
+                }
+                else if (wantOptimize)
+                {
+                    _optimizeRejected = true;
+                    wantOptimize = false;
+                }
+            }
+            optimized = optimize && _optimize;
 
             // Worst case for the geometry; TJPARAM_NOREALLOC means the library will not grow
             // it, and a smaller guess would fail on noisy content. Kept between calls so a

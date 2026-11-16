@@ -21,6 +21,7 @@ internal static unsafe class TurboJpeg
     public const int ParamNoRealloc = 2;
     public const int ParamQuality = 3;
     public const int ParamSubsamp = 4;
+    public const int ParamOptimize = 11;
     public const int PixelFormatRgbx = 2;
     public const int PixelFormatBgrx = 3;
     public const int Subsamp420 = 2;
