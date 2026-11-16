@@ -403,6 +403,25 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
+    public void WatchFinding_ClearedWhileNoNoticeCanBeShown_NotifiesWhenItReturns()
+    {
+        var service = new DiagnosticsAlertService(null!, new Nexus.Service.Tests.InMemoryConfigStore(), FeatureGates.AllEnabled);
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true };
+        var drive = new[] { SmartWatch("1 command timeout") };
+        var ok = new[] { new HealthComponent { Id = "storage:OOS6000G", Kind = "storage", Name = "OOS6000G", Status = HealthStatuses.Ok } };
+        var helperConnected = true;
+        service.CanDeliver = () => helperConnected;
+
+        Assert.Single(service.DueNotices(drive, notifications, T0));
+        helperConnected = false;
+        service.DueNotices(ok, notifications, T0.AddMinutes(5));
+        service.DueNotices(drive, notifications, T0.AddMinutes(10));
+        helperConnected = true;
+
+        Assert.Single(service.DueNotices(drive, notifications, T0.AddHours(2)));
+    }
+
+    [Fact]
     public void WatchState_FailedSaveIsRetriedWithoutAFindingChange()
     {
         var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-alert-" + Guid.NewGuid().ToString("N"));

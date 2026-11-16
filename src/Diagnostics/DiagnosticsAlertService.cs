@@ -219,14 +219,19 @@ public sealed class DiagnosticsAlertService : BackgroundService
     // A watch finding is shown once, so it must not be marked shown while delivery would drop it.
     internal IReadOnlyList<DiagnosticsAlertNotice> DueNotices(IReadOnlyList<HealthComponent> components, DiagnosticsNotifications notifications, DateTime nowUtc)
     {
-        if (CanDeliver is { } canDeliver && !canDeliver())
-        {
-            return Array.Empty<DiagnosticsAlertNotice>();
-        }
         lock (_lastNotifiedUtc)
         {
             var before = WatchStateText();
-            var due = EvaluateNotifications(components, notifications, _lastNotifiedUtc, nowUtc, _notifiedWatch);
+            IReadOnlyList<DiagnosticsAlertNotice> due;
+            if (CanDeliver is { } canDeliver && !canDeliver())
+            {
+                ForgetCleared(components, _notifiedWatch);
+                due = Array.Empty<DiagnosticsAlertNotice>();
+            }
+            else
+            {
+                due = EvaluateNotifications(components, notifications, _lastNotifiedUtc, nowUtc, _notifiedWatch);
+            }
             _watchStateUnsaved |= WatchStateText() != before;
             if (_watchStateUnsaved)
             {
@@ -288,13 +293,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
     {
         if (notifiedWatch is not null)
         {
-            foreach (var component in components)
-            {
-                if (component.Status == HealthStatuses.Ok)
-                {
-                    notifiedWatch.Remove(component.Id);
-                }
-            }
+            ForgetCleared(components, notifiedWatch);
         }
 
         if (!notifications.Enabled)
@@ -337,6 +336,17 @@ public sealed class DiagnosticsAlertService : BackgroundService
             notices.Add(new DiagnosticsAlertNotice(component.Name, reason?.Summary ?? "Needs attention.", component.Kind ?? ""));
         }
         return notices;
+    }
+
+    private static void ForgetCleared(IReadOnlyList<HealthComponent> components, IDictionary<string, string> notifiedWatch)
+    {
+        foreach (var component in components)
+        {
+            if (component.Status == HealthStatuses.Ok)
+            {
+                notifiedWatch.Remove(component.Id);
+            }
+        }
     }
 
     // The state file holds one line per component, so tabs and line breaks in a summary are flattened.
