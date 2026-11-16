@@ -367,4 +367,60 @@ public partial class SensorAlertEngineTests
         Assert.Equal(1200, StateOf(rig, "custom-fan").Value);
         Assert.Equal("Fan #1", rig.Store.Load().Diagnostics.SensorAlerts.Single(r => r.Id == "custom-fan").Sensor.Name);
     }
+
+    private const string SecondFanId = "/lpc/ctl/2";
+    private const string SecondTachId = "/lpc/nct/fan/2";
+
+    private static Rig TwoBoardFanRig(out SensorAlertRule rule)
+    {
+        var rig = BuiltInRig(r =>
+        {
+            r.Fans.Channels.Add(new FanChannel { Id = BoardFanId, Name = "Fan #1", RpmSensorId = BoardTachId, Rpm = 1200 });
+            r.Fans.Channels.Add(new FanChannel { Id = SecondFanId, Name = "Fan #2", RpmSensorId = SecondTachId, Rpm = 2000 });
+            var second = BoardTach(2000);
+            second.Id = SecondTachId;
+            second.Name = "Fan #2";
+            r.Sensors.Mobo = new[] { BoardTach(), second };
+        });
+        rule = BoardFanRule("Fan #1");
+        rule.Low = 1500;
+        rule.RaiseAfterSeconds = 0;
+        rig.AddRule(rule);
+        rig.Seconds(2);
+        Assert.Single(rig.Engine.History());
+        return rig;
+    }
+
+    private static void Repoint(Rig rig) => rig.Store.Update(s =>
+    {
+        var stored = s.Diagnostics.SensorAlerts.Single(r => r.Id == "custom-fan");
+        stored.Sensor.Id = SecondTachId;
+        stored.Sensor.Name = "Fan #2";
+    });
+
+    [Fact]
+    public void A_rule_re_pointed_from_an_unrenamed_fan_to_a_renamed_one_keeps_its_old_rows_as_recorded()
+    {
+        var rig = TwoBoardFanRig(out _);
+        Rename(rig, SecondFanId, "B fan");
+
+        Repoint(rig);
+        rig.Seconds(2);
+
+        Assert.Equal("Fan #1", Assert.Single(rig.Engine.History()).SensorName);
+    }
+
+    [Fact]
+    public void A_rule_re_pointed_from_a_renamed_fan_to_another_renamed_one_does_not_take_the_new_name_on_old_rows()
+    {
+        var rig = TwoBoardFanRig(out _);
+        Rename(rig, BoardFanId, "A fan");
+        Assert.Equal("A fan", rig.Engine.History().Single().SensorName);
+        Rename(rig, SecondFanId, "B fan");
+
+        Repoint(rig);
+        rig.Seconds(2);
+
+        Assert.Equal("Fan #1", Assert.Single(rig.Engine.History()).SensorName);
+    }
 }

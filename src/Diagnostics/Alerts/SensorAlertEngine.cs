@@ -1308,17 +1308,27 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>Newest first.</summary>
     public List<SensorAlertHistoryEntry> History()
     {
-        // Entries keep the hardware name; the current Cooling name is applied on read, so clearing a rename restores them all.
-        var snap = Snapshot();
-        var shown = snap.Overlay is null
-            ? new Dictionary<string, string>()
-            : snap.Rules.Where(r => !ReferenceEquals(snap.Display(r), r)).ToDictionary(r => r.Id, r => snap.Display(r).Sensor.Name, StringComparer.Ordinal);
+        // Entries keep the hardware name; the Cooling name is applied on read, only to rows still carrying the rule's current hardware name, so a re-pointed rule's old rows stay as recorded.
+        var shown = new Dictionary<string, (string Raw, string Display)>(StringComparer.Ordinal);
+        // No renames is the common case, and then the full snapshot is skipped.
+        if (_fans is not null && Nexus.Service.Cooling.CoolingSnapshots.FanNames(_store.Load().Cooling).Count > 0)
+        {
+            var snap = Snapshot();
+            foreach (var rule in snap.Rules)
+            {
+                var display = snap.Display(rule);
+                if (!ReferenceEquals(display, rule))
+                {
+                    shown[rule.Id] = (rule.Sensor.Name, display.Sensor.Name);
+                }
+            }
+        }
         lock (_lock)
         {
             return _history.AsEnumerable().Reverse().Select(h => new SensorAlertHistoryEntry
             {
                 RuleId = h.RuleId,
-                SensorName = shown.TryGetValue(h.RuleId, out var display) ? display : h.SensorName,
+                SensorName = shown.TryGetValue(h.RuleId, out var label) && label.Raw == h.SensorName ? label.Display : h.SensorName,
                 Direction = h.Direction,
                 StartedUtc = h.StartedUtc,
                 EndedUtc = h.EndedUtc,
