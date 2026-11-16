@@ -11,7 +11,7 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Diagnostics.Alerts;
 
 /// <summary>One resolved reading. Valid is false for a missing, stale, non-finite or implausible sensor.</summary>
-internal readonly record struct SensorSample(bool Valid, double Value, string Units, string Source = "");
+internal readonly record struct SensorSample(bool Valid, double Value, string Units, string Source = "", string? HealedName = null);
 
 /// <summary>A finished alert the user has not dismissed yet. Time is wall clock, for display and the expiry.</summary>
 internal sealed record EndedAlert(DateTimeOffset EndedUtc, double Peak, double Threshold, string Direction);
@@ -108,11 +108,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     private Dictionary<string, IReadOnlyList<HardwareSensor>> _lastLists = new(StringComparer.Ordinal);
 
-    private static SensorRef WithId(SensorRef sensor, string id) => new()
+    private static SensorRef WithId(SensorRef sensor, string id, string? name = null) => new()
     {
         Category = sensor.Category,
         Id = id,
-        Name = sensor.Name,
+        Name = name ?? sensor.Name,
         Type = sensor.Type,
         ParentName = sensor.ParentName,
     };
@@ -420,6 +420,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     internal static SensorSample Resolve(IReadOnlyList<HardwareSensor> list, SensorRef reference, out string? healedId, IReadOnlyDictionary<string, string>? fanHeaderNames = null)
     {
         healedId = null;
+        string? healedName = null;
         HardwareSensor? found = null;
         if (!string.IsNullOrEmpty(reference.Id))
         {
@@ -431,6 +432,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     && (string.IsNullOrEmpty(reference.Name) || NameMatches(s, reference.Name, fanHeaderNames)))
                 {
                     found = s;
+                    // A rule stored under a Cooling name goes back to the hardware name.
+                    healedName = !string.IsNullOrEmpty(reference.Name) && s.Name != reference.Name ? s.Name : null;
                     break;
                 }
             }
@@ -440,7 +443,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             for (var i = 0; i < list.Count; i++)
             {
                 var s = list[i];
-                if (!NameMatches(s, reference.Name, fanHeaderNames) || !string.Equals(s.Type, reference.Type, StringComparison.OrdinalIgnoreCase))
+                if (s.Name != reference.Name || !string.Equals(s.Type, reference.Type, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -460,10 +463,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         {
             return new SensorSample(false, 0, "");
         }
-        return new SensorSample(IsUsable(found), found.Value, found.Units, found.Parent.Name);
+        return new SensorSample(IsUsable(found), found.Value, found.Units, found.Parent.Name, healedName);
     }
 
-    // A key picked from the renamed list stores the Cooling name, one stored earlier holds the hardware name; both resolve.
+    // Id pass only: a rule stored under the Cooling name resolves by its id, never by name.
     private static bool NameMatches(HardwareSensor s, string name, IReadOnlyDictionary<string, string>? fanHeaderNames) =>
         s.Name == name || (fanHeaderNames is not null && fanHeaderNames.TryGetValue(s.Id, out var custom) && custom == name);
 
@@ -583,6 +586,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var enabled = rules;
         var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify, string Key, bool Mobile)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
+        var nameHeals = new List<(string RuleId, string OldName, string SensorType, string RawName)>();
         var readings = new List<SeriesEntry>(enabled.Count);
         if (enabled.Count > 0)
         {
@@ -606,10 +610,14 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         heals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, healed));
                     }
                     // A built-in's series is the monitoring history's own, so it is not recorded twice.
+                    if (rule.BuiltIn is null && sample.HealedName is { } rawName)
+                    {
+                        nameHeals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, rawName));
+                    }
                     if (rule.BuiltIn is null && sample.Valid && double.IsFinite(sample.Value))
                     {
                         // A healed id is the same sensor, so the entry carries it and compares equal to the rule once the heal lands.
-                        readings.Add(new SeriesEntry(rule.Id, sample.Value, healed is null ? rule.Sensor : WithId(rule.Sensor, healed)));
+                        readings.Add(new SeriesEntry(rule.Id, sample.Value, healed is null && sample.HealedName is null ? rule.Sensor : WithId(rule.Sensor, healed ?? rule.Sensor.Id, sample.HealedName)));
                     }
                     if (sample.Valid)
                     {
@@ -632,6 +640,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         if (heals.Count > 0)
         {
             HealSensorIds(heals);
+        }
+        if (nameHeals.Count > 0)
+        {
+            HealSensorNames(nameHeals);
         }
         // After the heal, so a healed id already matches the stored rule.
         DropStaleSeries();
@@ -962,10 +974,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         // Read once per refresh, and only when a channel has a tach sensor to look up.
         IReadOnlyList<HardwareSensor>? gpuTachs = null;
         IReadOnlyList<HardwareSensor>? boardTachs = null;
-        var channels = _fans.GetFanChannels();
-        var names = Nexus.Service.Cooling.CoolingSnapshots.FanNames(_store.Load().Cooling);
-        var tachNames = Nexus.Service.Monitoring.FanSensorNames.BuildMap(channels, names);
-        foreach (var ch in channels)
+        foreach (var ch in _fans.GetFanChannels())
         {
             var seriesId = BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id);
             if (devices.Any(d => d.SeriesId == seriesId))
@@ -973,10 +982,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                 continue;
             }
             BuiltInSource source;
-            var name = names.TryGetValue(ch.Id, out var custom) && !string.IsNullOrWhiteSpace(custom) ? custom.Trim() : ch.Name;
-            var hardware = ch.DeviceId is { } devId && names.TryGetValue(devId, out var deviceCustom) && !string.IsNullOrWhiteSpace(deviceCustom)
-                ? deviceCustom.Trim()
-                : ch.DeviceName ?? name;
+            var hardware = ch.DeviceName ?? ch.Name;
             // The tach sensor behind a motherboard or graphics card channel when the picker lists it; a hub channel has none.
             HardwareSensor? tach = null;
             if (!string.IsNullOrEmpty(ch.RpmSensorId))
@@ -988,8 +994,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             }
             source = tach is null
                 ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware }
-                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", Nexus.Service.Monitoring.FanSensorNames.WithRename(tach, tachNames)), HardwareName = hardware };
-            var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
+                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
+            var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, ch.Name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
             // A channel with no readable tach has no value, as in the history.
             Add(devices, sensors, device, ch.RpmUnavailable ? float.NaN : ch.Rpm, ch.RpmUnavailable);
         }
@@ -1102,6 +1108,28 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         catch (Exception ex)
         {
             Warn("notify", $"[sensor-alerts] notify failed: {ex.Message}", Mono());
+        }
+    }
+
+    private void HealSensorNames(List<(string RuleId, string OldName, string SensorType, string RawName)> heals)
+    {
+        try
+        {
+            _store.Update(s =>
+            {
+                foreach (var (ruleId, oldName, type, rawName) in heals)
+                {
+                    var rule = s.Diagnostics.SensorAlerts?.FirstOrDefault(r => r.Id == ruleId);
+                    if (rule is not null && rule.BuiltIn is null && rule.Sensor.Name == oldName && rule.Sensor.Type == type)
+                    {
+                        rule.Sensor.Name = rawName;
+                    }
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Warn("heal", $"[sensor-alerts] name self-heal failed: {ex.Message}", Mono());
         }
     }
 
