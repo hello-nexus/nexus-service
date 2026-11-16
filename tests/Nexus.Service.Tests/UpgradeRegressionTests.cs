@@ -50,6 +50,32 @@ public class UpgradeRegressionTests : IDisposable
         return node;
     }
 
+    // Every stored value must come back unchanged. A key the capture predates may appear on load at its default,
+    // so objects match when each stored key survives; arrays and scalars still compare exactly.
+    private static bool Survives(JsonNode before, JsonNode? after)
+    {
+        if (before is JsonObject stored)
+        {
+            if (after is not JsonObject loaded)
+            {
+                return false;
+            }
+            foreach (var (key, value) in stored)
+            {
+                if (value is null)
+                {
+                    continue;
+                }
+                if (!Survives(value, loaded[key]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return JsonNode.DeepEquals(before, after);
+    }
+
     private static int AssertStablePathsSurvive(JsonNode raw, JsonNode loaded, string label)
     {
         var compared = 0;
@@ -60,7 +86,7 @@ public class UpgradeRegressionTests : IDisposable
             {
                 continue;
             }
-            Assert.True(JsonNode.DeepEquals(before, At(loaded, path)), $"{label}: {path} changed on load");
+            Assert.True(Survives(before, At(loaded, path)), $"{label}: {path} changed on load");
             compared++;
         }
         return compared;
