@@ -1121,6 +1121,8 @@ public sealed partial class Slv3Hub : IDisposable
         var nowMs = _nowMs();
         if ((_tx is not { IsOpen: true } || _rx is not { IsOpen: true }) && !RecoverHandlesLocked(nowMs))
         {
+            // No RX answer is coming, so this time is blind, not unseen.
+            _blindSinceMs ??= nowMs;
             return false;
         }
         if (_rx is not { IsOpen: true })

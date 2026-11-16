@@ -1688,6 +1688,43 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void Time_the_link_was_down_is_blind_time_so_a_recovered_hub_does_not_mark_chains_unheard()
+    {
+        var clock = new ManualClock();
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var discovery = new ToggleDiscovery();
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx, clock.NowMs) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        tx.Dead = true;
+        discovery.TxPresent = false;
+        discovery.RxPresent = false;
+
+        // The poll stops entirely once both dongles have been absent past the disconnect limit.
+        var failed = false;
+        for (var i = 0; i < 21; i++)
+        {
+            clock.AdvanceMs(1_000);
+            failed |= !hub.PollTick();
+        }
+        Assert.True(failed);
+
+        net.Fans.Clear();
+        tx.Dead = false;
+        discovery.TxPresent = true;
+        discovery.RxPresent = true;
+        clock.AdvanceMs(1_000);
+        Assert.True(hub.PollTick());
+
+        var fan = Assert.Single(hub.State.Fans);
+        Assert.True(fan.Stale);
+        Assert.False(fan.Unheard);
+    }
+
+    [Fact]
     public void Chain_seen_every_poll_never_goes_stale_despite_slow_clock_advance()
     {
         var clock = new ManualClock();

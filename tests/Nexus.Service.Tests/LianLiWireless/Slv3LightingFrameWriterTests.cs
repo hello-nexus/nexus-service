@@ -757,33 +757,69 @@ public class Slv3LightingFrameWriterTests
         new() { Joinable = true, LastUploadStartMs = lastUploadMs, RetryAtMs = retryAtMs };
 
     [Fact]
-    public void An_unheard_chain_gets_no_windows_and_no_live_frames_and_does_not_hold_the_turn()
+    public void An_unheard_chain_is_held_silent_but_a_state_change_still_reaches_it_once()
     {
-        Assert.True(Slv3LightingFrameWriter.SkipsWindowUploads(new Slv3FanInfo { Unheard = true }));
-        Assert.False(Slv3LightingFrameWriter.SkipsWindowUploads(new Slv3FanInfo { Unheard = false }));
-        Assert.False(Slv3LightingFrameWriter.SkipsWindowUploads(null));
+        Assert.True(Slv3LightingFrameWriter.HoldsForUnheard(new Slv3FanInfo { Unheard = true }));
+        Assert.False(Slv3LightingFrameWriter.HoldsForUnheard(new Slv3FanInfo { Unheard = false }));
+        Assert.False(Slv3LightingFrameWriter.HoldsForUnheard(null));
 
-        var (hub, _, tx, _, _, writer, frames) = CreateBoundSetup();
+        var (hub, net, tx) = Slv3TestHub.CreateConnected();
+        net.Fans.Add(new Slv3TestHub.SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, FanCount = 1 });
+        Assert.True(hub.DriveTick());
+        var store = new InMemoryConfigStore();
+        var identify = new Np50IdentifyTracker();
+        var provider = new Slv3LightingDeviceProvider(hub, store, identify);
+        var frames = new List<DeviceFrame>(provider.BuildFrames(0));
+        var engine = new LightingEngine();
+        engine.UpdateDevices(frames.ToArray());
+        var autoClock = 0L;
+        var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider,
+            () => { autoClock += 200 * TimeSpan.TicksPerMillisecond; return autoClock; });
         hub.State.Fans[0].Unheard = true;
-        for (var i = 0; i < 3; i++)
+        void Ticks(int n, byte shade)
         {
-            FillAll(frames, (byte)(10 + i), 20, 30);
-            writer.Tick();
+            for (var i = 0; i < n; i++)
+            {
+                FillAll(frames, (byte)(shade + i), 20, 30);
+                writer.Tick();
+            }
         }
-        Assert.Empty(RgbSyncFrames(tx));
+
+        // First sight is a state change and settles; after that the chain is silent while unheard.
+        Ticks(6, 10);
+        // The settle window runs on the wall clock.
+        System.Threading.Thread.Sleep(400);
+        Ticks(1, 10);
+        var settled = RgbSyncFrames(tx).Count;
+        Ticks(6, 100);
+        Assert.Equal(settled, RgbSyncFrames(tx).Count);
         var chain = Assert.Single(writer._rolling.Values);
         Assert.False(chain.Joinable);
 
-        // A heard chain takes the upload turn although the skipped one waited longer.
+        // Turning the device off reaches it even though it is unheard, then silence again.
+        store.Update(s => s.Devices.DisabledLightingDevices.Add(frames[0].Id));
+        Ticks(1, 50);
+        Assert.True(RgbSyncFrames(tx).Count > settled);
+        System.Threading.Thread.Sleep(400);
+        Ticks(1, 50);
+        var afterOff = RgbSyncFrames(tx).Count;
+        Ticks(6, 60);
+        Assert.Equal(afterOff, RgbSyncFrames(tx).Count);
+
+        // So does a brightness change.
+        store.Update(s => s.Lighting.GlobalBrightness = 0.4f);
+        Ticks(1, 70);
+        Assert.True(RgbSyncFrames(tx).Count > afterOff);
+        System.Threading.Thread.Sleep(400);
+        Ticks(1, 70);
+        var afterDim = RgbSyncFrames(tx).Count;
+        Ticks(6, 80);
+        Assert.Equal(afterDim, RgbSyncFrames(tx).Count);
+
+        // A heard chain takes the upload turn although the held one waited longer.
         var heard = Joinable(500);
         writer._rolling["heard"] = heard;
         Assert.True(writer.IsNextToUpload(heard, 1000));
-
-        // Heard again: streaming resumes.
-        hub.State.Fans[0].Unheard = false;
-        FillAll(frames, 90, 20, 30);
-        writer.Tick();
-        Assert.NotEmpty(RgbSyncFrames(tx));
     }
 
     [Fact]
