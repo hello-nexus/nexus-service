@@ -177,7 +177,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     public Computer Instance => _computer;
 
     /// <summary>True while DIMM reads are paused; the sticks' sensors hold their last value, so callers must not publish them.</summary>
-    internal bool DimmReadsPaused => _dimmBackoff.ShouldSkip;
+    internal bool DimmReadsPaused => _dimmBackoff.Paused;
 
     private void OnWalkStalled(TimeSpan age)
     {

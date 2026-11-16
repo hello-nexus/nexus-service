@@ -4,7 +4,7 @@ namespace Nexus.Service.Sensors;
 
 /// <summary>
 /// Pauses DIMM SPD reads when they keep taking seconds, which means another process holds the global SMBus mutex
-/// and every stick burns the mutex wait. Walks are serialized by the caller, so no locking.
+/// and every stick burns the mutex wait. Walks are serialized by the caller, so no locking; only Paused is read from other threads, hence its volatile backing field.
 /// Free of LibreHardwareMonitor types so it tests on every platform.
 /// </summary>
 internal sealed class LhmDimmBackoff
@@ -22,7 +22,7 @@ internal sealed class LhmDimmBackoff
 
     private readonly Func<long> _nowMs;
     private long _pausedUntilMs;
-    private bool _probing;
+    private volatile bool _probing;
     private int _slowWalks;
     private long _walkSlowestMs;
     private bool _walkRead;
@@ -32,6 +32,9 @@ internal sealed class LhmDimmBackoff
 
     /// <summary>True while paused. Once the pause has run out this is false, so the next walk reads the sticks as a probe.</summary>
     internal bool ShouldSkip => (_pausedUntilMs != 0 && _nowMs() < _pausedUntilMs) || _probeStickSlow;
+
+    /// <summary>True from the pause until a probe walk has read the sticks fast, so readings published meanwhile would be stale.</summary>
+    internal bool Paused => _probing;
 
     /// <summary>Longest stick read in the walk that just ended; for the log line.</summary>
     internal long LastSlowestMs { get; private set; }
