@@ -186,4 +186,39 @@ public partial class SensorAlertEngineTests
         Assert.False(without.Valid);
         Assert.True(with.Valid);
     }
+
+    [Fact]
+    public void A_rule_created_from_the_renamed_picker_is_stored_raw_and_survives_clearing_the_rename()
+    {
+        var rig = BoardFanRig();
+        Rename(rig, BoardFanId, "CPU fan");
+        var rule = BoardFanRule("CPU fan");
+
+        rig.Engine.RestoreRawSensorName(rule.Sensor);
+        rig.AddRule(rule);
+        rig.Seconds(1);
+
+        Assert.Equal("Fan #1", rig.Store.Load().Diagnostics.SensorAlerts.Single(r => r.Id == "custom-fan").Sensor.Name);
+        Assert.Equal(1200, StateOf(rig, "custom-fan").Value);
+
+        Rename(rig, BoardFanId, null);
+        rig.Seconds(1);
+
+        Assert.Equal(1200, StateOf(rig, "custom-fan").Value);
+    }
+
+    [Fact]
+    public void Restoring_the_raw_name_leaves_other_sensors_and_hardware_names_alone()
+    {
+        var rig = BoardFanRig();
+        Rename(rig, BoardFanId, "CPU fan");
+        var other = new SensorRef { Category = "motherboard", Id = "other", Name = "CPU fan", Type = "Fan" };
+        var raw = BoardFanRule("Fan #1").Sensor;
+
+        rig.Engine.RestoreRawSensorName(other);
+        rig.Engine.RestoreRawSensorName(raw);
+
+        Assert.Equal("CPU fan", other.Name);
+        Assert.Equal("Fan #1", raw.Name);
+    }
 }

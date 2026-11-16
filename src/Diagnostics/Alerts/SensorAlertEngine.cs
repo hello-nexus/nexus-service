@@ -143,6 +143,21 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         return list.Any(x => x.Id == reference.Id && string.Equals(x.Type, reference.Type, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>Swaps a Cooling fan name on <paramref name="reference"/> back to the hardware name, so a stored rule survives the rename being cleared.</summary>
+    public void RestoreRawSensorName(SensorRef reference)
+    {
+        if (string.IsNullOrEmpty(reference.Id) || FanHeaderNames() is not { } renames
+            || !renames.TryGetValue(reference.Id, out var custom) || custom != reference.Name)
+        {
+            return;
+        }
+        var lists = ReadCategories(new List<SensorAlertRule> { new() { Sensor = reference } }, Mono());
+        if (lists.TryGetValue(reference.Category, out var list) && list.FirstOrDefault(x => x.Id == reference.Id) is { } raw)
+        {
+            reference.Name = raw.Name;
+        }
+    }
+
     private SeriesSnapshot _series = new(DateTimeOffset.MinValue, Array.Empty<SeriesEntry>());
 
     /// <summary>

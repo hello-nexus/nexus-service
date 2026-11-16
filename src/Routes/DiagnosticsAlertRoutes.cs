@@ -45,6 +45,7 @@ public static class DiagnosticsAlertRoutes
             body.Id = Guid.NewGuid().ToString("N");
             // Read outside the store lock: it can walk hardware.
             var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
+            engine.RestoreRawSensorName(body.Sensor);
             var candidateResolves = engine.IdResolves(body.Sensor);
             SensorAlertRule? tracker = null;
             var full = false;
@@ -107,6 +108,7 @@ public static class DiagnosticsAlertRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
+            engine.RestoreRawSensorName(body.Sensor);
             // Read outside the store lock: it can walk hardware.
             var bodyIdResolves = engine.IdResolves(body.Sensor);
             var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
