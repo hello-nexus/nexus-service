@@ -30,4 +30,27 @@ public sealed class StoreCatalogProxyQueryTests
     {
         Assert.Equal("?nexusVersion=3.0.19&touch=true", StoreCatalogProxy.Query("3.0.19", true, tag));
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void A_release_build_reports_its_own_version_when_the_caller_names_none(string? requested)
+    {
+        Assert.Equal("3.1.10-beta.1", StoreCatalogProxy.ClientVersion(requested, "v3.1.10-beta.1"));
+    }
+
+    [Theory]
+    [InlineData("v3.0.0-dev")]
+    [InlineData("v3.1.10-dev.4")]
+    public void A_dev_build_reports_no_version(string buildVersion)
+    {
+        Assert.Equal("", StoreCatalogProxy.ClientVersion(null, buildVersion));
+    }
+
+    [Fact]
+    public void A_named_version_is_kept()
+    {
+        Assert.Equal("3.1.12", StoreCatalogProxy.ClientVersion("3.1.12", "v3.1.10"));
+    }
 }

@@ -18,9 +18,9 @@ public static class DiagnosticsAlertRoutes
 {
     public static void MapDiagnosticsAlertEndpoints(this WebApplication app)
     {
-        app.MapGet("/diagnostics/alerts", (IConfigStore store, SensorAlertEngine engine) => new SensorAlertsResponse
+        app.MapGet("/diagnostics/alerts", (IConfigStore store, SensorAlertEngine engine, Nexus.Service.Cooling.IFanControlProvider fans) => new SensorAlertsResponse
         {
-            Rules = engine.Rules(),
+            Rules = FanLabeled(engine.Rules(), store, fans),
             States = engine.States(),
             History = engine.History(),
         }).AllowPanel();
@@ -45,6 +45,7 @@ public static class DiagnosticsAlertRoutes
             body.Id = Guid.NewGuid().ToString("N");
             // Read outside the store lock: it can walk hardware.
             var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
+            engine.RestoreRawSensorName(body.Sensor);
             var candidateResolves = engine.IdResolves(body.Sensor);
             SensorAlertRule? tracker = null;
             var full = false;
@@ -107,6 +108,7 @@ public static class DiagnosticsAlertRoutes
             {
                 return Results.BadRequest(ApiResponse.Fail(error));
             }
+            engine.RestoreRawSensorName(body.Sensor);
             // Read outside the store lock: it can walk hardware.
             var bodyIdResolves = engine.IdResolves(body.Sensor);
             var builtIns = engine.Rules().Where(r => r.BuiltIn is not null).ToList();
@@ -173,7 +175,7 @@ public static class DiagnosticsAlertRoutes
         }).Produces(StatusCodes.Status204NoContent).Produces<ApiResponse>(StatusCodes.Status409Conflict);
 
         // Writes the factory state back (the series is kept: it is the same sensor). No id resets every built-in.
-        app.MapPost("/diagnostics/alerts/builtins/reset", (string? id, IConfigStore store, SensorAlertEngine engine) =>
+        app.MapPost("/diagnostics/alerts/builtins/reset", (string? id, IConfigStore store, SensorAlertEngine engine, Nexus.Service.Cooling.IFanControlProvider fans) =>
         {
             var devices = engine.BuiltInDevices().Where(d => string.IsNullOrEmpty(id) || BuiltInSensorRules.RuleId(d.SeriesId) == id).ToList();
             if (!string.IsNullOrEmpty(id) && devices.Count == 0)
@@ -197,12 +199,13 @@ public static class DiagnosticsAlertRoutes
                 }
             });
             engine.Reconcile();
-            return Results.Ok(new SensorAlertsResponse { Rules = engine.Rules(), States = engine.States(), History = engine.History() });
+            return Results.Ok(new SensorAlertsResponse { Rules = FanLabeled(engine.Rules(), store, fans), States = engine.States(), History = engine.History() });
         }).Produces<SensorAlertsResponse>().Produces<ApiResponse>(StatusCodes.Status404NotFound);
 
         app.MapGet("/diagnostics/alerts/history-series", (
             long? from, long? to, int? maxPoints, string? ruleId,
-            IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, ISensorProvider sensors) =>
+            IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, ISensorProvider sensors,
+            Nexus.Service.Cooling.IFanControlProvider fans) =>
         {
             if (from is null || to is null || to < from)
             {
@@ -220,6 +223,7 @@ public static class DiagnosticsAlertRoutes
                 step = 60;
             }
 
+            var fanOverlay = Monitoring.FanNameOverlay.Build(store, fans);
             var names = new Dictionary<string, string>(StringComparer.Ordinal);
             store.Read(s =>
             {
@@ -227,7 +231,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     if (rule.BuiltIn is null && (string.IsNullOrEmpty(ruleId) || rule.Id == ruleId))
                     {
-                        names[rule.Id] = rule.Sensor.Name;
+                        names[rule.Id] = fanOverlay?.TachName(rule.Sensor) ?? rule.Sensor.Name;
                     }
                 }
             });
@@ -248,7 +252,7 @@ public static class DiagnosticsAlertRoutes
                     {
                         if (monitoring.Series.FirstOrDefault(x => x.Id == BuiltInSensorRules.SeriesId(rule.Id)) is { Points.Count: > 0 } found)
                         {
-                            series.Add(new MetricSeriesWire { Id = rule.Id, Kind = "sensorAlert", Name = rule.Sensor.Name, Points = found.Points });
+                            series.Add(new MetricSeriesWire { Id = rule.Id, Kind = "sensorAlert", Name = fanOverlay?.RuleName(rule.Id) ?? rule.Sensor.Name, Points = found.Points });
                         }
                     }
                 }
@@ -301,6 +305,9 @@ public static class DiagnosticsAlertRoutes
             return Results.NoContent();
         }).Produces(StatusCodes.Status204NoContent);
     }
+
+    private static List<SensorAlertRule> FanLabeled(List<SensorAlertRule> rules, IConfigStore store, Nexus.Service.Cooling.IFanControlProvider fans) =>
+        Monitoring.FanNameOverlay.Build(store, fans)?.Project(rules) ?? rules;
 
     private static void DropHistory(string ruleId, IMetricsHistoryStore history, MetricsSampleBuffer buffer)
     {
