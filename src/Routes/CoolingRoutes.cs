@@ -314,9 +314,16 @@ public static class CoolingRoutes
             // UI or the device id of one of its group headers, and re-enumerating
             // the hardware to validate a string write buys nothing.
             id = Uri.UnescapeDataString(id);
+            // A wireless chain's name is shared with the lighting list, whose own
+            // older entry for it is dropped so the new name is the one it shows.
+            var chain = Nexus.Service.Lighting.LightingDeviceNames.IsWirelessChainId(id);
             store.Update(s =>
             {
-                if (string.IsNullOrWhiteSpace(body.Name))
+                if (chain)
+                {
+                    Nexus.Service.Lighting.LightingDeviceNames.SetName(s, id, body.Name);
+                }
+                else if (string.IsNullOrWhiteSpace(body.Name))
                 {
                     s.Cooling.FanNames.Remove(id);
                 }
@@ -325,6 +332,10 @@ public static class CoolingRoutes
                     s.Cooling.FanNames[id] = body.Name.Trim();
                 }
             });
+            if (chain)
+            {
+                PanelTopics.BroadcastLighting(hub);
+            }
             PanelTopics.BroadcastCooling(hub);
             return Results.Ok(ApiResponse.Ok());
         });

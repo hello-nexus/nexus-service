@@ -83,13 +83,20 @@ public class LightingDeviceNamesTests
     }
 
     [Fact]
-    public void Merge_AnOlderLightingEntryWinsOverCooling()
+    public void ACoolingRenameWithAStaleLightingEntryShowsTheNewNameOnLighting()
     {
-        var merged = LightingDeviceNames.Merge(
-            new Dictionary<string, string> { [Chain] = "Lighting name" },
-            new Dictionary<string, string> { [Chain] = "Rear stack" });
+        var s = new Nexus.Service.Persistence.NexusSettings();
+        s.Lighting.DeviceNames[Chain] = "Stale";
 
-        Assert.Equal("Lighting name", merged[Chain]);
+        // The cooling route's write for a chain.
+        LightingDeviceNames.SetName(s, Chain, "Rear stack");
+        var cards = new List<LightingDevice>
+        {
+            new LightingDevice { Id = Chain + ":fan1", Name = "Lian Li Wireless - Fan", DeviceId = Chain },
+        };
+        LightingDeviceNames.Apply(cards, LightingDeviceNames.Merge(s.Lighting.DeviceNames, s.Cooling.FanNames));
+
+        Assert.Equal("Rear stack", cards[0].DeviceName);
     }
 
     [Fact]

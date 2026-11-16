@@ -90,6 +90,27 @@ public sealed class LightingDeviceMutationBroadcastTests : IClassFixture<StubDev
     }
 
     [Fact]
+    public async Task CoolingRename_OfAWirelessChainDropsTheStaleLightingEntryAndBroadcastsLighting()
+    {
+        var hub = _factory.Services.GetRequiredService<MultiplexHub>();
+        var captured = new List<string>();
+        hub.OnBroadcastForTest += (topic, _) => captured.Add(topic);
+        using var lightingSub = hub.AddTestSubscription(PanelTopics.Lighting);
+        using var coolingSub = hub.AddTestSubscription(PanelTopics.Cooling);
+        var store = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+        store.Update(s => s.Lighting.DeviceNames["lianli-wireless:998D1DE566E1"] = "Stale");
+
+        var res = await _client.PostAsync(
+            "/cooling/fan/lianli-wireless%3A998D1DE566E1/name",
+            new StringContent("""{"name":" Rear stack "}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal("Rear stack", store.Load().Cooling.FanNames["lianli-wireless:998D1DE566E1"]);
+        Assert.False(store.Load().Lighting.DeviceNames.ContainsKey("lianli-wireless:998D1DE566E1"));
+        Assert.Contains(PanelTopics.Lighting, captured);
+    }
+
+    [Fact]
     public async Task Rename_WithAnEmptyNameClearsTheStoredRename()
     {
         await _client.PostAsync(
