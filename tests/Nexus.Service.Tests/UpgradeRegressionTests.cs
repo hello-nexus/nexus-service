@@ -50,30 +50,45 @@ public class UpgradeRegressionTests : IDisposable
         return node;
     }
 
-    // Every stored value must come back unchanged. A key the capture predates may appear on load at its default,
-    // so objects match when each stored key survives; arrays and scalars still compare exactly.
-    private static bool Survives(JsonNode before, JsonNode? after)
+    private static readonly JsonNode FreshDefaults =
+        JsonNode.Parse(JsonSerializer.Serialize(new NexusSettings(), PersistenceJsonContext.Default.NexusSettings))!;
+
+    // Stored values return unchanged; a loaded key the capture lacks passes only when the fresh default document holds the same value there.
+    // Arrays compare exactly, so a new default field on an array element type needs a capture refresh or a per-element template.
+    private static bool Survives(JsonNode? before, JsonNode? after, JsonNode? fresh)
     {
-        if (before is JsonObject stored)
+        if (before is null)
         {
-            if (after is not JsonObject loaded)
+            return after is null;
+        }
+        if (before is not JsonObject stored)
+        {
+            return JsonNode.DeepEquals(before, after);
+        }
+        if (after is not JsonObject loaded)
+        {
+            return false;
+        }
+        var defaults = fresh as JsonObject;
+        foreach (var (key, value) in stored)
+        {
+            if (!Survives(value, loaded[key], defaults?[key]))
             {
                 return false;
             }
-            foreach (var (key, value) in stored)
-            {
-                if (value is null)
-                {
-                    continue;
-                }
-                if (!Survives(value, loaded[key]))
-                {
-                    return false;
-                }
-            }
-            return true;
         }
-        return JsonNode.DeepEquals(before, after);
+        foreach (var (key, value) in loaded)
+        {
+            if (stored.ContainsKey(key))
+            {
+                continue;
+            }
+            if (value is null || defaults?[key] is not { } def || !JsonNode.DeepEquals(value, def))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int AssertStablePathsSurvive(JsonNode raw, JsonNode loaded, string label)
@@ -86,7 +101,7 @@ public class UpgradeRegressionTests : IDisposable
             {
                 continue;
             }
-            Assert.True(Survives(before, At(loaded, path)), $"{label}: {path} changed on load");
+            Assert.True(Survives(before, At(loaded, path), At(FreshDefaults, path)), $"{label}: {path} changed on load");
             compared++;
         }
         return compared;
@@ -155,6 +170,24 @@ public class UpgradeRegressionTests : IDisposable
             store.Dispose();
         }
     }
+
+    [Fact]
+    public void Survives_rejects_changes_and_allows_only_fresh_default_keys()
+    {
+        var defaults = JsonNode.Parse("""{ "a": { "flag": true, "map": {} } }""");
+        static JsonNode J(string json) => JsonNode.Parse(json)!;
+        bool Check(string before, string? after) => Survives(J(before), after is null ? null : J(after), defaults!["a"]);
+
+        Assert.True(Check("""{ "flag": true }""", """{ "flag": true }"""));
+        Assert.False(Check("""{ "old": 1 }""", """{ "new": 1 }"""));
+        Assert.False(Check("""{ "map": {} }""", """{ "map": { "x": 1 } }"""));
+        Assert.True(Check("""{ "x": 1 }""", """{ "x": 1, "flag": true }"""));
+        Assert.False(Check("""{ "x": 1 }""", """{ "x": 1, "flag": false }"""));
+        Assert.False(Check("""{ "x": 1 }""", """{ "x": 1, "extra": 2 }"""));
+        Assert.False(Check("""{ "x": null }""", """{ "x": 5 }"""));
+        Assert.True(Check("""{ "x": null }""", """{ "flag": true }"""));
+    }
+
 
     [Fact]
     public void Schema_19_file_loads_and_keeps_the_onboarding_state_it_had()
