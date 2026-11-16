@@ -1661,34 +1661,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_chain_missing_from_a_list_the_rx_answered_is_unheard_but_a_blind_rx_never_marks_it()
-    {
-        var clock = new ManualClock();
-        var (hub, net, _, rx) = CreateConnectedHub(clock.NowMs);
-        net.Fans.Add(new SimulatedFan { Mac = FanMac });
-        Assert.True(hub.DriveTick());
-        Assert.False(hub.State.Fans[0].Unheard);
-
-        net.Fans.Clear();
-        clock.AdvanceMs(4_000);
-        Assert.True(hub.DriveTick());
-        Assert.True(hub.State.Fans[0].Stale);
-        Assert.True(hub.State.Fans[0].Unheard);
-
-        net.Fans.Add(new SimulatedFan { Mac = FanMac });
-        Assert.True(hub.DriveTick());
-        Assert.False(hub.State.Fans[0].Unheard);
-
-        rx.FailReads = true;
-        Assert.True(hub.DriveTick());
-        clock.AdvanceMs(4_000);
-        Assert.True(hub.DriveTick());
-        Assert.True(hub.State.Fans[0].Stale);
-        Assert.False(hub.State.Fans[0].Unheard);
-    }
-
-    [Fact]
-    public void Time_the_link_was_down_is_blind_time_so_a_recovered_hub_does_not_mark_chains_unheard()
+    public void Time_the_link_was_down_is_blind_time_so_a_recovered_hub_keeps_its_chains()
     {
         var clock = new ManualClock();
         var net = new FakeSlv3Network();
@@ -1705,7 +1678,7 @@ public partial class Slv3HubTests
 
         // The poll stops entirely once both dongles have been absent past the disconnect limit.
         var failed = false;
-        for (var i = 0; i < 21; i++)
+        for (var i = 0; i < 40; i++)
         {
             clock.AdvanceMs(1_000);
             failed |= !hub.PollTick();
@@ -1719,9 +1692,7 @@ public partial class Slv3HubTests
         clock.AdvanceMs(1_000);
         Assert.True(hub.PollTick());
 
-        var fan = Assert.Single(hub.State.Fans);
-        Assert.True(fan.Stale);
-        Assert.False(fan.Unheard);
+        Assert.Single(hub.State.Fans);
     }
 
     [Fact]

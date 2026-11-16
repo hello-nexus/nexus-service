@@ -2372,6 +2372,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     private void ExpireChainsLocked(long nowMs)
     {
+        var blindMs = _blindTotalMs + (_blindSinceMs is { } since ? nowMs - since : 0);
         List<string>? gone = null;
         foreach (var (master, poll) in new List<KeyValuePair<string, long>>(_liveMasters))
         {
@@ -2394,7 +2395,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
         foreach (var (key, chain) in _knownChains)
         {
-            if (UnseenMsLocked(chain, nowMs) > ChainExpiryMs)
+            if (nowMs - chain.LastSeenMs - (blindMs - chain.BlindMsAtSeen) > ChainExpiryMs)
             {
                 (gone ??= new List<string>()).Add(key);
             }
@@ -2422,10 +2423,6 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    // Time the RX was answering and did not hear the chain.
-    private long UnseenMsLocked(Slv3KnownChain chain, long nowMs) =>
-        nowMs - chain.LastSeenMs - ((_blindTotalMs + (_blindSinceMs is { } since ? nowMs - since : 0)) - chain.BlindMsAtSeen);
-
     // A poll that got no device list from the RX.
     private void AgeChainsLocked(long nowMs)
     {
@@ -2451,9 +2448,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             var chain = _knownChains[key];
             records.Add(chain.Record);
-            var info = ToFanInfo(chain.Record, stale: nowMs - chain.LastSeenMs > ChainStaleMs);
-            info.Unheard = UnseenMsLocked(chain, nowMs) > ChainStaleMs;
-            fans.Add(info);
+            fans.Add(ToFanInfo(chain.Record, stale: nowMs - chain.LastSeenMs > ChainStaleMs));
         }
         _lastFanRecords = records;
         _anyAioBound = records.Exists(r => r.IsHydroShift && IsBoundToUsLocked(r));
