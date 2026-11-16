@@ -388,6 +388,45 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
+    public void WatchFinding_WaitsUntilANoticeCanBeShown()
+    {
+        var service = new DiagnosticsAlertService(null!, new Nexus.Service.Tests.InMemoryConfigStore(), FeatureGates.AllEnabled);
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true };
+        var drive = new[] { SmartWatch("1 command timeout") };
+        var helperConnected = false;
+        service.CanDeliver = () => helperConnected;
+
+        Assert.Empty(service.DueNotices(drive, notifications, T0));
+        helperConnected = true;
+        Assert.Single(service.DueNotices(drive, notifications, T0.AddMinutes(5)));
+        Assert.Empty(service.DueNotices(drive, notifications, T0.AddHours(2)));
+    }
+
+    [Fact]
+    public void WatchState_FailedSaveIsRetriedWithoutAFindingChange()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-alert-" + Guid.NewGuid().ToString("N"));
+        var path = System.IO.Path.Combine(dir, "diagnostics-notified.txt");
+        try
+        {
+            var service = new DiagnosticsAlertService(null!, new Nexus.Service.Tests.InMemoryConfigStore(), FeatureGates.AllEnabled, watchStatePath: path);
+            var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true };
+            var drive = new[] { SmartWatch("1 command timeout") };
+
+            Assert.Single(service.DueNotices(drive, notifications, T0));
+            Assert.False(System.IO.File.Exists(path));
+
+            System.IO.Directory.CreateDirectory(dir);
+            Assert.Empty(service.DueNotices(drive, notifications, T0.AddMinutes(5)));
+            Assert.True(System.IO.File.Exists(path));
+        }
+        finally
+        {
+            if (System.IO.Directory.Exists(dir)) System.IO.Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public void WatchFinding_NotifiesAgainWhenItGetsWorse()
     {
         var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true, CooldownMinutes = 60 };

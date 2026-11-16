@@ -268,6 +268,7 @@ internal static class TrayBootstrap
             catch (Exception ex) { Console.Error.WriteLine($"[diagnostics-notify] show failed: {ex.Message}"); }
         }
         diagAlerts.AlertNeedsAttention += notice => SendDiagnosticsNotice(notice);
+        diagAlerts.CanDeliver = () => helperRegistry.GetAny() is not null;
 
         // Cancel on an Astral countdown notice applies to the countdown it was made for; a helper that
         // connects mid-countdown is shown the notice again.

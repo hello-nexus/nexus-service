@@ -47,6 +47,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
     private readonly TimeProvider _time;
     private readonly string? _watchStatePath;
     private readonly Dictionary<string, string> _notifiedWatch = new(StringComparer.Ordinal);
+    private bool _watchStateUnsaved;
 
     // An urgent notice must not sit out the full user cooldown after one earlier toast: a limit that keeps being crossed would otherwise stay silent for the whole window.
     private static readonly TimeSpan UrgentCooldown = TimeSpan.FromMinutes(5);
@@ -87,19 +88,21 @@ public sealed class DiagnosticsAlertService : BackgroundService
         }
     }
 
-    private void SaveWatchState()
+    private bool SaveWatchState()
     {
         if (_watchStatePath is null)
         {
-            return;
+            return true;
         }
         try
         {
             WriteWatchState(_watchStatePath, _notifiedWatch);
+            return true;
         }
         catch (Exception ex)
         {
             ServiceLog.Warn($"[diagnostics-alert] could not save notified state: {ex.Message}");
+            return false;
         }
     }
 
@@ -210,6 +213,29 @@ public sealed class DiagnosticsAlertService : BackgroundService
         catch (OperationCanceledException) { return false; }
     }
 
+    /// <summary>Set by the platform bootstrap: false while no notice can be shown (no user session or tray helper yet). Null means always deliverable.</summary>
+    public Func<bool>? CanDeliver { get; set; }
+
+    // A watch finding is shown once, so it must not be marked shown while delivery would drop it.
+    internal IReadOnlyList<DiagnosticsAlertNotice> DueNotices(IReadOnlyList<HealthComponent> components, DiagnosticsNotifications notifications, DateTime nowUtc)
+    {
+        if (CanDeliver is { } canDeliver && !canDeliver())
+        {
+            return Array.Empty<DiagnosticsAlertNotice>();
+        }
+        lock (_lastNotifiedUtc)
+        {
+            var before = WatchStateText();
+            var due = EvaluateNotifications(components, notifications, _lastNotifiedUtc, nowUtc, _notifiedWatch);
+            _watchStateUnsaved |= WatchStateText() != before;
+            if (_watchStateUnsaved)
+            {
+                _watchStateUnsaved = !SaveWatchState();
+            }
+            return due;
+        }
+    }
+
     internal void Tick()
     {
         if (!_gates.Diagnostics)
@@ -232,17 +258,7 @@ public sealed class DiagnosticsAlertService : BackgroundService
             ServiceLog.Warn($"[diagnostics-alert] {component.Kind} issue: {component.Name} - {summary}");
         }
 
-        IReadOnlyList<DiagnosticsAlertNotice> due;
-        lock (_lastNotifiedUtc)
-        {
-            var before = WatchStateText();
-            due = EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now, _notifiedWatch);
-            if (WatchStateText() != before)
-            {
-                SaveWatchState();
-            }
-        }
-        foreach (var notice in due)
+        foreach (var notice in DueNotices(health.Components, notifications, now))
         {
             try
             {

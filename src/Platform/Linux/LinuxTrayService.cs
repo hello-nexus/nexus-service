@@ -61,6 +61,7 @@ public sealed class LinuxTrayService : IHostedService
         _pairing.PairRequestNeedsAttention += OnPairAttention;
         _transfer.TransferNeedsAttention += OnTransferAttention;
         _diagAlerts.AlertNeedsAttention += OnDiagnosticsAlert;
+        _diagAlerts.CanDeliver = () => LinuxSession.SessionUid is not null;
         await TryStartHostAsync(isRetry: false);
     }
 
