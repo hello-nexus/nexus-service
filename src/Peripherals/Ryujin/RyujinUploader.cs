@@ -38,11 +38,12 @@ internal sealed class RyujinUploader
     private const int MaxLoggedReports = 300;
     private bool _logChunkAcks;
     private long _nextKeepalive;
+    private bool _inBegin;
 
     /// <summary>Runs the owner's keepalive when one is due; called from the chunk loop, the reads and the sliced pauses, so the pump waits no longer than the interval plus one read slice.</summary>
     private void MaybeKeepalive()
     {
-        if (Keepalive is null || Environment.TickCount64 < _nextKeepalive)
+        if (Keepalive is null || _inBegin || Environment.TickCount64 < _nextKeepalive)
         {
             return;
         }
@@ -133,6 +134,10 @@ internal sealed class RyujinUploader
         Drain();
         _info($"[ryujin-upload] start mode={mode} bytes={avi.Length} chunks={total}");
 
+        // 71 through 7F go out contiguously as Armoury Crate sends them, with no keepalive poll between.
+        _inBegin = false;
+        MaybeKeepalive();
+        _inBegin = true;
         var begin = RyujinUploadProtocol.EncodeBegin(avi.Length, Slot);
         for (int i = 0; i < begin.Length; i++)
         {
@@ -143,13 +148,14 @@ internal sealed class RyujinUploader
             bool last = i == begin.Length - 1;
             if (paced || !last)
             {
-                PauseWithKeepalive(RyujinUploadProtocol.BeginGapsMs[i]);
+                _link.Pause(RyujinUploadProtocol.BeginGapsMs[i]);
             }
             else
             {
                 WaitFor(RyujinUploadProtocol.AckErase, RyujinUploadProtocol.BeginGapsMs[i], out _);
             }
         }
+        _inBegin = false;
 
         double ackMin = double.MaxValue, ackMax = 0, ackSum = 0;
         int acks = 0, sent = 0;

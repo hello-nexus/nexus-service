@@ -392,6 +392,22 @@ public class RyujinUploadTests
     }
 
     [Fact]
+    public void The_begin_commands_are_contiguous_with_the_keepalive_before_them()
+    {
+        var link = new FakeLink();
+        var log = new List<string>();
+        var uploader = new RyujinUploader(link, log.Add, log.Add)
+        {
+            AckTimeoutMs = 30, EndWaitMs = 30, KeepaliveMs = 3_600_000, Keepalive = () => link.Events.Add("keepalive"),
+        };
+
+        var result = uploader.Upload(new byte[4096], null, CancellationToken.None);
+
+        Assert.True(result.Ok);
+        Assert.Equal(new[] { "keepalive", "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F", "chunk" }, link.Events.Take(7));
+    }
+
+    [Fact]
     public void Keepalive_runs_at_the_start_and_long_pauses_are_sliced_around_it()
     {
         var link = new FakeLink { Acks = false };
@@ -403,8 +419,9 @@ public class RyujinUploadTests
 
         // One at the start of each of the two attempts (the fast one fails without acks).
         Assert.Equal(2, calls);
-        Assert.All(link.Pauses, p => Assert.InRange(p, 1, 250));
-        Assert.True(link.Pauses.Sum() >= 27 + 140 + 110 + 520 + 510);
+        // The begin gaps stay whole (contiguous commands); the paced group gap is sliced.
+        Assert.DoesNotContain(link.Pauses, p => p == 2300);
+        Assert.All(link.Pauses.Where(p => p is not (27 or 140 or 110 or 520 or 510)), p => Assert.InRange(p, 1, 250));
     }
 
     [Fact]

@@ -216,7 +216,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
                     if (uploaded)
                     {
                         // After the select, so the layout change happens exactly as Armoury Crate's sequence has it.
-                        _hub.QueryDiskInfoAndLog(1500);
+                        _hub.QueryDiskInfoAndLog(1500, ct);
                     }
                     ServiceLog.Info($"[asus-ryujin-cooling] stored-media layout selected, held={(uploaded ? "after upload" : "from an earlier upload")}");
                 }

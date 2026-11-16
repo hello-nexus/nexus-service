@@ -315,7 +315,7 @@ public sealed class RyujinCoolingHub : IDisposable
     }
 
     /// <summary>Sends the disk-info query pair and logs every report that comes back for the given time. Worker thread only.</summary>
-    internal void QueryDiskInfoAndLog(int listenMs)
+    internal void QueryDiskInfoAndLog(int listenMs, CancellationToken ct)
     {
         IHidDevice? device;
         lock (_stateLock)
@@ -328,7 +328,7 @@ public sealed class RyujinCoolingHub : IDisposable
         }
         Span<byte> buffer = stackalloc byte[RyujinCoolingProtocol.ReportLength];
         long deadline = NowMs() + listenMs;
-        while (NowMs() < deadline)
+        while (NowMs() < deadline && !ct.IsCancellationRequested)
         {
             int n = device.Read(buffer, 200);
             if (n < 0)
