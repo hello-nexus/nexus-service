@@ -100,6 +100,9 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         else if (e.Mode == PowerModes.Resume)
         {
             ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
+            // First, ahead of the diagnostics and device work below: a call there that waits on a held lock must not keep the fans from being driven again.
+            try { _curveEngine?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] curve engine resume failed: {ex.Message}"); }
             ServiceLog.Info($"[resume] resumed: devices before restart={_bridge.Devices.Count}, smbus mutex={RgbBridge.ProbeSmbusMutex()}, {RgbBridge.LhmWalkSummary()}");
             _blackout.OnResumed();
             _bridge.OnSystemResume();
@@ -107,8 +110,6 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             _slv3?.OnSystemResumed();
             try { _curve?.OnSystemResumed(); }
             catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II Curve resume failed: {ex.Message}"); }
-            try { _curveEngine?.OnSystemResumed(); }
-            catch (Exception ex) { ServiceLog.Warn($"[power-events] curve engine resume failed: {ex.Message}"); }
             try { _aio?.OnSystemResumed(); }
             catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II resume failed: {ex.Message}"); }
         }

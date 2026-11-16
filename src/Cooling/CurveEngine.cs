@@ -241,7 +241,12 @@ public sealed class CurveEngine : BackgroundService
     /// dedup would then hold the duty back forever. Arms a one-shot re-drive that the tick performs once an
     /// LHM walk begun after the resume has completed: readings cached from before sleep look fresh, and a
     /// write before the chip settles would be reverted again.</summary>
-    public void OnSystemResumed() => Interlocked.Exchange(ref _resumeWalkSeq, _guard.WalkBeginSeq());
+    public void OnSystemResumed()
+    {
+        var seq = _guard.WalkBeginSeq();
+        Interlocked.Exchange(ref _resumeWalkSeq, seq);
+        ServiceLog.Info($"[curve-engine] resume: re-drive armed, waiting for a sensor walk begun after walk {seq}");
+    }
 
     private void ConsumeResumeRedrive()
     {
@@ -256,6 +261,8 @@ public sealed class CurveEngine : BackgroundService
         }
         lock (_lastWrite) { _lastWrite.Clear(); }
         ClearManualReplayed();
+        _fans.RetakeControlAfterResume();
+        ServiceLog.Info($"[curve-engine] resume: re-drive fired after sensor walk {_guard.WalkCompletedSeq()}, every curve and manual duty is written again");
     }
 
     internal void Tick()

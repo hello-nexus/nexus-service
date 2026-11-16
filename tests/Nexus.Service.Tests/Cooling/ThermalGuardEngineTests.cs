@@ -28,6 +28,8 @@ public class ThermalGuardEngineTests
         public readonly List<TemperatureSource> ExtraSources = new();
         public int ReleaseAllCalls;
         public int KeepingPortsCalls;
+        public int Retakes;
+        public void RetakeControlAfterResume() => Retakes++;
         public bool Restores = true;
         public bool ReleaseRestoresHardwareControl(string channelId) => Restores;
 
@@ -1725,9 +1727,12 @@ public class ThermalGuardEngineTests
         e.Tick();
         Assert.Equal(before, fans.Order.Count);
 
+        Assert.Equal(0, fans.Retakes);
+
         seq[1] = 6;
         mono[0] += 1000;
         e.Tick();
+        Assert.Equal(1, fans.Retakes);
         Assert.Equal(before + 2, fans.Order.Count);
         Assert.Equal(10, fans.Order.Last(d => d.Id == "f1").Duty);
         Assert.Equal(30, fans.Order.Last(d => d.Id == "f2").Duty);
@@ -1735,6 +1740,7 @@ public class ThermalGuardEngineTests
         mono[0] += 1000;
         e.Tick();
         Assert.Equal(before + 2, fans.Order.Count);
+        Assert.Equal(1, fans.Retakes);
     }
 
     [Fact]
