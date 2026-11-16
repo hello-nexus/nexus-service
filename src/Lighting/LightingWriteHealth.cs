@@ -32,10 +32,10 @@ public sealed class LightingWriteHealth
     /// <summary>A flagged key clears once this long passes with no failure.</summary>
     public static readonly TimeSpan ClearAfter = TimeSpan.FromSeconds(20);
 
-    /// <summary>The instance drivers report into, which DI also serves; drivers are built outside the container in places.</summary>
     /// <summary>Handlers whose extra controllers use parent keys of the form handler:N.</summary>
     private static readonly HashSet<string> UnitScopedHandlers = new(StringComparer.Ordinal) { "strimer" };
 
+    /// <summary>The instance drivers report into, which DI also serves; drivers are built outside the container in places.</summary>
     public static LightingWriteHealth Shared { get; } = new() { Incidents = Nexus.Service.Diagnostics.DeviceIncidentLog.Shared };
 
     /// <summary>Per-device event rings; null in tests that do not exercise incident capture.</summary>

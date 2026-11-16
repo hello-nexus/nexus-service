@@ -21,12 +21,23 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
             path => HidPathIds.MayMatch(path, vendorId, productId),
             attrs => attrs.VendorID == (ushort)vendorId && attrs.ProductID == (ushort)productId);
 
+    public (IReadOnlyList<string> Paths, IReadOnlyList<HidDeviceInfo> Fresh) Scan(int vendorId, int productId, IReadOnlyCollection<string> knownPaths)
+    {
+        var paths = new List<string>();
+        var fresh = EnumerateDevices(
+            path => HidPathIds.MayMatch(path, vendorId, productId),
+            attrs => attrs.VendorID == (ushort)vendorId && attrs.ProductID == (ushort)productId,
+            seenPaths: paths,
+            skipPaths: knownPaths);
+        return (paths, fresh);
+    }
+
     public IReadOnlyList<HidDeviceInfo> FindAll() => EnumerateDevices(null, null);
 
     /// <summary><see cref="FindAll"/> without the per-device serial read, for callers that only need usages.</summary>
     public IReadOnlyList<HidDeviceInfo> FindAllWithoutSerials() => EnumerateDevices(null, null, readSerial: false);
 
-    private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true)
+    private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true, List<string>? seenPaths = null, IReadOnlyCollection<string>? skipPaths = null)
     {
         var result = new List<HidDeviceInfo>();
         Native.HidD_GetHidGuid(out var hidGuid);
@@ -67,6 +78,12 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
 
                     var devicePath = Marshal.PtrToStringUni(detail + 4) ?? "";
                     if (string.IsNullOrEmpty(devicePath) || (pathFilter is not null && !pathFilter(devicePath)))
+                    {
+                        continue;
+                    }
+
+                    seenPaths?.Add(devicePath);
+                    if (skipPaths is not null && skipPaths.Contains(devicePath))
                     {
                         continue;
                     }

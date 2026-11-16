@@ -42,6 +42,8 @@ public class StrimerMultiUnitTests
         public Dictionary<string, FakeDevice> Opened { get; } = new();
         public HashSet<string> Busy { get; } = new();
         public int FindCalls;
+        public List<HashSet<string>> KnownSeen { get; } = new();
+        public Func<string, bool>? Flaky;
 
         public void Plug(string path, string? serial) => Present.Add(Info(path, serial));
         public void Unplug(string path) => Present.RemoveAll(i => i.Path == path);
@@ -57,6 +59,14 @@ public class StrimerMultiUnitTests
         };
 
         public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) { FindCalls++; return Present.ToList(); }
+        public (IReadOnlyList<string> Paths, IReadOnlyList<HidDeviceInfo> Fresh) Scan(int vendorId, int productId, IReadOnlyCollection<string> knownPaths)
+        {
+            KnownSeen.Add(new HashSet<string>(knownPaths));
+            var paths = Present.Where(i => Flaky is null || !Flaky(i.Path)).Select(i => i.Path).ToList();
+            var fresh = Present.Where(i => !knownPaths.Contains(i.Path)).ToList();
+            return (paths, fresh);
+        }
+
         public IReadOnlyList<HidDeviceInfo> FindAll() => Present.ToList();
 
         public IHidDevice? Open(string path, bool forInput = false)
@@ -224,6 +234,8 @@ public class StrimerMultiUnitTests
         PollNow();
 
         _worker.Poll(0, _clock += 1);
+        Assert.True(_units.All[0].IsConnected, "one empty probe is a hiccup, not an unplug");
+        _worker.Poll(0, _clock += 1);
 
         Assert.False(_units.All[0].IsConnected);
         Assert.Empty(_provider.GetAll().Devices);
@@ -249,18 +261,18 @@ public class StrimerMultiUnitTests
     {
         _hid.Plug("path-a", "A");
         _worker.Poll(1, 100_000);
-        var calls = _hid.FindCalls;
+        var calls = _hid.KnownSeen.Count;
 
         _worker.Poll(1, 105_000);
-        Assert.Equal(calls, _hid.FindCalls);
+        Assert.Equal(calls, _hid.KnownSeen.Count);
 
         _hid.Plug("path-b", "B");
         _worker.Poll(2, 110_000);
-        Assert.Equal(calls + 1, _hid.FindCalls);
+        Assert.Equal(calls + 1, _hid.KnownSeen.Count);
         Assert.Equal(2, _units.Connected().Count);
 
         _worker.Poll(2, 141_000);
-        Assert.Equal(calls + 2, _hid.FindCalls);
+        Assert.Equal(calls + 2, _hid.KnownSeen.Count);
     }
 
     [Fact]
@@ -326,5 +338,63 @@ public class StrimerMultiUnitTests
         writer.Tick();
 
         Assert.Single(spy2.Calls, c => c.Bytes[2] == 0x40);
+    }
+
+    [Fact]
+    public void Two_units_with_a_usb_count_stuck_at_one_do_not_rescan_every_poll()
+    {
+        _hid.Plug("path-a", "A");
+        _hid.Plug("path-b", "B");
+        _worker.Poll(1, 100_000);
+        Assert.Equal(2, _units.Connected().Count);
+        var scans = _hid.KnownSeen.Count;
+
+        _worker.Poll(1, 105_000);
+        _worker.Poll(1, 110_000);
+
+        Assert.Equal(scans, _hid.KnownSeen.Count);
+    }
+
+    [Fact]
+    public void A_rescan_never_rereads_an_attached_path()
+    {
+        _hid.Plug("path-a", "A");
+        _worker.Poll(1, 100_000);
+
+        _worker.Poll(1, 140_000);
+
+        Assert.Contains("path-a", _hid.KnownSeen[^1]);
+    }
+
+    [Fact]
+    public void A_path_missing_from_one_scan_keeps_the_unit_but_two_scans_detach_it()
+    {
+        _hid.Plug("path-a", "A");
+        _worker.Poll(1, 100_000);
+        var gen = _units.All[0].Generation;
+
+        _hid.Flaky = p => p == "path-a";
+        _worker.Poll(1, 140_000);
+        Assert.True(_units.All[0].IsConnected);
+        Assert.Equal(gen, _units.All[0].Generation);
+
+        _worker.Poll(1, 180_000);
+        Assert.False(_units.All[0].IsConnected);
+    }
+
+    [Fact]
+    public void A_transient_miss_is_forgiven_when_the_path_returns()
+    {
+        _hid.Plug("path-a", "A");
+        _worker.Poll(1, 100_000);
+        _hid.Flaky = p => p == "path-a";
+        _worker.Poll(1, 140_000);
+        _hid.Flaky = null;
+        _worker.Poll(1, 180_000);
+        _hid.Flaky = p => p == "path-a";
+
+        _worker.Poll(1, 220_000);
+
+        Assert.True(_units.All[0].IsConnected);
     }
 }

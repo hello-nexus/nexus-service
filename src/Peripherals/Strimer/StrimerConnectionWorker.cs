@@ -25,6 +25,13 @@ public sealed class StrimerConnectionWorker : BackgroundService
     // A full HID enumeration opens every controller, so steady state skips it and only rescans on this cadence or when the USB count changes.
     private const long RescanMs = 30_000;
     private long _lastScanMs = long.MinValue / 2;
+    // Windows reports identical controllers as one USB entry, so only a change in the count (not its size) can mean a replug.
+    private int _lastUsbCount = -1;
+    private int _zeroUsbPolls;
+    // A controller that misses one rescan is kept: a transient enumeration failure must not restart a healthy unit.
+    private readonly int[] _missedScans = new int[StrimerUnits.MaxUnits];
+    private readonly HashSet<string> _ignoredPaths = new(StringComparer.Ordinal);
+    private readonly HidDeviceInfo?[] _attachedInfo = new HidDeviceInfo?[StrimerUnits.MaxUnits];
     // Slot remembered per controller for this process, so one unplugging never renumbers the other.
     private readonly Dictionary<string, int> _slotByKey = new();
 
@@ -94,26 +101,53 @@ public sealed class StrimerConnectionWorker : BackgroundService
         {
             if (hub.IsConnected && hub.ConsecutiveWriteFailures >= MaxConsecutiveFailures) DetachUnit(hub);
         }
+        // One empty probe can be an enumerator hiccup; two in a row is an unplug.
         if (usbCount <= 0)
         {
-            DetachAll();
+            _lastUsbCount = usbCount;
+            if (++_zeroUsbPolls >= 2) DetachAll();
             return;
         }
+        _zeroUsbPolls = 0;
 
-        var connected = _units.Connected().Count;
+        var countChanged = usbCount != _lastUsbCount;
+        _lastUsbCount = usbCount;
         var due = nowMs - _lastScanMs >= RescanMs;
-        if (connected > 0 && connected == Math.Min(usbCount, _units.All.Count) && !due) return;
+        if (_units.Connected().Count > 0 && !countChanged && !due) return;
         _lastScanMs = nowMs;
 
-        var infos = FindMatching();
-        var present = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var i in infos) present.Add(i.Path);
-
-        // A path that is gone belongs to an unplugged controller (macOS paths change on replug), so free its slot first.
+        var known = new HashSet<string>(_ignoredPaths, StringComparer.Ordinal);
         foreach (var hub in _units.All)
         {
             var path = hub.AttachedPath;
-            if (hub.IsConnected && (path == null || !present.Contains(path))) DetachUnit(hub);
+            if (path != null) known.Add(path);
+        }
+        var (paths, scanned) = _hid.Scan(StrimerProtocol.VendorId, StrimerProtocol.ProductId, known);
+        var present = new HashSet<string>(paths, StringComparer.Ordinal);
+        _ignoredPaths.IntersectWith(present);
+
+        var fresh = new List<HidDeviceInfo>();
+        foreach (var info in scanned)
+        {
+            if (info.UsagePage == StrimerProtocol.VendorUsagePage && info.Usage == StrimerProtocol.VendorUsage) fresh.Add(info);
+            else _ignoredPaths.Add(info.Path);
+        }
+
+        // A path that is gone belongs to an unplugged controller. It must stay gone for two scans, unless a new
+        // controller path showed up meanwhile (macOS paths change on replug), which frees the slot at once.
+        foreach (var hub in _units.All)
+        {
+            if (!hub.IsConnected) continue;
+            var path = hub.AttachedPath;
+            if (path != null && present.Contains(path))
+            {
+                _missedScans[hub.Unit] = 0;
+                continue;
+            }
+            if (++_missedScans[hub.Unit] >= 2 || fresh.Count > 0)
+            {
+                DetachUnit(hub);
+            }
         }
 
         var attached = new HashSet<string>(StringComparer.Ordinal);
@@ -131,18 +165,23 @@ public sealed class StrimerConnectionWorker : BackgroundService
         // Serials order units when every controller reports a distinct one; otherwise paths do.
         var useSerial = true;
         var serials = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var i in infos)
+        void Note(string? serial)
         {
-            if (string.IsNullOrEmpty(i.Serial) || !serials.Add(i.Serial)) { useSerial = false; break; }
+            if (string.IsNullOrEmpty(serial) || !serials.Add(serial)) useSerial = false;
         }
-        var fresh = new List<(string Key, HidDeviceInfo Info)>();
-        foreach (var i in infos)
+        foreach (var hub in _units.All)
         {
-            if (!attached.Contains(i.Path)) fresh.Add((useSerial ? i.Serial! : i.Path, i));
+            if (hub.IsConnected) Note(_attachedInfo[hub.Unit]?.Serial);
         }
-        fresh.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+        foreach (var i in fresh) Note(i.Serial);
+        var order = new List<(string Key, HidDeviceInfo Info)>();
+        foreach (var i in fresh)
+        {
+            order.Add((useSerial ? i.Serial! : i.Path, i));
+        }
+        order.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
 
-        foreach (var (key, info) in fresh)
+        foreach (var (key, info) in order)
         {
             if (!_slotByKey.TryGetValue(key, out var slot) || slot >= taken.Length || taken[slot])
             {
@@ -156,6 +195,8 @@ public sealed class StrimerConnectionWorker : BackgroundService
             if (device == null) continue;
             var hub = _units.All[slot];
             hub.Attach(device);
+            _attachedInfo[slot] = info;
+            _missedScans[slot] = 0;
             if (!_firstAttach)
             {
                 _firstAttach = true;
@@ -164,15 +205,5 @@ public sealed class StrimerConnectionWorker : BackgroundService
             ServiceLog.Info($"[strimer] unit {slot + 1} connected");
             _lighting.OnHubStateUpdated();
         }
-    }
-
-    private List<HidDeviceInfo> FindMatching()
-    {
-        var list = new List<HidDeviceInfo>();
-        foreach (var info in _hid.Find(StrimerProtocol.VendorId, StrimerProtocol.ProductId))
-        {
-            if (info.UsagePage == StrimerProtocol.VendorUsagePage && info.Usage == StrimerProtocol.VendorUsage) list.Add(info);
-        }
-        return list;
     }
 }
