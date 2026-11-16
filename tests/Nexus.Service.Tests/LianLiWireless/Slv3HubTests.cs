@@ -1661,6 +1661,33 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_chain_bound_here_stays_listed_as_lost_past_the_plain_expiry_then_drops()
+    {
+        var clock = new ManualClock();
+        var (hub, net, _, _) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].BoundToUs);
+
+        net.Fans.Clear();
+        clock.AdvanceMs(4_000);
+        Assert.True(hub.DriveTick());
+        var fan = Assert.Single(hub.State.Fans);
+        Assert.True(fan.Stale);
+        Assert.False(fan.Lost);
+
+        clock.AdvanceMs(31_000);
+        Assert.True(hub.DriveTick());
+        fan = Assert.Single(hub.State.Fans);
+        Assert.True(fan.Stale);
+        Assert.True(fan.Lost);
+
+        clock.AdvanceMs(300_000);
+        Assert.True(hub.DriveTick());
+        Assert.Empty(hub.State.Fans);
+    }
+
+    [Fact]
     public void Chain_seen_every_poll_never_goes_stale_despite_slow_clock_advance()
     {
         var clock = new ManualClock();
@@ -3276,7 +3303,7 @@ public partial class Slv3HubTests
 
         // The AIO drops off the controller's list long enough to expire, and the PC locks while it is gone.
         net.Fans.Clear();
-        clock.AdvanceMs(40_000);
+        clock.AdvanceMs(310_000);
         Assert.True(hub.DriveTick());
         Assert.Empty(hub.State.Fans);
         state.Set(true);

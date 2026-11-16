@@ -340,6 +340,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const int PendingTimeoutMs = 3 * WindowPeriodMs;
     // RF payloads per second a round of uploads may average; see LatePassAirBudgetPerSecond for the measured loss point.
     private const double WindowAirPerSecond = 200;
+    // Share of the air budget a round of uploads may fill; the rest is left for chains to report in, or the receiver stops hearing them.
+    private const double WindowAirUtilization = 0.5;
     // Air cost of one upload: header repeats plus two data passes, parts per LED measured on neonrain.
     private const double WindowHeaderCost = 8;
     private const double WindowPartsPerLed = 0.47;
@@ -547,7 +549,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     /// <summary>Frame stretch and ms per round of uploads, so the round stays under the air budget and inside one window.</summary>
     internal static (int Stretch, double CycleMs) WindowPlan(int chains, int leds)
     {
-        var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * leds) * 1000 / WindowAirPerSecond;
+        var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * leds) * 1000 / WindowAirPerSecond / WindowAirUtilization;
         var cycleMs = Math.Max(Math.Max(WindowPeriodMs, airMs), MinRenderPeriodMs * chains);
         return (Math.Clamp((int)Math.Ceiling(cycleMs / WindowCycleMs), 1, MaxWindowStretch), cycleMs);
     }
@@ -823,7 +825,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.Joinable = false;
             return false;
         }
-        st.Joinable = _windowFrames is not null && CoversChain(ids);
+        // An unheard chain gets no upload, and must not hold the turn for chains that are heard.
+        st.Joinable = _windowFrames is not null && CoversChain(ids) && !SkipsWindowUploads(FindFanInfo(macHex));
         foreach (var id in ids)
         {
             _rollingIds.Add(id);
@@ -861,6 +864,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && current >= st.WindowFirstFrame
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
     }
+
+    internal static bool SkipsWindowUploads(Slv3FanInfo? fan) => fan is { Stale: true };
 
     internal bool IsNextToUpload(ChainRolling chain, double nowMs)
     {

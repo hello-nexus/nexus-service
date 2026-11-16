@@ -235,6 +235,9 @@ public sealed partial class Slv3Hub : IDisposable
     // Only time the RX was answering counts: a busy, failing or closed RX can
     // not see anyone, while the TX keeps driving the chains.
     private const long ChainExpiryMs = 30_000;
+    // A chain bound to this controller outlives ChainExpiryMs unseen, listed as lost: a crowded air link
+    // hides live chains for long stretches, and dropping them tears down their lighting and cooling devices.
+    private const long BoundChainExpiryMs = 300_000;
     // Unseen this long = telemetry is last-known, surfaced as Stale.
     private const long ChainStaleMs = 3_500;
     private long? _blindSinceMs;
@@ -2182,6 +2185,11 @@ public sealed partial class Slv3Hub : IDisposable
                 continue;
             }
             var record = chain.Record;
+            // A bound chain kept listed past ChainExpiryMs must not hold up settling like a live one.
+            if (UnseenMsLocked(chain, _nowMs()) > ChainExpiryMs)
+            {
+                continue;
+            }
             if (chain.Poll != _devicePolls
                 || (_intents.TryGetValue(key, out var intent) && NeedsBind(intent, record)))
             {
@@ -2393,7 +2401,8 @@ public sealed partial class Slv3Hub : IDisposable
         }
         foreach (var (key, chain) in _knownChains)
         {
-            if (nowMs - chain.LastSeenMs - (blindMs - chain.BlindMsAtSeen) > ChainExpiryMs)
+            var limit = IsBoundToUsLocked(chain.Record) ? BoundChainExpiryMs : ChainExpiryMs;
+            if (UnseenMsLocked(chain, nowMs) > limit)
             {
                 (gone ??= new List<string>()).Add(key);
             }
@@ -2402,7 +2411,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             foreach (var key in gone)
             {
-                ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
+                ServiceLog.Info($"[lianli-wireless] chain {key} dropped (unseen past its expiry)");
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 _knownChains.Remove(key);
@@ -2420,6 +2429,10 @@ public sealed partial class Slv3Hub : IDisposable
             }
         }
     }
+
+    // Time the RX could have heard the chain but did not.
+    private long UnseenMsLocked(Slv3KnownChain chain, long nowMs) =>
+        nowMs - chain.LastSeenMs - ((_blindTotalMs + (_blindSinceMs is { } since ? nowMs - since : 0)) - chain.BlindMsAtSeen);
 
     // A poll that got no device list from the RX.
     private void AgeChainsLocked(long nowMs)
@@ -2446,7 +2459,9 @@ public sealed partial class Slv3Hub : IDisposable
         {
             var chain = _knownChains[key];
             records.Add(chain.Record);
-            fans.Add(ToFanInfo(chain.Record, stale: nowMs - chain.LastSeenMs > ChainStaleMs));
+            var info = ToFanInfo(chain.Record, stale: nowMs - chain.LastSeenMs > ChainStaleMs);
+            info.Lost = UnseenMsLocked(chain, nowMs) > ChainExpiryMs;
+            fans.Add(info);
         }
         _lastFanRecords = records;
         _anyAioBound = records.Exists(r => r.IsHydroShift && IsBoundToUsLocked(r));

@@ -527,7 +527,7 @@ public class Slv3FlexLcdTests
         tx.SentFrames.Clear();
         Assert.True(hub.Unbind(Convert.ToHexString(TlMac), out _));
         net.Fans.Remove(fan);
-        _clock += 40_000;
+        _clock += 310_000;
         Assert.True(hub.DriveTick());
         Assert.False(Released(tx), "a gone chain was sent a release");
         net.Fans.Add(fan);
