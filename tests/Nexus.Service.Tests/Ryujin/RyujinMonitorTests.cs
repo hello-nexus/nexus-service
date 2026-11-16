@@ -381,7 +381,7 @@ public class RyujinMonitorTests
         {
             await worker.StartAsync(CancellationToken.None);
             Assert.True(SpinWait.SpinUntil(() => store.Load().Devices.RyujinDisplay.UploadFailedSha == sha, 20000));
-            Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Count(w => w[1] == 0x5D && w[4] == 0x21) >= 2, 8000));
+            Assert.True(SpinWait.SpinUntil(() => fake.Writes.ToArray().Any(w => w[1] == 0x9A), 8000));
             await worker.StopAsync(CancellationToken.None);
         }
         finally
@@ -390,6 +390,8 @@ public class RyujinMonitorTests
         }
 
         Assert.Equal("failed", hub.Upload.State);
+        // The screen never left the monitor layout, so no stored-media select was sent.
+        Assert.DoesNotContain(fake.Writes.ToArray(), w => w[1] == 0x5D && w[4] == 0x14);
         // One fast and one paced attempt, then no more for the same file.
         Assert.Equal(2, fake.Writes.ToArray().Count(w => w[1] == 0x71));
     }

@@ -289,12 +289,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         }
         int total = RyujinUploadProtocol.ChunkCount(avi.Length);
         _hub.Upload = new RyujinUploadState("uploading", 0, total, "");
-        if (!_hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia()))
-        {
-            RecordFailure(sha, "the layout select write failed");
-            return false;
-        }
-        _appliedMode = ModeImage;
+        // The stored-media layout is selected after the upload: the screen must not be playing the file being rewritten, and a fresh select opens the new one.
         var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe, _hub.TakeStashedAck), ServiceLog.Info, ServiceLog.Warn)
         {
             Keepalive = KeepaliveDuringUpload,

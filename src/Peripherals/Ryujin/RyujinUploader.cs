@@ -35,7 +35,11 @@ internal sealed class RyujinUploader
     public const int DefaultAckTimeoutMs = 6000;
     public const string AbortedMessage = "aborted";
     private const byte AnyReport = 0xFF;
-    private const int MaxLoggedReports = 8;
+    private const int MaxLoggedReports = 300;
+    private bool _logChunkAcks;
+    private Stopwatch _attemptClock = Stopwatch.StartNew();
+
+    private double _clockMs() => _attemptClock.Elapsed.TotalMilliseconds;
 
     private readonly IRyujinUploadLink _link;
     private readonly Action<string> _info;
@@ -55,7 +59,7 @@ internal sealed class RyujinUploader
     public Func<RyujinUploadAbort>? AbortCheck { get; init; }
 
     /// <summary>How long to listen for the device's answer to the end command.</summary>
-    public int EndWaitMs { get; init; } = 3000;
+    public int EndWaitMs { get; init; } = 5000;
 
     public RyujinUploader(IRyujinUploadLink link, Action<string> info, Action<string> warn)
     {
@@ -88,6 +92,7 @@ internal sealed class RyujinUploader
         int total = RyujinUploadProtocol.ChunkCount(avi.Length);
         var clock = Stopwatch.StartNew();
         _logged = 0;
+        _attemptClock = clock;
         _keepalives = 0;
         _link.ClearInbound();
         long nextKeepalive = Environment.TickCount64 + KeepaliveMs;
@@ -141,7 +146,7 @@ internal sealed class RyujinUploader
                 Drain();
                 _link.Pause(sent % RyujinUploadProtocol.PacedGroupChunks == 0 ? RyujinUploadProtocol.PacedGroupGapMs : RyujinUploadProtocol.PacedChunkGapMs);
             }
-            else if (WaitFor(RyujinUploadProtocol.AckChunk, AckTimeoutMs, out _))
+            else if (WaitChunkAck(sent))
             {
                 double ms = Stopwatch.GetElapsedTime(wrote).TotalMilliseconds;
                 ackMin = Math.Min(ackMin, ms);
@@ -160,9 +165,11 @@ internal sealed class RyujinUploader
         {
             return Fail(mode, "end command write failed", sent, clock);
         }
-        WaitFor(AnyReport, EndWaitMs, out _);
+        // Armoury Crate followed the end command with DC and 99 about half a second later; every reply in the window is logged.
+        Listen(Math.Min(600, EndWaitMs));
         _link.WriteReport(RyujinMonitorProtocol.EncodeDc());
         _link.WriteReport(RyujinCoolingProtocol.EncodeStatusRequest());
+        Listen(EndWaitMs);
 
         double totalMs = clock.Elapsed.TotalMilliseconds;
         double kbps = avi.Length / 1024.0 / (totalMs / 1000.0);
@@ -172,6 +179,37 @@ internal sealed class RyujinUploader
         _info(string.Create(CultureInfo.InvariantCulture,
             $"[ryujin-upload] done mode={mode} bytes={avi.Length} chunks={sent} total_ms={totalMs:0} kb_per_s={kbps:0.0} ack_ms_min_avg_max={ack} acks={acks} keepalives={_keepalives}"));
         return new RyujinUploadResult(true, "ok", sent, totalMs);
+    }
+
+    private bool WaitChunkAck(int sent)
+    {
+        _logChunkAcks = sent <= 3 || sent % RyujinUploadProtocol.PacedGroupChunks == 0;
+        return WaitFor(RyujinUploadProtocol.AckChunk, AckTimeoutMs, out _);
+    }
+
+    /// <summary>Reads and logs every inbound report for the given time.</summary>
+    private void Listen(int ms)
+    {
+        var buffer = new byte[RyujinCoolingProtocol.ReportLength];
+        _logChunkAcks = true;
+        long deadline = Stopwatch.GetTimestamp() + (long)(ms * (Stopwatch.Frequency / 1000.0));
+        while (true)
+        {
+            int left = (int)((deadline - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency);
+            if (left <= 0)
+            {
+                return;
+            }
+            int n = _link.ReadReport(buffer, left);
+            if (n < 0)
+            {
+                return;
+            }
+            if (n > 0)
+            {
+                LogInbound(buffer.AsSpan(0, n));
+            }
+        }
     }
 
     /// <summary>Reads inbound reports until one carries the wanted event (or any report for <see cref="AnyReport"/>).</summary>
@@ -196,7 +234,10 @@ internal sealed class RyujinUploader
             {
                 continue;
             }
-            LogInbound(buffer.AsSpan(0, n));
+            if (_logChunkAcks || RyujinUploadProtocol.AckKind(buffer.AsSpan(0, n)) != RyujinUploadProtocol.AckChunk)
+            {
+                LogInbound(buffer.AsSpan(0, n));
+            }
             if (kind == AnyReport || RyujinUploadProtocol.AckKind(buffer.AsSpan(0, n)) == kind)
             {
                 length = n;
@@ -224,7 +265,7 @@ internal sealed class RyujinUploader
         if (_logged < MaxLoggedReports)
         {
             _logged++;
-            _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 16)])}");
+            _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 24)])} t_ms={_clockMs():0}");
         }
     }
 
