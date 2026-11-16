@@ -301,10 +301,10 @@ public static partial class DevicesRoutes
             Nexus.Service.Lighting.LightingWriteHealth writeHealth) =>
         {
             var all = ld.GetAll();
-            var settings = store.Load();
-            var lighting = settings.Lighting;
-            Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices,
-                Nexus.Service.Lighting.LightingDeviceNames.WithWirelessChainNames(lighting.DeviceNames, settings.Cooling.FanNames));
+            Dictionary<string, string> names = new();
+            store.Read(s => names = Nexus.Service.Lighting.LightingDeviceNames.Merge(s.Lighting.DeviceNames, s.Cooling.FanNames));
+            var lighting = store.Load().Lighting;
+            Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices, names);
             Nexus.Service.Lighting.Engine.DeviceFrameIndex.Apply(all.Devices, engine.Devices);
             writeHealth.Apply(all.Devices);
             foreach (var device in all.Devices)
@@ -365,17 +365,12 @@ public static partial class DevicesRoutes
             Nexus.Service.Persistence.IConfigStore store,
             Nexus.Service.Sockets.MultiplexHub hub) =>
         {
-            store.Update(s =>
+            var chain = false;
+            store.Update(s => chain = Nexus.Service.Lighting.LightingDeviceNames.SetName(s, body.Id, body.Name));
+            if (chain)
             {
-                if (string.IsNullOrWhiteSpace(body.Name))
-                {
-                    s.Lighting.DeviceNames.Remove(body.Id);
-                }
-                else
-                {
-                    s.Lighting.DeviceNames[body.Id] = body.Name.Trim();
-                }
-            });
+                Nexus.Service.Sockets.PanelTopics.BroadcastCooling(hub);
+            }
             Nexus.Service.Sockets.PanelTopics.BroadcastLighting(hub);
             return Results.Ok(ApiResponse.Ok());
         });

@@ -67,9 +67,9 @@ public class LightingDeviceNamesTests
     private const string Chain = "lianli-wireless:998D1DE566E1";
 
     [Fact]
-    public void WithWirelessChainNames_FallsBackToTheCoolingNameOfTheChain()
+    public void Merge_FallsBackToTheCoolingNameOfTheChain()
     {
-        var merged = LightingDeviceNames.WithWirelessChainNames(
+        var merged = LightingDeviceNames.Merge(
             new Dictionary<string, string>(),
             new Dictionary<string, string> { [Chain] = "Rear stack" });
 
@@ -83,9 +83,9 @@ public class LightingDeviceNamesTests
     }
 
     [Fact]
-    public void WithWirelessChainNames_LightingRenameWinsOverCooling()
+    public void Merge_AnOlderLightingEntryWinsOverCooling()
     {
-        var merged = LightingDeviceNames.WithWirelessChainNames(
+        var merged = LightingDeviceNames.Merge(
             new Dictionary<string, string> { [Chain] = "Lighting name" },
             new Dictionary<string, string> { [Chain] = "Rear stack" });
 
@@ -93,10 +93,9 @@ public class LightingDeviceNamesTests
     }
 
     [Fact]
-    public void WithWirelessChainNames_IgnoresOtherFanNamesAndPortNames()
+    public void Merge_IgnoresOtherFanNamesAndPortNames()
     {
-        var lighting = new Dictionary<string, string>();
-        var merged = LightingDeviceNames.WithWirelessChainNames(lighting, new Dictionary<string, string>
+        var merged = LightingDeviceNames.Merge(new Dictionary<string, string>(), new Dictionary<string, string>
         {
             [Chain + ":port0"] = "Port",
             ["np50:AABB"] = "Hub",
@@ -104,5 +103,42 @@ public class LightingDeviceNamesTests
         });
 
         Assert.Empty(merged);
+    }
+
+    [Fact]
+    public void SetName_RoutesAChainToTheCoolingStoreAndDropsTheStaleLightingEntry()
+    {
+        var s = new Nexus.Service.Persistence.NexusSettings();
+        s.Lighting.DeviceNames[Chain] = "Old";
+
+        Assert.True(LightingDeviceNames.SetName(s, Chain, "  New  "));
+
+        Assert.Equal("New", s.Cooling.FanNames[Chain]);
+        Assert.False(s.Lighting.DeviceNames.ContainsKey(Chain));
+    }
+
+    [Fact]
+    public void SetName_EmptyResetsAChainInBothStores()
+    {
+        var s = new Nexus.Service.Persistence.NexusSettings();
+        s.Lighting.DeviceNames[Chain] = "Old";
+        s.Cooling.FanNames[Chain] = "New";
+
+        LightingDeviceNames.SetName(s, Chain, "");
+
+        Assert.False(s.Cooling.FanNames.ContainsKey(Chain));
+        Assert.False(s.Lighting.DeviceNames.ContainsKey(Chain));
+    }
+
+    [Fact]
+    public void SetName_KeepsEveryOtherIdInTheLightingStore()
+    {
+        var s = new Nexus.Service.Persistence.NexusSettings();
+
+        Assert.False(LightingDeviceNames.SetName(s, Chain + ":fan1", "Zone"));
+        Assert.False(LightingDeviceNames.SetName(s, "np50:AABB:1", "Port"));
+
+        Assert.Equal("Zone", s.Lighting.DeviceNames[Chain + ":fan1"]);
+        Assert.Empty(s.Cooling.FanNames);
     }
 }
