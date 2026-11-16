@@ -21,6 +21,7 @@ internal sealed class FanNameOverlay
     private readonly Dictionary<string, string> _names;
     private readonly Dictionary<string, FanChannel> _byRuleId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _bySeriesId = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, FanChannel> _byTach = new(StringComparer.Ordinal);
 
     private FanNameOverlay(IReadOnlyList<FanChannel> channels, Dictionary<string, string> names)
     {
@@ -28,7 +29,15 @@ internal sealed class FanNameOverlay
         foreach (var ch in channels)
         {
             var seriesId = MetricsHistory.SanitizeId(ch.Id);
-            _byRuleId[BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + seriesId)] = ch;
+            // The first channel wins a SanitizeId collision, as in the engine's fan discovery.
+            if (!_byRuleId.TryAdd(BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + seriesId), ch))
+            {
+                continue;
+            }
+            if (!string.IsNullOrEmpty(ch.RpmSensorId))
+            {
+                _byTach.TryAdd(ch.RpmSensorId, ch);
+            }
             if (Custom(ch.Id) is { } name)
             {
                 _bySeriesId["fan:" + seriesId] = name;
@@ -79,16 +88,32 @@ internal sealed class FanNameOverlay
         return response with { Series = series };
     }
 
-    /// <summary>Copies of the rules with built-in fan entries relabeled; the inputs are left as they are.</summary>
+    /// <summary>Copies of the rules with built-in fan entries and custom rules on a renamed fan's tach relabeled; the inputs are left as they are.</summary>
     public List<SensorAlertRule> Project(List<SensorAlertRule> rules)
     {
         var output = new List<SensorAlertRule>(rules.Count);
         foreach (var rule in rules)
         {
-            output.Add(rule.BuiltIn == BuiltInSensorRules.FanSpeed && _byRuleId.TryGetValue(rule.Id, out var ch) ? Project(rule, ch) : rule);
+            if (rule.BuiltIn == BuiltInSensorRules.FanSpeed && _byRuleId.TryGetValue(rule.Id, out var ch))
+            {
+                output.Add(Project(rule, ch));
+            }
+            else if (rule.BuiltIn is null && TachName(rule.Sensor.Id) is { } tachName)
+            {
+                var copy = rule.Clone();
+                copy.Sensor.Name = tachName;
+                output.Add(copy);
+            }
+            else
+            {
+                output.Add(rule);
+            }
         }
         return output;
     }
+
+    /// <summary>The renamed name of the fan whose tach sensor has this id, or null.</summary>
+    public string? TachName(string sensorId) => !string.IsNullOrEmpty(sensorId) && _byTach.TryGetValue(sensorId, out var ch) ? Custom(ch.Id) : null;
 
     /// <summary>The display name of a built-in fan rule, or null to keep it.</summary>
     public string? RuleName(string ruleId) => _byRuleId.TryGetValue(ruleId, out var ch) ? Custom(ch.Id) : null;
@@ -114,8 +139,10 @@ internal sealed class FanNameOverlay
                 HardwareName = group ?? source.HardwareName,
                 Sensors = source.Sensors,
                 Sensor = source.Sensor is { } tach && name is not null
-                    ? new SensorRef { Category = tach.Category, Id = tach.Id, Name = name, Type = tach.Type, ParentName = tach.ParentName }
-                    : source.Sensor,
+                    ? new SensorRef { Category = tach.Category, Id = tach.Id, Name = name, Type = tach.Type, ParentName = group ?? tach.ParentName }
+                    : source.Sensor is { } groupOnly && group is not null
+                        ? new SensorRef { Category = groupOnly.Category, Id = groupOnly.Id, Name = groupOnly.Name, Type = groupOnly.Type, ParentName = group }
+                        : source.Sensor,
             };
         }
         return copy;

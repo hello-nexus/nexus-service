@@ -146,7 +146,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>Swaps a Cooling fan name on <paramref name="reference"/> back to the hardware name, so a stored rule survives the rename being cleared.</summary>
     public void RestoreRawSensorName(SensorRef reference)
     {
-        if (string.IsNullOrEmpty(reference.Id) || FanHeaderNames() is not { } renames
+        if (string.IsNullOrEmpty(reference.Id) || FanHeaderNames(reuseTickChannels: false) is not { } renames
             || !renames.TryGetValue(reference.Id, out var custom) || custom != reference.Name)
         {
             return;
@@ -416,6 +416,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
 
     /// <summary>
     /// The sensor a rule points at, or an invalid sample. <paramref name="healedId"/> is set when the sensor was found by name and its id differs from the stored one.
+    /// <paramref name="fanHeaderNames"/> (Cooling renames by tach id) lets the id pass also accept the renamed name, and <see cref="SensorSample.HealedName"/> then carries the hardware name to store; the name pass matches hardware names only.
     /// </summary>
     internal static SensorSample Resolve(IReadOnlyList<HardwareSensor> list, SensorRef reference, out string? healedId, IReadOnlyDictionary<string, string>? fanHeaderNames = null)
     {
@@ -470,7 +471,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     private static bool NameMatches(HardwareSensor s, string name, IReadOnlyDictionary<string, string>? fanHeaderNames) =>
         s.Name == name || (fanHeaderNames is not null && fanHeaderNames.TryGetValue(s.Id, out var custom) && custom == name);
 
-    private IReadOnlyDictionary<string, string>? FanHeaderNames()
+    // The channels DiscoverFans enumerated this tick, so reading renames adds no provider call.
+    private IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel>? _fanChannels;
+
+    private IReadOnlyDictionary<string, string>? FanHeaderNames(bool reuseTickChannels = true)
     {
         if (_fans is null)
         {
@@ -478,7 +482,13 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
         try
         {
-            return Nexus.Service.Monitoring.FanSensorNames.BuildMap(_fans.GetFanChannels(), Nexus.Service.Cooling.CoolingSnapshots.FanNames(_store.Load().Cooling));
+            var names = Nexus.Service.Cooling.CoolingSnapshots.FanNames(_store.Load().Cooling);
+            if (names.Count == 0)
+            {
+                return null;
+            }
+            var channels = (reuseTickChannels ? Volatile.Read(ref _fanChannels) : null) ?? _fans.GetFanChannels();
+            return Nexus.Service.Monitoring.FanSensorNames.BuildMap(channels, names);
         }
         catch (Exception ex)
         {
@@ -586,7 +596,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var enabled = rules;
         var notices = new List<(DiagnosticsAlertNotice Notice, bool Notify, string Key, bool Mobile)>();
         var heals = new List<(string RuleId, string SensorName, string SensorType, string NewId)>();
-        var nameHeals = new List<(string RuleId, string OldName, string SensorType, string RawName)>();
+        var nameHeals = new List<(string RuleId, string OldName, string SensorType, string SensorId, string RawName)>();
         var readings = new List<SeriesEntry>(enabled.Count);
         if (enabled.Count > 0)
         {
@@ -609,11 +619,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     {
                         heals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, healed));
                     }
-                    // A built-in's series is the monitoring history's own, so it is not recorded twice.
                     if (rule.BuiltIn is null && sample.HealedName is { } rawName)
                     {
-                        nameHeals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, rawName));
+                        nameHeals.Add((rule.Id, rule.Sensor.Name, rule.Sensor.Type, rule.Sensor.Id, rawName));
                     }
+                    // A built-in's series is the monitoring history's own, so it is not recorded twice.
                     if (rule.BuiltIn is null && sample.Valid && double.IsFinite(sample.Value))
                     {
                         // A healed id is the same sensor, so the entry carries it and compares equal to the rule once the heal lands.
@@ -974,7 +984,9 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         // Read once per refresh, and only when a channel has a tach sensor to look up.
         IReadOnlyList<HardwareSensor>? gpuTachs = null;
         IReadOnlyList<HardwareSensor>? boardTachs = null;
-        foreach (var ch in _fans.GetFanChannels())
+        var channels = _fans.GetFanChannels();
+        Volatile.Write(ref _fanChannels, channels);
+        foreach (var ch in channels)
         {
             var seriesId = BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id);
             if (devices.Any(d => d.SeriesId == seriesId))
@@ -1111,18 +1123,21 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private void HealSensorNames(List<(string RuleId, string OldName, string SensorType, string RawName)> heals)
+    // The id guard keeps a PUT that retargeted the rule meanwhile from receiving another sensor's name.
+    internal void HealSensorNames(List<(string RuleId, string OldName, string SensorType, string SensorId, string RawName)> heals)
     {
+        var healed = new List<(string RuleId, string RawName)>();
         try
         {
             _store.Update(s =>
             {
-                foreach (var (ruleId, oldName, type, rawName) in heals)
+                foreach (var (ruleId, oldName, type, sensorId, rawName) in heals)
                 {
                     var rule = s.Diagnostics.SensorAlerts?.FirstOrDefault(r => r.Id == ruleId);
-                    if (rule is not null && rule.BuiltIn is null && rule.Sensor.Name == oldName && rule.Sensor.Type == type)
+                    if (rule is not null && rule.BuiltIn is null && rule.Sensor.Id == sensorId && rule.Sensor.Name == oldName && rule.Sensor.Type == type)
                     {
                         rule.Sensor.Name = rawName;
+                        healed.Add((ruleId, rawName));
                     }
                 }
             });
@@ -1130,6 +1145,18 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         catch (Exception ex)
         {
             Warn("heal", $"[sensor-alerts] name self-heal failed: {ex.Message}", Mono());
+            return;
+        }
+        // The heal is not an edit: the running state follows the stored name so the episode and its notice carry on.
+        lock (_lock)
+        {
+            foreach (var (ruleId, rawName) in healed)
+            {
+                if (_states.TryGetValue(ruleId, out var st) && st.Config is { } cfg)
+                {
+                    cfg.Sensor.Name = rawName;
+                }
+            }
         }
     }
 

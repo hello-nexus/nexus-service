@@ -119,7 +119,9 @@ public class FanNameOverlayTests
         Assert.Equal("CPU fan", shown.Sensor.Name);
         Assert.Equal("CPU fan", shown.Source!.Sensor!.Name);
         Assert.Equal("My board", shown.Source.HardwareName);
+        Assert.Equal("My board", shown.Source.Sensor.ParentName);
         Assert.Equal("/lpc/fan/1", shown.Source.Sensor.Id);
+        Assert.Equal("Board", rule.Source!.Sensor!.ParentName);
         Assert.Equal("Fan #1", rule.Source!.Sensor!.Name);
         Assert.Equal("Fan #1", rule.Source.HardwareName);
     }
@@ -160,5 +162,32 @@ public class FanNameOverlayTests
         Assert.Equal(new[] { "CPU fan", "CPU fan", "Port 1" }, shown.Series.Select(x => x.Name));
         Assert.Same(points, shown.Series[0].Points);
         Assert.Equal("Fan #1", response.Series[0].Name);
+    }
+
+    [Fact]
+    public void A_custom_rule_on_a_renamed_fans_tach_is_labeled_on_a_copy_and_other_sensors_are_not()
+    {
+        var (store, fans) = Rig();
+        Rename(store, "/lpc/ctl/1", "CPU fan");
+        var custom = new SensorAlertRule { Id = "c1", Sensor = new SensorRef { Category = "motherboard", Id = "/lpc/fan/1", Name = "Fan #1", Type = "Fan", ParentName = "Board" } };
+        var other = new SensorAlertRule { Id = "c2", Sensor = new SensorRef { Category = "motherboard", Id = "/lpc/fan/9", Name = "Fan #9", Type = "Fan" } };
+
+        var shown = FanNameOverlay.Build(store, fans)!.Project(new List<SensorAlertRule> { custom, other });
+
+        Assert.Equal("CPU fan", shown[0].Sensor.Name);
+        Assert.Equal("Fan #1", custom.Sensor.Name);
+        Assert.Same(other, shown[1]);
+        Assert.Equal("CPU fan", FanNameOverlay.Build(store, fans)!.TachName("/lpc/fan/1"));
+    }
+
+    [Fact]
+    public void A_sanitize_collision_keeps_the_first_channel()
+    {
+        var (store, fans) = Rig();
+        fans.Channels.Add(new FanChannel { Id = "/lpc/ctl-1", Name = "Other" });
+        Rename(store, "/lpc/ctl/1", "First");
+        Rename(store, "/lpc/ctl-1", "Second");
+
+        Assert.Equal("First", FanNameOverlay.Build(store, fans)!.SeriesName("fan:lpc-ctl-1"));
     }
 }

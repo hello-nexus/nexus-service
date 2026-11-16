@@ -223,6 +223,7 @@ public static class DiagnosticsAlertRoutes
                 step = 60;
             }
 
+            var fanOverlay = Monitoring.FanNameOverlay.Build(store, fans);
             var names = new Dictionary<string, string>(StringComparer.Ordinal);
             store.Read(s =>
             {
@@ -230,7 +231,7 @@ public static class DiagnosticsAlertRoutes
                 {
                     if (rule.BuiltIn is null && (string.IsNullOrEmpty(ruleId) || rule.Id == ruleId))
                     {
-                        names[rule.Id] = rule.Sensor.Name;
+                        names[rule.Id] = fanOverlay?.TachName(rule.Sensor.Id) ?? rule.Sensor.Name;
                     }
                 }
             });
@@ -245,7 +246,6 @@ public static class DiagnosticsAlertRoutes
                 var builtIns = engine.Rules().Where(r => r.BuiltIn is not null && (string.IsNullOrEmpty(ruleId) || r.Id == ruleId)).ToList();
                 if (builtIns.Count > 0)
                 {
-                    var fanOverlay = Monitoring.FanNameOverlay.Build(store, fans);
                     var wanted = builtIns.ToDictionary(r => BuiltInSensorRules.SeriesId(r.Id), StringComparer.Ordinal);
                     var monitoring = MonitoringHistoryRoutes.QueryHistory(fromSec, toSec, step, clamped, wanted.Keys.ToHashSet(StringComparer.Ordinal), history, buffer, sensors);
                     foreach (var rule in builtIns)

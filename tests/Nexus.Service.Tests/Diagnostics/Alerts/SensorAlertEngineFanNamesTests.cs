@@ -105,7 +105,7 @@ public partial class SensorAlertEngineTests
         Assert.Equal(SensorAlertStates.Active, after.State);
         Assert.Equal(before.Since, after.Since);
         Assert.Equal(notices, rig.Notices.Count);
-        Assert.Empty(rig.Engine.History().Where(h => h.EndedUtc is not null));
+        Assert.DoesNotContain(rig.Engine.History(), h => h.EndedUtc is not null);
     }
 
     [Fact]
@@ -255,5 +255,56 @@ public partial class SensorAlertEngineTests
 
         Assert.Equal("CPU fan", other.Name);
         Assert.Equal("Fan #1", raw.Name);
+    }
+
+    [Fact]
+    public void A_tick_reads_the_fan_channels_once_with_or_without_renames()
+    {
+        var rig = BoardFanRig();
+        rig.AddRule(BoardFanRule("Fan #1"));
+        rig.Seconds(1);
+        var before = rig.Fans.Reads;
+        rig.Seconds(1);
+        var plain = rig.Fans.Reads - before;
+
+        Rename(rig, BoardFanId, "CPU fan");
+        before = rig.Fans.Reads;
+        rig.Seconds(1);
+
+        Assert.Equal(plain, rig.Fans.Reads - before);
+        Assert.Equal(1, plain);
+    }
+
+    [Fact]
+    public void The_name_heal_skips_a_rule_retargeted_to_another_sensor_meanwhile()
+    {
+        var rig = BoardFanRig();
+        var rule = BoardFanRule("CPU fan");
+        rule.Sensor.Id = "/lpc/nct/fan/2";
+        rig.AddRule(rule);
+
+        rig.Engine.HealSensorNames(new List<(string, string, string, string, string)> { ("custom-fan", "CPU fan", "Fan", BoardTachId, "Fan #1") });
+
+        Assert.Equal("CPU fan", rig.Store.Load().Diagnostics.SensorAlerts.Single(r => r.Id == "custom-fan").Sensor.Name);
+    }
+
+    [Fact]
+    public void The_name_heal_of_a_legacy_rule_does_not_restart_its_episode()
+    {
+        var rig = BoardFanRig();
+        Rename(rig, BoardFanId, "CPU fan");
+        var rule = BoardFanRule("CPU fan");
+        rule.High = 1000;
+        rig.AddRule(rule);
+        rig.Seconds(1);
+        Assert.Equal(SensorAlertStates.Pending, StateOf(rig, "custom-fan").State);
+
+        // The raise delay counts from the first breach, so a heal that restarted the rule would still be pending here.
+        rig.Seconds(5);
+
+        var state = StateOf(rig, "custom-fan");
+        Assert.Equal("Fan #1", rig.Store.Load().Diagnostics.SensorAlerts.Single(r => r.Id == "custom-fan").Sensor.Name);
+        Assert.Equal(SensorAlertStates.Active, state.State);
+        Assert.Single(rig.Notices);
     }
 }
