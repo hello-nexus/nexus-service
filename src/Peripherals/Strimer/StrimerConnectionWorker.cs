@@ -22,6 +22,9 @@ public sealed class StrimerConnectionWorker : BackgroundService
     private readonly DeviceControlGate _gate;
     private readonly HardwarePresence _presence;
     private bool _firstAttach;
+    // A full HID enumeration opens every controller, so steady state skips it and only rescans on this cadence or when the USB count changes.
+    private const long RescanMs = 30_000;
+    private long _lastScanMs = long.MinValue / 2;
     // Slot remembered per controller for this process, so one unplugging never renumbers the other.
     private readonly Dictionary<string, int> _slotByKey = new();
 
@@ -36,31 +39,37 @@ public sealed class StrimerConnectionWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                if (!_gate.IsEnabled("strimer"))
+                try
                 {
-                    DetachAll();
+                    if (!_gate.IsEnabled("strimer"))
+                    {
+                        DetachAll();
+                    }
+                    else
+                    {
+                        Poll(_presence.UsbCount(StrimerProtocol.VendorId, StrimerProtocol.ProductId), Environment.TickCount64);
+                    }
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                 }
-                else if (_presence.UsbPresent(StrimerProtocol.VendorId, StrimerProtocol.ProductId))
+                catch (OperationCanceledException)
                 {
-                    Poll();
+                    break;
                 }
-                await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                ServiceLog.Error($"[strimer] worker error: {ex.Message}");
-                await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                catch (Exception ex)
+                {
+                    ServiceLog.Error($"[strimer] worker error: {ex.Message}");
+                    await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
+                }
             }
         }
-        DetachAll();
+        finally
+        {
+            DetachAll();
+        }
     }
 
     private void DetachAll()
@@ -78,14 +87,35 @@ public sealed class StrimerConnectionWorker : BackgroundService
         _lighting.OnHubStateUpdated();
     }
 
-    internal void Poll()
+    /// <param name="usbCount">Controllers the cheap USB probe sees right now.</param>
+    internal void Poll(int usbCount, long nowMs)
     {
         foreach (var hub in _units.All)
         {
             if (hub.IsConnected && hub.ConsecutiveWriteFailures >= MaxConsecutiveFailures) DetachUnit(hub);
         }
+        if (usbCount <= 0)
+        {
+            DetachAll();
+            return;
+        }
+
+        var connected = _units.Connected().Count;
+        var due = nowMs - _lastScanMs >= RescanMs;
+        if (connected > 0 && connected == Math.Min(usbCount, _units.All.Count) && !due) return;
+        _lastScanMs = nowMs;
 
         var infos = FindMatching();
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var i in infos) present.Add(i.Path);
+
+        // A path that is gone belongs to an unplugged controller (macOS paths change on replug), so free its slot first.
+        foreach (var hub in _units.All)
+        {
+            var path = hub.AttachedPath;
+            if (hub.IsConnected && (path == null || !present.Contains(path))) DetachUnit(hub);
+        }
+
         var attached = new HashSet<string>(StringComparer.Ordinal);
         var taken = new bool[_units.All.Count];
         foreach (var hub in _units.All)
@@ -119,10 +149,11 @@ public sealed class StrimerConnectionWorker : BackgroundService
                 slot = Array.IndexOf(taken, false);
                 if (slot < 0) break;
             }
-            var device = _hid.Open(info.Path);
-            if (device == null) continue;
+            // Reserved before the open, so a controller that is busy keeps its slot against the ones sorted after it.
             taken[slot] = true;
             _slotByKey[key] = slot;
+            var device = _hid.Open(info.Path);
+            if (device == null) continue;
             var hub = _units.All[slot];
             hub.Attach(device);
             if (!_firstAttach)

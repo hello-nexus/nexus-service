@@ -33,6 +33,9 @@ public sealed class LightingWriteHealth
     public static readonly TimeSpan ClearAfter = TimeSpan.FromSeconds(20);
 
     /// <summary>The instance drivers report into, which DI also serves; drivers are built outside the container in places.</summary>
+    /// <summary>Handlers whose extra controllers use parent keys of the form handler:N.</summary>
+    private static readonly HashSet<string> UnitScopedHandlers = new(StringComparer.Ordinal) { "strimer" };
+
     public static LightingWriteHealth Shared { get; } = new() { Incidents = Nexus.Service.Diagnostics.DeviceIncidentLog.Shared };
 
     /// <summary>Per-device event rings; null in tests that do not exercise incident capture.</summary>
@@ -226,7 +229,11 @@ public sealed class LightingWriteHealth
     {
         lock (_lock)
         {
-            return Match(id) || Match(deviceId) || Match(parentDeviceId) || Match(controlHandlerId);
+            // Controllers of a unit-scoped handler each report under their own parent key; the shared handler id would flag all of them.
+            var handlerShared = controlHandlerId is null || !UnitScopedHandlers.Contains(controlHandlerId)
+                || parentDeviceId is null || parentDeviceId == controlHandlerId
+                || !parentDeviceId.StartsWith(controlHandlerId + ":", StringComparison.Ordinal);
+            return Match(id) || Match(deviceId) || Match(parentDeviceId) || (handlerShared && Match(controlHandlerId));
         }
 
         bool Match(string? key) => !string.IsNullOrEmpty(key) && _states.TryGetValue(key, out var st) && st.Failing;

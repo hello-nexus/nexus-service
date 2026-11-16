@@ -40,6 +40,8 @@ public class StrimerMultiUnitTests
     {
         public List<HidDeviceInfo> Present { get; } = new();
         public Dictionary<string, FakeDevice> Opened { get; } = new();
+        public HashSet<string> Busy { get; } = new();
+        public int FindCalls;
 
         public void Plug(string path, string? serial) => Present.Add(Info(path, serial));
         public void Unplug(string path) => Present.RemoveAll(i => i.Path == path);
@@ -54,11 +56,12 @@ public class StrimerMultiUnitTests
             Usage = StrimerProtocol.VendorUsage,
         };
 
-        public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) => Present.ToList();
+        public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId) { FindCalls++; return Present.ToList(); }
         public IReadOnlyList<HidDeviceInfo> FindAll() => Present.ToList();
 
         public IHidDevice? Open(string path, bool forInput = false)
         {
+            if (Busy.Contains(path)) return null;
             var info = Present.First(i => i.Path == path);
             var d = new FakeDevice(path, info.Serial);
             Opened[path] = d;
@@ -78,13 +81,18 @@ public class StrimerMultiUnitTests
         _worker = new StrimerConnectionWorker(_hid, _units, _provider, new DeviceControlGate(_store), new HardwarePresence(null!));
     }
 
+    private long _clock;
+
+    // Each call is past the rescan interval, so it always enumerates.
+    private void PollNow() => _worker.Poll(_hid.Present.Count, _clock += 31_000);
+
     [Fact]
     public void Both_controllers_open_in_serial_order_regardless_of_enumeration_order()
     {
         _hid.Plug("path-b", "B-SERIAL");
         _hid.Plug("path-a", "A-SERIAL");
 
-        _worker.Poll();
+        PollNow();
 
         Assert.Equal("path-a", _units.All[0].AttachedPath);
         Assert.Equal("path-b", _units.All[1].AttachedPath);
@@ -97,7 +105,7 @@ public class StrimerMultiUnitTests
         _hid.Plug("path-b", "SAME");
         _hid.Plug("path-a", "SAME");
 
-        _worker.Poll();
+        PollNow();
 
         Assert.Equal("path-a", _units.All[0].AttachedPath);
         Assert.Equal("path-b", _units.All[1].AttachedPath);
@@ -108,7 +116,7 @@ public class StrimerMultiUnitTests
     {
         _hid.Plug("path-a", "A");
         _hid.Plug("path-b", "B");
-        _worker.Poll();
+        PollNow();
 
         var structures = _provider.GetStructures();
         var ids = structures.Select(s => s.DeviceId).ToArray();
@@ -132,7 +140,7 @@ public class StrimerMultiUnitTests
     {
         _hid.Plug("path-a", "A");
         _hid.Plug("path-b", "B");
-        _worker.Poll();
+        PollNow();
 
         var frames = _provider.BuildFrames(0);
 
@@ -145,7 +153,7 @@ public class StrimerMultiUnitTests
     {
         _hid.Plug("path-a", "A");
         _hid.Plug("path-b", "B");
-        _worker.Poll();
+        PollNow();
         var writer = new StrimerLightingFrameWriter(new LightingEngine(), _units, _store, new Np50IdentifyTracker(), _provider);
 
         writer.TickCustom(_store.Load(), Array.Empty<DeviceFrame>(), new MasterLevel(1f, false));
@@ -159,13 +167,13 @@ public class StrimerMultiUnitTests
     {
         _hid.Plug("path-a", "A");
         _hid.Plug("path-b", "B");
-        _worker.Poll();
+        PollNow();
         var b = _hid.Opened["path-b"];
         b.WriteOk = false;
         for (var i = 0; i < 3; i++) _units.All[1].SendApplyLatch();
         _hid.Unplug("path-b");
 
-        _worker.Poll();
+        PollNow();
 
         Assert.True(_units.All[0].IsConnected);
         Assert.False(_units.All[1].IsConnected);
@@ -180,12 +188,12 @@ public class StrimerMultiUnitTests
     {
         _hid.Plug("path-a", "A");
         _hid.Plug("path-b", "B");
-        _worker.Poll();
+        PollNow();
         var aOld = _hid.Opened["path-a"];
         aOld.WriteOk = false;
         for (var i = 0; i < 3; i++) _units.All[0].SendApplyLatch();
         _hid.Unplug("path-a");
-        _worker.Poll();
+        PollNow();
 
         // B keeps its ids while A is away, and A returns to slot 0.
         Assert.False(_units.All[0].IsConnected);
@@ -193,7 +201,7 @@ public class StrimerMultiUnitTests
         Assert.Equal("strimer:2:atx", _provider.GetStructures()[0].DeviceId);
 
         _hid.Plug("path-a", "A");
-        _worker.Poll();
+        PollNow();
 
         Assert.Equal("path-a", _units.All[0].AttachedPath);
         Assert.Equal("path-b", _units.All[1].AttachedPath);
@@ -203,9 +211,120 @@ public class StrimerMultiUnitTests
     public void Single_controller_keeps_legacy_ids_only()
     {
         _hid.Plug("path-a", "A");
-        _worker.Poll();
+        PollNow();
 
         Assert.Equal(new[] { "strimer:atx", "strimer:gpu" }, _provider.GetStructures().Select(s => s.DeviceId).ToArray());
         Assert.Equal(12, _provider.GetAll().Devices.Count);
+    }
+
+    [Fact]
+    public void Usb_presence_gone_detaches_every_unit()
+    {
+        _hid.Plug("path-a", "A");
+        PollNow();
+
+        _worker.Poll(0, _clock += 1);
+
+        Assert.False(_units.All[0].IsConnected);
+        Assert.Empty(_provider.GetAll().Devices);
+    }
+
+    [Fact]
+    public void A_vanished_path_detaches_and_the_lone_replugged_unit_reclaims_slot_one()
+    {
+        _hid.Plug("iokit:1", null);
+        PollNow();
+        _hid.Unplug("iokit:1");
+        _hid.Plug("iokit:2", null);
+
+        PollNow();
+
+        Assert.Equal("iokit:2", _units.All[0].AttachedPath);
+        Assert.False(_units.All[1].IsConnected);
+        Assert.Equal(new[] { "strimer:atx", "strimer:gpu" }, _provider.GetStructures().Select(s => s.DeviceId).ToArray());
+    }
+
+    [Fact]
+    public void Steady_state_skips_hid_enumeration_until_the_count_changes_or_the_rescan_is_due()
+    {
+        _hid.Plug("path-a", "A");
+        _worker.Poll(1, 100_000);
+        var calls = _hid.FindCalls;
+
+        _worker.Poll(1, 105_000);
+        Assert.Equal(calls, _hid.FindCalls);
+
+        _hid.Plug("path-b", "B");
+        _worker.Poll(2, 110_000);
+        Assert.Equal(calls + 1, _hid.FindCalls);
+        Assert.Equal(2, _units.Connected().Count);
+
+        _worker.Poll(2, 141_000);
+        Assert.Equal(calls + 2, _hid.FindCalls);
+    }
+
+    [Fact]
+    public void A_controller_that_opens_late_keeps_the_slot_its_serial_sorts_to()
+    {
+        _hid.Plug("path-a", "A");
+        _hid.Plug("path-b", "B");
+        _hid.Busy.Add("path-a");
+        PollNow();
+        Assert.Equal("path-b", _units.All[1].AttachedPath);
+        Assert.False(_units.All[0].IsConnected);
+
+        _hid.Busy.Clear();
+        PollNow();
+
+        Assert.Equal("path-a", _units.All[0].AttachedPath);
+        Assert.Equal("path-b", _units.All[1].AttachedPath);
+    }
+
+    [Fact]
+    public void Write_health_is_judged_per_unit()
+    {
+        var health = new LightingWriteHealth(() => _healthNow);
+        for (var i = 0; i < 17; i++)
+        {
+            health.NoteFailure("strimer", "strimer");
+            _healthNow += TimeSpan.FromSeconds(1);
+        }
+
+        Assert.True(health.IsFailing("strimer:atx:z0", "strimer:atx", "strimer", "strimer"));
+        Assert.False(health.IsFailing("strimer:2:atx:z0", "strimer:2:atx", "strimer:2", "strimer"));
+    }
+
+    private TimeSpan _healthNow = TimeSpan.Zero;
+
+    [Fact]
+    public void Write_health_of_a_later_unit_flags_only_its_own_cards()
+    {
+        var health = new LightingWriteHealth(() => _healthNow);
+        for (var i = 0; i < 17; i++)
+        {
+            health.NoteFailure("strimer:2", "strimer");
+            _healthNow += TimeSpan.FromSeconds(1);
+        }
+
+        Assert.True(health.IsFailing("strimer:2:atx:z0", "strimer:2:atx", "strimer:2", "strimer"));
+        Assert.False(health.IsFailing("strimer:atx:z0", "strimer:atx", "strimer", "strimer"));
+    }
+
+    [Fact]
+    public void Reattaching_a_slot_makes_the_writer_resend_the_sync_switch()
+    {
+        var spy1 = new StrimerTransportSpy();
+        _units.All[0].Attach(spy1);
+        _store.Update(s => s.Devices.StrimerLighting.ArgbSync = true);
+        var writer = new StrimerLightingFrameWriter(new LightingEngine(), _units, _store, new Np50IdentifyTracker(), _provider);
+        writer.Tick();
+        Assert.Single(spy1.Calls, c => c.Bytes[2] == 0x40);
+
+        var spy2 = new StrimerTransportSpy();
+        _units.All[0].Detach();
+        _units.All[0].Attach(spy2);
+        writer.Tick();
+
+        Assert.Single(spy2.Calls, c => c.Bytes[2] == 0x40);
     }
 }

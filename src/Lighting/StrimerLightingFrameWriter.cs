@@ -29,7 +29,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
     // Per-controller send state, indexed by unit slot.
     private sealed class UnitState
     {
-        // Separate segment buffers for ATX (6 segments) and GPU (6 segments).
+        // Separate segment buffers for ATX (6 segments) and GPU (4 or 6 segments).
         public RgbColor[][] AtxSegBuf = Array.Empty<RgbColor[]>();
         public RgbColor[][] GpuSegBuf = Array.Empty<RgbColor[]>();
         // Last firmware-mode signature committed; null forces re-commit on next tick.
@@ -37,6 +37,7 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         // Sync state the controller last accepted; false after attach, so a cable never put on sync sees no extra write.
         public bool ArgbSyncSent;
         public long ArgbRetryAtMs;
+        public int Generation = -1;
     }
 
     private readonly Dictionary<int, UnitState> _states = new();
@@ -126,6 +127,14 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
                 st.ArgbSyncSent = false;
                 st.ArgbRetryAtMs = 0;
                 continue;
+            }
+            var generation = hub.Generation;
+            if (st.Generation != generation)
+            {
+                st.Generation = generation;
+                st.LastFirmwareSig = null;
+                st.ArgbSyncSent = false;
+                st.ArgbRetryAtMs = 0;
             }
             TickUnit(hub, st);
         }

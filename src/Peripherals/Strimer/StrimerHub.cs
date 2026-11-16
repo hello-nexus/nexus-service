@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
 namespace Nexus.Service.Peripherals.Strimer;
@@ -16,12 +17,15 @@ public sealed class StrimerHub : IDisposable
     public StrimerHub(int unit = 0)
     {
         Unit = unit;
-        // Id scheme for slots 1 and up is strimer:2:atx, strimer:3:gpu, ...
         IdPrefix = unit == 0 ? "strimer:" : $"strimer:{unit + 1}:";
         HealthKey = unit == 0 ? "strimer" : $"strimer:{unit + 1}";
     }
 
     public int Unit { get; }
+
+    /// <summary>Bumped on every attach, so a consumer can tell a reattach inside one polling gap from an uninterrupted connection.</summary>
+    public int Generation => Volatile.Read(ref _generation);
+    private int _generation;
 
     /// <summary>Prefix of every device and zone id this unit owns.</summary>
     public string IdPrefix { get; }
@@ -47,6 +51,7 @@ public sealed class StrimerHub : IDisposable
         {
             _device = device;
             State.IsConnected = true;
+            Interlocked.Increment(ref _generation);
             Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey, deviceLeft: false);
         }
     }
