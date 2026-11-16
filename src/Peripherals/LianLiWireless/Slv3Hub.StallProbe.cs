@@ -18,6 +18,7 @@ public sealed partial class Slv3Hub
     private long _stallNextProbeMs;
     private string _stallActionName = "";
     private int _stallSeq;
+    private int _stallActed;
     private int _stallReopensAtStart;
     private volatile bool _pauseWindowUploads;
     private long _wuCount;
@@ -110,7 +111,7 @@ public sealed partial class Slv3Hub
         {
             return;
         }
-        var action = letters[_stallSeq % letters.Length];
+        var action = letters[_stallActed++ % letters.Length];
         _stallActionMs = nowMs;
         _stallActionName = action.ToString();
         StallLog($"#{_stallSeq + 1} age={age}ms action={action} txprobe={ProbeTxLocked()}");
