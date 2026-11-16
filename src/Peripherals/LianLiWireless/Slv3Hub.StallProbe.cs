@@ -66,7 +66,7 @@ public sealed partial class Slv3Hub
             var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Nexus", "slv3-stall.txt");
             if (File.Exists(path))
             {
-                var parts = File.ReadAllText(path).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var parts = File.ReadAllText(path).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length == 2 && long.TryParse(parts[0], out var after) && parts[1].Length > 0)
                 {
                     return (after, parts[1]);
