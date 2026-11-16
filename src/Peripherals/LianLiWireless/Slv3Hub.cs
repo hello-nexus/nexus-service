@@ -3216,6 +3216,9 @@ public sealed partial class Slv3Hub : IDisposable
         finally
         {
             var ok = result == WindowUploadResult.Sent;
+#if DEV_TOOLS
+            StallNoteUpload(ok, ElapsedMs(startedAt));
+#endif
             Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
         }
     }

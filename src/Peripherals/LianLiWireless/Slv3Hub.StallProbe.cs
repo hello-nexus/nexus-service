@@ -1,6 +1,7 @@
 #if DEV_TOOLS
 using System;
 using System.IO;
+using System.Threading;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Peripherals.LianLiWireless;
@@ -19,6 +20,44 @@ public sealed partial class Slv3Hub
     private int _stallSeq;
     private int _stallReopensAtStart;
     private volatile bool _pauseWindowUploads;
+    private long _wuCount;
+    private long _wuFail;
+    private long _wuMs;
+    private long _statsNextMs;
+    private long _statsLastCount;
+    private long _statsLastFail;
+    private long _statsLastMs;
+    private long _statsPolls;
+    private long _statsNoData;
+
+    private void StallNoteUpload(bool ok, long ms)
+    {
+        Interlocked.Increment(ref _wuCount);
+        if (!ok)
+        {
+            Interlocked.Increment(ref _wuFail);
+        }
+        Interlocked.Add(ref _wuMs, ms);
+    }
+
+    private void StallStatsLocked(long nowMs)
+    {
+        if (nowMs < _statsNextMs)
+        {
+            return;
+        }
+        _statsNextMs = nowMs + 60_000;
+        var c = Interlocked.Read(ref _wuCount);
+        var f = Interlocked.Read(ref _wuFail);
+        var ms = Interlocked.Read(ref _wuMs);
+        var dc = c - _statsLastCount;
+        StallLog($"STATS 60s: windowUploads={dc} failed={f - _statsLastFail} avgLat={(dc > 0 ? (ms - _statsLastMs) / dc : 0)}ms goodPolls={_statsPolls} nodataPolls={_statsNoData}");
+        _statsLastCount = c;
+        _statsLastFail = f;
+        _statsLastMs = ms;
+        _statsPolls = 0;
+        _statsNoData = 0;
+    }
 
     private static (long AfterMs, string Letters) ReadStallConfig()
     {
@@ -50,6 +89,7 @@ public sealed partial class Slv3Hub
     // Caller holds _lock; called on every nodata poll.
     private void StallOnNoDataLocked(long nowMs)
     {
+        _statsNoData++;
         if (_stallStartMs == 0)
         {
             _stallStartMs = nowMs;
@@ -94,6 +134,8 @@ public sealed partial class Slv3Hub
     // Caller holds _lock; called when a valid device list arrives.
     private void StallOnGoodReplyLocked(long nowMs)
     {
+        _statsPolls++;
+        StallStatsLocked(nowMs);
         if (_stallStartMs == 0)
         {
             return;
