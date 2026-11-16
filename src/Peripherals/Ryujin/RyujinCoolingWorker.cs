@@ -210,7 +210,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
             }
             if (uploaded || _appliedMode != ModeImage)
             {
-                if (SelectStoredMedia(StoredSlot()))
+                if (SelectStoredMedia(PlaySlot()))
                 {
                     _appliedMode = ModeImage;
                     ServiceLog.Info($"[asus-ryujin-cooling] stored-media layout selected, held={(uploaded ? "after upload" : "from an earlier upload")}");
@@ -227,7 +227,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         return _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia(slot));
     }
 
-    private int StoredSlot() => Math.Clamp(_store.Load().Devices.RyujinDisplay.StoredSlot, 0, 9);
+    private int PlaySlot() => Math.Clamp(_store.Load().Devices.RyujinDisplay.StoredSlot ?? 0, 0, 9);
 
     private bool SelectMonitor(RyujinDisplaySettings wanted)
     {
@@ -306,7 +306,6 @@ public sealed class RyujinCoolingWorker : BackgroundService
         var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe, _hub.TakeStashedAck), ServiceLog.Info, ServiceLog.Warn)
         {
             Keepalive = KeepaliveDuringUpload,
-            Slot = StoredSlot(),
             AbortCheck = () => _gate.IsEnabled(RyujinCoolingProtocol.HandlerId) ? RyujinUploadAbort.None : RyujinUploadAbort.ControlOff,
         };
         RyujinUploadResult result;
@@ -378,7 +377,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 _appliedSlots = wantedSlots;
                 if (_appliedMode == ModeImage)
                 {
-                    _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia(StoredSlot()));
+                    _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia(PlaySlot()));
                 }
                 return sensorsChanged;
             }

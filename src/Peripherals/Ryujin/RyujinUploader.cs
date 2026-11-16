@@ -182,6 +182,12 @@ internal sealed class RyujinUploader
         _link.WriteReport(RyujinMonitorProtocol.EncodeDc());
         _link.WriteReport(RyujinCoolingProtocol.EncodeStatusRequest());
         Listen(EndWaitMs);
+        // The query pair Armoury Crate opens with, repeated so the log shows which slot bits the upload changed.
+        foreach (var query in RyujinUploadProtocol.EncodeDiskInfoQuery())
+        {
+            _link.WriteReport(query);
+        }
+        Listen(1500);
 
         double totalMs = clock.Elapsed.TotalMilliseconds;
         double kbps = avi.Length / 1024.0 / (totalMs / 1000.0);
@@ -282,7 +288,11 @@ internal sealed class RyujinUploader
         if (_logged < MaxLoggedReports)
         {
             _logged++;
-            _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 24)])} t_ms={ElapsedMs():0}");
+            _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 32)])} t_ms={ElapsedMs():0}");
+            if (RyujinUploadProtocol.TryParseDiskInfo(report, out uint total, out uint free, out uint jpg, out uint gif))
+            {
+                _info($"[ryujin-upload] disk info total_kb={total} free_kb={free} jpg_slots=0x{jpg:X} gif_slots=0x{gif:X}");
+            }
         }
     }
 

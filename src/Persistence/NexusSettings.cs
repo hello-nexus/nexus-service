@@ -2478,8 +2478,8 @@ public sealed class RyujinDisplaySettings
     /// <summary>SHA-256 of the AVI whose last upload failed; it is not sent again until a new file is picked.</summary>
     public string UploadFailedSha { get; set; } = "";
 
-    /// <summary>Slot the picked file is uploaded to and played from; edit settings.json and pick the file again to change it.</summary>
-    public int StoredSlot { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinUploadProtocol.DefaultSlot;
+    /// <summary>Test override of the slot the select plays; unset sends Armoury Crate's bytes. The upload slot is not affected.</summary>
+    public int? StoredSlot { get; set; }
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>

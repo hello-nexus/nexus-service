@@ -27,7 +27,7 @@ internal static class RyujinUploadProtocol
     public const int PacedGroupGapMs = 2300;
     public const int PacedGroupChunks = 4;
 
-    /// <summary>The slot Armoury Crate's upload names (the last byte of 72); its activation names slot 0, which the capture cannot reconcile.</summary>
+    /// <summary>The last byte of Armoury Crate's 72; its select plays slot 0 whatever that byte is, so the two numberings may differ.</summary>
     public const int DefaultSlot = 1;
 
     public static byte[][] EncodeBegin(int length, int slot = DefaultSlot)
@@ -65,6 +65,28 @@ internal static class RyujinUploadProtocol
         commit[3] = 0x01;
         commit[4] = (byte)slot;
         return new[] { layout, commit };
+    }
+
+    /// <summary>The disk-info reply to F1: EC 71 00 01 then total KB, free KB (u32 LE) and the JPG and GIF slot bitmaps, per a public protocol doc.</summary>
+    public static bool TryParseDiskInfo(ReadOnlySpan<byte> report, out uint totalKb, out uint freeKb, out uint jpgSlots, out uint gifSlots)
+    {
+        totalKb = freeKb = jpgSlots = gifSlots = 0;
+        if (report.Length < 27 || report[0] != Id || report[1] != 0x71 || report[2] != 0x00 || report[3] != 0x01)
+        {
+            return false;
+        }
+        totalKb = BitConverter.ToUInt32(report[4..8]);
+        freeKb = BitConverter.ToUInt32(report[8..12]);
+        jpgSlots = BitConverter.ToUInt32(report[18..22]);
+        gifSlots = BitConverter.ToUInt32(report[23..27]);
+        return true;
+    }
+
+    /// <summary>The query pair Armoury Crate opens an upload with, without the write.</summary>
+    public static byte[][] EncodeDiskInfoQuery()
+    {
+        var begin = EncodeBegin(0);
+        return new[] { begin[0], begin[1] };
     }
 
     public static int ChunkCount(int length) => (length + ChunkBytes - 1) / ChunkBytes;

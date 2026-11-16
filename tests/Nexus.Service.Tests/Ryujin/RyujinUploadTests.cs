@@ -287,6 +287,23 @@ public class RyujinUploadTests
     }
 
     [Fact]
+    public void Disk_info_reply_is_decoded_from_the_captured_fields()
+    {
+        // The reply logged from the first hardware run: total E0FE0000, free B0E50000, 20070000 after it.
+        var report = new byte[65];
+        Convert.FromHexString("EC710001E0FE0000B0E5000020070000").CopyTo(report, 0);
+        report[18] = 0x03;
+        report[23] = 0x1F;
+
+        Assert.True(RyujinUploadProtocol.TryParseDiskInfo(report, out uint total, out uint free, out uint jpg, out uint gif));
+        Assert.Equal(65248u, total);
+        Assert.Equal(58800u, free);
+        Assert.Equal(3u, jpg);
+        Assert.Equal(0x1Fu, gif);
+        Assert.False(RyujinUploadProtocol.TryParseDiskInfo(Report("EC 71 00 00"), out _, out _, out _, out _));
+    }
+
+    [Fact]
     public void Acked_upload_sends_each_chunk_as_soon_as_the_ack_arrives_and_never_pauses_between_chunks()
     {
         var link = new FakeLink();
@@ -297,7 +314,7 @@ public class RyujinUploadTests
 
         Assert.True(result.Ok);
         Assert.Equal(3, result.Chunks);
-        Assert.Equal(new[] { "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F", "chunk", "chunk", "chunk", "hid 73FF", "hid DC", "hid 99" }, link.Events);
+        Assert.Equal(new[] { "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F", "chunk", "chunk", "chunk", "hid 73FF", "hid DC", "hid 99", "hid 71", "hid F1" }, link.Events);
         // Only the capture's four command gaps; the erase acknowledgement replaces the last one.
         Assert.Equal(new[] { 27, 140, 110, 520 }, link.Pauses);
         Assert.Equal(new[] { 1, 2, 3 }, progress);
@@ -314,7 +331,7 @@ public class RyujinUploadTests
 
         Assert.True(result.Ok);
         Assert.Equal("ok after paced fallback", result.Message);
-        Assert.Equal(2, link.Events.Count(e => e == "hid 71"));
+        Assert.Equal(3, link.Events.Count(e => e == "hid 71"));
         Assert.Contains(log, l => l.Contains("failed mode=fast") && l.Contains("no chunk ack"));
         Assert.Contains(log, l => l.StartsWith("[ryujin-upload] done mode=paced"));
         var chunkPauses = link.Pauses.Where(p => p is 80 or 2300).ToList();
