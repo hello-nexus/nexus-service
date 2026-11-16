@@ -11,7 +11,27 @@ public sealed class StrimerHub : IDisposable
     private IHidDevice? _device;
     private bool _disposed;
     private int _consecutiveWriteFailures;
-    private const string HealthKey = "strimer";
+
+    /// <param name="unit">Zero-based slot. Slot 0 keeps the original ids and health key so a single-controller install is unchanged.</param>
+    public StrimerHub(int unit = 0)
+    {
+        Unit = unit;
+        // Id scheme for slots 1 and up is strimer:2:atx, strimer:3:gpu, ...
+        IdPrefix = unit == 0 ? "strimer:" : $"strimer:{unit + 1}:";
+        HealthKey = unit == 0 ? "strimer" : $"strimer:{unit + 1}";
+    }
+
+    public int Unit { get; }
+
+    /// <summary>Prefix of every device and zone id this unit owns.</summary>
+    public string IdPrefix { get; }
+
+    public string HealthKey { get; }
+
+    /// <summary>HID path of the attached controller; null while detached.</summary>
+    public string? AttachedPath { get { lock (_lock) return _device?.Path; } }
+
+    private const string HandlerId = "strimer";
 
     public StrimerState State { get; } = new();
 
@@ -113,12 +133,12 @@ public sealed class StrimerHub : IDisposable
         if (ok)
         {
             _consecutiveWriteFailures = 0;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey, HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey, HandlerId);
         }
         else
         {
             _consecutiveWriteFailures++;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey, HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey, HandlerId);
         }
     }
 

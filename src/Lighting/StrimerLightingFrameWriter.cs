@@ -19,39 +19,55 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
     private const int TickPeriodMs = 90;
 
     private readonly LightingEngine _engine;
-    private readonly StrimerHub _hub;
+    private readonly StrimerUnits _units;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private readonly StrimerLightingDeviceProvider _provider;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
-    // Per-zone segment buffers; separate buffers for ATX (6 segments) and GPU (6 segments).
-    private RgbColor[][] _atxSegBuf = Array.Empty<RgbColor[]>();
-    private RgbColor[][] _gpuSegBuf = Array.Empty<RgbColor[]>();
+    // Per-controller send state, indexed by unit slot.
+    private sealed class UnitState
+    {
+        // Separate segment buffers for ATX (6 segments) and GPU (6 segments).
+        public RgbColor[][] AtxSegBuf = Array.Empty<RgbColor[]>();
+        public RgbColor[][] GpuSegBuf = Array.Empty<RgbColor[]>();
+        // Last firmware-mode signature committed; null forces re-commit on next tick.
+        public int? LastFirmwareSig;
+        // Sync state the controller last accepted; false after attach, so a cable never put on sync sees no extra write.
+        public bool ArgbSyncSent;
+        public long ArgbRetryAtMs;
+    }
+
+    private readonly Dictionary<int, UnitState> _states = new();
+
+    private UnitState StateFor(StrimerHub hub)
+    {
+        if (!_states.TryGetValue(hub.Unit, out var st))
+        {
+            st = new UnitState();
+            _states[hub.Unit] = st;
+        }
+        return st;
+    }
 
     // Scratch byte buffer for wire encoding one zone's LED data.
     private readonly byte[] _ledBuf = new byte[StrimerProtocol.MaxLedsPerZone * 3];
 
-    // Last firmware-mode signature committed; null forces re-commit on next tick.
-    private int? _lastFirmwareSig;
-    // Sync state the controller last accepted; false after attach, so a cable never put on sync sees no extra write.
-    private bool _argbSyncSent;
     private const long ArgbRetryMs = 1000;
-    private long _argbRetryAtMs;
 
     private readonly FeatureGates _gates;
 
     public StrimerLightingFrameWriter(
         LightingEngine engine,
-        StrimerHub hub,
+        StrimerUnits units,
         IConfigStore store,
         Np50IdentifyTracker identify,
         StrimerLightingDeviceProvider provider,
         FeatureGates? gates = null)
     {
         _engine   = engine;
-        _hub      = hub;
+        _units    = units;
         _store    = store;
         _identify = identify;
         _provider = provider;
@@ -101,30 +117,38 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
     internal void Tick()
     {
         if (!_gates.Lighting) return;
-        if (!_hub.IsConnected)
+        foreach (var hub in _units.All)
         {
-            _lastFirmwareSig = null;
-            _argbSyncSent = false;
-            _argbRetryAtMs = 0;
-            return;
+            var st = StateFor(hub);
+            if (!hub.IsConnected)
+            {
+                st.LastFirmwareSig = null;
+                st.ArgbSyncSent = false;
+                st.ArgbRetryAtMs = 0;
+                continue;
+            }
+            TickUnit(hub, st);
         }
+    }
 
+    private void TickUnit(StrimerHub hub, UnitState st)
+    {
         var settings         = _store.Load();
         var ls               = settings.Devices.StrimerLighting;
         // Under sync the cable has no engine cards, so the switch runs before the device check.
-        if (ls.ArgbSync != _argbSyncSent)
+        if (ls.ArgbSync != st.ArgbSyncSent)
         {
             var now = Environment.TickCount64;
-            if (now < _argbRetryAtMs) return;
-            if (!_hub.SendArgbSync(ls.ArgbSync))
+            if (now < st.ArgbRetryAtMs) return;
+            if (!hub.SendArgbSync(ls.ArgbSync))
             {
-                if (_argbRetryAtMs == 0) ServiceLog.Warn("[strimer-lighting-writer] ARGB sync switch rejected by the controller; retrying");
-                _argbRetryAtMs = now + ArgbRetryMs;
+                if (st.ArgbRetryAtMs == 0) ServiceLog.Warn($"[strimer-lighting-writer] ARGB sync switch rejected by controller {hub.Unit + 1}; retrying");
+                st.ArgbRetryAtMs = now + ArgbRetryMs;
                 return;
             }
-            _argbRetryAtMs = 0;
-            _argbSyncSent = ls.ArgbSync;
-            _lastFirmwareSig = null;
+            st.ArgbRetryAtMs = 0;
+            st.ArgbSyncSent = ls.ArgbSync;
+            st.LastFirmwareSig = null;
         }
         if (ls.ArgbSync) return;
 
@@ -135,8 +159,8 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
 
         if (ls.Mode == "custom")
         {
-            _lastFirmwareSig = null;
-            TickCustom(settings, devices, globalBrightness);
+            st.LastFirmwareSig = null;
+            TickCustom(hub, st, settings, devices, globalBrightness);
             return;
         }
 
@@ -147,13 +171,18 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         List<StrimerZonePlan> plan = new();
         _store.Read(s => plan = StrimerEffectLooks.BuildPlan(s.Devices.StrimerLighting, globalBrightness, gpuZones));
         var sig = ComputeFirmwareSig(plan);
-        if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value) return;
+        if (st.LastFirmwareSig.HasValue && sig == st.LastFirmwareSig.Value) return;
 
-        CommitFirmwareMode(_hub, plan);
-        _lastFirmwareSig = sig;
+        CommitFirmwareMode(hub, plan);
+        st.LastFirmwareSig = sig;
     }
 
     internal void TickCustom(NexusSettings settings, DeviceFrame[] devices, MasterLevel globalBrightness)
+    {
+        foreach (var hub in _units.Connected()) TickCustom(hub, StateFor(hub), settings, devices, globalBrightness);
+    }
+
+    private void TickCustom(StrimerHub hub, UnitState st, NexusSettings settings, DeviceFrame[] devices, MasterLevel globalBrightness)
     {
         var ls           = settings.Devices.StrimerLighting;
         var speedByte    = StrimerLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
@@ -165,42 +194,42 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         var prefs    = settings.Devices.LightingDevicePrefs;
         var nowTicks = DateTime.UtcNow.Ticks;
 
-        var structures = _provider.BuildStructures();
+        var structures = _provider.BuildStructures(hub);
 
         // ATX: 6 segments, 20 LEDs each.
         var atxStructure = structures[0];
         var atxZones     = ZoneResolution.Resolve(atxStructure, settings);
-        SegmentFrameComposer.EnsureBuffers(atxStructure, ref _atxSegBuf);
+        SegmentFrameComposer.EnsureBuffers(atxStructure, ref st.AtxSegBuf);
         SegmentFrameComposer.Compose(
-            atxStructure, atxZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _atxSegBuf, _engine.Live, segmentGated: true);
+            atxStructure, atxZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, st.AtxSegBuf, _engine.Live, segmentGated: true);
         for (var s = 0; s < StrimerProtocol.AtxZoneCount; s++)
         {
             // A fully uncontrolled strip skips its color/commit pair entirely,
             // so it stops updating rather than going black.
-            if (uncontrolled.Count > 0 && uncontrolled.Contains($"strimer:atx:z{s}")) continue;
+            if (uncontrolled.Count > 0 && uncontrolled.Contains($"{hub.IdPrefix}atx:z{s}")) continue;
             var zone = StrimerProtocol.AtxZone(s);
-            FillLedBuf(_atxSegBuf[s], StrimerProtocol.AtxLedsPerZone);
-            _hub.SendColorData(zone, _ledBuf.AsSpan(0, StrimerProtocol.AtxLedsPerZone * 3));
-            _hub.SendEffectCommit(zone, StrimerProtocol.ModeDirect, speedByte, dirByte, brightnessByte);
+            FillLedBuf(st.AtxSegBuf[s], StrimerProtocol.AtxLedsPerZone);
+            hub.SendColorData(zone, _ledBuf.AsSpan(0, StrimerProtocol.AtxLedsPerZone * 3));
+            hub.SendEffectCommit(zone, StrimerProtocol.ModeDirect, speedByte, dirByte, brightnessByte);
         }
 
         // GPU: 4 or 6 segments depending on the harness, 27 LEDs each.
         var gpuStructure = structures[1];
         var gpuZones     = ZoneResolution.Resolve(gpuStructure, settings);
-        SegmentFrameComposer.EnsureBuffers(gpuStructure, ref _gpuSegBuf);
+        SegmentFrameComposer.EnsureBuffers(gpuStructure, ref st.GpuSegBuf);
         SegmentFrameComposer.Compose(
-            gpuStructure, gpuZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _gpuSegBuf, _engine.Live, segmentGated: true);
+            gpuStructure, gpuZones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, st.GpuSegBuf, _engine.Live, segmentGated: true);
         var gpuZoneCount = StrimerProtocol.NormalizeGpuZoneCount(settings.Devices.StrimerGpuZones);
         for (var s = 0; s < gpuZoneCount; s++)
         {
-            if (uncontrolled.Count > 0 && uncontrolled.Contains($"strimer:gpu:z{s}")) continue;
+            if (uncontrolled.Count > 0 && uncontrolled.Contains($"{hub.IdPrefix}gpu:z{s}")) continue;
             var zone = StrimerProtocol.GpuZone(s);
-            FillLedBuf(_gpuSegBuf[s], StrimerProtocol.GpuLedsPerZone);
-            _hub.SendColorData(zone, _ledBuf.AsSpan(0, StrimerProtocol.GpuLedsPerZone * 3));
-            _hub.SendEffectCommit(zone, StrimerProtocol.ModeDirect, speedByte, dirByte, brightnessByte);
+            FillLedBuf(st.GpuSegBuf[s], StrimerProtocol.GpuLedsPerZone);
+            hub.SendColorData(zone, _ledBuf.AsSpan(0, StrimerProtocol.GpuLedsPerZone * 3));
+            hub.SendEffectCommit(zone, StrimerProtocol.ModeDirect, speedByte, dirByte, brightnessByte);
         }
 
-        _hub.SendApplyLatch(gpuZoneCount);
+        hub.SendApplyLatch(gpuZoneCount);
     }
 
     // Writes RGB values from src into _ledBuf as R,G,B. StrimerProtocol.WriteColorData

@@ -5,11 +5,11 @@ namespace Nexus.Service.Devices.Handlers;
 
 public sealed class StrimerHandler : IDeviceHandler
 {
-    private readonly StrimerHub _hub;
+    private readonly StrimerUnits _units;
 
-    public StrimerHandler(StrimerHub hub)
+    public StrimerHandler(StrimerUnits units)
     {
-        _hub = hub;
+        _units = units;
         Identifiers = new[] { new UsbId(StrimerProtocol.VendorId, StrimerProtocol.ProductId) };
     }
 
@@ -21,7 +21,7 @@ public sealed class StrimerHandler : IDeviceHandler
 
     public bool IsConnected(IReadOnlyList<UsbDeviceEntry> detectedDevices)
     {
-        if (_hub.IsConnected) return true;
+        if (_units.IsConnected) return true;
         foreach (var d in detectedDevices)
         {
             if (d.VendorId == StrimerProtocol.VendorId && d.ProductId == StrimerProtocol.ProductId) return true;

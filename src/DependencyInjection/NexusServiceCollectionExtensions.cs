@@ -1795,7 +1795,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd>()));
 
         // Lian Li Strimer Plus: HID connection worker + lighting.
-        services.AddSingleton<Nexus.Service.Peripherals.Strimer.StrimerHub>();
+        services.AddSingleton<Nexus.Service.Peripherals.Strimer.StrimerUnits>();
         services.AddSingleton<Nexus.Service.Lighting.StrimerLightingDeviceProvider>();
         services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.StrimerLightingDeviceProvider>());
