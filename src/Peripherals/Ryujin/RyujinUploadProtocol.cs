@@ -27,14 +27,17 @@ internal static class RyujinUploadProtocol
     public const int PacedGroupGapMs = 2300;
     public const int PacedGroupChunks = 4;
 
-    public static byte[][] EncodeBegin(int length)
+    /// <summary>The slot Armoury Crate's upload names (the last byte of 72); its activation names slot 0, which the capture cannot reconcile.</summary>
+    public const int DefaultSlot = 1;
+
+    public static byte[][] EncodeBegin(int length, int slot = DefaultSlot)
     {
         var begin = new[] { Report(0x71), Report(0xF1), Report(0x72), Report(0x73), Report(0x7F) };
         begin[0][2] = 0x01;
         begin[0][3] = 0x01;
         begin[2][2] = 0x01;
         begin[2][3] = 0x00;
-        begin[2][4] = 0x01;
+        begin[2][4] = (byte)slot;
         begin[3][2] = 0x01;
         begin[4][2] = 0x02;
         BitConverter.GetBytes((uint)length).CopyTo(begin[4], 3);
@@ -49,16 +52,18 @@ internal static class RyujinUploadProtocol
     }
 
     /// <summary>Selects the stored-media layout; Armoury Crate sent it with the clock before the gif upload.</summary>
-    public static byte[][] EncodeSelectStoredMedia()
+    public static byte[][] EncodeSelectStoredMedia(int slot = 0)
     {
         var layout = Report(0x5D);
         layout[3] = 0x01;
         layout[4] = 0x14;
         layout[5] = 0x01;
+        layout[6] = (byte)slot;
         layout[9] = 0x01;
         var commit = Report(0x51);
         commit[2] = 0x14;
         commit[3] = 0x01;
+        commit[4] = (byte)slot;
         return new[] { layout, commit };
     }
 

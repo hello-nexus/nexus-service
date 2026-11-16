@@ -159,7 +159,7 @@ internal static class RyujinMediaAvi
 
     /// <summary>
     /// Rewrites a baseline JPEG's header the way Armoury Crate's frames carry it: SOI, the Lavc comment, DQT, one DHT
-    /// holding every table, SOF0, SOS. The JFIF APP0 is dropped; one DQT table used by every component.
+    /// holding every table, SOF0, SOS. The JFIF APP0 is dropped; every quantization table in one DQT.
     /// </summary>
     public static byte[] WithComment(byte[] jpeg)
     {
@@ -175,6 +175,10 @@ internal static class RyujinMediaAvi
         {
             byte marker = jpeg[at + 1];
             int length = (jpeg[at + 2] << 8) | jpeg[at + 3];
+            if (length < 2)
+            {
+                return jpeg;
+            }
             if (marker == 0xDA)
             {
                 break;
@@ -187,6 +191,10 @@ internal static class RyujinMediaAvi
             switch (marker)
             {
                 case 0xDB:
+                    if (!WholeTables(body))
+                    {
+                        return jpeg;
+                    }
                     dqt.AddRange(body.ToArray());
                     break;
                 case 0xC4:
@@ -210,16 +218,22 @@ internal static class RyujinMediaAvi
         ms.WriteByte(0xFF);
         ms.WriteByte(0xD8);
         ms.Write(JpegComment);
-        // Armoury Crate's frames carry one quantization table that all three components select.
-        WriteSegment(ms, 0xDB, dqt.GetRange(0, Math.Min(65, dqt.Count)));
-        for (int comp = 12; comp < sof.Length; comp += 3)
-        {
-            sof[comp] = 0;
-        }
+        WriteSegment(ms, 0xDB, dqt);
         WriteSegment(ms, 0xC4, dht);
         ms.Write(sof);
         ms.Write(jpeg, at, jpeg.Length - at);
         return ms.ToArray();
+    }
+
+    /// <summary>True when the DQT body is whole tables: one id byte then 64 entries of one byte, or of two when the precision nibble is set.</summary>
+    private static bool WholeTables(ReadOnlySpan<byte> body)
+    {
+        int at = 0;
+        while (at < body.Length)
+        {
+            at += 1 + ((body[at] >> 4) != 0 ? 128 : 64);
+        }
+        return at == body.Length;
     }
 
     private static void WriteSegment(Stream s, byte marker, List<byte> body)

@@ -37,9 +37,27 @@ internal sealed class RyujinUploader
     private const byte AnyReport = 0xFF;
     private const int MaxLoggedReports = 300;
     private bool _logChunkAcks;
+    private long _nextKeepalive;
+
+    /// <summary>Runs the owner's keepalive when one is due; called wherever the upload waits so the pump is never left longer than the interval.</summary>
+    private void MaybeKeepalive()
+    {
+        if (Keepalive is null || Environment.TickCount64 < _nextKeepalive)
+        {
+            return;
+        }
+        if (_keepalives++ == 0)
+        {
+            _info("[ryujin-upload] keepalive poll during the upload (Armoury Crate sent none)");
+        }
+        Keepalive();
+        _nextKeepalive = Environment.TickCount64 + KeepaliveMs;
+    }
+
+    private const int ReadSliceMs = 250;
     private Stopwatch _attemptClock = Stopwatch.StartNew();
 
-    private double _clockMs() => _attemptClock.Elapsed.TotalMilliseconds;
+    private double ElapsedMs() => _attemptClock.Elapsed.TotalMilliseconds;
 
     private readonly IRyujinUploadLink _link;
     private readonly Action<string> _info;
@@ -52,6 +70,8 @@ internal sealed class RyujinUploader
 
     /// <summary>Called between chunks about every <see cref="KeepaliveMs"/>; the owner keeps duty and status flowing. Armoury Crate sent no HID during an upload.</summary>
     public Action? Keepalive { get; init; }
+
+    public int Slot { get; init; } = RyujinUploadProtocol.DefaultSlot;
 
     public int KeepaliveMs { get; init; } = RyujinCoolingProtocol.KeepaliveMs;
 
@@ -70,6 +90,7 @@ internal sealed class RyujinUploader
 
     public RyujinUploadResult Upload(byte[] avi, Action<int, int>? progress, CancellationToken ct)
     {
+        _logged = 0;
         var fast = Attempt(avi, paced: false, progress, ct);
         if (fast.Ok || fast.Abort != RyujinUploadAbort.DeviceFailure)
         {
@@ -91,15 +112,14 @@ internal sealed class RyujinUploader
         string mode = paced ? "paced" : "fast";
         int total = RyujinUploadProtocol.ChunkCount(avi.Length);
         var clock = Stopwatch.StartNew();
-        _logged = 0;
         _attemptClock = clock;
         _keepalives = 0;
         _link.ClearInbound();
-        long nextKeepalive = Environment.TickCount64 + KeepaliveMs;
+        _nextKeepalive = Environment.TickCount64 + KeepaliveMs;
         Drain();
         _info($"[ryujin-upload] start mode={mode} bytes={avi.Length} chunks={total}");
 
-        var begin = RyujinUploadProtocol.EncodeBegin(avi.Length);
+        var begin = RyujinUploadProtocol.EncodeBegin(avi.Length, Slot);
         for (int i = 0; i < begin.Length; i++)
         {
             if (!_link.WriteReport(begin[i]))
@@ -126,15 +146,7 @@ internal sealed class RyujinUploader
             {
                 return Fail(mode, AbortedMessage, sent, clock, abort);
             }
-            if (Keepalive is not null && Environment.TickCount64 >= nextKeepalive)
-            {
-                if (_keepalives++ == 0)
-                {
-                    _info("[ryujin-upload] keepalive poll during the upload (Armoury Crate sent none)");
-                }
-                Keepalive();
-                nextKeepalive = Environment.TickCount64 + KeepaliveMs;
-            }
+            MaybeKeepalive();
             long wrote = Stopwatch.GetTimestamp();
             if (!_link.WriteChunk(chunk))
             {
@@ -165,7 +177,7 @@ internal sealed class RyujinUploader
         {
             return Fail(mode, "end command write failed", sent, clock);
         }
-        // Armoury Crate followed the end command with DC and 99 about half a second later; every reply in the window is logged.
+        // Armoury Crate followed the end command with DC and 99 shortly after; every reply in the window is logged.
         Listen(Math.Min(600, EndWaitMs));
         _link.WriteReport(RyujinMonitorProtocol.EncodeDc());
         _link.WriteReport(RyujinCoolingProtocol.EncodeStatusRequest());
@@ -200,7 +212,8 @@ internal sealed class RyujinUploader
             {
                 return;
             }
-            int n = _link.ReadReport(buffer, left);
+            MaybeKeepalive();
+            int n = _link.ReadReport(buffer, Math.Min(left, ReadSliceMs));
             if (n < 0)
             {
                 return;
@@ -225,7 +238,8 @@ internal sealed class RyujinUploader
             {
                 return false;
             }
-            int n = _link.ReadReport(buffer, left);
+            MaybeKeepalive();
+            int n = _link.ReadReport(buffer, Math.Min(left, ReadSliceMs));
             if (n < 0)
             {
                 return false;
@@ -256,7 +270,10 @@ internal sealed class RyujinUploader
             {
                 return;
             }
-            LogInbound(buffer.AsSpan(0, n));
+            if (RyujinUploadProtocol.AckKind(buffer.AsSpan(0, n)) != RyujinUploadProtocol.AckChunk)
+            {
+                LogInbound(buffer.AsSpan(0, n));
+            }
         }
     }
 
@@ -265,7 +282,7 @@ internal sealed class RyujinUploader
         if (_logged < MaxLoggedReports)
         {
             _logged++;
-            _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 24)])} t_ms={_clockMs():0}");
+            _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 24)])} t_ms={ElapsedMs():0}");
         }
     }
 

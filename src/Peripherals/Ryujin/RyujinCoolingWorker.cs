@@ -197,6 +197,11 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 {
                     return _appliedMode == ModeImage && SelectMonitor(wanted);
                 }
+                // A new pick starts from the monitor layout so the screen is not playing a file while it is rewritten.
+                if (_appliedMode == ModeImage)
+                {
+                    SelectMonitor(wanted);
+                }
                 if (!UploadMedia(wanted.MediaSha, ct))
                 {
                     return _appliedMode == ModeImage && _gate.IsEnabled(RyujinCoolingProtocol.HandlerId) && SelectMonitor(wanted);
@@ -205,7 +210,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
             }
             if (uploaded || _appliedMode != ModeImage)
             {
-                if (BounceToStoredMedia())
+                if (SelectStoredMedia(StoredSlot()))
                 {
                     _appliedMode = ModeImage;
                     ServiceLog.Info($"[asus-ryujin-cooling] stored-media layout selected, held={(uploaded ? "after upload" : "from an earlier upload")}");
@@ -216,20 +221,13 @@ public sealed class RyujinCoolingWorker : BackgroundService
         return _appliedMode == ModeImage && SelectMonitor(wanted);
     }
 
-    /// <summary>Selects the monitor layout, waits, then the stored media, so the screen opens the file afresh instead of treating the select as no change.</summary>
-    private bool BounceToStoredMedia()
+    private bool SelectStoredMedia(int slot)
     {
-        if (!_hub.Send(RyujinMonitorProtocol.EncodeSelectMonitorLayout()))
-        {
-            return false;
-        }
-        Thread.Sleep(BounceDwellMs);
-        ServiceLog.Info("[ryujin-upload] bounce: monitor layout, then the stored-media layout");
-        return _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia());
+        ServiceLog.Info($"[ryujin-upload] selecting the stored media, slot {slot}");
+        return _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia(slot));
     }
 
-    /// <summary>Test-build experiment: how long the monitor layout is held before the stored media is selected.</summary>
-    internal int BounceDwellMs { get; set; } = 1000;
+    private int StoredSlot() => Math.Clamp(_store.Load().Devices.RyujinDisplay.StoredSlot, 0, 9);
 
     private bool SelectMonitor(RyujinDisplaySettings wanted)
     {
@@ -308,6 +306,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         var uploader = new RyujinUploader(new RyujinHidBulkLink(device, pipe, _hub.TakeStashedAck), ServiceLog.Info, ServiceLog.Warn)
         {
             Keepalive = KeepaliveDuringUpload,
+            Slot = StoredSlot(),
             AbortCheck = () => _gate.IsEnabled(RyujinCoolingProtocol.HandlerId) ? RyujinUploadAbort.None : RyujinUploadAbort.ControlOff,
         };
         RyujinUploadResult result;
@@ -379,7 +378,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
                 _appliedSlots = wantedSlots;
                 if (_appliedMode == ModeImage)
                 {
-                    _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia());
+                    _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia(StoredSlot()));
                 }
                 return sensorsChanged;
             }
