@@ -122,15 +122,26 @@ public sealed class StoreCatalogProxy
     public Task<string?> DownloadInfoAsync(string appId, string? version, string? nexusVersion, CancellationToken ct)
     {
         if (!AppIds.IsValid(appId)) return Task.FromResult<string?>(null);
-        var q = $"?nexusVersion={Uri.EscapeDataString(nexusVersion ?? "")}";
+        var q = $"?nexusVersion={Uri.EscapeDataString(ClientVersion(nexusVersion))}";
         if (!string.IsNullOrEmpty(version)) q += $"&version={Uri.EscapeDataString(version)}";
         return GetAsync($"/store/apps/{appId}/download{q}", ct);
+    }
+
+    /// <summary>Version the catalog checks release minimums against; the dashboard sends none, and an empty one passes every minimum.</summary>
+    internal static string ClientVersion(string? requested) => ClientVersion(requested, BuildInfo.Version);
+
+    /// <summary>A local or dev-tools build reports no version: its number is a placeholder that sits below every real release.</summary>
+    internal static string ClientVersion(string? requested, string buildVersion)
+    {
+        if (!string.IsNullOrWhiteSpace(requested)) return requested;
+        var own = buildVersion.TrimStart('v', 'V');
+        return own.Contains("-dev", StringComparison.OrdinalIgnoreCase) ? "" : own;
     }
 
     /// <summary>The catalog query; the dashboard's language travels as a BCP 47 tag so listing copy comes back in it.</summary>
     internal static string Query(string? nexusVersion, bool? touch, string? locale = null)
     {
-        var q = $"?nexusVersion={Uri.EscapeDataString(nexusVersion ?? "")}";
+        var q = $"?nexusVersion={Uri.EscapeDataString(ClientVersion(nexusVersion))}";
         if (touch.HasValue) q += $"&touch={(touch.Value ? "true" : "false")}";
         if (IsLocaleTag(locale)) q += $"&locale={locale}";
         return q;

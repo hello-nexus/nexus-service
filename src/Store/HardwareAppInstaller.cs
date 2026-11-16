@@ -175,7 +175,7 @@ public sealed class HardwareAppInstaller : BackgroundService
     /// <summary>What to install: the catalog names the version, then the entitled path is tried for it so a signed-in owner still gets the purchase recorded. Null when nothing resolved, so the next tick retries.</summary>
     private async Task<StoreInstallRequest?> ResolveAsync(string appId, CancellationToken ct)
     {
-        var nexusVersion = BuildInfo.Version.TrimStart('v', 'V');
+        var nexusVersion = StoreCatalogProxy.ClientVersion(null);
         var latest = await StoreRelease.LatestAsync(_catalog, appId, nexusVersion, ct).ConfigureAwait(false);
         if (latest is null) return null;
         return await StoreRelease.ResolveAsync(_entitlements, appId, latest, nexusVersion, waiveAccount: true, ct).ConfigureAwait(false);

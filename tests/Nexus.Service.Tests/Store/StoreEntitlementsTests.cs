@@ -135,6 +135,20 @@ public sealed class StoreEntitlementsTests : IDisposable
     }
 
     [Fact]
+    public async Task Authorize_reads_a_floor_refusal_as_unavailable_not_a_sign_in()
+    {
+        var (ent, api, _) = Make(signedIn: true);
+        api.OnSendRaw = (_, _, _, _) => CloudApiResult<CloudRawResponse>.Ok(
+            new CloudRawResponse { Body = "{\"statusCode\":403,\"message\":\"requires_newer_nexus\",\"error\":\"Forbidden\"}" },
+            403);
+
+        var auth = await ent.AuthorizeAsync("com.hellonexus.ina", "0.9.2", "3.1.9", CancellationToken.None);
+
+        Assert.False(auth.Ok);
+        Assert.Equal("version_unavailable", auth.Reason);
+    }
+
+    [Fact]
     public async Task Library_signed_out_still_lists_what_is_installed_here()
     {
         WriteApp("com.hellonexus.aquarium", "1.0.2", "Aquarium");
