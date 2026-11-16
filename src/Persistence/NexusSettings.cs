@@ -2478,7 +2478,7 @@ public sealed class RyujinDisplaySettings
     /// <summary>SHA-256 of the AVI whose last upload failed; it is not sent again until a new file is picked.</summary>
     public string UploadFailedSha { get; set; } = "";
 
-    /// <summary>Test override of the slot the select plays; unset sends Armoury Crate's bytes. The upload slot is not affected.</summary>
+    /// <summary>Override of the slot the select plays; unset plays the slot Nexus uploads to. The upload slot is not affected.</summary>
     public int? StoredSlot { get; set; }
 }
 

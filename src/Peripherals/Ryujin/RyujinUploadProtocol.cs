@@ -82,6 +82,19 @@ internal static class RyujinUploadProtocol
         return true;
     }
 
+    /// <summary>The device's display-state report (EC 5C 00 ...): rotation byte 3 (0x5A for 90 degrees) and brightness byte 5, as in the settings report Nexus sends.</summary>
+    public static bool TryParseDisplayState(ReadOnlySpan<byte> report, out int rotationDegrees, out int brightness)
+    {
+        rotationDegrees = brightness = 0;
+        if (report.Length < 6 || report[0] != Id || report[1] != 0x5C || report[2] != 0x00)
+        {
+            return false;
+        }
+        rotationDegrees = report[3] == 0x5A ? 90 : 0;
+        brightness = report[5];
+        return true;
+    }
+
     /// <summary>The query pair Armoury Crate opens an upload with, without the write.</summary>
     public static byte[][] EncodeDiskInfoQuery()
     {

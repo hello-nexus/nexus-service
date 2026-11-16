@@ -70,6 +70,7 @@ public static class RyujinMediaEncoder
         }
         catch (Exception ex)
         {
+            ServiceLog.Warn($"[ryujin-upload] conversion failed for a {source.Length} byte {SafeExtension(extension)} source: {ex.Message}");
             return new(null, 0, ex.Message);
         }
         finally

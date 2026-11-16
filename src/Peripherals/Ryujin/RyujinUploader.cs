@@ -303,6 +303,10 @@ internal sealed class RyujinUploader
         {
             _logged++;
             _info($"[ryujin-upload] inbound {Convert.ToHexString(report[..Math.Min(report.Length, 32)])} t_ms={ElapsedMs():0}");
+            if (RyujinUploadProtocol.TryParseDisplayState(report, out int rotation, out int brightness))
+            {
+                _info($"[ryujin-upload] display state report rotation={rotation} brightness={brightness}");
+            }
             if (RyujinUploadProtocol.TryParseDiskInfo(report, out uint total, out uint free, out uint jpg, out uint gif))
             {
                 _info($"[ryujin-upload] disk info total_kb={total} free_kb={free} jpg_slots=0x{jpg:X} gif_slots=0x{gif:X}");

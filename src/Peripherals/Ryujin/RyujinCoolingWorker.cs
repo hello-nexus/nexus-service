@@ -232,7 +232,7 @@ public sealed class RyujinCoolingWorker : BackgroundService
         return _hub.Send(RyujinUploadProtocol.EncodeSelectStoredMedia(slot));
     }
 
-    private int PlaySlot() => Math.Clamp(_store.Load().Devices.RyujinDisplay.StoredSlot ?? 0, 0, 9);
+    private int PlaySlot() => Math.Clamp(_store.Load().Devices.RyujinDisplay.StoredSlot ?? RyujinUploadProtocol.DefaultSlot, 0, 9);
 
     private bool SelectMonitor(RyujinDisplaySettings wanted)
     {

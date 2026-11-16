@@ -304,6 +304,18 @@ public class RyujinUploadTests
     }
 
     [Fact]
+    public void Display_state_report_is_decoded_from_the_hardware_reply()
+    {
+        var report = new byte[65];
+        Convert.FromHexString("EC5C000000400000004014000000004000000000").CopyTo(report, 0);
+
+        Assert.True(RyujinUploadProtocol.TryParseDisplayState(report, out int rotation, out int brightness));
+        Assert.Equal(0, rotation);
+        Assert.Equal(0x40, brightness);
+        Assert.False(RyujinUploadProtocol.TryParseDisplayState(Report("EC 5C 01"), out _, out _));
+    }
+
+    [Fact]
     public void Acked_upload_sends_each_chunk_as_soon_as_the_ack_arrives_and_never_pauses_between_chunks()
     {
         var link = new FakeLink();
