@@ -454,7 +454,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     }
 
     // Starts at the chain's remembered divisor and steps down while the firmware cap refuses the payload.
-    internal async Task<bool> UploadWindowAsync(string macHex, ChainRolling st, byte[] full, int ledCount, long firstFrame, int startDivisor, double interval)
+    internal async Task<bool> UploadWindowAsync(string macHex, ChainRolling st, byte[] full, int ledCount, long firstFrame, int startDivisor, double interval, long windowId = -1)
     {
         var result = Slv3Hub.WindowUploadResult.TooLarge;
         var used = startDivisor;
@@ -463,7 +463,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             used = d;
             var payload = d == 1 ? full : ReduceWindow(full, ledCount, firstFrame, d);
             st.UploadPayload = payload;
-            result = await _hub.SendRgbWindowResultAsync(macHex, payload, ledCount, WindowFrames / d, interval * d, PassThroughBrightnessPercent).ConfigureAwait(false);
+            result = await _hub.SendRgbWindowResultAsync(macHex, payload, ledCount, WindowFrames / d, interval * d, PassThroughBrightnessPercent, windowId).ConfigureAwait(false);
             if (result != Slv3Hub.WindowUploadResult.TooLarge) break;
         }
         st.UploadResult = result;
@@ -831,7 +831,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadStretch = _windowStretch;
                 var interval = WindowInterval;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
-                st.Upload = Task.Run(() => UploadWindowAsync(macHex, st, payload, ledCount, first, divisor, interval));
+                var windowId = _windowId;
+                st.Upload = Task.Run(() => UploadWindowAsync(macHex, st, payload, ledCount, first, divisor, interval, windowId));
                 return true;
             }
         }

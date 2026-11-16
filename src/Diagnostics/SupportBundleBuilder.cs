@@ -76,13 +76,14 @@ public static class SupportBundleBuilder
     }
 
     private static bool IsPinned(LogCandidate c) =>
-        c.EntryName is "logs/nexus-service.log" or "logs/" + DeviceIncidentLog.FileName or "logs/device-incidents.1.log";
+        c.EntryName is "logs/nexus-service.log" or "logs/" + DeviceIncidentLog.FileName or "logs/device-incidents.1.log"
+        || (c.EntryName.StartsWith("logs/", StringComparison.Ordinal) && Peripherals.LianLiWireless.Slv3LinkDiag.IsLogFileName(c.EntryName[5..]));
 
     /// <summary>Newest first, taking each file that still fits in what is left of the budget.</summary>
     internal static List<LogCandidate> SelectWithinBudget(IEnumerable<LogCandidate> candidates, long budget)
     {
         var chosen = new List<LogCandidate>();
-        // The current service log and the device incident logs always ship, then the rest fill what is left, newest first.
+        // The current service log, the device incident logs and the wireless link diagnostics always ship, then the rest fill what is left, newest first.
         var ordered = candidates.OrderByDescending(IsPinned).ThenByDescending(c => c.LastWriteUtc).ThenBy(c => c.EntryName, StringComparer.Ordinal);
         foreach (var c in ordered)
         {

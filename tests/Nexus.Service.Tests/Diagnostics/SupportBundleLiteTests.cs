@@ -352,6 +352,16 @@ public class SupportBundleLiteTests : IDisposable
     }
 
     [Fact]
+    public void Budget_always_ships_every_wireless_link_log_file()
+    {
+        var t = new DateTime(2026, 10, 29, 0, 0, 0, DateTimeKind.Utc);
+        SupportBundleBuilder.LogCandidate C(string n, int days, long len) => new(n, n, t.AddDays(days), len, false, null);
+        var chosen = SupportBundleBuilder.SelectWithinBudget(
+            new[] { C("logs/other.log", 0, 90), C("logs/lianli-link.log", -9, 50), C("logs/lianli-link.3.log", -8, 20) }, 100);
+        Assert.Equal(new[] { "logs/lianli-link.3.log", "logs/lianli-link.log" }, chosen.Select(c => c.EntryName).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
     public void Zip_entries_for_other_user_profiles_are_indexed_not_named_after_the_user()
     {
         var logs = Path.Combine(_root, "u", "alice", "AppData", "Local", "Nexus", "logs");

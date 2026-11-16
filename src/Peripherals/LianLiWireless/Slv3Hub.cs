@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using Nexus.Service.Lighting;
 using System.Collections.Generic;
@@ -419,8 +420,18 @@ public sealed partial class Slv3Hub : IDisposable
         if (lockState is not null)
         {
             _lockSleep = new Nexus.Service.Lighting.LcdLockSleepSet(lockState);
+            _diagLockState = lockState;
+            lockState.Changed += OnLockDiag;
         }
     }
+
+    internal Slv3LinkDiag Diag { get; } = new();
+
+    private readonly Nexus.Service.Lighting.LcdLockState? _diagLockState;
+
+    private void OnLockDiag(bool locked) => Diag.EventWhileLinked(locked ? "lock" : "unlock");
+
+    private static int ElapsedMs(long startTimestamp) => (int)Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
 
     // Session lock. The HydroShift II screen's backlight rides in the param block that goes
     // out every drive tick, so the dark value is written into that block and nothing else is
@@ -471,6 +482,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
             }
             ConsiderTxPortCycleLocked(txPort, _nowMs());
+            Diag.NoteUsb(txPort, rxPort);
             if (txPort is null || rxPort is null)
             {
                 // The module presents TX and RX as two WinUSB devices behind its
@@ -542,6 +554,8 @@ public sealed partial class Slv3Hub : IDisposable
 
             State.LinkStatus = Slv3LinkStatus.Ok;
             State.IsConnected = true;
+            Diag.OnLinkUp();
+            Diag.Event("connected");
             ServiceLog.Info($"[lianli-wireless] connected (tx={txPort.PortName}, rx={rxPort.PortName}, master={State.MasterMac})");
             return true;
         }
@@ -557,6 +571,11 @@ public sealed partial class Slv3Hub : IDisposable
 
     private void DisconnectLocked()
     {
+        if (State.IsConnected)
+        {
+            Diag.Event("disconnected");
+        }
+        Diag.OnLinkDown(_nowMs());
         try { _tx?.Dispose(); } catch { /* best effort */ }
         try { _rx?.Dispose(); } catch { /* best effort */ }
         _tx = null;
@@ -631,6 +650,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
         }
         ConsiderTxPortCycleLocked(txPort, nowMs);
+        Diag.NoteUsb(txPort, rxPort);
         if (txPort is null && rxPort is null)
         {
             if (_bothAbsentSinceMs == 0)
@@ -878,8 +898,11 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     /// <summary>The system resumed: no TX port cycle until it has had time to re-enumerate on its own.</summary>
-    public void OnSystemResumed() =>
+    public void OnSystemResumed()
+    {
+        Diag.Event("resume");
         Volatile.Write(ref _powerQuietUntilMs, _nowMs() + PortCycleResumeQuietMs);
+    }
 
     private bool MasterInitLocked(out bool anyWritten)
     {
@@ -1112,10 +1135,13 @@ public sealed partial class Slv3Hub : IDisposable
         var nowMs = _nowMs();
         if ((_tx is not { IsOpen: true } || _rx is not { IsOpen: true }) && !RecoverHandlesLocked(nowMs))
         {
+            Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
+            Diag.EndPoll(nowMs, gotList: false);
             return false;
         }
         if (_rx is not { IsOpen: true })
         {
+            Diag.OnReply(nowMs, default, 0, Slv3ReplyKind.NoHandle, 0);
             AgeChainsLocked(nowMs);
             return true;
         }
@@ -2217,12 +2243,16 @@ public sealed partial class Slv3Hub : IDisposable
         // from the last poll's reported count (the reference auto-tunes the same
         // way); a chain that just appeared is picked up on the next poll.
         var pageCount = DeviceListPagesFor(_lastRecordCount);
+        var startedAt = Stopwatch.GetTimestamp();
         if (!_rx.RfSend(Slv3Protocol.BuildGetDev(pageCount)))
         {
+            Diag.OnReply(_nowMs(), default, ElapsedMs(startedAt), Slv3ReplyKind.SendFail, 0);
             // A failed write counts toward the same streak as an unreadable reply.
             return HandleGetDevFailureLocked();
         }
         var reply = _rx.RfRead(Slv3Protocol.PageLength * pageCount);
+        var replyRecords = Slv3Protocol.RecordCount(reply);
+        Diag.OnReply(_nowMs(), reply, ElapsedMs(startedAt), ClassifyReply(reply, replyRecords), replyRecords);
         // A missing/invalid GetDev echo with a healthy handle is a wedged RX
         // MCU (streak -> 0x15 reset); a valid reply listing zero devices is an
         // RF sampling gap and takes the normal merge path.
@@ -2303,11 +2333,13 @@ public sealed partial class Slv3Hub : IDisposable
                     }
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
+                Diag.OnSeen(key, nowMs, reply.AsSpan(offset, Slv3Protocol.RecordLength), record.RxType, record.Channel);
             }
         }
         _pollRecords = pollRecords;
         UpdateReportOrderLocked(pollRecords);
 
+        Diag.EndPoll(nowMs, gotList: true);
         ExpireChainsLocked(nowMs);
 
         // Page estimate follows the larger of the reply's count and the tracked
@@ -2316,6 +2348,13 @@ public sealed partial class Slv3Hub : IDisposable
         PublishFansLocked(nowMs);
         return true;
     }
+
+    private static Slv3ReplyKind ClassifyReply(byte[] reply, int records) =>
+        reply.Length == 0 ? Slv3ReplyKind.Timeout
+        : reply[0] == 0 ? Slv3ReplyKind.NoData
+        : reply.Length < Slv3Protocol.RecordHeaderLength || reply[0] != Slv3Protocol.UsbSendRf ? Slv3ReplyKind.Invalid
+        : records == 0 ? Slv3ReplyKind.Empty
+        : Slv3ReplyKind.Ok;
 
     // The confirmed chains of this reply in report order, then chains an incomplete reply left out in their old order, then any known chain still missing.
     private void UpdateReportOrderLocked(List<Slv3DeviceRecord> pollRecords)
@@ -2381,6 +2420,7 @@ public sealed partial class Slv3Hub : IDisposable
             foreach (var key in gone)
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
+                Diag.OnDropped(key, nowMs);
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 _knownChains.Remove(key);
@@ -2404,6 +2444,7 @@ public sealed partial class Slv3Hub : IDisposable
     {
         _blindSinceMs ??= nowMs;
         _pollRecords = new List<Slv3DeviceRecord>();
+        Diag.EndPoll(nowMs, gotList: false);
         ExpireChainsLocked(nowMs);
         PublishFansLocked(nowMs);
     }
@@ -3123,7 +3164,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool SendRgbFrame(
         string macHex, ReadOnlySpan<RgbColor> leds, int brightnessPercent, int intervalMs, out string effectIndexHex) =>
-        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(leds, brightnessPercent), leds.Length, 1, intervalMs, dataPasses: 1, out effectIndexHex);
+        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(leds, brightnessPercent), leds.Length, 1, intervalMs, dataPasses: 1, out effectIndexHex, Slv3UploadKind.Frame);
 
     /// <summary>
     /// <see cref="SendRgbFrame"/> for a looping animation of
@@ -3134,7 +3175,7 @@ public sealed partial class Slv3Hub : IDisposable
     public bool SendRgbAnimation(
         string macHex, ReadOnlySpan<byte> frames, int ledCount, int frameCount, double intervalMs,
         int brightnessPercent, out string effectIndexHex) =>
-        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent), ledCount, frameCount, intervalMs, dataPasses: WindowDataPasses, out effectIndexHex);
+        SendRgbData(macHex, Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent), ledCount, frameCount, intervalMs, dataPasses: WindowDataPasses, out effectIndexHex, Slv3UploadKind.Animation);
 
     /// <summary>
     /// <see cref="SendRgbAnimation"/> for one rolling playback window, re-sent
@@ -3142,8 +3183,8 @@ public sealed partial class Slv3Hub : IDisposable
     /// the window profile and a chain-safe effect index.
     /// </summary>
     public async Task<bool> SendRgbWindowAsync(
-        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent) =>
-        await SendRgbWindowResultAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent).ConfigureAwait(false) == WindowUploadResult.Sent;
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, long windowId = -1) =>
+        await SendRgbWindowResultAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent, windowId).ConfigureAwait(false) == WindowUploadResult.Sent;
 
     /// <summary>Why a window upload did or did not go out; <see cref="TooLarge"/> is refused before any radio traffic.</summary>
     public enum WindowUploadResult
@@ -3154,7 +3195,34 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     public async Task<WindowUploadResult> SendRgbWindowResultAsync(
-        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, long windowId = -1)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        var outcome = new UploadOutcome();
+        var result = WindowUploadResult.Failed;
+        try
+        {
+            result = await SendRgbWindowCoreAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent, outcome).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            var ok = result == WindowUploadResult.Sent;
+            Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
+        }
+    }
+
+    // Set under _lock at the failing send, so a parallel upload's timeout cannot be misattributed.
+    private sealed class UploadOutcome
+    {
+        public Slv3UploadReason Reason = Slv3UploadReason.NotPrepared;
+    }
+
+    private Slv3UploadReason SendFailReasonLocked() =>
+        _tx is { LastWriteTimedOut: true } ? Slv3UploadReason.TxTimeout : Slv3UploadReason.TxFail;
+
+    private async Task<WindowUploadResult> SendRgbWindowCoreAsync(
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, UploadOutcome outcome)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _, out var tooLarge))
@@ -3168,12 +3236,14 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 if (_tx is null)
                 {
+                    outcome.Reason = SendFailReasonLocked();
                     return WindowUploadResult.Failed;
                 }
                 for (var i = 0; i < WindowHeaderRepeats; i++)
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[0]))
                     {
+                        outcome.Reason = SendFailReasonLocked();
                         return WindowUploadResult.Failed;
                     }
                 }
@@ -3183,6 +3253,7 @@ public sealed partial class Slv3Hub : IDisposable
                     {
                         if (!SendRfPayloadLocked(channel, rxType, packets[p]))
                         {
+                            outcome.Reason = SendFailReasonLocked();
                             return WindowUploadResult.Failed;
                         }
                     }
@@ -3215,6 +3286,7 @@ public sealed partial class Slv3Hub : IDisposable
                     {
                         if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
                         {
+                            outcome.Reason = SendFailReasonLocked();
                             return WindowUploadResult.Failed;
                         }
                     }
@@ -3301,7 +3373,17 @@ public sealed partial class Slv3Hub : IDisposable
 
     // A lost data packet fails the whole upload and multi-frame loops run to dozens of packets, so animations send each part twice.
     private bool SendRgbData(
-        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex, Slv3UploadKind kind)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        var outcome = new UploadOutcome();
+        var ok = SendRgbDataCore(macHex, raw, ledCount, frameCount, intervalMs, dataPasses, out effectIndexHex, outcome);
+        Diag.OnUpload(macHex, _nowMs(), kind, ok, ElapsedMs(startedAt), -1, ok ? Slv3UploadReason.Ok : outcome.Reason);
+        return ok;
+    }
+
+    private bool SendRgbDataCore(
+        string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex, UploadOutcome outcome)
     {
         effectIndexHex = "";
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex, out _))
@@ -3312,7 +3394,7 @@ public sealed partial class Slv3Hub : IDisposable
         BeginUpload();
         try
         {
-            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex);
+            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex, outcome);
         }
         finally
         {
@@ -3336,7 +3418,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex)
+    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex, UploadOutcome outcome)
     {
         effectIndexHex = "";
         // The header gaps run with _lock RELEASED so the device-list poll keeps
@@ -3348,7 +3430,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 Thread.Sleep(RgbHeaderGapMs);
             }
-            if (!SendRfPayload(channel, rxType, packets[0]))
+            if (!SendRfPayload(channel, rxType, packets[0], outcome))
             {
                 return false;
             }
@@ -3360,6 +3442,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             if (_tx is null)
             {
+                outcome.Reason = Slv3UploadReason.TxFail;
                 return false;
             }
             for (var pass = 0; pass < dataPasses; pass++)
@@ -3368,6 +3451,7 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[p]))
                     {
+                        outcome.Reason = SendFailReasonLocked();
                         return false;
                     }
                 }
@@ -3381,15 +3465,21 @@ public sealed partial class Slv3Hub : IDisposable
 
     // Same as SendRfPayloadLocked but takes _lock itself, for callers that pace
     // sends across released-lock gaps (SendRgbFrame's header repeats).
-    private bool SendRfPayload(byte channel, byte rxType, byte[] payload)
+    private bool SendRfPayload(byte channel, byte rxType, byte[] payload, UploadOutcome outcome)
     {
         lock (_lock)
         {
             if (_tx is null)
             {
+                outcome.Reason = Slv3UploadReason.TxFail;
                 return false;
             }
-            return SendRfPayloadLocked(channel, rxType, payload);
+            if (SendRfPayloadLocked(channel, rxType, payload))
+            {
+                return true;
+            }
+            outcome.Reason = SendFailReasonLocked();
+            return false;
         }
     }
 
@@ -3554,6 +3644,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public Task OnSystemSuspending()
     {
+        Diag.Event("suspend");
         Volatile.Write(ref _powerQuietUntilMs, long.MaxValue);
         if (_disposed || !IsConnected)
         {
@@ -3660,8 +3751,10 @@ public sealed partial class Slv3Hub : IDisposable
             }
             _disposed = true;
             try { DisplayWatch?.Dispose(); } catch { /* best effort */ }
+            _diagLockState?.Changed -= OnLockDiag;
             DisconnectLocked();
         }
+        Diag.Dispose();
     }
 
     // L-Connect bind_to_master with its target_rx_type; Unbinding aims the chain at a zero master.
