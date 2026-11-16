@@ -234,6 +234,30 @@ public sealed class CurveEngine : BackgroundService
         lock (_manualReplayed) { _manualReplayed.Clear(); }
     }
 
+    // Walk sequence recorded at resume; negative when no re-drive is pending.
+    private long _resumeWalkSeq = -1;
+
+    /// <summary>Firmware or the driver can hand a fan back to its own control across sleep, and the write
+    /// dedup would then hold the duty back forever. Arms a one-shot re-drive that the tick performs once an
+    /// LHM walk begun after the resume has completed: readings cached from before sleep look fresh, and a
+    /// write before the chip settles would be reverted again.</summary>
+    public void OnSystemResumed() => Interlocked.Exchange(ref _resumeWalkSeq, _guard.WalkBeginSeq());
+
+    private void ConsumeResumeRedrive()
+    {
+        var pending = Interlocked.Read(ref _resumeWalkSeq);
+        if (pending < 0 || _guard.WalkCompletedSeq() <= pending)
+        {
+            return;
+        }
+        if (Interlocked.CompareExchange(ref _resumeWalkSeq, -1, pending) != pending)
+        {
+            return;
+        }
+        lock (_lastWrite) { _lastWrite.Clear(); }
+        ClearManualReplayed();
+    }
+
     internal void Tick()
     {
         try
@@ -267,6 +291,7 @@ public sealed class CurveEngine : BackgroundService
             _step = "waiting for fresh readings";
             return;
         }
+        ConsumeResumeRedrive();
 
         // The watchdog drove cooling mode from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.

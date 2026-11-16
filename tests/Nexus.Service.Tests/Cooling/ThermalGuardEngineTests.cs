@@ -1685,6 +1685,106 @@ public class ThermalGuardEngineTests
         return (engine, guard, mono);
     }
 
+    private static (CurveEngine Engine, Fans Fans, long[] Mono, long[] Seq, bool[] Fresh) ResumeRig()
+    {
+        var fans = new Fans();
+        fans.Channels.Add(new FanChannel { Id = "f1", Name = "Fan 1" });
+        fans.Channels.Add(new FanChannel { Id = "f2", Name = "Fan 2" });
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Cooling.Curves.Add(Flat("f1", 10));
+            s.Cooling.ManualSpeeds["f2"] = 30;
+        });
+        var mono = new long[] { 1_000 };
+        var guard = new ThermalGuardController(fans, store) { MonotonicMs = () => mono[0] };
+        var engine = new CurveEngine(fans, store, new MultiplexHub(), new FeatureGates(store), guard) { Clock = () => mono[0] };
+        // Seq[0] = walks begun, Seq[1] = newest completed walk.
+        var seq = new long[] { 5, 5 };
+        var fresh = new[] { true };
+        guard.WalkBeginSeq = () => seq[0];
+        guard.WalkCompletedSeq = () => seq[1];
+        guard.ReadingsFresh = () => fresh[0];
+        return (engine, fans, mono, seq, fresh);
+    }
+
+    [Fact]
+    public void Resume_RewritesEveryOwnedChannel_OnceAWalkBegunAfterTheResumeCompletes()
+    {
+        var (e, fans, mono, seq, _) = ResumeRig();
+        mono[0] += 1000;
+        e.Tick();
+        var before = fans.Order.Count;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before, fans.Order.Count);
+
+        e.OnSystemResumed();
+        seq[0] = 6;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before, fans.Order.Count);
+
+        seq[1] = 6;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before + 2, fans.Order.Count);
+        Assert.Equal(10, fans.Order.Last(d => d.Id == "f1").Duty);
+        Assert.Equal(30, fans.Order.Last(d => d.Id == "f2").Duty);
+
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before + 2, fans.Order.Count);
+    }
+
+    [Fact]
+    public void Resume_IgnoresAWalkAlreadyInFlight_SoCachedPreSleepReadingsDoNotTriggerTheRedriveEarly()
+    {
+        var (e, fans, mono, seq, _) = ResumeRig();
+        mono[0] += 1000;
+        e.Tick();
+        var before = fans.Order.Count;
+
+        // Walk 6 began before sleep and is still running when the system resumes; IsFresh reads true on its awake-only clock.
+        seq[0] = 6;
+        e.OnSystemResumed();
+        seq[1] = 6;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before, fans.Order.Count);
+
+        seq[0] = 7;
+        seq[1] = 7;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before + 2, fans.Order.Count);
+    }
+
+    [Fact]
+    public void Resume_DoesNotWriteDuringTheStaleWindow_AndRedrivesOnceReadingsAreFreshAgain()
+    {
+        var (e, fans, mono, seq, fresh) = ResumeRig();
+        mono[0] += 1000;
+        e.Tick();
+        var before = fans.Order.Count;
+
+        e.OnSystemResumed();
+        fresh[0] = false;
+        seq[0] = 6;
+        seq[1] = 6;
+        for (var i = 0; i < 5; i++)
+        {
+            mono[0] += 1000;
+            e.Tick();
+        }
+        Assert.Equal(before, fans.Order.Count);
+
+        fresh[0] = true;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(before + 2, fans.Order.Count);
+    }
+
     [Fact]
     public void Watchdog_DrivesCoolingModeAfterTenSecondsWhenHot_OnlyOnceTheReadingIsStaleWhenCool()
     {

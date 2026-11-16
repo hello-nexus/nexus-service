@@ -14,6 +14,22 @@ public class LhmWalkWatchTests
     private void Advance(TimeSpan by) => Interlocked.Add(ref _nowMs, (long)by.TotalMilliseconds);
 
     [Fact]
+    public void Completed_sequence_names_the_walk_that_finished_not_one_begun_since()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        var marker = watch.BeginSeq;
+        watch.EndWalk();
+        Assert.Equal(marker, watch.CompletedSeq);
+
+        watch.BeginWalk();
+        Assert.Equal(marker, watch.CompletedSeq);
+        Assert.True(watch.BeginSeq > marker);
+        watch.EndWalk();
+        Assert.Equal(watch.BeginSeq, watch.CompletedSeq);
+    }
+
+    [Fact]
     public void A_healthy_walk_never_stalls_and_readings_pass_through()
     {
         var watch = NewWatch();

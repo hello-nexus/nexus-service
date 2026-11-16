@@ -30,13 +30,15 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? _curve;
     private readonly Nexus.Service.Lifecycle.ResumeSelfRestart? _selfRestart;
+    private readonly Nexus.Service.Cooling.CurveEngine? _curveEngine;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? _aio;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null, Nexus.Service.Lifecycle.ResumeSelfRestart? selfRestart = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null, Nexus.Service.Lifecycle.ResumeSelfRestart? selfRestart = null, Nexus.Service.Cooling.CurveEngine? curveEngine = null)
     {
+        _curveEngine = curveEngine;
         _selfRestart = selfRestart;
         _curve = curve;
         _aio = aio;
@@ -105,6 +107,8 @@ public sealed class PowerEventListener : IHostedService, IDisposable
             _slv3?.OnSystemResumed();
             try { _curve?.OnSystemResumed(); }
             catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II Curve resume failed: {ex.Message}"); }
+            try { _curveEngine?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] curve engine resume failed: {ex.Message}"); }
             try { _aio?.OnSystemResumed(); }
             catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II resume failed: {ex.Message}"); }
         }

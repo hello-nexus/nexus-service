@@ -23,6 +23,9 @@ internal sealed class LhmWalkWatch
     private long _walkStartMs;
     private long _lastEndMs;
     private int _stale;
+    private long _beginSeq;
+    private long _runningSeq;
+    private long _completedSeq;
     private readonly object _transition = new();
 
     private readonly Func<Action, IOneShot> _oneShotFactory;
@@ -132,10 +135,17 @@ internal sealed class LhmWalkWatch
 
     internal bool SpdQuiesced => _nowMs() < Interlocked.Read(ref _spdQuiescedUntilMs);
 
+    /// <summary>Count of walks begun so far. A caller that records it can later ask whether a walk begun after that point has completed.</summary>
+    internal long BeginSeq => Interlocked.Read(ref _beginSeq);
+
+    /// <summary>Sequence number of the newest walk that ran to completion.</summary>
+    internal long CompletedSeq => Interlocked.Read(ref _completedSeq);
+
     internal void BeginWalk()
     {
         lock (_transition)
         {
+            Interlocked.Exchange(ref _runningSeq, Interlocked.Increment(ref _beginSeq));
             Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
             // One deadline per walk, created on the first walk; a walk that ends in time disarms it, so nothing wakes while readings are healthy.
             (_stallTimer ??= _oneShotFactory(OnStallDeadline)).Arm(StallLimit + DeadlineSlack);
@@ -152,6 +162,7 @@ internal sealed class LhmWalkWatch
             _stallTimer?.Disarm();
             Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
             Interlocked.Exchange(ref _walkStartMs, 0);
+            Interlocked.Exchange(ref _completedSeq, Interlocked.Read(ref _runningSeq));
             return Interlocked.Exchange(ref _stale, 0) != 0;
         }
     }

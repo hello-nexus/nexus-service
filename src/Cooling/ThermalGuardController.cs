@@ -261,6 +261,12 @@ public sealed class ThermalGuardController
     /// <summary>False while the sensor walk is running past its normal duration or has wedged; readers then get cached values, so a tick completing says nothing about the data.</summary>
     internal Func<bool> ReadingsFresh { get; set; } = () => LhmWalkWatch.Shared.IsFresh;
 
+    /// <summary>Walks begun so far; a resume records it to tell a walk that started afterwards from one already in flight.</summary>
+    internal Func<long> WalkBeginSeq { get; set; } = () => LhmWalkWatch.Shared.BeginSeq;
+
+    /// <summary>Sequence number of the newest completed walk.</summary>
+    internal Func<long> WalkCompletedSeq { get; set; } = () => LhmWalkWatch.Shared.CompletedSeq;
+
     public void TickCompleted()
     {
         // Not counted as a tick: the watchdog measures how long the temperatures have gone unrefreshed.
