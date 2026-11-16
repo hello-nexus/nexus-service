@@ -24,6 +24,36 @@ public static class LightingDeviceNames
     /// <see cref="LightingDevice.DeviceName"/>. Without it an ARGB port could
     /// not be renamed at all: its device id is neither a card id nor a parent.
     /// </summary>
+    /// <summary>
+    /// A wireless chain has one name, set on the cooling page or the wireless
+    /// controller page and stored under its device id in
+    /// <see cref="Nexus.Service.Persistence.CoolingSettings.FanNames"/>. The
+    /// lighting list reads it as the fallback for that device id, so a name
+    /// set there reaches every lighting zone of the chain; a rename made on the
+    /// lighting page itself still wins.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> WithWirelessChainNames(
+        IReadOnlyDictionary<string, string> lightingNames,
+        IReadOnlyDictionary<string, string> fanNames)
+    {
+        Dictionary<string, string>? merged = null;
+        foreach (var (id, name) in fanNames)
+        {
+            if (string.IsNullOrWhiteSpace(name)
+                || !id.StartsWith(WirelessDevicePrefix, System.StringComparison.Ordinal)
+                || id.IndexOf(':', WirelessDevicePrefix.Length) >= 0
+                || lightingNames.ContainsKey(id))
+            {
+                continue;
+            }
+            merged ??= new Dictionary<string, string>(lightingNames);
+            merged[id] = name;
+        }
+        return merged ?? lightingNames;
+    }
+
+    private const string WirelessDevicePrefix = Nexus.Service.Lighting.Slv3LightingDeviceProvider.GroupId + ":";
+
     public static void Apply(List<LightingDevice> devices, IReadOnlyDictionary<string, string> names)
     {
         if (names.Count == 0) return;

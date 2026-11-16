@@ -63,4 +63,46 @@ public class LightingDeviceNamesTests
         Assert.Null(cards[0].ParentName);
         Assert.Null(cards[1].ParentName);
     }
+
+    private const string Chain = "lianli-wireless:998D1DE566E1";
+
+    [Fact]
+    public void WithWirelessChainNames_FallsBackToTheCoolingNameOfTheChain()
+    {
+        var merged = LightingDeviceNames.WithWirelessChainNames(
+            new Dictionary<string, string>(),
+            new Dictionary<string, string> { [Chain] = "Rear stack" });
+
+        var cards = new List<LightingDevice>
+        {
+            new LightingDevice { Id = Chain + ":fan1", Name = "Lian Li Wireless - Fan", DeviceId = Chain },
+        };
+        LightingDeviceNames.Apply(cards, merged);
+
+        Assert.Equal("Rear stack", cards[0].DeviceName);
+    }
+
+    [Fact]
+    public void WithWirelessChainNames_LightingRenameWinsOverCooling()
+    {
+        var merged = LightingDeviceNames.WithWirelessChainNames(
+            new Dictionary<string, string> { [Chain] = "Lighting name" },
+            new Dictionary<string, string> { [Chain] = "Rear stack" });
+
+        Assert.Equal("Lighting name", merged[Chain]);
+    }
+
+    [Fact]
+    public void WithWirelessChainNames_IgnoresOtherFanNamesAndPortNames()
+    {
+        var lighting = new Dictionary<string, string>();
+        var merged = LightingDeviceNames.WithWirelessChainNames(lighting, new Dictionary<string, string>
+        {
+            [Chain + ":port0"] = "Port",
+            ["np50:AABB"] = "Hub",
+            ["lianli-wireless:112233445566"] = "   ",
+        });
+
+        Assert.Empty(merged);
+    }
 }

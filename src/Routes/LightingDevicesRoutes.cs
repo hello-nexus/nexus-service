@@ -301,8 +301,10 @@ public static partial class DevicesRoutes
             Nexus.Service.Lighting.LightingWriteHealth writeHealth) =>
         {
             var all = ld.GetAll();
-            var lighting = store.Load().Lighting;
-            Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices, lighting.DeviceNames);
+            var settings = store.Load();
+            var lighting = settings.Lighting;
+            Nexus.Service.Lighting.LightingDeviceNames.Apply(all.Devices,
+                Nexus.Service.Lighting.LightingDeviceNames.WithWirelessChainNames(lighting.DeviceNames, settings.Cooling.FanNames));
             Nexus.Service.Lighting.Engine.DeviceFrameIndex.Apply(all.Devices, engine.Devices);
             writeHealth.Apply(all.Devices);
             foreach (var device in all.Devices)
