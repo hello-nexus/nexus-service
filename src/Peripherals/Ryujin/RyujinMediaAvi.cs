@@ -170,6 +170,7 @@ internal static class RyujinMediaAvi
         var dqt = new List<byte>();
         var dht = new List<byte>();
         byte[]? sof = null;
+        bool reachedScan = false;
         int at = 2;
         while (at + 4 <= jpeg.Length && jpeg[at] == 0xFF)
         {
@@ -181,6 +182,7 @@ internal static class RyujinMediaAvi
             }
             if (marker == 0xDA)
             {
+                reachedScan = true;
                 break;
             }
             if (at + 2 + length > jpeg.Length)
@@ -210,7 +212,7 @@ internal static class RyujinMediaAvi
             }
             at += 2 + length;
         }
-        if (sof is null || dqt.Count == 0 || dht.Count == 0 || at >= jpeg.Length)
+        if (!reachedScan || sof is null || dqt.Count == 0 || dht.Count == 0 || at >= jpeg.Length)
         {
             return jpeg;
         }

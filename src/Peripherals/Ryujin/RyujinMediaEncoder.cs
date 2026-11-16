@@ -97,12 +97,13 @@ public static class RyujinMediaEncoder
                 {
                     return new(null, 0, "The JPEG encoder is unavailable.");
                 }
-                jpeg = RyujinMediaAvi.WithComment(jpeg);
+                var rewritten = RyujinMediaAvi.WithComment(jpeg);
                 if (!variantLogged)
                 {
                     variantLogged = true;
-                    ServiceLog.Info($"[ryujin-upload] jpeg variant: huffman={(optimized ? "optimized" : "standard (optimize refused)")}, JFIF APP0 stripped, Lavc comment, merged DQT/DHT, 4:2:0 baseline");
+                    ServiceLog.Info($"[ryujin-upload] jpeg variant: huffman={(optimized ? "optimized" : "standard (optimize refused)")}, header={(ReferenceEquals(rewritten, jpeg) ? "left as TurboJPEG wrote it (unexpected segments)" : "rewritten to Armoury Crate's layout (JFIF dropped, Lavc comment, merged DQT/DHT)")}");
                 }
+                jpeg = rewritten;
                 jpegs.Add(jpeg);
                 total += 8 + jpeg.Length + (jpeg.Length & 1) + 16;
             }

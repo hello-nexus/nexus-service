@@ -314,7 +314,7 @@ public class RyujinUploadTests
 
         Assert.True(result.Ok);
         Assert.Equal(3, result.Chunks);
-        Assert.Equal(new[] { "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F", "chunk", "chunk", "chunk", "hid 73FF", "hid DC", "hid 99", "hid 71", "hid F1" }, link.Events);
+        Assert.Equal(new[] { "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F", "chunk", "chunk", "chunk", "hid 73FF", "hid DC", "hid 99" }, link.Events);
         // Only the capture's four command gaps; the erase acknowledgement replaces the last one.
         Assert.Equal(new[] { 27, 140, 110, 520 }, link.Pauses);
         Assert.Equal(new[] { 1, 2, 3 }, progress);
@@ -331,7 +331,7 @@ public class RyujinUploadTests
 
         Assert.True(result.Ok);
         Assert.Equal("ok after paced fallback", result.Message);
-        Assert.Equal(3, link.Events.Count(e => e == "hid 71"));
+        Assert.Equal(2, link.Events.Count(e => e == "hid 71"));
         Assert.Contains(log, l => l.Contains("failed mode=fast") && l.Contains("no chunk ack"));
         Assert.Contains(log, l => l.StartsWith("[ryujin-upload] done mode=paced"));
         var chunkPauses = link.Pauses.Where(p => p is 80 or 2300).ToList();
@@ -389,6 +389,22 @@ public class RyujinUploadTests
         Assert.True(result.Ok);
         Assert.True(calls >= 3);
         Assert.Single(log, l => l.Contains("keepalive poll during the upload"));
+    }
+
+    [Fact]
+    public void Keepalive_runs_at_the_start_and_long_pauses_are_sliced_around_it()
+    {
+        var link = new FakeLink { Acks = false };
+        var log = new List<string>();
+        int calls = 0;
+        var uploader = new RyujinUploader(link, log.Add, log.Add) { AckTimeoutMs = 10, EndWaitMs = 10, KeepaliveMs = 3_600_000, Keepalive = () => calls++ };
+
+        uploader.Upload(new byte[4096], null, CancellationToken.None);
+
+        // One at the start of each of the two attempts (the fast one fails without acks).
+        Assert.Equal(2, calls);
+        Assert.All(link.Pauses, p => Assert.InRange(p, 1, 250));
+        Assert.True(link.Pauses.Sum() >= 27 + 140 + 110 + 520 + 510);
     }
 
     [Fact]

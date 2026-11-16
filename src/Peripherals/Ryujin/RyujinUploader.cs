@@ -39,7 +39,7 @@ internal sealed class RyujinUploader
     private bool _logChunkAcks;
     private long _nextKeepalive;
 
-    /// <summary>Runs the owner's keepalive when one is due; called wherever the upload waits so the pump is never left longer than the interval.</summary>
+    /// <summary>Runs the owner's keepalive when one is due; called from the chunk loop, the reads and the sliced pauses, so the pump waits no longer than the interval plus one read slice.</summary>
     private void MaybeKeepalive()
     {
         if (Keepalive is null || Environment.TickCount64 < _nextKeepalive)
@@ -55,6 +55,20 @@ internal sealed class RyujinUploader
     }
 
     private const int ReadSliceMs = 250;
+
+    private void PauseWithKeepalive(int ms)
+    {
+        if (Keepalive is null)
+        {
+            _link.Pause(ms);
+            return;
+        }
+        for (int left = ms; left > 0; left -= ReadSliceMs)
+        {
+            MaybeKeepalive();
+            _link.Pause(Math.Min(left, ReadSliceMs));
+        }
+    }
     private Stopwatch _attemptClock = Stopwatch.StartNew();
 
     private double ElapsedMs() => _attemptClock.Elapsed.TotalMilliseconds;
@@ -114,8 +128,8 @@ internal sealed class RyujinUploader
         var clock = Stopwatch.StartNew();
         _attemptClock = clock;
         _keepalives = 0;
+        _nextKeepalive = 0;
         _link.ClearInbound();
-        _nextKeepalive = Environment.TickCount64 + KeepaliveMs;
         Drain();
         _info($"[ryujin-upload] start mode={mode} bytes={avi.Length} chunks={total}");
 
@@ -129,7 +143,7 @@ internal sealed class RyujinUploader
             bool last = i == begin.Length - 1;
             if (paced || !last)
             {
-                _link.Pause(RyujinUploadProtocol.BeginGapsMs[i]);
+                PauseWithKeepalive(RyujinUploadProtocol.BeginGapsMs[i]);
             }
             else
             {
@@ -156,7 +170,7 @@ internal sealed class RyujinUploader
             if (paced)
             {
                 Drain();
-                _link.Pause(sent % RyujinUploadProtocol.PacedGroupChunks == 0 ? RyujinUploadProtocol.PacedGroupGapMs : RyujinUploadProtocol.PacedChunkGapMs);
+                PauseWithKeepalive(sent % RyujinUploadProtocol.PacedGroupChunks == 0 ? RyujinUploadProtocol.PacedGroupGapMs : RyujinUploadProtocol.PacedChunkGapMs);
             }
             else if (WaitChunkAck(sent))
             {
@@ -182,12 +196,6 @@ internal sealed class RyujinUploader
         _link.WriteReport(RyujinMonitorProtocol.EncodeDc());
         _link.WriteReport(RyujinCoolingProtocol.EncodeStatusRequest());
         Listen(EndWaitMs);
-        // The query pair Armoury Crate opens with, repeated so the log shows which slot bits the upload changed.
-        foreach (var query in RyujinUploadProtocol.EncodeDiskInfoQuery())
-        {
-            _link.WriteReport(query);
-        }
-        Listen(1500);
 
         double totalMs = clock.Elapsed.TotalMilliseconds;
         double kbps = avi.Length / 1024.0 / (totalMs / 1000.0);
