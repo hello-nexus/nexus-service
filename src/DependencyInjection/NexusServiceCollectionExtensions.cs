@@ -518,7 +518,11 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Monitoring.History.ISensorSeriesSource>(
             sp => sp.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>());
         services.AddHostedService<Nexus.Service.Diagnostics.Alerts.SensorAlertEvaluator>();
-        services.AddSingleton<Nexus.Service.Diagnostics.DiagnosticsAlertService>();
+        services.AddSingleton(sp => new Nexus.Service.Diagnostics.DiagnosticsAlertService(
+            sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsHealthModel>(),
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>(),
+            watchStatePath: Nexus.Service.Diagnostics.DiagnosticsAlertService.DefaultWatchStatePath()));
         services.AddSingleton<Nexus.Service.Diagnostics.Alerts.SensorAlertPushSender>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Diagnostics.DiagnosticsAlertService>());
 

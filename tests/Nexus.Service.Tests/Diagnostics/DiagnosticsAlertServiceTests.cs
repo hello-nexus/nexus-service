@@ -324,6 +324,108 @@ public class DiagnosticsAlertServiceTests
         Assert.Single(second);
     }
 
+    private static HealthComponent SmartWatch(string summary) => new()
+    {
+        Id = "storage:OOS6000G",
+        Kind = "storage",
+        Name = "OOS6000G",
+        Status = HealthStatuses.Watch,
+        Reasons = new List<HealthComponentReason> { new("smart.commandTimeout", HealthStatuses.Watch, summary, "detail") },
+    };
+
+    [Fact]
+    public void UnchangedWatchFinding_NotifiesOnce_NotEveryCooldown()
+    {
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true, CooldownMinutes = 60 };
+        var lastNotified = new Dictionary<string, DateTime>();
+        var notifiedWatch = new Dictionary<string, string>();
+        var drive = new[] { SmartWatch("1 command timeout") };
+
+        var first = DiagnosticsAlertService.EvaluateNotifications(drive, notifications, lastNotified, T0, notifiedWatch);
+        Assert.Single(first);
+        for (var hour = 1; hour <= 24; hour++)
+        {
+            Assert.Empty(DiagnosticsAlertService.EvaluateNotifications(drive, notifications, lastNotified, T0.AddHours(hour), notifiedWatch));
+        }
+    }
+
+    [Fact]
+    public void UnchangedWatchFinding_StaysQuietAfterARestart()
+    {
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true, CooldownMinutes = 60 };
+        var notifiedWatch = new Dictionary<string, string>();
+        var drive = new[] { SmartWatch("1 command timeout") };
+
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(drive, notifications, new Dictionary<string, DateTime>(), T0, notifiedWatch));
+        // A restart clears the in-memory cooldown table but keeps the saved watch state.
+        Assert.Empty(DiagnosticsAlertService.EvaluateNotifications(drive, notifications, new Dictionary<string, DateTime>(), T0.AddMinutes(5), notifiedWatch));
+    }
+
+    [Fact]
+    public void WatchState_RoundTripsThroughTheStateFile()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "nexus-alert-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            var path = System.IO.Path.Combine(dir, "diagnostics-notified.txt");
+            var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true };
+            var drive = new[] { SmartWatch("1 command timeout") };
+            var beforeRestart = new Dictionary<string, string>();
+            Assert.Single(DiagnosticsAlertService.EvaluateNotifications(drive, notifications, new Dictionary<string, DateTime>(), T0, beforeRestart));
+            DiagnosticsAlertService.WriteWatchState(path, beforeRestart);
+
+            var afterRestart = new Dictionary<string, string>();
+            DiagnosticsAlertService.ReadWatchState(path, afterRestart);
+
+            Assert.Equal(beforeRestart, afterRestart);
+            Assert.Empty(DiagnosticsAlertService.EvaluateNotifications(drive, notifications, new Dictionary<string, DateTime>(), T0.AddMinutes(5), afterRestart));
+        }
+        finally
+        {
+            System.IO.Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void WatchFinding_NotifiesAgainWhenItGetsWorse()
+    {
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true, CooldownMinutes = 60 };
+        var lastNotified = new Dictionary<string, DateTime>();
+        var notifiedWatch = new Dictionary<string, string>();
+
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(new[] { SmartWatch("1 command timeout") }, notifications, lastNotified, T0, notifiedWatch));
+        var worse = DiagnosticsAlertService.EvaluateNotifications(new[] { SmartWatch("3 command timeouts") }, notifications, lastNotified, T0.AddMinutes(61), notifiedWatch);
+
+        Assert.Equal("3 command timeouts", Assert.Single(worse).Text);
+    }
+
+    [Fact]
+    public void WatchFinding_NotifiesAgainAfterItClearsAndReturns()
+    {
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true, CooldownMinutes = 60 };
+        var lastNotified = new Dictionary<string, DateTime>();
+        var notifiedWatch = new Dictionary<string, string>();
+        var ok = new HealthComponent { Id = "storage:OOS6000G", Kind = "storage", Name = "OOS6000G", Status = HealthStatuses.Ok };
+
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(new[] { SmartWatch("1 command timeout") }, notifications, lastNotified, T0, notifiedWatch));
+        DiagnosticsAlertService.EvaluateNotifications(new[] { ok }, notifications, lastNotified, T0.AddMinutes(30), notifiedWatch);
+
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(new[] { SmartWatch("1 command timeout") }, notifications, lastNotified, T0.AddMinutes(61), notifiedWatch));
+    }
+
+    [Fact]
+    public void UnchangedActFinding_StillRepeatsAfterTheCooldown()
+    {
+        var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true, CooldownMinutes = 60 };
+        var lastNotified = new Dictionary<string, DateTime>();
+        var notifiedWatch = new Dictionary<string, string>();
+        var components = new[] { Component("storage:1", "storage", HealthStatuses.Act, HealthStatuses.Act) };
+
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(components, notifications, lastNotified, T0, notifiedWatch));
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(components, notifications, lastNotified, T0.AddMinutes(61), notifiedWatch));
+    }
+
     [Fact]
     public void OkStatusComponent_NeverNotifies()
     {

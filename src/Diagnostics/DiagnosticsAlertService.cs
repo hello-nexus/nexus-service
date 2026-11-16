@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -28,8 +29,10 @@ public sealed record DiagnosticsAlertNotice(string Title, string Text, string Ki
 /// <see cref="DiagnosticsSettings.Notifications"/>, gated by the master
 /// enable + that category's toggle and rate-limited to one notification per
 /// <see cref="DiagnosticsNotifications.CooldownMinutes"/> for the same
-/// component id. Both watch and act severities can notify; only the log line
-/// above is act-only and per-run.
+/// component id. An act component repeats after each cooldown. A watch
+/// component notifies once per distinct set of findings, remembered across
+/// restarts, so a stable finding (one SMART command timeout) is not a toast
+/// every hour. Only the log line above is act-only and per-run.
 /// </summary>
 public sealed class DiagnosticsAlertService : BackgroundService
 {
@@ -42,6 +45,8 @@ public sealed class DiagnosticsAlertService : BackgroundService
     private readonly Dictionary<string, DateTime> _lastNotifiedUtc = new(StringComparer.Ordinal);
     private readonly FeatureGates _gates;
     private readonly TimeProvider _time;
+    private readonly string? _watchStatePath;
+    private readonly Dictionary<string, string> _notifiedWatch = new(StringComparer.Ordinal);
 
     // An urgent notice must not sit out the full user cooldown after one earlier toast: a limit that keeps being crossed would otherwise stay silent for the whole window.
     private static readonly TimeSpan UrgentCooldown = TimeSpan.FromMinutes(5);
@@ -52,12 +57,69 @@ public sealed class DiagnosticsAlertService : BackgroundService
     /// Linux notify-send).</summary>
     public event Action<DiagnosticsAlertNotice>? AlertNeedsAttention;
 
-    public DiagnosticsAlertService(DiagnosticsHealthModel health, IConfigStore store, FeatureGates? gates = null, TimeProvider? time = null)
+    public DiagnosticsAlertService(DiagnosticsHealthModel health, IConfigStore store, FeatureGates? gates = null, TimeProvider? time = null, string? watchStatePath = null)
     {
         _time = time ?? TimeProvider.System;
         _health = health;
         _store = store;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _watchStatePath = watchStatePath;
+        LoadWatchState();
+    }
+
+    /// <summary>File that remembers which watch findings already notified, so a restart does not repeat them.</summary>
+    public static string DefaultWatchStatePath() =>
+        Path.Combine(JsonConfigStore.ResolveDataDirectory(), "diagnostics-notified.txt");
+
+    private void LoadWatchState()
+    {
+        if (_watchStatePath is null || !File.Exists(_watchStatePath))
+        {
+            return;
+        }
+        try
+        {
+            ReadWatchState(_watchStatePath, _notifiedWatch);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[diagnostics-alert] could not read notified state: {ex.Message}");
+        }
+    }
+
+    private void SaveWatchState()
+    {
+        if (_watchStatePath is null)
+        {
+            return;
+        }
+        try
+        {
+            WriteWatchState(_watchStatePath, _notifiedWatch);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[diagnostics-alert] could not save notified state: {ex.Message}");
+        }
+    }
+
+    internal static void ReadWatchState(string path, IDictionary<string, string> into)
+    {
+        foreach (var line in File.ReadAllLines(path))
+        {
+            var tab = line.IndexOf('\t');
+            if (tab > 0)
+            {
+                into[line[..tab]] = line[(tab + 1)..];
+            }
+        }
+    }
+
+    internal static void WriteWatchState(string path, IReadOnlyDictionary<string, string> state)
+    {
+        var tmp = path + ".tmp";
+        File.WriteAllLines(tmp, state.Select(kv => kv.Key + "\t" + kv.Value));
+        File.Move(tmp, path, overwrite: true);
     }
 
     /// <summary>Raises a notice outside the health poll (the thermal guard trip), still honoring the master notifications switch unless <paramref name="ignoreMaster"/> (a shutdown countdown the user opted into must always show).</summary>
@@ -173,7 +235,12 @@ public sealed class DiagnosticsAlertService : BackgroundService
         IReadOnlyList<DiagnosticsAlertNotice> due;
         lock (_lastNotifiedUtc)
         {
-            due = EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now);
+            var before = WatchStateText();
+            due = EvaluateNotifications(health.Components, notifications, _lastNotifiedUtc, now, _notifiedWatch);
+            if (WatchStateText() != before)
+            {
+                SaveWatchState();
+            }
         }
         foreach (var notice in due)
         {
@@ -192,16 +259,28 @@ public sealed class DiagnosticsAlertService : BackgroundService
     /// Pure evaluation of which components should raise a native notification
     /// this tick: gated by the master enable + the reason's category toggle,
     /// rate-limited per component id to one notification per CooldownMinutes.
-    /// lastNotifiedUtc is read and updated in place (mirrors the per-run
-    /// _alerted set above), so tests can drive it across repeated calls
-    /// without constructing a real DiagnosticsHealthModel.
+    /// A watch component also skips while notifiedWatch holds its current
+    /// findings. A component that turns ok is dropped from notifiedWatch, so a
+    /// later recurrence notifies again. Both dictionaries are updated in place.
     /// </summary>
     internal static IReadOnlyList<DiagnosticsAlertNotice> EvaluateNotifications(
         IReadOnlyList<HealthComponent> components,
         DiagnosticsNotifications notifications,
         IDictionary<string, DateTime> lastNotifiedUtc,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        IDictionary<string, string>? notifiedWatch = null)
     {
+        if (notifiedWatch is not null)
+        {
+            foreach (var component in components)
+            {
+                if (component.Status == HealthStatuses.Ok)
+                {
+                    notifiedWatch.Remove(component.Id);
+                }
+            }
+        }
+
         if (!notifications.Enabled)
         {
             return Array.Empty<DiagnosticsAlertNotice>();
@@ -223,11 +302,18 @@ public sealed class DiagnosticsAlertService : BackgroundService
             {
                 continue;
             }
+            var fingerprint = Fingerprint(component);
+            if (component.Status == HealthStatuses.Watch && notifiedWatch is not null &&
+                notifiedWatch.TryGetValue(component.Id, out var seen) && seen == fingerprint)
+            {
+                continue;
+            }
             if (lastNotifiedUtc.TryGetValue(component.Id, out var last) &&
                 nowUtc - last < TimeSpan.FromMinutes(notifications.CooldownMinutes))
             {
                 continue;
             }
+            notifiedWatch?[component.Id] = fingerprint;
 
             var reason = component.Reasons.FirstOrDefault(r => r.Severity == component.Status)
                 ?? component.Reasons.FirstOrDefault();
@@ -236,6 +322,15 @@ public sealed class DiagnosticsAlertService : BackgroundService
         }
         return notices;
     }
+
+    // The state file holds one line per component, so tabs and line breaks in a summary are flattened.
+    private static string Fingerprint(HealthComponent component) =>
+        string.Join("|", component.Reasons
+            .Select(r => $"{r.Code}:{r.Severity}:{r.Summary}".Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' '))
+            .OrderBy(x => x, StringComparer.Ordinal));
+
+    private string WatchStateText() =>
+        string.Join("\n", _notifiedWatch.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "\t" + kv.Value));
 
     /// <summary>SPA path for a diagnostics alert, or null when the kind has no tab; the route is /{section}/{view}/{subtab} per nexus-web useRoute.ts and the tab slugs are DiagnosticsView's own.</summary>
     public static string? AlertPath(string kind) => kind switch
