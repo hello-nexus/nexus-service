@@ -156,6 +156,7 @@ public class DiagnosticsEventLogTests
         Assert.Equal("critical", incident.Severity);
         Assert.Equal("1b8", incident.Data["p1"]);
         Assert.Equal("a", incident.Data["p2"]);
+        Assert.Equal("Live kernel event, code 0x1b8.", incident.Detail);
     }
 
     [Fact]

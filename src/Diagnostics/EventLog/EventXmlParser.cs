@@ -272,7 +272,7 @@ public static class EventXmlParser
         }
         var detail = string.IsNullOrEmpty(p1)
             ? "Live kernel event reported by Windows Error Reporting."
-            : $"Live kernel event, bugcheck parameter {p1}.";
+            : $"Live kernel event, code 0x{(p1.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? p1[2..] : p1)}.";
         return new ExtractedFields(DiagnosticSeverity.Critical, "Live kernel event", detail, null, data);
     }
 

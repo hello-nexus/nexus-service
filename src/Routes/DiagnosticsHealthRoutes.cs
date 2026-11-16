@@ -520,14 +520,16 @@ public static class DiagnosticsHealthRoutes
     /// occurrence's FirstUtc. Severity is in the key because the same title can
     /// carry different severities (e.g. WHEA severity is level-driven), so an
     /// older higher-severity occurrence must not collapse under a newer lower one.
-    /// Does not touch EventLogMonitor's store, so CountsSince health thresholds
+    /// Live kernel events also key on their bug check code (Data["p1"]) so each
+    /// code is its own row. Does not touch EventLogMonitor's store, so CountsSince health thresholds
     /// keep counting real occurrences.</summary>
     internal static IReadOnlyList<DiagnosticIncident> GroupRepeats(IReadOnlyList<DiagnosticIncident> incidents)
     {
-        var groups = new Dictionary<(string Source, string Title, string Severity, string? AppName), List<DiagnosticIncident>>();
+        var groups = new Dictionary<(string Source, string Title, string Severity, string? AppName, string? Code), List<DiagnosticIncident>>();
         foreach (var incident in incidents)
         {
-            var key = (incident.Source, incident.Title, incident.Severity, incident.App?.Name);
+            var code = incident.Source == DiagnosticEventCatalog.SourceLiveKernel && incident.Data.TryGetValue("p1", out var p1) ? p1 : null;
+            var key = (incident.Source, incident.Title, incident.Severity, incident.App?.Name, code);
             if (!groups.TryGetValue(key, out var list))
             {
                 list = new List<DiagnosticIncident>();

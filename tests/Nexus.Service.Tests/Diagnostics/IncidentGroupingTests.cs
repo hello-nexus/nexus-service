@@ -23,6 +23,31 @@ public class IncidentGroupingTests
             App = appName is null ? null : new DiagnosticAppInfo { Name = appName },
         };
 
+    private static DiagnosticIncident KernelEvent(string id, DateTime timeUtc, string code) =>
+        Incident(id, timeUtc, "liveKernel", "Live kernel event", severity: "critical") with
+        {
+            Data = new Dictionary<string, string> { ["p1"] = code },
+        };
+
+    [Fact]
+    public void Live_kernel_events_group_per_code()
+    {
+        var incidents = new List<DiagnosticIncident>
+        {
+            KernelEvent("a", T0, "124"),
+            KernelEvent("b", T0.AddMinutes(1), "124"),
+            KernelEvent("c", T0.AddMinutes(2), "144"),
+            KernelEvent("d", T0.AddMinutes(3), "117"),
+        };
+
+        var grouped = DiagnosticsHealthRoutes.GroupRepeats(incidents);
+
+        Assert.Equal(3, grouped.Count);
+        Assert.Equal(2, grouped.Single(i => i.Data["p1"] == "124").RepeatCount);
+        Assert.Equal(1, grouped.Single(i => i.Data["p1"] == "144").RepeatCount);
+        Assert.Equal(1, grouped.Single(i => i.Data["p1"] == "117").RepeatCount);
+    }
+
     [Fact]
     public void Repeats_collapse_into_one_with_count_and_first_utc()
     {
