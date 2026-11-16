@@ -30,6 +30,32 @@ public class IncidentGroupingTests
         };
 
     [Fact]
+    public void Live_kernel_events_without_p1_group_together()
+    {
+        var incidents = new List<DiagnosticIncident>
+        {
+            Incident("a", T0, "liveKernel", "Live kernel event", severity: "critical"),
+            Incident("b", T0.AddMinutes(1), "liveKernel", "Live kernel event", severity: "critical"),
+        };
+
+        var result = Assert.Single(DiagnosticsHealthRoutes.GroupRepeats(incidents));
+        Assert.Equal(2, result.RepeatCount);
+    }
+
+    [Fact]
+    public void Non_live_kernel_incidents_ignore_p1()
+    {
+        var incidents = new List<DiagnosticIncident>
+        {
+            Incident("a", T0, "whea", "Hardware error") with { Data = new Dictionary<string, string> { ["p1"] = "1" } },
+            Incident("b", T0.AddMinutes(1), "whea", "Hardware error") with { Data = new Dictionary<string, string> { ["p1"] = "2" } },
+        };
+
+        var result = Assert.Single(DiagnosticsHealthRoutes.GroupRepeats(incidents));
+        Assert.Equal(2, result.RepeatCount);
+    }
+
+    [Fact]
     public void Live_kernel_events_group_per_code()
     {
         var incidents = new List<DiagnosticIncident>
