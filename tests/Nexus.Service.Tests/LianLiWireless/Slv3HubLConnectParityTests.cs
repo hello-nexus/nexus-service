@@ -287,7 +287,7 @@ public partial class Slv3HubTests
             var (hub, net, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel, lockOn: lockOn);
             Ticks(hub, 2);
             net.Fans.Clear();
-            clock.AdvanceMs(310_000);
+            clock.AdvanceMs(40_000);
             Ticks(hub, 1);
             Assert.Empty(hub.State.Fans);
 
@@ -477,7 +477,7 @@ public partial class Slv3HubTests
         net.Fans.Add(clash);
         Ticks(hub, Slv3Hub.SlotConflictLimit);
         net.Fans.Remove(clash);
-        clock.AdvanceMs(310_000);
+        clock.AdvanceMs(40_000);
         Ticks(hub, 10);
         tx.SentFrames.Clear();
 

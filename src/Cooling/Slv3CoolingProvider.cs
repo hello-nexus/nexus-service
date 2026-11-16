@@ -79,7 +79,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
             }
             if (!HasFanPorts(fan)) continue;
             var portCount = EffectivePortCount(fan);
-            var rpmUnavailable = fan.FanCount <= 0 || fan.Lost;
+            var rpmUnavailable = fan.FanCount <= 0;
             var deviceName = "Lian Li Wireless Fan";
             var minDuty = Slv3Protocol.MinDutyPercentFor(Slv3Protocol.ClassifyFanFamily((byte)fan.FanType));
             for (var port = 0; port < portCount; port++)
@@ -252,7 +252,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
             }
             if (!HasFanPorts(fan)) continue;
             var portCount = EffectivePortCount(fan);
-            var rpmUnavailable = fan.FanCount <= 0 || fan.Lost;
+            var rpmUnavailable = fan.FanCount <= 0;
             var devices = new List<CoolingDevice>(portCount);
             for (var port = 0; port < portCount; port++)
             {
@@ -321,7 +321,7 @@ public sealed class Slv3CoolingProvider : IFanControlProvider, ICoolingProvider
         return rpm >= 0 ? rpm : 0;
     }
 
-    private static int PumpRpm(Slv3FanInfo fan) => fan.Lost ? 0 : PortRpm(fan, Slv3Protocol.HydroShiftPumpPort);
+    private static int PumpRpm(Slv3FanInfo fan) => PortRpm(fan, Slv3Protocol.HydroShiftPumpPort);
 
     private static string PumpId(string macHex) => $"{IdPrefix}{macHex}{PumpSuffix}";
 

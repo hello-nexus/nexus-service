@@ -757,22 +757,44 @@ public class Slv3LightingFrameWriterTests
         new() { Joinable = true, LastUploadStartMs = lastUploadMs, RetryAtMs = retryAtMs };
 
     [Fact]
-    public void An_unheard_chain_skips_uploads_and_does_not_hold_the_turn_for_heard_chains()
+    public void An_unheard_chain_gets_no_windows_and_no_live_frames_and_does_not_hold_the_turn()
     {
-        Assert.True(Slv3LightingFrameWriter.SkipsWindowUploads(new Slv3FanInfo { Stale = true }));
-        Assert.False(Slv3LightingFrameWriter.SkipsWindowUploads(new Slv3FanInfo { Stale = false }));
+        Assert.True(Slv3LightingFrameWriter.SkipsWindowUploads(new Slv3FanInfo { Unheard = true }));
+        Assert.False(Slv3LightingFrameWriter.SkipsWindowUploads(new Slv3FanInfo { Unheard = false }));
         Assert.False(Slv3LightingFrameWriter.SkipsWindowUploads(null));
 
-        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
-        var unheard = new Slv3LightingFrameWriter.ChainRolling { Joinable = false, LastUploadStartMs = 0 };
+        var (hub, _, tx, _, _, writer, frames) = CreateBoundSetup();
+        hub.State.Fans[0].Unheard = true;
+        for (var i = 0; i < 3; i++)
+        {
+            FillAll(frames, (byte)(10 + i), 20, 30);
+            writer.Tick();
+        }
+        Assert.Empty(RgbSyncFrames(tx));
+        var chain = Assert.Single(writer._rolling.Values);
+        Assert.False(chain.Joinable);
+
+        // A heard chain takes the upload turn although the skipped one waited longer.
         var heard = Joinable(500);
-        writer._rolling["unheard"] = unheard;
         writer._rolling["heard"] = heard;
         Assert.True(writer.IsNextToUpload(heard, 1000));
-        // Back in the list, it waited longest and takes the next turn.
-        unheard.Joinable = true;
-        Assert.False(writer.IsNextToUpload(heard, 1000));
-        Assert.True(writer.IsNextToUpload(unheard, 1000));
+
+        // Heard again: streaming resumes.
+        hub.State.Fans[0].Unheard = false;
+        FillAll(frames, 90, 20, 30);
+        writer.Tick();
+        Assert.NotEmpty(RgbSyncFrames(tx));
+    }
+
+    [Fact]
+    public void A_chain_that_is_only_stale_from_a_blind_receiver_keeps_streaming()
+    {
+        var (hub, _, tx, _, _, writer, frames) = CreateBoundSetup();
+        hub.State.Fans[0].Stale = true;
+        hub.State.Fans[0].Unheard = false;
+        FillAll(frames, 10, 20, 30);
+        writer.Tick();
+        Assert.NotEmpty(RgbSyncFrames(tx));
     }
 
     [Fact]

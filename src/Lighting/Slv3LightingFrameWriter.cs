@@ -803,6 +803,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             if (!ids.Contains(z.Id)) ids.Add(z.Id);
         }
+        // A chain the RX is not hearing gets neither windows nor live frames until it is heard again, so the air goes to chains that are, and it must not hold the upload turn.
+        if (SkipsWindowUploads(FindFanInfo(macHex)))
+        {
+            st.Joinable = false;
+            foreach (var id in ids) _rollingIds.Add(id);
+            return true;
+        }
         var identifying = false;
         foreach (var id in ids)
         {
@@ -825,8 +832,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.Joinable = false;
             return false;
         }
-        // An unheard chain gets no upload, and must not hold the turn for chains that are heard.
-        st.Joinable = _windowFrames is not null && CoversChain(ids) && !SkipsWindowUploads(FindFanInfo(macHex));
+        st.Joinable = _windowFrames is not null && CoversChain(ids);
         foreach (var id in ids)
         {
             _rollingIds.Add(id);
@@ -865,7 +871,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
     }
 
-    internal static bool SkipsWindowUploads(Slv3FanInfo? fan) => fan is { Stale: true };
+    internal static bool SkipsWindowUploads(Slv3FanInfo? fan) => fan is { Unheard: true };
 
     internal bool IsNextToUpload(ChainRolling chain, double nowMs)
     {

@@ -1661,30 +1661,30 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_chain_bound_here_stays_listed_as_lost_past_the_plain_expiry_then_drops()
+    public void A_chain_missing_from_a_list_the_rx_answered_is_unheard_but_a_blind_rx_never_marks_it()
     {
         var clock = new ManualClock();
-        var (hub, net, _, _) = CreateConnectedHub(clock.NowMs);
-        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1 });
+        var (hub, net, _, rx) = CreateConnectedHub(clock.NowMs);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
-        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.False(hub.State.Fans[0].Unheard);
 
         net.Fans.Clear();
         clock.AdvanceMs(4_000);
         Assert.True(hub.DriveTick());
-        var fan = Assert.Single(hub.State.Fans);
-        Assert.True(fan.Stale);
-        Assert.False(fan.Lost);
+        Assert.True(hub.State.Fans[0].Stale);
+        Assert.True(hub.State.Fans[0].Unheard);
 
-        clock.AdvanceMs(31_000);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
-        fan = Assert.Single(hub.State.Fans);
-        Assert.True(fan.Stale);
-        Assert.True(fan.Lost);
+        Assert.False(hub.State.Fans[0].Unheard);
 
-        clock.AdvanceMs(300_000);
+        rx.FailReads = true;
         Assert.True(hub.DriveTick());
-        Assert.Empty(hub.State.Fans);
+        clock.AdvanceMs(4_000);
+        Assert.True(hub.DriveTick());
+        Assert.True(hub.State.Fans[0].Stale);
+        Assert.False(hub.State.Fans[0].Unheard);
     }
 
     [Fact]
@@ -3303,7 +3303,7 @@ public partial class Slv3HubTests
 
         // The AIO drops off the controller's list long enough to expire, and the PC locks while it is gone.
         net.Fans.Clear();
-        clock.AdvanceMs(310_000);
+        clock.AdvanceMs(40_000);
         Assert.True(hub.DriveTick());
         Assert.Empty(hub.State.Fans);
         state.Set(true);

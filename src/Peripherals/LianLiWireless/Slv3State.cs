@@ -82,8 +82,8 @@ public sealed class Slv3FanInfo
     public string EffectIndex { get; set; } = "";
     /// <summary>True when the chain has missed recent device-list polls (beacon unheard); telemetry is last-known, not live.</summary>
     public bool Stale { get; set; }
-    /// <summary>Unseen long enough that an unbound chain would be gone; kept listed because it is bound here. Telemetry is not shown as live.</summary>
-    public bool Lost { get; set; }
+    /// <summary>Unseen past the stale limit while the RX was answering, so the chain itself is not being heard; a blind RX never sets it.</summary>
+    public bool Unheard { get; set; }
     /// <summary>A HydroShift II that is also on the USB link (same radio MAC), where its screen has its own panel page.</summary>
     public bool UsbConnected { get; set; }
     /// <summary>A HydroShift II is on USB but its radio MAC is unread (Nexus Control off for it), so this record may be that unit.</summary>
