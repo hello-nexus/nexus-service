@@ -123,4 +123,38 @@ public partial class Slv3HubTests
         Ticks(hub, 1);
         Assert.True(hub.OwnershipSettledSince(mark));
     }
+
+    [Fact]
+    public void A_dongle_that_enumerates_after_a_none_reading_still_gets_a_confirm_window()
+    {
+        var net = new FakeSlv3Network();
+        var discovery = new ToggleDiscovery { TxPresent = false, RxPresent = false };
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? new FakeTxTransport(net) : new FakeRxTransport(net));
+        var mark = hub.PollMark;
+        Assert.False(hub.EnsureConnected());
+        hub.NoteConnectFailed();
+        Assert.True(hub.OwnershipSettled);
+        Assert.False(hub.OwnershipSettledSince(mark));
+
+        discovery.TxPresent = true;
+        discovery.RxPresent = true;
+        Assert.True(hub.EnsureConnected());
+        Ticks(hub, Slv3Hub.ChainConfirmWindowPolls - 1);
+        Assert.False(hub.OwnershipSettledSince(mark));
+
+        Ticks(hub, 1);
+        Assert.True(hub.OwnershipSettledSince(mark));
+    }
+
+    [Fact]
+    public void A_switched_off_link_settles_every_mark_at_once()
+    {
+        var hub = new Slv3Hub(new ToggleDiscovery(), _ => new SilentTransport(Slv3DongleRole.Tx));
+        var mark = hub.PollMark;
+        Assert.False(hub.OwnershipSettledSince(mark));
+
+        hub.NoteLinkDisabled();
+
+        Assert.True(hub.OwnershipSettledSince(mark));
+    }
 }

@@ -452,6 +452,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     private volatile bool _ownershipSettled;
     private long _settleBasePoll;
+    private volatile bool _linkDisabled;
 
     /// <summary>
     /// Whether it is known which units the dongle has bound: an AIO bound to us is confirmed, the
@@ -465,11 +466,13 @@ public sealed partial class Slv3Hub : IDisposable
     public long PollMark => Volatile.Read(ref _devicePolls);
 
     /// <summary>
-    /// Ownership is settled and, while the link is up, a full confirm window of polls has run
-    /// since <paramref name="mark"/>, so a chain that was already bound when a unit attached late has had time to surface.
+    /// The link is switched off, or ownership is settled and a full confirm window of polls has
+    /// run since <paramref name="mark"/>, so a chain already bound when a unit attached has had
+    /// time to surface. A link that is merely down does not count: the dongle may not have
+    /// enumerated yet, so a unit with no dongle waits out its caller's cap instead.
     /// </summary>
     public bool OwnershipSettledSince(long mark) =>
-        _ownershipSettled && (!IsConnected || PollMark - mark >= ChainConfirmWindowPolls);
+        _linkDisabled || (_ownershipSettled && PollMark - mark >= ChainConfirmWindowPolls);
 
     /// <summary>The worker's connect attempt failed; only a missing dongle settles ownership.</summary>
     public void NoteConnectFailed()
@@ -481,11 +484,16 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     /// <summary>The link is switched off (setting or vendor conflict), so this link drives no unit and cannot own one.</summary>
-    public void NoteLinkDisabled() => _ownershipSettled = true;
+    public void NoteLinkDisabled()
+    {
+        _linkDisabled = true;
+        _ownershipSettled = true;
+    }
 
     private void ResetOwnershipLocked()
     {
         _ownershipSettled = false;
+        _linkDisabled = false;
         _settleBasePoll = _devicePolls;
     }
 
