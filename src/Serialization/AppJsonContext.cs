@@ -390,6 +390,18 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.OverlayIdentifyDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.IdentifyDisplaysBody))]
 
+// Calendar
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarSourceDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarEventDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarListResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarEventsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarCreateRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarPatchRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarSettingsDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarSettingsRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarRefreshResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarErrorResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarChangedFrame))]
 // Weather
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSnapshot))]
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherHourlyForecast))]

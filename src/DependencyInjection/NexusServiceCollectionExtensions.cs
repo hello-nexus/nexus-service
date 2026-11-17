@@ -2302,6 +2302,22 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddNexusCalendar(this IServiceCollection services)
+    {
+        services.AddSingleton<Nexus.Service.Calendar.ICalendarFetcher, Nexus.Service.Calendar.HttpCalendarFetcher>();
+        services.AddSingleton(sp =>
+        {
+            var calendar = new Nexus.Service.Calendar.CalendarService(
+                Nexus.Service.Persistence.NexusDataPaths.NexusRoot(),
+                sp.GetRequiredService<Nexus.Service.Calendar.ICalendarFetcher>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            calendar.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastCalendar(hub);
+            return calendar;
+        });
+        services.AddHostedService<Nexus.Service.Calendar.CalendarSyncWorker>();
+        return services;
+    }
+
     public static IServiceCollection AddNexusStocks(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Platform.Stocks.IStockQuoteProvider, Nexus.Service.Platform.Stocks.YahooStockQuoteProvider>();

@@ -98,6 +98,13 @@ public class NexusAppFactory : WebApplicationFactory<Program>
             services.AddSingleton<FakeWeatherProvider>();
             services.AddSingleton<Nexus.Service.Platform.Weather.IWeatherProvider>(sp => sp.GetRequiredService<FakeWeatherProvider>());
 
+            // Calendar sources and cache live under the data root and its sync would reach the network.
+            services.RemoveAll<Nexus.Service.Calendar.ICalendarFetcher>();
+            services.RemoveAll<Nexus.Service.Calendar.CalendarService>();
+            services.AddSingleton<Calendar.FakeCalendarFetcher>();
+            services.AddSingleton<Nexus.Service.Calendar.ICalendarFetcher>(sp => sp.GetRequiredService<Calendar.FakeCalendarFetcher>());
+            services.AddSingleton(sp => new Nexus.Service.Calendar.CalendarService(_configDir, sp.GetRequiredService<Nexus.Service.Calendar.ICalendarFetcher>()));
+
             // Isolate config (the auth token + all settings) to a per-factory
             // temp file so integration tests never read or mutate the
             // developer's real settings.json.

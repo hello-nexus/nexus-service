@@ -114,6 +114,7 @@ is called out here:
 | OBS endpoint, default `ws://127.0.0.1:4455` | WebSocket JSON | service -> OBS | OBS status and controls when OBS widget/actions are used. |
 | Steam Web API | HTTPS | service -> internet | Steam profile, games, friends, achievements when Steam widget/API routes run. |
 | `ipwho.is` and `api.open-meteo.com` | HTTPS | service -> internet | Weather location and forecast, cached by the service. |
+| User-supplied calendar subscription (ICS) hosts | HTTPS (HTTP accepted) | service -> internet | Calendar events. Public hosts only (every resolved address is checked at connect time), 20 s timeout, 10 MB cap, conditional GET. Later phases add Google and Microsoft calendar APIs. |
 | `discord://`, `steam://`, app URLs | OS protocol launch | service -> OS | Opens local apps. These are not app-network polling paths. |
 
 ## Auth and Reconnect Behavior
@@ -264,6 +265,7 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `cooling/warnings` | event-driven on an active-warning-set transition (NP50 heartbeat worker; future warning producers) | `{revision: long, deviceId: string}` | no current REST endpoint or React subscriber found | Broadcast infrastructure only; not yet wired to a route or UI. |
 | `diagnostics/alerts` | event-driven on a sensor alert state transition or rule change (`SensorAlertEngine`), never per evaluation tick | `{states: SensorAlertState[]}` carried inline | Diagnostics Settings sensor alerts | Subscribers may also refetch `GET /diagnostics/alerts` for rules and history. |
 | `panel/device` | event-driven on every panel device CRUD (`POST /panel/devices`, `POST /panel/devices/{id}`, `DELETE /panel/devices/{id}`) | `{revision: long, deviceId: string}` | `usePanelLayout` filters by `deviceId === mine` and refetches the device record | Cross-device layout sync; replaces the BroadcastChannel cross-tab path for cross-device updates. |
+| `calendar` | event-driven on calendar add/edit/remove, interval change and each sync | `{revision: long}` (no event data) | Calendar widget and page hooks | Push-driven refetch of `GET /api/calendar/calendars`, `/settings` and `/events`. |
 | `gallery` | event-driven on gallery source add/remove/upload and sort change | `{revision: long}` | `GalleryPage`, `useGallery()` | Push-driven refetch of `GET /gallery/items`. |
 | `cloud/accounts` | event-driven on account activation or logout (login, switch, or a recovery the service's own poll loop approved) | `{revision: long}` | `useCloudAccounts()` | Push-driven refetch of `GET /cloud/accounts`, so a sign-in that no page requested still shows without a reload. |
 | `displays` | event-driven on display topology or monitor-panel assignment change | `{revision: long}` | `useDisplayTopology()` | Push-driven refetch of `GET /displays/topology`. |
@@ -533,6 +535,7 @@ features.
 | Steam provider | HTTPS `api.steampowered.com` | when Steam widget/API routes run; widget polls every `15 s` | Steam profile, games, friends, achievements. |
 | Weather provider | HTTPS `ipwho.is` | cached `24 h` | Approximate location. |
 | Weather provider | HTTPS `api.open-meteo.com` | cached `15 min`, stale served up to `2 h` | Forecast/current weather. |
+| Calendar sync | HTTPS GET to each subscribed ICS URL | every `5`, `15` (default), `30` or `60 min` (service-wide setting), backoff to `2 h` on errors, manual refresh throttled to `30 s` | Parsed events cached under `<NexusRoot>/calendar/cache`; checked every `30 s` against wall-clock due times, so a sync follows a resume from sleep within one tick. |
 
 ## Current Hotspots for Audit
 
