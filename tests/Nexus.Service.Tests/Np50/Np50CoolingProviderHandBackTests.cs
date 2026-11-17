@@ -52,33 +52,64 @@ public class Np50CoolingProviderHandBackTests
 
         Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
         Assert.Contains(t.Writes, w => IsCoolingModeFrame(w) && w[4] == Np50Protocol.ModeSoftware);
+        var duty = Assert.Single(t.Writes, IsPortDutyFrame);
+        Assert.Equal(1, duty[3]);
+        Assert.Equal(60, duty[6]);
     }
 
     [Fact]
-    public void Releasing_the_last_driven_channel_hands_back_and_a_later_write_relatches_software()
+    public void Releasing_the_last_driven_channel_hands_back()
     {
         var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
         var provider = new Np50CoolingProvider(hub);
 
         provider.DriveFanSpeed(Fp12, 60);
         provider.ReleaseFan(Fp12);
+
         Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void Releasing_a_driven_legacy_channel_still_hands_back()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed("np50:NPTEST:legacy", 40);
+        provider.ReleaseFan("np50:NPTEST:legacy");
+
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void Releasing_a_non_last_driven_channel_does_not_hand_back()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
 
         provider.DriveFanSpeed(Fp12, 60);
+        provider.DriveFanSpeed("np50:NPTEST:port1:dev2", 60);
+        provider.ReleaseFan(Fp12);
+
         Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
     }
 
     [Fact]
-    public void A_user_pinned_firmware_mode_still_swallows_curve_writes()
+    public void A_user_pinned_firmware_mode_swallows_curve_writes_without_a_port_duty_frame()
     {
-        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
         var provider = new Np50CoolingProvider(hub);
 
         hub.SetDesiredCoolingMode(Np50Protocol.ModeStatic);
         provider.DriveFanSpeed(Fp12, 60);
 
         Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+        Assert.DoesNotContain(t.Writes, IsPortDutyFrame);
     }
+
+    // FF CC 02 <port> then one 9-byte record per slot; the mode frame is 15 bytes.
+    private static bool IsPortDutyFrame(byte[] w) =>
+        w.Length > 15 && w[0] == 0xFF && w[1] == 0xCC && w[2] == 0x02;
 
     private const string Fp12 = "np50:NPTEST:port1:dev1";
 
