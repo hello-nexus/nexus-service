@@ -450,6 +450,27 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool IsConnected => State.IsConnected;
 
+    private volatile bool _ownershipSettled;
+
+    /// <summary>
+    /// Whether it is known which units the dongle has bound: its first device list has been read,
+    /// or the link attempt failed in a way that says no dongle is usable. Stays set once true,
+    /// so a later drop does not make a wired unit wait again.
+    /// </summary>
+    public bool OwnershipSettled => _ownershipSettled;
+
+    /// <summary>
+    /// The worker's connect attempt failed. A missing, busy or unopenable dongle settles
+    /// ownership as "none"; a dongle that opened but answered nothing stays unsettled.
+    /// </summary>
+    public void NoteConnectFailed()
+    {
+        if (State.LinkStatus is not (Slv3LinkStatus.Unknown or Slv3LinkStatus.NoResponse))
+        {
+            _ownershipSettled = true;
+        }
+    }
+
     /// <summary>Opens the TX + RX dongles and learns our master MAC. Both must open for the link to be usable.</summary>
     public bool EnsureConnected()
     {
@@ -2382,6 +2403,7 @@ public sealed partial class Slv3Hub : IDisposable
         // set, so a partial report can't shrink the next read below the full list.
         _lastRecordCount = Math.Max(count, _knownChains.Count);
         PublishFansLocked(nowMs);
+        _ownershipSettled = true;
         return true;
     }
 

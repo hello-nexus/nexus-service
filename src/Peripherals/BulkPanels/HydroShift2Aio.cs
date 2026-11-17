@@ -48,10 +48,18 @@ public sealed class HydroShift2Aio : BackgroundService
     internal const int RewipeRetries = 3;
     internal const int RewipeRetryMs = RingRetryMs;
 
+    /// <summary>
+    /// Writes the dongle-bound firmware ignores wait for the dongle's first device list, but no
+    /// longer than this after the unit is first seen, so a dongle link that never settles cannot
+    /// keep a wired-only unit from its pump, fans and ring. Measured: the chain appeared well under a second after the USB connect.
+    /// </summary>
+    internal const int OwnershipWaitMaxMs = 15_000;
+
     private readonly BulkPanelHub _hub;
     private readonly HydroShift2LcdDriver _driver;
     private readonly Func<string?, bool> _wirelessOwns;
     private readonly Func<string, bool> _nexusWidgets;
+    private readonly Func<bool> _ownershipKnown;
 
     private readonly object _lock = new();
     private HydroShift2Params? _params;
@@ -80,14 +88,17 @@ public sealed class HydroShift2Aio : BackgroundService
     private int _rewipeRetriesLeft;
     private volatile bool _resumed;
     private long _ringResendAt;
+    private long _connectedSince;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
 
     /// <param name="wirelessOwns">True while a wireless dongle Nexus drives has this unit (by radio MAC; null before the first reading) bound; that link then owns pump, fans and ring.</param>
+    /// <param name="ownershipKnown">True once the dongle has reported what it has bound, or is known absent; null counts as known. Until then no pump, fan or ring write is sent, because a unit bound to the dongle stops answering for the session after a ring upload.</param>
     /// <param name="nexusWidgets">False for a unit (by radio MAC) whose glass the user gave to its own wireless screen; null keeps Nexus widgets on every unit.</param>
-    public HydroShift2Aio(BulkPanelHub hub, HydroShift2LcdDriver driver, Func<string?, bool> wirelessOwns, Func<string, bool>? nexusWidgets = null)
+    public HydroShift2Aio(BulkPanelHub hub, HydroShift2LcdDriver driver, Func<string?, bool> wirelessOwns, Func<string, bool>? nexusWidgets = null, Func<bool>? ownershipKnown = null)
     {
+        _ownershipKnown = ownershipKnown ?? (() => true);
         _hub = hub;
         _driver = driver;
         _wirelessOwns = wirelessOwns;
@@ -216,6 +227,7 @@ public sealed class HydroShift2Aio : BackgroundService
             _resumed = false;
             _ringResendAt = 0;
             _ownScreen = null;
+            _connectedSince = 0;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
             {
@@ -228,6 +240,11 @@ public sealed class HydroShift2Aio : BackgroundService
                 RaiseAvailabilityChanged();
             }
             return;
+        }
+
+        if (_connectedSince == 0)
+        {
+            _connectedSince = now;
         }
 
         if (now - _lastParamsAt >= ParamsPollMs)
@@ -334,6 +351,14 @@ public sealed class HydroShift2Aio : BackgroundService
         if (!available)
         {
             _wirelessHeld = true;
+            return;
+        }
+
+        // The dongle's chain list lags the USB connect; a ring upload sent before it names this
+        // unit wedges the firmware for the session. Nothing is sent until ownership is known, and
+        // the pump and fans keep their hardware defaults meanwhile.
+        if (!_ownershipKnown() && now - _connectedSince < OwnershipWaitMaxMs)
+        {
             return;
         }
 

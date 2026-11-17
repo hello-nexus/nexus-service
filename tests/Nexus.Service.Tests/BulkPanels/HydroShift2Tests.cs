@@ -454,6 +454,95 @@ public class HydroShift2Tests
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 
+    private static (HydroShift2Aio Aio, FirmwarePipe Pipe) AttachedWith(Func<string?, bool> owns, Func<bool> known)
+    {
+        var driver = new HydroShift2LcdDriver();
+        var hub = new BulkPanelHub(driver);
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        return (new HydroShift2Aio(hub, driver, owns, ownershipKnown: known), pipe);
+    }
+
+    [Fact]
+    public void No_ring_or_pump_write_goes_out_before_the_dongle_has_reported()
+    {
+        var (aio, pipe) = AttachedWith(_ => false, () => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.SetPumpDuty(60);
+
+        aio.Tick(10_000);
+        aio.Tick(12_000);
+        aio.Tick(10_000 + HydroShift2Aio.OwnershipWaitMaxMs - 1);
+
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushRgb, pipe.Commands);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandSyncPumpFan, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_wired_unit_gets_its_ring_and_pump_once_ownership_is_known()
+    {
+        var known = false;
+        var (aio, pipe) = AttachedWith(_ => false, () => known);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.SetPumpDuty(60);
+        aio.Tick(10_000);
+        known = true;
+
+        aio.Tick(10_250);
+
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+        Assert.Contains(HydroShift2Protocol.CommandSyncPumpFan, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_dongle_that_never_settles_cannot_hold_a_wired_unit_back_for_good()
+    {
+        var (aio, pipe) = AttachedWith(_ => false, () => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(10_000);
+
+        aio.Tick(10_000 + HydroShift2Aio.OwnershipWaitMaxMs);
+
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void No_ring_goes_out_while_the_dongle_owns_the_unit_even_once_ownership_is_known()
+    {
+        var (aio, pipe) = AttachedWith(_ => true, () => true);
+        aio.SetRing(Solid(255, 0, 0));
+
+        aio.Tick(10_000);
+        aio.Tick(60_000);
+
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushRgb, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_run_of_unanswered_frames_is_reported_as_rejected_and_one_slow_reply_is_not()
+    {
+        var driver = new HydroShift2LcdDriver();
+        var pipe = new FirmwarePipe();
+        driver.Connect(pipe, null);
+        var frame = new byte[480 * 480 * 4];
+        pipe.Silent = true;
+
+        for (var i = 0; i < HydroShift2LcdDriver.UnansweredFramesBeforeReject - 1; i++)
+        {
+            Assert.True(driver.SendFrame(pipe, null, frame));
+        }
+        pipe.Silent = false;
+        Assert.True(driver.SendFrame(pipe, null, frame));
+        pipe.Silent = true;
+        for (var i = 0; i < HydroShift2LcdDriver.UnansweredFramesBeforeReject - 1; i++)
+        {
+            Assert.True(driver.SendFrame(pipe, null, frame));
+        }
+
+        Assert.False(driver.SendFrame(pipe, null, frame));
+        Assert.True(driver.RenegotiateOnRejectedFrames);
+    }
+
     [Fact]
     public void The_ring_is_reuploaded_once_the_firmware_has_left_the_wireless_link()
     {

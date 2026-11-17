@@ -90,6 +90,7 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                 }
                 else
                 {
+                    _hub.NoteConnectFailed();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                 }
             }
