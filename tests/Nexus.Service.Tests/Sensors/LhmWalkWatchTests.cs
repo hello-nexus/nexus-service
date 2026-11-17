@@ -30,6 +30,22 @@ public class LhmWalkWatchTests
     }
 
     [Fact]
+    public void A_rebuild_that_reads_no_sensors_does_not_count_as_a_completed_sensor_walk()
+    {
+        var watch = NewWatch();
+        watch.BeginWalk();
+        watch.EndWalk();
+        var sensors = watch.CompletedSeq;
+        var begun = watch.BeginSeq;
+
+        watch.BeginWalk(sensorWalk: false);
+        watch.EndWalk();
+
+        Assert.Equal(sensors, watch.CompletedSeq);
+        Assert.Equal(begun, watch.BeginSeq);
+    }
+
+    [Fact]
     public void A_healthy_walk_never_stalls_and_readings_pass_through()
     {
         var watch = NewWatch();

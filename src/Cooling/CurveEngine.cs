@@ -255,14 +255,14 @@ public sealed class CurveEngine : BackgroundService
         {
             return;
         }
-        if (Interlocked.CompareExchange(ref _resumeWalkSeq, -1, pending) != pending)
-        {
-            return;
-        }
+        // Idempotent steps first; the pending mark is cleared only once the retake succeeded, so a throw retries on the next tick.
         lock (_lastWrite) { _lastWrite.Clear(); }
         ClearManualReplayed();
         _fans.RetakeControlAfterResume();
-        ServiceLog.Info($"[curve-engine] resume: re-drive fired after sensor walk {_guard.WalkCompletedSeq()}, every curve and manual duty is written again");
+        if (Interlocked.CompareExchange(ref _resumeWalkSeq, -1, pending) == pending)
+        {
+            ServiceLog.Info($"[curve-engine] resume: re-drive fired after sensor walk {_guard.WalkCompletedSeq()}, every curve and manual duty is written again");
+        }
     }
 
     internal void Tick()
@@ -298,7 +298,7 @@ public sealed class CurveEngine : BackgroundService
             _step = "waiting for fresh readings";
             return;
         }
-        ConsumeResumeRedrive();
+        Isolated("resume retake", ConsumeResumeRedrive);
 
         // The watchdog drove cooling mode from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.

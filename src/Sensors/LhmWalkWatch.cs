@@ -141,11 +141,12 @@ internal sealed class LhmWalkWatch
     /// <summary>Sequence number of the newest walk that ran to completion.</summary>
     internal long CompletedSeq => Interlocked.Read(ref _completedSeq);
 
-    internal void BeginWalk()
+    /// <param name="sensorWalk">False for a rebuild that never reads the sensors (the SPD gate): it still arms the stall watch but must not count as a completed sensor walk.</param>
+    internal void BeginWalk(bool sensorWalk = true)
     {
         lock (_transition)
         {
-            Interlocked.Exchange(ref _runningSeq, Interlocked.Increment(ref _beginSeq));
+            Interlocked.Exchange(ref _runningSeq, sensorWalk ? Interlocked.Increment(ref _beginSeq) : 0);
             Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
             // One deadline per walk, created on the first walk; a walk that ends in time disarms it, so nothing wakes while readings are healthy.
             (_stallTimer ??= _oneShotFactory(OnStallDeadline)).Arm(StallLimit + DeadlineSlack);
@@ -162,7 +163,10 @@ internal sealed class LhmWalkWatch
             _stallTimer?.Disarm();
             Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
             Interlocked.Exchange(ref _walkStartMs, 0);
-            Interlocked.Exchange(ref _completedSeq, Interlocked.Read(ref _runningSeq));
+            if (Interlocked.Read(ref _runningSeq) is var seq and > 0)
+            {
+                Interlocked.Exchange(ref _completedSeq, seq);
+            }
             return Interlocked.Exchange(ref _stale, 0) != 0;
         }
     }

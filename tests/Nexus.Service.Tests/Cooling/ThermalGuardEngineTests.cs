@@ -29,7 +29,16 @@ public class ThermalGuardEngineTests
         public int ReleaseAllCalls;
         public int KeepingPortsCalls;
         public int Retakes;
-        public void RetakeControlAfterResume() => Retakes++;
+        public bool ThrowOnRetake;
+        public void RetakeControlAfterResume()
+        {
+            Retakes++;
+            Order.Add(("<retake>", -1));
+            if (ThrowOnRetake)
+            {
+                throw new InvalidOperationException("retake failed");
+            }
+        }
         public bool Restores = true;
         public bool ReleaseRestoresHardwareControl(string channelId) => Restores;
 
@@ -1733,13 +1742,16 @@ public class ThermalGuardEngineTests
         mono[0] += 1000;
         e.Tick();
         Assert.Equal(1, fans.Retakes);
-        Assert.Equal(before + 2, fans.Order.Count);
+        Assert.Equal(before + 3, fans.Order.Count);
+        var retakeAt = fans.Order.FindIndex(d => d.Id == "<retake>");
+        Assert.Equal(before, retakeAt);
+        Assert.All(fans.Order.Skip(retakeAt + 1), d => Assert.NotEqual("<retake>", d.Id));
         Assert.Equal(10, fans.Order.Last(d => d.Id == "f1").Duty);
         Assert.Equal(30, fans.Order.Last(d => d.Id == "f2").Duty);
 
         mono[0] += 1000;
         e.Tick();
-        Assert.Equal(before + 2, fans.Order.Count);
+        Assert.Equal(before + 3, fans.Order.Count);
         Assert.Equal(1, fans.Retakes);
     }
 
@@ -1763,7 +1775,7 @@ public class ThermalGuardEngineTests
         seq[1] = 7;
         mono[0] += 1000;
         e.Tick();
-        Assert.Equal(before + 2, fans.Order.Count);
+        Assert.Equal(before + 3, fans.Order.Count);
     }
 
     [Fact]
@@ -1784,11 +1796,41 @@ public class ThermalGuardEngineTests
             e.Tick();
         }
         Assert.Equal(before, fans.Order.Count);
+        Assert.Equal(0, fans.Retakes);
 
         fresh[0] = true;
         mono[0] += 1000;
         e.Tick();
-        Assert.Equal(before + 2, fans.Order.Count);
+        Assert.Equal(1, fans.Retakes);
+        Assert.Equal(before + 3, fans.Order.Count);
+    }
+
+    [Fact]
+    public void Resume_RetakeThatThrows_KeepsTheRedriveArmedAndTheTickAlive_ThenSucceedsOnTheNextTick()
+    {
+        var (e, fans, mono, seq, _) = ResumeRig();
+        mono[0] += 1000;
+        e.Tick();
+        var before = fans.Order.Count;
+
+        fans.ThrowOnRetake = true;
+        e.OnSystemResumed();
+        seq[0] = 6;
+        seq[1] = 6;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(1, fans.Retakes);
+
+        fans.ThrowOnRetake = false;
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(2, fans.Retakes);
+        Assert.True(fans.Order.Count > before);
+        Assert.Equal(10, fans.Order.Last(d => d.Id == "f1").Duty);
+
+        mono[0] += 1000;
+        e.Tick();
+        Assert.Equal(2, fans.Retakes);
     }
 
     [Fact]

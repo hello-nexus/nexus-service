@@ -39,10 +39,9 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
 
     // Track which channels are under software control
     private readonly HashSet<string> _softwareControlled = new();
-    // Channels whose next write first hands the header back to its default, so the driver re-asserts software
-    // mode; LHM writes the mode register only on the transition, so a duty write alone cannot undo a
-    // firmware reset that happened during sleep.
-    private readonly HashSet<string> _retakeOnNextWrite = new();
+    // Route, engine and watchdog threads all touch _softwareControlled; every access takes _softwareLock.
+    private readonly object _softwareLock = new();
+    private readonly ResumeRetakeTracker _retake = new();
     // Track which channel id-set we last logged so re-discovery on every
     // GetFanChannels call doesn't print the same 6-line block at the per-tick
     // poll rate. Only emit when the discovered set actually changes (channel
@@ -106,7 +105,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             {
                 mode = FanModes.Curve;
             }
-            else if (_softwareControlled.Contains(m.Id))
+            else if (IsSoftwareControlled(m.Id))
             {
                 mode = FanModes.Manual;
             }
@@ -189,9 +188,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return clamped;
 
-        RetakeIfDue(mapping);
-        WriteDuty(mapping, clamped);
-        _softwareControlled.Add(channelId);
+        _retake.Write(channelId, mapping.AmdFan is not null, () => WriteDefault(mapping), () => WriteDuty(mapping, clamped));
+        MarkSoftwareControlled(channelId);
         _config.Update(s => s.Cooling.ManualSpeeds[channelId] = clamped);
         return clamped;
     }
@@ -203,35 +201,27 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         var mappings = EnsureDiscovered();
         var mapping = mappings.FirstOrDefault(m => m.Id == channelId);
         if (mapping is null) return;
-        RetakeIfDue(mapping);
         // CurveEngine retries only a write that throws.
-        if (!WriteDuty(mapping, clamped)) throw new InvalidOperationException($"ADLX refused the fan write for {channelId}");
-        _softwareControlled.Add(channelId);
+        if (!_retake.Write(channelId, mapping.AmdFan is not null, () => WriteDefault(mapping), () => WriteDuty(mapping, clamped))) throw new InvalidOperationException($"ADLX refused the fan write for {channelId}");
+        MarkSoftwareControlled(channelId);
         // No ManualSpeeds write - see interface doc.
     }
 
     public void RetakeControlAfterResume()
     {
         string[] driven;
-        lock (_softwareControlled) { driven = _softwareControlled.ToArray(); }
-        lock (_retakeOnNextWrite)
-        {
-            foreach (var id in driven)
-            {
-                _retakeOnNextWrite.Add(id);
-            }
-        }
+        lock (_softwareLock) { driven = _softwareControlled.ToArray(); }
+        _retake.Arm(driven);
     }
 
-    private void RetakeIfDue(ChannelMapping mapping)
+    private void MarkSoftwareControlled(string channelId)
     {
-        bool due;
-        lock (_retakeOnNextWrite) { due = _retakeOnNextWrite.Remove(mapping.Id); }
-        // The ADLX path takes the fan over by itself on every set.
-        if (due && mapping.AmdFan is null)
-        {
-            WriteDefault(mapping);
-        }
+        lock (_softwareLock) { _softwareControlled.Add(channelId); }
+    }
+
+    private bool IsSoftwareControlled(string channelId)
+    {
+        lock (_softwareLock) { return _softwareControlled.Contains(channelId); }
     }
 
     // WriteDefault returns the header to its SuperIO / driver default.
@@ -245,7 +235,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         if (mapping is null) return;
 
         WriteDefault(mapping);
-        _softwareControlled.Remove(channelId);
+        lock (_softwareLock) { _softwareControlled.Remove(channelId); }
+        _retake.Forget(channelId);
         _config.Update(s => s.Cooling.ManualSpeeds.Remove(channelId));
     }
 
@@ -268,7 +259,8 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             }
             catch { /* swallow */ }
         }
-        _softwareControlled.Clear();
+        lock (_softwareLock) { _softwareControlled.Clear(); }
+        _retake.Clear();
         // Cooling.ManualSpeeds is preserved: ReleaseAll runs on shutdown and
         // profile switch, where the persisted intent must survive so
         // CurveEngine's replay can re-apply it. The explicit per-fan BIOS

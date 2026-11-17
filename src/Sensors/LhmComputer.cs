@@ -255,7 +255,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 {
                     return;
                 }
-                _walkWatch.BeginWalk();
+                _walkWatch.BeginWalk(sensorWalk: false);
                 _walkWatch.SetItem("spd-gate");
                 try
                 {
