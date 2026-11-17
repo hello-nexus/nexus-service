@@ -61,6 +61,30 @@ public class LightingDevicesCatalogTests
         Assert.True(withPid > 1000, $"expected >1000 OpenRGB rows with a USB PID, got {withPid} of {openRgb.Count}");
     }
 
+    [Theory]
+    [InlineData("HX550i", "0x1C03")]
+    [InlineData("HX650i", "0x1C04")]
+    [InlineData("HX750i", "0x1C05")]
+    [InlineData("HX850i", "0x1C06")]
+    [InlineData("HX1000i", "0x1C07")]
+    [InlineData("HX1000i", "0x1C1E")]
+    [InlineData("HX1200i", "0x1C08")]
+    [InlineData("HX1500i", "0x1C1F")]
+    [InlineData("RM550i", "0x1C09")]
+    [InlineData("RM650i", "0x1C0A")]
+    [InlineData("RM750i", "0x1C0B")]
+    [InlineData("RM850i", "0x1C0C")]
+    [InlineData("RM1000i", "0x1C0D")]
+    public void Catalog_ListsCorsairPsuFanControl(string model, string pid)
+    {
+        var device = Assert.Single(
+            LightingDevicesCatalog.All,
+            d => d.Source == "nexus" && d.Vendor == "Corsair" && d.ProductId == pid && d.VendorId == "0x1B1C");
+
+        Assert.Equal(model + " PSU", device.Model);
+        Assert.Equal("fan", device.Category);
+    }
+
     [Fact]
     public void Catalog_AssignsSensibleCategories()
     {

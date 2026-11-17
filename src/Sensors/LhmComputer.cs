@@ -577,6 +577,27 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
+    /// <summary>Highest PSU temperature LHM last read, or null when it has no PSU temperature.</summary>
+    public float? MaxPsuTemperature()
+    {
+        float? max = null;
+        foreach (var hw in _computer.Hardware)
+        {
+            if (hw.HardwareType != HardwareType.Psu)
+            {
+                continue;
+            }
+            foreach (var sensor in hw.Sensors)
+            {
+                if (sensor.SensorType == SensorType.Temperature && sensor.Value is { } v && (max is null || v > max))
+                {
+                    max = v;
+                }
+            }
+        }
+        return max;
+    }
+
     /// <summary>False when the user turned off live drive activity: drive reads then happen only for SMART and explicit requests.</summary>
     public bool LiveDriveActivity => _config.Load().Monitoring.LiveDriveActivity;
 

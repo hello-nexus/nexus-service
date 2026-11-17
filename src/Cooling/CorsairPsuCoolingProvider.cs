@@ -8,15 +8,7 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
 
-/// <summary>
-/// The fan of a digital Corsair PSU as one controllable channel "corsair-psu:{n}". The PSU runs its own fan
-/// curve (hardware mode) until Nexus writes a duty, which switches it to software mode; every release path
-/// writes hardware mode back. Duty is never written below <see cref="CorsairPsuProtocol.MinDuty"/>.
-///
-/// Fail closed: a reply that does not echo its command, an unreadable mode or a failed write stops all
-/// further writes for the session and hands the fan back to the PSU. Every exchange holds
-/// <see cref="CorsairPsuBus.Gate"/> so it cannot interleave with the sensor library's reads.
-/// </summary>
+/// <summary>The fan of a digital Corsair PSU as channel "corsair-psu:1"; hardware mode until a duty is written, floor 30, fails closed to hardware mode.</summary>
 public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingProvider, IDisposable
 {
     private const string IdPrefix = "corsair-psu:";
@@ -24,31 +16,50 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
     private const string PortLabel = "PSU Fan";
     private const long ProbeIntervalMs = 10_000;
     private const long RpmIntervalMs = 5_000;
+    private const int DefaultGateWaitMs = 1_500;
+
+    // LHM does not expose the PSU's own critical temperature, so software mode ends at a fixed margin.
+    private const float ThermalTripC = 75f;
+    private const float ThermalClearC = 65f;
 
     private readonly ICorsairPsuTransport _transport;
     private readonly Func<bool> _hostReady;
     private readonly Func<long> _nowMs;
+    private readonly Func<float?>? _psuTemperatureC;
+    private readonly int _gateWaitMs;
 
-    // Written only under CorsairPsuBus.Gate; read by the snapshot methods under _stateLock.
+    // Mutated under CorsairPsuBus.Gate. _device, _lastDuty, _rpm and _rpmKnown are also written under
+    // _stateLock because GetFanChannels snapshots them without the gate.
     private readonly object _stateLock = new();
     private CorsairPsuInfo? _device;
-    private bool _initialized;
+    private volatile bool _initialized;
     private bool _startupChecked;
-    private bool _softwareMode;
-    private bool _reassertMode;
-    private bool _failedClosed;
+    private volatile bool _softwareMode;
+    private volatile bool _reassertMode;
+    private volatile bool _failedClosed;
+    private volatile bool _restoreWanted;
+    private volatile bool _thermalHold;
+    private volatile bool _notReadyLogged;
     private int _lastDuty;
     private int _rpm;
     private bool _rpmKnown;
     private long _nextProbeMs;
     private long _nextRpmMs;
-    private bool _disposed;
+    private long _nextRestoreMs;
+    private volatile bool _disposed;
 
-    public CorsairPsuCoolingProvider(ICorsairPsuTransport transport, Func<bool> hostReady, Func<long>? nowMs = null)
+    public CorsairPsuCoolingProvider(
+        ICorsairPsuTransport transport,
+        Func<bool> hostReady,
+        Func<long>? nowMs = null,
+        Func<float?>? psuTemperatureC = null,
+        int gateWaitMs = DefaultGateWaitMs)
     {
         _transport = transport;
         _hostReady = hostReady;
         _nowMs = nowMs ?? (() => Environment.TickCount64);
+        _psuTemperatureC = psuTemperatureC;
+        _gateWaitMs = gateWaitMs;
     }
 
     public static bool IsCorsairPsuId(string id) =>
@@ -106,14 +117,11 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
 
     public void ReleaseAll() => RestoreHardware("release all");
 
-    // The mode may not have survived the sleep, so the next write sets it again. It stays recorded as
-    // software so a release still writes hardware mode.
+    // The mode and the session may not survive sleep. Stays recorded as software so a release still restores hardware mode.
     public void RetakeControlAfterResume()
     {
-        lock (CorsairPsuBus.Gate)
-        {
-            _reassertMode = true;
-        }
+        _reassertMode = true;
+        _initialized = false;
     }
 
     public Task<IReadOnlyList<FanCalibration>> CalibrateAsync(
@@ -160,8 +168,8 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         {
             return;
         }
-        _disposed = true;
         RestoreHardware("dispose");
+        _disposed = true;
     }
 
     // ── internals ──
@@ -169,59 +177,115 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
     private static string ModelName(CorsairPsuInfo dev) =>
         CorsairPsuProtocol.Models.TryGetValue(dev.ProductId, out var name) ? name : "Corsair PSU";
 
-    private bool Ready => _hostReady();
+    private bool TryEnterGate() => Monitor.TryEnter(CorsairPsuBus.Gate, _gateWaitMs);
 
-    /// <summary>Tracks presence and reads the fan speed, each on its own interval.</summary>
+    private static void ExitGate() => Monitor.Exit(CorsairPsuBus.Gate);
+
+    private bool NeedsRestore => _softwareMode && (_failedClosed || _restoreWanted || _thermalHold);
+
+    /// <summary>Tracks presence, retries a pending hardware-mode restore, and reads the fan speed, each on its own interval.</summary>
     private void Refresh()
     {
-        if (!Ready)
+        if (!_hostReady() || _disposed || !TryEnterGate())
         {
             return;
         }
-        var now = _nowMs();
-        lock (CorsairPsuBus.Gate)
+        try
         {
+            var now = _nowMs();
             if (now >= _nextProbeMs)
             {
                 _nextProbeMs = now + ProbeIntervalMs;
-                var found = _transport.Find();
-                if (found is null && _device is not null)
-                {
-                    ServiceLog.Warn("[corsair-psu] device removed");
-                    ResetSession();
-                }
-                else if (found is not null && _device is null)
-                {
-                    lock (_stateLock)
-                    {
-                        _device = found;
-                    }
-                    ServiceLog.Info($"[corsair-psu] found {ModelName(found)}");
-                }
+                Probe();
             }
-            if (_device is null || _failedClosed)
+            if (_device is null)
             {
                 return;
             }
-            if (!EnsureSession())
+            CheckThermal();
+            if (NeedsRestore && now >= _nextRestoreMs)
+            {
+                _nextRestoreMs = now + ProbeIntervalMs;
+                TryRestoreHardware("retry");
+            }
+            if (_failedClosed || !EnsureSession() || now < _nextRpmMs)
             {
                 return;
             }
-            if (now >= _nextRpmMs)
+            _nextRpmMs = now + RpmIntervalMs;
+            if (Exchange(CorsairPsuProtocol.BuildReadFanSpeed()) is not { } reply)
             {
-                _nextRpmMs = now + RpmIntervalMs;
-                var reply = Exchange(CorsairPsuProtocol.BuildReadFanSpeed());
-                if (reply is null)
-                {
-                    return;
-                }
-                var rpm = CorsairPsuProtocol.ParseRpm(reply);
-                lock (_stateLock)
-                {
-                    _rpmKnown = rpm is not null;
-                    _rpm = rpm ?? 0;
-                }
+                return;
             }
+            var rpm = CorsairPsuProtocol.ParseRpm(reply);
+            lock (_stateLock)
+            {
+                _rpmKnown = rpm is not null;
+                _rpm = rpm ?? 0;
+            }
+        }
+        finally
+        {
+            ExitGate();
+        }
+    }
+
+    private void Probe()
+    {
+        var found = _transport.Find();
+        if (found is null)
+        {
+            if (_device is not null)
+            {
+                ServiceLog.Warn("[corsair-psu] device removed");
+                ResetSession();
+            }
+            return;
+        }
+        if (_device is not null && !string.Equals(_device.Path, found.Path, StringComparison.Ordinal))
+        {
+            ServiceLog.Warn("[corsair-psu] device re-enumerated under a new path");
+            ResetSession();
+        }
+        if (_device is null)
+        {
+            lock (_stateLock)
+            {
+                _device = found;
+            }
+            ServiceLog.Info($"[corsair-psu] found {ModelName(found)}");
+        }
+    }
+
+    private float? PsuTemperature()
+    {
+        try
+        {
+            return _psuTemperatureC?.Invoke();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Hands the fan to the PSU while it runs hot, and holds writes off until it cools.</summary>
+    private void CheckThermal()
+    {
+        if (PsuTemperature() is not { } temp)
+        {
+            return;
+        }
+        if (!_thermalHold && temp >= ThermalTripC)
+        {
+            _thermalHold = true;
+            ServiceLog.Warn($"[corsair-psu] PSU temperature {temp:0} C reached the guard, returning the fan to the PSU");
+            TryRestoreHardware("thermal guard");
+        }
+        else if (_thermalHold && temp <= ThermalClearC)
+        {
+            _thermalHold = false;
+            ServiceLog.Info("[corsair-psu] PSU temperature back in range, software control allowed");
         }
     }
 
@@ -232,19 +296,28 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         {
             return duty;
         }
-        if (!Ready)
+        if (!_hostReady())
         {
-            ServiceLog.Warn("[corsair-psu] write dropped: sensor library still opening");
+            if (!_notReadyLogged)
+            {
+                _notReadyLogged = true;
+                ServiceLog.Warn("[corsair-psu] writes dropped until the sensor library has opened");
+            }
             return duty;
         }
         Refresh();
-        lock (CorsairPsuBus.Gate)
+        if (!TryEnterGate())
+        {
+            return duty;
+        }
+        try
         {
             if (_disposed || _device is null || _failedClosed)
             {
                 return duty;
             }
-            if (!EnsureSession())
+            CheckThermal();
+            if (_thermalHold || !EnsureSession())
             {
                 return duty;
             }
@@ -267,32 +340,55 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
             {
                 return duty;
             }
+            _restoreWanted = false;
             lock (_stateLock)
             {
                 _lastDuty = duty;
             }
+        }
+        finally
+        {
+            ExitGate();
         }
         return duty;
     }
 
     private void RestoreHardware(string why)
     {
-        lock (CorsairPsuBus.Gate)
+        _restoreWanted = true;
+        if (!TryEnterGate())
         {
-            if (_device is null || !_softwareMode)
-            {
-                return;
-            }
-            // The session is already initialized or the mode could not have been set.
-            if (WriteHardwareMode())
-            {
-                _softwareMode = false;
-                ServiceLog.Info($"[corsair-psu] fan mode: hardware ({why})");
-            }
-            else
-            {
-                _failedClosed = true;
-            }
+            ServiceLog.Warn($"[corsair-psu] hardware mode restore ({why}) waiting on the PSU bus, will retry");
+            return;
+        }
+        try
+        {
+            TryRestoreHardware(why);
+        }
+        finally
+        {
+            ExitGate();
+        }
+    }
+
+    /// <summary>Caller holds the gate. Leaves the restore pending when the write does not read back.</summary>
+    private void TryRestoreHardware(string why)
+    {
+        if (_device is null || !_softwareMode)
+        {
+            _restoreWanted = false;
+            return;
+        }
+        if (WriteHardwareMode())
+        {
+            _softwareMode = false;
+            _restoreWanted = false;
+            ServiceLog.Info($"[corsair-psu] fan mode: hardware ({why})");
+        }
+        else
+        {
+            _restoreWanted = true;
+            _failedClosed = true;
         }
     }
 
@@ -309,10 +405,12 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         _softwareMode = false;
         _reassertMode = false;
         _failedClosed = false;
+        _restoreWanted = false;
+        _thermalHold = false;
         _nextRpmMs = 0;
     }
 
-    /// <summary>Handshake once per device appearance, then hand a fan left in software mode back to the PSU.</summary>
+    /// <summary>Handshake once per session, then hand a fan left in software mode back to the PSU.</summary>
     private bool EnsureSession()
     {
         if (_device is null || _failedClosed)

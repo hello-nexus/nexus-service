@@ -304,7 +304,8 @@ public static class NexusServiceCollectionExtensions
             var lhm = sp.GetService<LhmComputer>();
             return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
                 new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
-                () => lhm is null || lhm.OpenTask.IsCompleted);
+                () => lhm is null || lhm.OpenTask.IsCompleted,
+                psuTemperatureC: () => lhm?.MaxPsuTemperature());
         });
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS

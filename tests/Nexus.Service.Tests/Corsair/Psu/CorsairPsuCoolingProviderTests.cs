@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Nexus.Service.Cooling;
+using Nexus.Service.Peripherals.Hyte.MiniHub;
+using Nexus.Service.Peripherals.Hyte.Np50;
+using Nexus.Service.Plugins;
 using Nexus.Service.Peripherals.Corsair.Psu;
 using Xunit;
 
@@ -44,10 +48,32 @@ public class CorsairPsuCoolingProviderTests
         public IEnumerable<byte[]> HardwareModeWrites => Writes.Where(f => f[1] == 0xF0 && f[2] == 0x00);
     }
 
-    private static CorsairPsuCoolingProvider Make(FakePsu psu, Func<bool>? ready = null, long start = 0)
+    private static CorsairPsuCoolingProvider Make(
+        FakePsu psu, Func<bool>? ready = null, long start = 0, Func<float?>? temp = null, int gateWaitMs = 1_500)
     {
         var now = start;
-        return new CorsairPsuCoolingProvider(psu, ready ?? (() => true), () => now += 20_000);
+        return new CorsairPsuCoolingProvider(psu, ready ?? (() => true), () => now += 20_000, temp, gateWaitMs);
+    }
+
+    private sealed class NoPorts : INp50PortDiscovery
+    {
+        public IReadOnlyList<Np50PortInfo> Discover() => Array.Empty<Np50PortInfo>();
+    }
+
+    private sealed class Board : IFanControlProvider
+    {
+        public int Resumes;
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => Array.Empty<Nexus.Service.Models.Cooling.FanChannel>();
+        public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
+        public float? ReadTemperature(string sensorId) => null;
+        public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
+        public void DriveFanSpeed(string channelId, int dutyPercent) { }
+        public void ReleaseFan(string channelId) { }
+        public void ReleaseAll() { }
+        public void RetakeControlAfterResume() => Resumes++;
+        public System.Threading.Tasks.Task<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>> CalibrateAsync(
+            IReadOnlyList<string> fanIds, IProgress<Nexus.Service.Models.Cooling.FanCalibrationProgress> progress, CancellationToken ct) =>
+            System.Threading.Tasks.Task.FromResult<IReadOnlyList<Nexus.Service.Models.Cooling.FanCalibration>>(Array.Empty<Nexus.Service.Models.Cooling.FanCalibration>());
     }
 
     [Fact]
@@ -270,5 +296,129 @@ public class CorsairPsuCoolingProviderTests
         Assert.Empty(psu.Sent);
         Assert.True(provider.ReleaseRestoresHardwareControl(Id));
         Assert.False(provider.ReleaseRestoresHardwareControl("corsair:ch1"));
+    }
+    [Fact]
+    public void Composite_forwards_resume_to_the_psu_provider_and_the_next_write_redoes_the_handshake()
+    {
+        var psu = new FakePsu();
+        var provider = Make(psu);
+        var board = new Board();
+        var noPorts = new NoPorts();
+        var composite = new CompositeFanControlProvider(
+            board,
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry(),
+            new CompositeFanControlProvider.FanSource(CorsairPsuCoolingProvider.IsCorsairPsuId, provider));
+        composite.SetFanSpeed(Id, 60);
+
+        psu.Sent.Clear();
+        composite.RetakeControlAfterResume();
+        composite.DriveFanSpeed(Id, 61);
+
+        Assert.Equal(1, board.Resumes);
+        Assert.Equal(0xFE, psu.Sent[0][0]);
+        var writes = psu.Writes.ToList();
+        Assert.Equal(0xF0, writes[0][1]);
+        Assert.Equal(new byte[] { 0x02, 0x3B, 61 }, writes[1][..3]);
+    }
+
+    [Fact]
+    public void A_new_hid_path_resets_the_session_and_the_start_check_runs_on_the_new_path()
+    {
+        var psu = new FakePsu();
+        var provider = Make(psu);
+        provider.SetFanSpeed(Id, 60);
+        psu.Present = new CorsairPsuInfo(0x1C1F, "psu-2", null);
+        psu.Mode = 1;
+        Assert.Single(provider.GetFanChannels());
+        Assert.Equal(0, psu.Mode);
+        Assert.Equal("Auto", provider.GetFanChannels()[0].Mode, ignoreCase: true);
+    }
+
+    [Fact]
+    public void A_failed_restore_is_retried_until_it_reads_back_as_hardware_mode()
+    {
+        var psu = new FakePsu();
+        var provider = Make(psu);
+        provider.SetFanSpeed(Id, 60);
+        psu.IgnoreModeWrites = true;
+        provider.ReleaseAll();
+        Assert.Equal(1, psu.Mode);
+
+        psu.IgnoreModeWrites = false;
+        provider.GetFanChannels();
+        Assert.Equal(0, psu.Mode);
+        psu.Sent.Clear();
+        provider.GetFanChannels();
+        Assert.Empty(psu.HardwareModeWrites);
+    }
+
+    [Fact]
+    public void Release_that_cannot_get_the_bus_is_applied_once_the_bus_is_free()
+    {
+        var psu = new FakePsu();
+        var provider = Make(psu, gateWaitMs: 20);
+        provider.SetFanSpeed(Id, 60);
+
+        using var held = new ManualResetEventSlim();
+        using var done = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            lock (CorsairPsuBus.Gate)
+            {
+                held.Set();
+                done.Wait();
+            }
+        });
+        holder.Start();
+        held.Wait();
+        var started = DateTime.UtcNow;
+        provider.ReleaseAll();
+        provider.Dispose();
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(3));
+        Assert.Equal(1, psu.Mode);
+        done.Set();
+        holder.Join();
+
+        var second = Make(psu);
+        second.SetFanSpeed(Id, 60);
+        second.ReleaseAll();
+        Assert.Equal(0, psu.Mode);
+    }
+
+    [Fact]
+    public void Heat_returns_the_fan_to_the_psu_and_holds_writes_until_it_cools()
+    {
+        var psu = new FakePsu();
+        float? temp = 50;
+        var provider = Make(psu, temp: () => temp);
+        provider.SetFanSpeed(Id, 60);
+        Assert.Equal(1, psu.Mode);
+
+        temp = 76;
+        provider.GetFanChannels();
+        Assert.Equal(0, psu.Mode);
+
+        psu.Sent.Clear();
+        provider.SetFanSpeed(Id, 60);
+        Assert.Empty(psu.Writes);
+
+        temp = 70;
+        provider.SetFanSpeed(Id, 60);
+        Assert.Empty(psu.Writes);
+
+        temp = 64;
+        provider.SetFanSpeed(Id, 60);
+        Assert.Equal(1, psu.Mode);
+    }
+
+    [Fact]
+    public void Missing_temperature_never_blocks_control()
+    {
+        var psu = new FakePsu();
+        var provider = Make(psu, temp: () => null);
+        provider.SetFanSpeed(Id, 60);
+        Assert.Equal(1, psu.Mode);
     }
 }

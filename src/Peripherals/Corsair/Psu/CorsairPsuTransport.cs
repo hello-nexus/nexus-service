@@ -31,12 +31,11 @@ public sealed class HidCorsairPsuTransport : ICorsairPsuTransport
 
     public CorsairPsuInfo? Find()
     {
-        foreach (var pid in CorsairPsuProtocol.Models.Keys)
+        foreach (var info in _hid.FindAll())
         {
-            var found = _hid.Find(CorsairPsuProtocol.VendorId, pid);
-            if (found.Count > 0)
+            if (CorsairPsuProtocol.IsSupported(info.VendorId, info.ProductId))
             {
-                return new CorsairPsuInfo(pid, found[0].Path, found[0].Serial);
+                return new CorsairPsuInfo(info.ProductId, info.Path, info.Serial);
             }
         }
         return null;
@@ -49,7 +48,6 @@ public sealed class HidCorsairPsuTransport : ICorsairPsuTransport
         {
             return null;
         }
-        // Report id zero, then the frame.
         var report = new byte[1 + CorsairPsuProtocol.FrameLength];
         frame.CopyTo(report.AsSpan(1));
         if (!dev.Write(report))

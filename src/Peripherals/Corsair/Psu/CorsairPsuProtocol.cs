@@ -28,6 +28,8 @@ public static class CorsairPsuProtocol
     public const int MinDuty = 30;
     public const int MaxDuty = 100;
 
+    private const double MaxPlausibleRpm = 20000;
+
     /// <summary>Models with a fan we may take over, by product id.</summary>
     public static readonly IReadOnlyDictionary<int, string> Models = new Dictionary<int, string>
     {
@@ -86,7 +88,7 @@ public static class CorsairPsuProtocol
         if (mantissa > 1023) mantissa -= 2048;
         if (exponent > 15) exponent -= 32;
         var value = mantissa * Math.Pow(2, exponent);
-        if (double.IsNaN(value) || value < 0 || value > 20000) return null;
+        if (double.IsNaN(value) || value < 0 || value > MaxPlausibleRpm) return null;
         return (int)Math.Round(value);
     }
 
