@@ -461,6 +461,16 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool OwnershipSettled => _ownershipSettled;
 
+    /// <summary>Counts device-list polls; a wired unit records it when it attaches.</summary>
+    public long PollMark => Volatile.Read(ref _devicePolls);
+
+    /// <summary>
+    /// Ownership is settled and, while the link is up, a full confirm window of polls has run
+    /// since <paramref name="mark"/>, so a chain that was already bound when a unit attached late has had time to surface.
+    /// </summary>
+    public bool OwnershipSettledSince(long mark) =>
+        _ownershipSettled && (!IsConnected || PollMark - mark >= ChainConfirmWindowPolls);
+
     /// <summary>The worker's connect attempt failed; only a missing dongle settles ownership.</summary>
     public void NoteConnectFailed()
     {
@@ -470,7 +480,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    /// <summary>The link is switched off (setting or vendor conflict), so no unit is bound to it.</summary>
+    /// <summary>The link is switched off (setting or vendor conflict), so this link drives no unit and cannot own one.</summary>
     public void NoteLinkDisabled() => _ownershipSettled = true;
 
     private void ResetOwnershipLocked()
@@ -2413,7 +2423,7 @@ public sealed partial class Slv3Hub : IDisposable
         // set, so a partial report can't shrink the next read below the full list.
         _lastRecordCount = Math.Max(count, _knownChains.Count);
         PublishFansLocked(nowMs);
-        if (_anyAioBound || (_devicePolls - _settleBasePoll >= ChainConfirmWindowPolls && _unconfirmedChains.Count == 0))
+        if (_unconfirmedChains.Count == 0 && (_anyAioBound || _devicePolls - _settleBasePoll >= ChainConfirmWindowPolls))
         {
             _ownershipSettled = true;
         }

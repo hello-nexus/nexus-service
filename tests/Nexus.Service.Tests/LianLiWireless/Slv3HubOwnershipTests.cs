@@ -91,4 +91,36 @@ public partial class Slv3HubTests
 
         Assert.False(hub.OwnershipSettled);
     }
+
+    [Fact]
+    public void A_confirmed_bound_aio_does_not_settle_ownership_while_a_second_chain_is_still_pending()
+    {
+        var (hub, net) = ConfirmingHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4, DevType = 10 });
+        Ticks(hub, Slv3Hub.ChainConfirmSightings - 1);
+        net.Fans.Add(new SimulatedFan { Mac = Convert.FromHexString("AABBCCDDEE01"), MasterMac = OtherMasterMac, RxType = 5, DevType = 10 });
+
+        Ticks(hub, 1);
+        Assert.Single(hub.State.Fans);
+        Assert.False(hub.OwnershipSettled);
+
+        Ticks(hub, Slv3Hub.ChainConfirmSightings - 1);
+        Assert.Equal(2, hub.State.Fans.Length);
+        Assert.True(hub.OwnershipSettled);
+    }
+
+    [Fact]
+    public void A_late_attaching_unit_needs_a_confirm_window_of_polls_after_its_own_mark()
+    {
+        var (hub, _) = ConfirmingHub();
+        Ticks(hub, Slv3Hub.ChainConfirmWindowPolls);
+        Assert.True(hub.OwnershipSettled);
+        var mark = hub.PollMark;
+
+        Ticks(hub, Slv3Hub.ChainConfirmWindowPolls - 1);
+        Assert.False(hub.OwnershipSettledSince(mark));
+
+        Ticks(hub, 1);
+        Assert.True(hub.OwnershipSettledSince(mark));
+    }
 }

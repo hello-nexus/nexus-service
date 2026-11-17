@@ -2197,7 +2197,8 @@ public static class NexusServiceCollectionExtensions
                     && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)
                     && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))),
                 mac => !store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac, out var screen) || screen.NexusWidgets,
-                ownershipKnown: () => wireless.OwnershipSettled);
+                ownershipMark: () => wireless.PollMark,
+                ownershipSettledSince: wireless.OwnershipSettledSince);
             // Each switch to RF control redraws the AIO's own screen over the glass, so Nexus
             // widgets wipe it again. A change of owner stops or starts the stream now; the AIO's
             // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
