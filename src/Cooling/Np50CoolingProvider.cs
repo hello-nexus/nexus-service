@@ -54,6 +54,12 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     // FanChannel.Mode for channels not bound to a curve).
     private readonly HashSet<string> _softwareControlled = new();
 
+    // True while the hub's non-software mode came from our own hand-back (a
+    // release), not from the user pinning a mode. A later write then re-latches
+    // software mode instead of being swallowed as a pin.
+    private bool _handedBack;
+    private bool _pinDropLogged;
+
     public Np50CoolingProvider(Np50Hub hub)
     {
         _hub = hub;
@@ -192,10 +198,13 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // doesn't yank PWM out from under sibling fans that are still
         // actively driven.
         if (!channelId.StartsWith("np50:", StringComparison.Ordinal)) return;
-        _softwareControlled.Remove(channelId);
+        // A channel that was never software-driven (the legacy header released
+        // on first appearance at boot) has nothing to hand back, and handing the
+        // hub to firmware here would starve later curve writes to other channels.
+        var wasDriven = _softwareControlled.Remove(channelId);
         if (channelId.EndsWith(":legacy", StringComparison.Ordinal)) _hub.ClearDesiredLegacyDuty();
         if (!_hub.IsConnected) return;
-        if (_softwareControlled.Count == 0)
+        if (wasDriven && _softwareControlled.Count == 0)
         {
             HandBack();
         }
@@ -214,6 +223,8 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     // EEPROM read fails does it fall back to plain motherboard PWM.
     private void HandBack()
     {
+        _handedBack = true;
+        ServiceLog.Info("[np50-cooling] handing hub back to firmware control");
         _hub.ClearDesiredLegacyDuty();
         if (_hub.ApplyFirmwareStandaloneMode()) return;
         _hub.SetDesiredCoolingMode(Np50Protocol.ModeMotherboard);
@@ -297,8 +308,13 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // SetFanSpeed and DriveFanSpeed funnel through here; picking BIOS means
         // "stop driving PWM from software," so dropping the duty write is right.
         var pinned = _hub.DesiredCoolingMode;
-        if (pinned is byte mode && mode != Np50Protocol.ModeSoftware)
+        if (pinned is byte mode && mode != Np50Protocol.ModeSoftware && !_handedBack)
         {
+            if (!_pinDropLogged)
+            {
+                _pinDropLogged = true;
+                ServiceLog.Info($"[np50-cooling] write to {channelId} dropped: hub pinned to non-software mode {mode}");
+            }
             // Drop the channel from the software-control tracker so the next
             // GetFanChannels call surfaces Mode="Auto" and the panel renders
             // the fan in its hub-pinned state (BIOS / Static) instead of
@@ -313,6 +329,8 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // the user's Manual selection back to BIOS on the cooling-topic
         // refresh.
         _softwareControlled.Add(channelId);
+        _handedBack = false;
+        _pinDropLogged = false;
 
         // Latch desired mode to Software so the heartbeat re-asserts it on
         // drift (firmware 2.0.3.1 occasionally needs the mode-switch command

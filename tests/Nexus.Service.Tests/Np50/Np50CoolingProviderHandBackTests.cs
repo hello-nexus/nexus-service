@@ -34,11 +34,53 @@ public class Np50CoolingProviderHandBackTests
         var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeMotherboard, out var t);
         var provider = new Np50CoolingProvider(hub);
 
-        provider.ReleaseFan("np50:NPTEST:legacy");
+        provider.DriveFanSpeed(Fp12, 50);
+        provider.ReleaseFan(Fp12);
 
-        var frame = Assert.Single(t.Writes, IsCoolingModeFrame);
+        var frame = Assert.Single(t.Writes.Where(IsCoolingModeFrame).Skip(1));
         Assert.Equal(Np50Protocol.ModeMotherboard, frame[4]);
     }
+
+    [Fact]
+    public void Releasing_an_undriven_legacy_channel_before_the_first_fp12_write_keeps_fp12_writes_applied()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.ReleaseFan("np50:NPTEST:legacy");
+        provider.DriveFanSpeed(Fp12, 60);
+
+        Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
+        Assert.Contains(t.Writes, w => IsCoolingModeFrame(w) && w[4] == Np50Protocol.ModeSoftware);
+    }
+
+    [Fact]
+    public void Releasing_the_last_driven_channel_hands_back_and_a_later_write_relatches_software()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed(Fp12, 60);
+        provider.ReleaseFan(Fp12);
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+
+        provider.DriveFanSpeed(Fp12, 60);
+        Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void A_user_pinned_firmware_mode_still_swallows_curve_writes()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
+
+        hub.SetDesiredCoolingMode(Np50Protocol.ModeStatic);
+        provider.DriveFanSpeed(Fp12, 60);
+
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    private const string Fp12 = "np50:NPTEST:port1:dev1";
 
     [Fact]
     public void ReleaseAll_falls_back_to_motherboard_when_the_eeprom_read_fails()
