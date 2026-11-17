@@ -404,22 +404,109 @@ public class NzxtFanControllerTests
     private static int StartReportingWrites(FakeHid hid) =>
         hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x03);
 
+    private static int InitWrites(FakeHid hid) =>
+        hid.Writes.Count(w => w[0] == 0x60 && (w[1] == 0x02 || w[1] == 0x03));
+
     [Fact]
-    public void Poll_MissResendsStartReporting()
+    public void Poll_MissesBelowTheSilenceThresholdSendNothing()
     {
         var (hub, hid) = Connected();
         hub.StatusTimeoutMs = 20;
-        int before = StartReportingWrites(hid);
-        int intervalBefore = hid.Writes.Count(w => w[0] == 0x60 && w[1] == 0x02);
         hid.Writes.Clear();
 
-        Assert.False(hub.Poll());
+        for (int i = 0; i < NzxtFanControllerHub.SilenceResendAfterMisses - 1; i++)
+        {
+            Assert.False(hub.Poll());
+        }
+
+        Assert.Equal(0, InitWrites(hid));
+        Assert.False(hub.Lost);
+    }
+
+    [Fact]
+    public void Poll_SilenceResendsTheInitExactlyOnceAtTheThreshold()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        hid.Writes.Clear();
+
+        for (int i = 0; i < NzxtFanControllerHub.MaxMissedPolls; i++)
+        {
+            Assert.False(hub.Poll());
+        }
 
         Assert.Equal(2, hid.Writes.Count);
         Assert.Equal(new byte[] { 0x60, 0x02 }, hid.Writes[0].Take(2).ToArray());
         Assert.Equal(new byte[] { 0x60, 0x03 }, hid.Writes[1].Take(2).ToArray());
-        Assert.Equal(1, before);
-        Assert.Equal(1, intervalBefore);
+        Assert.True(hub.Lost);
+    }
+
+    [Fact]
+    public void Poll_LossComesAfterTheSingleResendWithRoomToAnswerIt()
+    {
+        Assert.True(NzxtFanControllerHub.MaxMissedPolls - NzxtFanControllerHub.SilenceResendAfterMisses >= 4);
+    }
+
+    [Fact]
+    public void Poll_StatusAfterTheResendRearmsIt()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        for (int i = 0; i < NzxtFanControllerHub.SilenceResendAfterMisses; i++)
+        {
+            hub.Poll();
+        }
+        hid.Incoming.Enqueue(Status(ThreeFans));
+        Assert.True(hub.Poll());
+        hid.Writes.Clear();
+
+        for (int i = 0; i < NzxtFanControllerHub.SilenceResendAfterMisses; i++)
+        {
+            hub.Poll();
+        }
+
+        Assert.Equal(2, InitWrites(hid));
+    }
+
+    [Fact]
+    public void Silence_KeepsTheChannelsPresentWithTheLastReadings()
+    {
+        var (hub, _) = Connected();
+        hub.StatusTimeoutMs = 20;
+        var provider = new NzxtFanControllerCoolingProvider(hub);
+        var before = provider.GetFanChannels();
+
+        for (int i = 0; i < NzxtFanControllerHub.MaxMissedPolls - 1; i++)
+        {
+            hub.Poll();
+            var channels = provider.GetFanChannels();
+            Assert.Equal(NzxtFanControllerProtocol.FanChannelCount, channels.Count);
+            Assert.Equal(before.Select(c => (c.Id, c.Rpm, c.DutyPercent)), channels.Select(c => (c.Id, c.Rpm, c.DutyPercent)));
+        }
+        Assert.True(hub.IsConnected);
+        Assert.False(hub.Lost);
+    }
+
+    [Fact]
+    public void Silence_DutyWrittenDuringSilenceIsStillSentAndReassertedAgainstTheNextReport()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        var provider = new NzxtFanControllerCoolingProvider(hub);
+        hub.Poll();
+        hid.Writes.Clear();
+
+        provider.SetFanSpeed(NzxtFanControllerCoolingProvider.FanId(0), 80);
+
+        Assert.Single(hid.Writes, w => w[0] == 0x62 && w[1] == 0x01 && w[2] == 0x01 && w[3] == 80);
+        hid.Writes.Clear();
+        for (int i = 0; i < 3; i++)
+        {
+            hid.Incoming.Enqueue(Status(new[] { (2, 600, 25), (2, 600, 25), (2, 600, 25) }));
+            Assert.True(hub.Poll());
+            provider.ReassertControl();
+        }
+        Assert.Single(hid.Writes, w => w[0] == 0x62 && w[3] == 80);
     }
 
     [Fact]

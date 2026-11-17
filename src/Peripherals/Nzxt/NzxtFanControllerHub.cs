@@ -17,9 +17,16 @@ public sealed class NzxtFanControllerHub
     public const string DeviceId = "nzxt-fan-controller";
     public const string ProductName = "NZXT RGB & Fan Controller";
 
-    // Consecutive missed status windows before the device is treated as gone. Another app
+    // Missed status windows (each StatusTimeoutMs long) before the one silence resend of the
+    // init and start-reporting commands. Every resend restarts the controller's own silent
+    // spell after init, so a resend per miss keeps the stream quiet; one is sent, then the
+    // controller is given time to answer it.
+    public const int SilenceResendAfterMisses = 7;
+
+    // Consecutive missed status windows before the device is treated as gone. It sits after
+    // the single resend with several seconds for the controller to answer it. Another app
     // re-initializing the controller can silence the stream for several windows.
-    public const int MaxMissedPolls = 8;
+    public const int MaxMissedPolls = 12;
 
     // Distinct report ids tracked per diagnostic window; anything past it lands in the last bucket.
     private const int MaxTrackedReportKinds = 12;
@@ -187,9 +194,10 @@ public sealed class NzxtFanControllerHub
     }
 
     /// <summary>
-    /// Waits for the next status report. False means none arrived or the device is gone; a miss
-    /// re-sends the init and start-reporting commands, guarding against the stream having stopped.
-    /// Worker thread only.
+    /// Waits for the next status report. False means none arrived or the device is gone. Silence
+    /// is tolerated: the channels stay connected with their last readings, one init and
+    /// start-reporting resend goes out after <see cref="SilenceResendAfterMisses"/> missed windows,
+    /// and <see cref="Lost"/> turns true at <see cref="MaxMissedPolls"/>. Worker thread only.
     /// </summary>
     public bool Poll()
     {
@@ -203,23 +211,25 @@ public sealed class NzxtFanControllerHub
             Volatile.Write(ref _missedPolls, 0);
             return true;
         }
-        Interlocked.Increment(ref _missedPolls);
+        int missed = Interlocked.Increment(ref _missedPolls);
         if (_readErrors > 0)
         {
             // A failing handle will not recover by re-sending; let the worker detach and reopen.
             Volatile.Write(ref _missedPolls, MaxMissedPolls);
             return false;
         }
-        lock (_writeLock)
+        if (missed == SilenceResendAfterMisses)
         {
-            if (_device == device)
+            bool sent = false;
+            lock (_writeLock)
             {
-                if (device != null
-                    && device.Write(NzxtFanControllerProtocol.EncodeSetStatusInterval()))
+                if (device != null && _device == device)
                 {
-                    device.Write(NzxtFanControllerProtocol.EncodeStartReporting());
+                    sent = device.Write(NzxtFanControllerProtocol.EncodeSetStatusInterval())
+                        && device.Write(NzxtFanControllerProtocol.EncodeStartReporting());
                 }
             }
+            ServiceLog.Info($"[nzxt-fan-controller] no status for {missed} window(s); resent 60 02/60 03 once ok={sent}; {DescribeSilence()}");
         }
         return false;
     }
