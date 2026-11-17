@@ -142,6 +142,46 @@ public class ResumeRetakeTrackerTests
     }
 
     [Fact]
+    public void ArmingAgainAfterGivingUp_ResetsTheCap()
+    {
+        var t = new ResumeRetakeTracker();
+        var defaults = 0;
+        t.Arm(new[] { "a" });
+        for (var i = 0; i < ResumeRetakeTracker.MaxDefaultFailures; i++)
+        {
+            t.Write("a", false, () => { defaults++; throw new InvalidOperationException(); }, () => true);
+        }
+        Assert.False(t.IsArmed("a"));
+
+        t.Arm(new[] { "a" });
+        for (var i = 0; i < ResumeRetakeTracker.MaxDefaultFailures; i++)
+        {
+            t.Write("a", false, () => { defaults++; throw new InvalidOperationException(); }, () => true);
+        }
+
+        Assert.Equal(2 * ResumeRetakeTracker.MaxDefaultFailures, defaults);
+    }
+
+    [Fact]
+    public void ArmingAgainWhileTheGivingUpWriteIsInFlight_KeepsTheNewArm()
+    {
+        var t = new ResumeRetakeTracker();
+        t.Arm(new[] { "a" });
+        for (var i = 0; i < ResumeRetakeTracker.MaxDefaultFailures - 1; i++)
+        {
+            t.Write("a", false, () => throw new InvalidOperationException(), () => true);
+        }
+
+        t.Write("a", false, () =>
+        {
+            t.Arm(new[] { "a" });
+            throw new InvalidOperationException();
+        }, () => true);
+
+        Assert.True(t.IsArmed("a"));
+    }
+
+    [Fact]
     public void ForgetAndClear_DropArmedChannels()
     {
         var t = new ResumeRetakeTracker();

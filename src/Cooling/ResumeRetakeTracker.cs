@@ -6,10 +6,11 @@ namespace Nexus.Service.Cooling;
 
 /// <summary>Channels whose next write first hands the header back to its default, so the driver re-asserts
 /// software mode. LHM writes the mode register only on the transition, so a duty write alone cannot undo a
-/// firmware reset that happened during sleep. A channel stays armed until a write to it succeeds.</summary>
+/// firmware reset that happened during sleep. A channel stays armed until the hand-back and a duty write both succeed,
+/// or until its hand-backs have failed <see cref="MaxDefaultFailures"/> times in total.</summary>
 internal sealed class ResumeRetakeTracker
 {
-    /// <summary>Failed hand-backs after which a channel stops retrying; its duty writes carry on either way.</summary>
+    /// <summary>Total failed hand-backs after which a channel stops attempting them; its duty writes carry on either way. Arming the channel again resets the count.</summary>
     internal const int MaxDefaultFailures = 3;
 
     private sealed class ArmState
@@ -50,7 +51,8 @@ internal sealed class ResumeRetakeTracker
     /// <summary>Runs one duty write. An armed channel is first handed back to default unless the driver takes the
     /// channel over by itself on every set. The channel is disarmed only after the hand-back and the duty write
     /// both succeeded, and only if it was not armed again meanwhile. A failing hand-back never blocks the duty
-    /// write: the channel stays armed and retries, up to <see cref="MaxDefaultFailures"/> times.</summary>
+    /// write: the channel stays armed and the hand-back is attempted again on the next write, until
+    /// <see cref="MaxDefaultFailures"/> attempts have failed in total.</summary>
     internal bool Write(string id, bool takesOverItself, Action writeDefault, Func<bool> writeDuty)
     {
         ArmState? taken;
