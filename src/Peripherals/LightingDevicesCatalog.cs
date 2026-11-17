@@ -327,6 +327,21 @@ public static class LightingDevicesCatalog
         Native("Corsair", "iCUE LINK LCD",          "aio",      "0x1B1C", "0x0C4E", screen: true),
         Native("Corsair", "iCUE LINK XD5 Elite LCD","aio",      "0x1B1C", "0x0C43", screen: true),
 
+        // Corsair HXi and RMi PSUs: fan control only, IDs from src/Peripherals/Corsair/Psu.
+        Native("Corsair", "HX550i PSU", "fan", "0x1B1C", "0x1C03", rgb: false),
+        Native("Corsair", "HX650i PSU", "fan", "0x1B1C", "0x1C04", rgb: false),
+        Native("Corsair", "HX750i PSU", "fan", "0x1B1C", "0x1C05", rgb: false),
+        Native("Corsair", "HX850i PSU", "fan", "0x1B1C", "0x1C06", rgb: false),
+        Native("Corsair", "HX1000i PSU", "fan", "0x1B1C", "0x1C07", rgb: false),
+        Native("Corsair", "HX1000i PSU", "fan", "0x1B1C", "0x1C1E", rgb: false),
+        Native("Corsair", "HX1200i PSU", "fan", "0x1B1C", "0x1C08", rgb: false),
+        Native("Corsair", "HX1500i PSU", "fan", "0x1B1C", "0x1C1F", rgb: false),
+        Native("Corsair", "RM550i PSU", "fan", "0x1B1C", "0x1C09", rgb: false),
+        Native("Corsair", "RM650i PSU", "fan", "0x1B1C", "0x1C0A", rgb: false),
+        Native("Corsair", "RM750i PSU", "fan", "0x1B1C", "0x1C0B", rgb: false),
+        Native("Corsair", "RM850i PSU", "fan", "0x1B1C", "0x1C0C", rgb: false),
+        Native("Corsair", "RM1000i PSU", "fan", "0x1B1C", "0x1C0D", rgb: false),
+
         // NZXT Kraken - PIDs from src/Peripherals/Nzxt/KrakenModel.cs. The 2023 Kraken and
         // Kraken Elite carry an LCD but no addressable LEDs anywhere, so they are screen-only.
         Native("NZXT",    "Kraken Elite V2",        "aio",      "0x1E71", "0x3012", screen: true),

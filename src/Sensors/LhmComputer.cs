@@ -542,7 +542,18 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             var itemStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                hw.Update();
+                // The PSU driver's command and reply pair must not interleave with a fan write.
+                if (hw.HardwareType == HardwareType.Psu)
+                {
+                    lock (Nexus.Service.Peripherals.Corsair.Psu.CorsairPsuBus.Gate)
+                    {
+                        hw.Update();
+                    }
+                }
+                else
+                {
+                    hw.Update();
+                }
             }
             finally
             {

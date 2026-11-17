@@ -296,7 +296,16 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CorsairPsuCoolingProvider.IsCorsairPsuId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairPsuCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
+        services.AddSingleton<Nexus.Service.Cooling.CorsairPsuCoolingProvider>(sp =>
+        {
+            var lhm = sp.GetService<LhmComputer>();
+            return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
+                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
+                () => lhm is null || lhm.OpenTask.IsCompleted);
+        });
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
