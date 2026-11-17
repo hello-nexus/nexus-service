@@ -48,11 +48,7 @@ public sealed class HydroShift2Aio : BackgroundService
     internal const int RewipeRetries = 3;
     internal const int RewipeRetryMs = RingRetryMs;
 
-    /// <summary>
-    /// Writes the dongle-bound firmware ignores wait for the dongle's first device list, but no
-    /// longer than this after the unit is first seen, so a dongle link that never settles cannot
-    /// keep a wired-only unit from its pump, fans and ring. Measured: the chain appeared well under a second after the USB connect.
-    /// </summary>
+    /// <summary>Longest wait for the dongle to report before a wired unit is written to anyway.</summary>
     internal const int OwnershipWaitMaxMs = 15_000;
 
     private readonly BulkPanelHub _hub;
@@ -88,7 +84,7 @@ public sealed class HydroShift2Aio : BackgroundService
     private int _rewipeRetriesLeft;
     private volatile bool _resumed;
     private long _ringResendAt;
-    private long _connectedSince;
+    private long _ownershipUnknownSince;
 
     /// <summary>Whether the glass showed the AIO's own screen at the last check; null until a reading after connect names the unit.</summary>
     private bool? _ownScreen;
@@ -227,7 +223,7 @@ public sealed class HydroShift2Aio : BackgroundService
             _resumed = false;
             _ringResendAt = 0;
             _ownScreen = null;
-            _connectedSince = 0;
+            _ownershipUnknownSince = 0;
             // A reconnect reads the unit again, even while the dongle owns it and OnDisconnected is skipped.
             lock (_lock)
             {
@@ -240,11 +236,6 @@ public sealed class HydroShift2Aio : BackgroundService
                 RaiseAvailabilityChanged();
             }
             return;
-        }
-
-        if (_connectedSince == 0)
-        {
-            _connectedSince = now;
         }
 
         if (now - _lastParamsAt >= ParamsPollMs)
@@ -357,9 +348,21 @@ public sealed class HydroShift2Aio : BackgroundService
         // The dongle's chain list lags the USB connect; a ring upload sent before it names this
         // unit wedges the firmware for the session. Nothing is sent until ownership is known, and
         // the pump and fans keep their hardware defaults meanwhile.
-        if (!_ownershipKnown() && now - _connectedSince < OwnershipWaitMaxMs)
+        if (_ownershipKnown())
         {
-            return;
+            _ownershipUnknownSince = 0;
+        }
+        else
+        {
+            // Measured from when it became unknown, so a dongle reset gates again but never for longer than the cap.
+            if (_ownershipUnknownSince == 0)
+            {
+                _ownershipUnknownSince = now;
+            }
+            if (now - _ownershipUnknownSince < OwnershipWaitMaxMs)
+            {
+                return;
+            }
         }
 
         SendPumpFanIfDue(now);

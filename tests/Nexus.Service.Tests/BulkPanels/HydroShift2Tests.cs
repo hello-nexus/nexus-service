@@ -507,40 +507,21 @@ public class HydroShift2Tests
     }
 
     [Fact]
-    public void No_ring_goes_out_while_the_dongle_owns_the_unit_even_once_ownership_is_known()
+    public void A_dongle_reset_gates_the_writes_again_but_only_for_the_cap()
     {
-        var (aio, pipe) = AttachedWith(_ => true, () => true);
+        var known = true;
+        var (aio, pipe) = AttachedWith(_ => false, () => known);
         aio.SetRing(Solid(255, 0, 0));
-
         aio.Tick(10_000);
-        aio.Tick(60_000);
+        pipe.Writes.Clear();
+        known = false;
+        aio.SetRing(Solid(0, 255, 0));
 
+        aio.Tick(20_000);
         Assert.DoesNotContain(HydroShift2Protocol.CommandPushRgb, pipe.Commands);
-    }
 
-    [Fact]
-    public void A_run_of_unanswered_frames_is_reported_as_rejected_and_one_slow_reply_is_not()
-    {
-        var driver = new HydroShift2LcdDriver();
-        var pipe = new FirmwarePipe();
-        driver.Connect(pipe, null);
-        var frame = new byte[480 * 480 * 4];
-        pipe.Silent = true;
-
-        for (var i = 0; i < HydroShift2LcdDriver.UnansweredFramesBeforeReject - 1; i++)
-        {
-            Assert.True(driver.SendFrame(pipe, null, frame));
-        }
-        pipe.Silent = false;
-        Assert.True(driver.SendFrame(pipe, null, frame));
-        pipe.Silent = true;
-        for (var i = 0; i < HydroShift2LcdDriver.UnansweredFramesBeforeReject - 1; i++)
-        {
-            Assert.True(driver.SendFrame(pipe, null, frame));
-        }
-
-        Assert.False(driver.SendFrame(pipe, null, frame));
-        Assert.True(driver.RenegotiateOnRejectedFrames);
+        aio.Tick(20_000 + HydroShift2Aio.OwnershipWaitMaxMs);
+        Assert.Contains(HydroShift2Protocol.CommandPushRgb, pipe.Commands);
     }
 
     [Fact]

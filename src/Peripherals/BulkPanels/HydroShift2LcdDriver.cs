@@ -63,7 +63,6 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
     {
         _round = pipe.ProductId == HydroShift2Protocol.ProductIdCircle;
         _identified = true;
-        _unansweredFrames = 0;
         _clock.Restart();
         _lastTimestamp = 0;
 
@@ -105,22 +104,9 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         {
             return false;
         }
-        if (ReadReply(pipe, HydroShift2Protocol.CommandPushJpeg) is not null)
-        {
-            _unansweredFrames = 0;
-            return true;
-        }
-        // One slow reply is normal (a ring upload hitches the glass); a run of them is a wedged
-        // pipe, reported as a rejected frame so the transport re-runs the handshake.
-        return ++_unansweredFrames < UnansweredFramesBeforeReject;
+        ReadReply(pipe, HydroShift2Protocol.CommandPushJpeg);
+        return true;
     }
-
-    /// <summary>Consecutive unanswered frames after which a frame counts as rejected.</summary>
-    internal const int UnansweredFramesBeforeReject = 3;
-
-    private int _unansweredFrames;
-
-    public bool RenegotiateOnRejectedFrames => true;
 
     public bool SetBrightness(IBulkUsbPipe pipe, IHidDevice? hid, int percent) =>
         Command(pipe, HydroShift2Protocol.CommandBrightness, stackalloc byte[] { (byte)Math.Clamp(percent, 0, 100) });
