@@ -100,61 +100,9 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         }
     }
 
-    // Curve inputs only: no DeviceId, so monitoring keeps showing these under LHM's own PSU group.
-    public IReadOnlyList<TemperatureSource> GetTemperatureSources()
-    {
-        if (!_hostReady())
-        {
-            return Array.Empty<TemperatureSource>();
-        }
-        var sources = new List<TemperatureSource>();
-        foreach (var (id, t) in IdentifiedTemperatures())
-        {
-            sources.Add(new TemperatureSource
-            {
-                Id = id,
-                Name = t.Name.StartsWith("PSU", StringComparison.OrdinalIgnoreCase) ? t.Name : "PSU " + t.Name,
-                Category = "PSU",
-                Value = t.Celsius,
-            });
-        }
-        return sources;
-    }
+    public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
 
-    public float? ReadTemperature(string sensorId)
-    {
-        if (!IsCorsairPsuId(sensorId) || !_hostReady())
-        {
-            return null;
-        }
-        foreach (var (id, t) in IdentifiedTemperatures())
-        {
-            if (string.Equals(id, sensorId, StringComparison.Ordinal))
-            {
-                return t.Celsius;
-            }
-        }
-        return null;
-    }
-
-    private IEnumerable<(string Id, PsuTemperature Sensor)> IdentifiedTemperatures()
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var t in ReadPsuTemperatures())
-        {
-            if (!float.IsFinite(t.Celsius))
-            {
-                continue;
-            }
-            var slug = new string(Array.FindAll(t.Name.ToLowerInvariant().ToCharArray(), char.IsAsciiLetterOrDigit));
-            var id = $"{IdPrefix}1:temp:{(slug.Length == 0 ? "sensor" : slug)}";
-            for (var n = 2; !seen.Add(id); n++)
-            {
-                id = $"{IdPrefix}1:temp:{slug}-{n}";
-            }
-            yield return (id, t);
-        }
-    }
+    public float? ReadTemperature(string sensorId) => null;
 
     public int SetFanSpeed(string channelId, int dutyPercent) => WriteDuty(channelId, dutyPercent);
 

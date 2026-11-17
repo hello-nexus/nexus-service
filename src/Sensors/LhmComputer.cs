@@ -577,7 +577,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
-    /// <summary>The PSU temperature sensors LHM last read; none when it has no PSU or a sensor has no value.</summary>
+    /// <summary>The PSU temperature sensors, leaving out a reading from a stalled walk and one the curve sources would also drop.</summary>
     public IReadOnlyList<Nexus.Service.Cooling.PsuTemperature> PsuTemperatures()
     {
         var result = new List<Nexus.Service.Cooling.PsuTemperature>();
@@ -589,7 +589,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             }
             foreach (var sensor in hw.Sensors)
             {
-                if (sensor.SensorType == SensorType.Temperature && sensor.Value is { } v)
+                if (sensor.SensorType == SensorType.Temperature
+                    && LhmWalkWatch.Shared.Read(sensor.Value) is { } v
+                    && Nexus.Service.Cooling.TemperatureSourceFilter.IsPlausible(v))
                 {
                     result.Add(new Nexus.Service.Cooling.PsuTemperature(sensor.Name, v));
                 }
