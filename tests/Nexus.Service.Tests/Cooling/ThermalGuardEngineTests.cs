@@ -1821,12 +1821,16 @@ public class ThermalGuardEngineTests
         e.Tick();
         Assert.Equal(1, fans.Retakes);
 
+        var afterThrow = fans.Order.Count;
         fans.ThrowOnRetake = false;
         mono[0] += 1000;
         e.Tick();
         Assert.Equal(2, fans.Retakes);
-        Assert.True(fans.Order.Count > before);
-        Assert.Equal(10, fans.Order.Last(d => d.Id == "f1").Duty);
+        Assert.True(fans.Order.Count > afterThrow);
+        var secondRetake = fans.Order.FindLastIndex(d => d.Id == "<retake>");
+        Assert.True(secondRetake >= afterThrow);
+        Assert.Contains(fans.Order.Skip(secondRetake + 1), d => d.Id == "f1" && d.Duty == 10);
+        Assert.Contains(fans.Order.Skip(secondRetake + 1), d => d.Id == "f2" && d.Duty == 30);
 
         mono[0] += 1000;
         e.Tick();

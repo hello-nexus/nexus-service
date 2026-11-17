@@ -91,16 +91,54 @@ public class ResumeRetakeTrackerTests
     }
 
     [Fact]
-    public void ThrowingDefaultWrite_KeepsTheChannelArmedAndSkipsTheDuty()
+    public void ThrowingDefaultWrite_StillWritesTheDuty_AndKeepsTheChannelArmed()
     {
         var t = new ResumeRetakeTracker();
         var duty = 0;
         t.Arm(new[] { "a" });
 
-        Assert.Throws<InvalidOperationException>(() => t.Write("a", false, () => throw new InvalidOperationException(), () => { duty++; return true; }));
+        var ok = t.Write("a", false, () => throw new InvalidOperationException(), () => { duty++; return true; });
 
-        Assert.Equal(0, duty);
+        Assert.True(ok);
+        Assert.Equal(1, duty);
         Assert.True(t.IsArmed("a"));
+    }
+
+    [Fact]
+    public void PersistentlyThrowingDefaultWrite_GivesUpAfterTheCap_WhileDutyWritesNeverStop()
+    {
+        var t = new ResumeRetakeTracker();
+        var defaults = 0;
+        var duty = 0;
+        t.Arm(new[] { "a" });
+
+        for (var i = 0; i < ResumeRetakeTracker.MaxDefaultFailures + 3; i++)
+        {
+            t.Write("a", false, () => { defaults++; throw new InvalidOperationException(); }, () => { duty++; return true; });
+        }
+
+        Assert.Equal(ResumeRetakeTracker.MaxDefaultFailures, defaults);
+        Assert.Equal(ResumeRetakeTracker.MaxDefaultFailures + 3, duty);
+        Assert.False(t.IsArmed("a"));
+    }
+
+    [Fact]
+    public void ArmingAgainDuringAWrite_IsNotDroppedByThatWritesDisarm()
+    {
+        var t = new ResumeRetakeTracker();
+        var log = new List<string>();
+        t.Arm(new[] { "a" });
+
+        t.Write("a", false, () => log.Add("default"), () =>
+        {
+            t.Arm(new[] { "a" });
+            return true;
+        });
+
+        Assert.True(t.IsArmed("a"));
+        Write(t, log);
+        Assert.Equal(new[] { "default", "default", "duty" }, log);
+        Assert.False(t.IsArmed("a"));
     }
 
     [Fact]
