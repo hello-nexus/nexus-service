@@ -38,6 +38,7 @@ public static class SmbiosParser
     // SMBIOS Type 17 field offsets, relative to the structure start (spec 3.x).
     private const int OffsetSize = 0x0C;
     private const int OffsetDeviceLocator = 0x10;
+    private const int OffsetBankLabel = 0x11;
     private const int OffsetMemoryType = 0x12;
     private const int OffsetSpeed = 0x15;
     private const int OffsetManufacturer = 0x17;
@@ -58,6 +59,7 @@ public static class SmbiosParser
     {
         public MemoryModuleInfo Info = null!;
         public byte? MemoryType;
+        public string BankLabel = "";
     }
 
     /// <summary>Parses every populated Type 17 structure plus an XMP-likely
@@ -68,7 +70,20 @@ public static class SmbiosParser
     {
         var parsed = ParseDevices(rawFirmwareTableBuffer);
         var modules = new List<MemoryModuleInfo>(parsed.Count);
-        foreach (var p in parsed) modules.Add(p.Info);
+        var duplicateSlots = parsed.GroupBy(p => p.Info.Slot).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet();
+        foreach (var p in parsed)
+        {
+            var info = p.Info;
+            // Boards that reuse one DeviceLocator across channels (e.g. "DIMM 1") only differ by BankLabel.
+            if (duplicateSlots.Contains(info.Slot) && p.BankLabel.Length > 0 && p.BankLabel != info.Slot)
+            {
+                info = info with { Slot = $"{p.BankLabel} / {info.Slot}" };
+            }
+
+            var (name, _) = Sensors.HardwareInventoryParsers.ResolveManufacturer(info.Manufacturer, info.ModuleManufacturerId);
+            modules.Add(info with { Manufacturer = name });
+        }
+
         return (modules, ComputeXmpLikelyActive(parsed));
     }
 
@@ -267,6 +282,7 @@ public static class SmbiosParser
         return new ParsedModule
         {
             MemoryType = memoryType,
+            BankLabel = ReadString(b, offset, length, OffsetBankLabel, strings),
             Info = new MemoryModuleInfo(slot, sizeBytes, maxSpeedMts, configuredSpeedMts, manufacturer, partNumber)
             {
                 ModuleManufacturerId = moduleManufacturerId,
