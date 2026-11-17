@@ -284,4 +284,45 @@ public class TryxSlideshowTests
 
         Assert.Equal("b.mp4", s.Tick(() => Library, 20_000));
     }
+
+    [Fact]
+    public void A_duration_learned_after_the_hold_is_due_does_not_extend_it()
+    {
+        var duration = 0.0;
+        var s = Build(_ => duration);
+        s.Configure(On(intervalSec: 5), "a.mp4", Library, 0);
+
+        duration = 20;
+        s.DurationLearned("a.mp4", 5_000);
+
+        Assert.Equal("b.mp4", s.Tick(() => Library, 5_000));
+    }
+
+    [Fact]
+    public void A_duration_learned_with_finish_videos_off_changes_nothing()
+    {
+        var duration = 0.0;
+        var s = Build(_ => duration);
+        s.Configure(On(intervalSec: 5, finishVideos: false), "a.mp4", Library, 0);
+
+        duration = 20;
+        s.DurationLearned("a.mp4", 1_000);
+
+        Assert.Equal("b.mp4", s.Tick(() => Library, 5_000));
+    }
+
+    [Fact]
+    public void A_rearm_with_the_duration_known_then_learned_does_not_over_extend()
+    {
+        var duration = 0.0;
+        var s = Build(_ => duration);
+        s.Configure(On(intervalSec: 5), "a.mp4", Library, 0);
+
+        duration = 20;
+        s.Rearm("a.mp4", 3_000);
+        s.DurationLearned("a.mp4", 3_500);
+
+        Assert.Null(s.Tick(() => Library, 22_999));
+        Assert.Equal("b.mp4", s.Tick(() => Library, 23_000));
+    }
 }

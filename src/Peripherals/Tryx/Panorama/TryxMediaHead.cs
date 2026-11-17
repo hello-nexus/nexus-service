@@ -39,6 +39,19 @@ public static class TryxMediaHead
         return kf is null ? null : new Head(kf, width, height, duration);
     }
 
+    /// <summary>Container-header duration only, no keyframe needed: null until the header bytes are
+    /// all present, 0 when the file has none (bare Annex-B) or carries no frame rate or count.</summary>
+    public static double? ParseDuration(ReadOnlySpan<byte> file)
+    {
+        if (IsStartCode(file)) return 0;
+        if (file.Length < 4) return null;
+        var headerLen = BinaryPrimitives.ReadUInt32LittleEndian(file);
+        if (headerLen > (uint)(file.Length - 4)) return null;
+        int width = 0, height = 0;
+        ReadMediaHeader(file.Slice(4, (int)headerLen), ref width, ref height, out var duration);
+        return duration;
+    }
+
     // MediaHeaderPb { frame_rate = 5, width = 6, height = 7, total_frame_count = 8 }, all varints.
     private static void ReadMediaHeader(ReadOnlySpan<byte> hdr, ref int width, ref int height, out double duration)
     {

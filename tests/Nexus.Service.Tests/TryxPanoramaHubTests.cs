@@ -40,11 +40,19 @@ public class TryxPanoramaHubTests
         public Dictionary<string, byte[]> PanelFiles { get; } = new();
         public int PullChunkSize { get; set; } = 65536;
         public int Pulls { get; private set; }
+        public bool SupportsFilePull { get; set; } = true;
         // Answers this many pulls with an error reply first, like a stray reply to another frame.
         public int FailNextPulls { get; set; }
+        // Answers this many pulls with a timeout (null), the transient link failure.
+        public int TimeoutNextPulls { get; set; }
         public TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs)
         {
             Pulls++;
+            if (TimeoutNextPulls > 0)
+            {
+                TimeoutNextPulls--;
+                return null;
+            }
             if (FailNextPulls > 0)
             {
                 FailNextPulls--;
@@ -1337,6 +1345,92 @@ public class TryxPanoramaHubTests
         {
             try { File.Delete(System.IO.Path.Combine(TryxThumbnailCache.CacheDir, name + ".dur")); } catch { }
         }
+    }
+
+    private static byte[] HeaderOnlyFile(int frames)
+    {
+        var full = TryxRkProtocol.WrapMediaContainer([0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32], fps: 30, width: 2240, height: 1080, frameCount: frames, magic: 1);
+        var headerLen = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(full);
+        return full[..(4 + headerLen)];
+    }
+
+    private (TryxPanoramaHub Hub, RecordingTransport Transport, string Name) HubWithClip(byte[] file)
+    {
+        var name = $"kanali-dur-{Guid.NewGuid():N}.mp4.h264_2240x1080";
+        var recording = new RecordingTransport { PullChunkSize = 4096 };
+        recording.PanelFiles[name] = file;
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        return (hub, recording, name);
+    }
+
+    private static void DeleteDur(string name)
+    {
+        try { File.Delete(System.IO.Path.Combine(TryxThumbnailCache.CacheDir, name + ".dur")); } catch { }
+    }
+
+    [Fact]
+    public void FillDuration_reads_a_header_only_file_without_needing_a_keyframe()
+    {
+        var (hub, _, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+        try
+        {
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(15, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally { DeleteDur(name); }
+    }
+
+    [Fact]
+    public void FillDuration_skips_the_pull_when_a_duration_is_already_stored()
+    {
+        var (hub, transport, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+        try
+        {
+            TryxThumbnailCache.WriteDuration(name, 7);
+
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(0, transport.Pulls);
+            Assert.Equal(7, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally { DeleteDur(name); }
+    }
+
+    [Fact]
+    public void TryEnqueueDuration_dedupes_a_clip_already_attempted()
+    {
+        var (hub, _, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+
+        Assert.True(hub.TryEnqueueDuration(name, out _));
+        Assert.False(hub.TryEnqueueDuration(name, out _));
+    }
+
+    [Fact]
+    public void FillDuration_link_failures_are_retried_until_the_cap_then_left()
+    {
+        var (hub, transport, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+        transport.TimeoutNextPulls = 100;
+        Assert.True(hub.TryEnqueueDuration(name, out var key));
+
+        hub.FillDuration(name, key);
+        Assert.True(hub.TryEnqueueDuration(name, out key));
+        hub.FillDuration(name, key);
+        Assert.True(hub.TryEnqueueDuration(name, out key));
+        hub.FillDuration(name, key);
+
+        Assert.False(hub.TryEnqueueDuration(name, out _));
+        Assert.Equal(0, TryxThumbnailCache.ReadDuration(name));
+    }
+
+    [Fact]
+    public void TryEnqueueDuration_is_skipped_when_the_transport_cannot_pull_files()
+    {
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => new RecordingTransport { SupportsFilePull = false });
+        hub.EnsureConnected();
+
+        Assert.False(hub.TryEnqueueDuration("clip.mp4.h264_2240x1080", out _));
     }
 
     [Fact]

@@ -37,6 +37,7 @@ public sealed class TryxSlideshow
     private readonly object _lock = new();
     private TryxSlideshowConfig _config = new();
     private long _deadlineMs = long.MaxValue;
+    private long _startMs;
     private string _current = "";
     // Shuffle walks one lap of every clip once, rebuilt when the library changes or
     // the lap runs out; a lap never opens on the clip just shown.
@@ -68,6 +69,7 @@ public sealed class TryxSlideshow
             _lap.Clear();
             _lapPos = -1;
             var foreign = IndexOf(library, current) < 0;
+            _startMs = nowMs;
             _deadlineMs = _config.Enabled && !wasEnabled && foreign ? nowMs : nowMs + HoldMsLocked(current);
         }
     }
@@ -78,21 +80,20 @@ public sealed class TryxSlideshow
         lock (_lock)
         {
             _current = current;
+            _startMs = nowMs;
             _deadlineMs = nowMs + HoldMsLocked(current);
         }
     }
 
     /// <summary>A duration became known for <paramref name="name"/>. If it is on screen, its
-    /// hold (measured from when it started) is recomputed with it so a clip longer than the
+    /// hold (measured from when it began) is recomputed with it so a clip longer than the
     /// interval plays out; a hold that was already due is left to the next tick.</summary>
     public void DurationLearned(string name, long nowMs)
     {
         lock (_lock)
         {
             if (!string.Equals(_current, name, StringComparison.Ordinal) || _deadlineMs == long.MaxValue) return;
-            var intervalMs = _config.IntervalSec * 1000L;
-            var startMs = _deadlineMs - intervalMs;
-            var deadline = startMs + HoldMsLocked(name);
+            var deadline = _startMs + HoldMsLocked(name);
             if (deadline > _deadlineMs && nowMs < _deadlineMs) _deadlineMs = deadline;
         }
     }
@@ -107,6 +108,7 @@ public sealed class TryxSlideshow
             if (!_config.Enabled || nowMs < _deadlineMs) return null;
             // Push the deadline out first so a failed select, or a library with nothing to
             // cycle, is re-checked at the interval cadence rather than every heartbeat.
+            _startMs = nowMs;
             _deadlineMs = nowMs + _config.IntervalSec * 1000L;
             var clips = library();
             if (clips.Count < 2) return null;
@@ -156,8 +158,8 @@ public sealed class TryxSlideshow
     }
 
     // Whole plays until the interval has passed: a 3 s clip on a 10 s interval holds for
-    // four plays (12 s), a 20 s clip on a 5 s interval for one. An unknown duration (a clip
-    // Nexus did not upload, or a preset) holds for the plain interval.
+    // four plays (12 s), a 20 s clip on a 5 s interval for one. An unknown duration (not yet
+    // read off the panel, or a preset) holds for the plain interval.
     private long HoldMsLocked(string name)
     {
         var intervalMs = _config.IntervalSec * 1000L;
