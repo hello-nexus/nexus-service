@@ -8,6 +8,9 @@ using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
 
+/// <summary>One PSU temperature sensor as LHM last read it.</summary>
+public readonly record struct PsuTemperature(string Name, float Celsius);
+
 /// <summary>The fan of a digital Corsair PSU as channel "corsair-psu:1"; hardware mode until a duty is written, floor 30, fails closed to hardware mode.</summary>
 public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingProvider, IDisposable
 {
@@ -25,7 +28,7 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
     private readonly ICorsairPsuTransport _transport;
     private readonly Func<bool> _hostReady;
     private readonly Func<long> _nowMs;
-    private readonly Func<float?>? _psuTemperatureC;
+    private readonly Func<IReadOnlyList<PsuTemperature>>? _psuTemperatures;
     private readonly int _gateWaitMs;
 
     // Mutated under CorsairPsuBus.Gate. _device, _lastDuty, _rpm and _rpmKnown are also written under
@@ -52,13 +55,13 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         ICorsairPsuTransport transport,
         Func<bool> hostReady,
         Func<long>? nowMs = null,
-        Func<float?>? psuTemperatureC = null,
+        Func<IReadOnlyList<PsuTemperature>>? psuTemperatures = null,
         int gateWaitMs = DefaultGateWaitMs)
     {
         _transport = transport;
         _hostReady = hostReady;
         _nowMs = nowMs ?? (() => Environment.TickCount64);
-        _psuTemperatureC = psuTemperatureC;
+        _psuTemperatures = psuTemperatures;
         _gateWaitMs = gateWaitMs;
     }
 
@@ -97,9 +100,61 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         }
     }
 
-    public IReadOnlyList<TemperatureSource> GetTemperatureSources() => Array.Empty<TemperatureSource>();
+    // Curve inputs only: no DeviceId, so monitoring keeps showing these under LHM's own PSU group.
+    public IReadOnlyList<TemperatureSource> GetTemperatureSources()
+    {
+        if (!_hostReady())
+        {
+            return Array.Empty<TemperatureSource>();
+        }
+        var sources = new List<TemperatureSource>();
+        foreach (var (id, t) in IdentifiedTemperatures())
+        {
+            sources.Add(new TemperatureSource
+            {
+                Id = id,
+                Name = t.Name.StartsWith("PSU", StringComparison.OrdinalIgnoreCase) ? t.Name : "PSU " + t.Name,
+                Category = "PSU",
+                Value = t.Celsius,
+            });
+        }
+        return sources;
+    }
 
-    public float? ReadTemperature(string sensorId) => null;
+    public float? ReadTemperature(string sensorId)
+    {
+        if (!IsCorsairPsuId(sensorId) || !_hostReady())
+        {
+            return null;
+        }
+        foreach (var (id, t) in IdentifiedTemperatures())
+        {
+            if (string.Equals(id, sensorId, StringComparison.Ordinal))
+            {
+                return t.Celsius;
+            }
+        }
+        return null;
+    }
+
+    private IEnumerable<(string Id, PsuTemperature Sensor)> IdentifiedTemperatures()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in ReadPsuTemperatures())
+        {
+            if (!float.IsFinite(t.Celsius))
+            {
+                continue;
+            }
+            var slug = new string(Array.FindAll(t.Name.ToLowerInvariant().ToCharArray(), char.IsAsciiLetterOrDigit));
+            var id = $"{IdPrefix}1:temp:{(slug.Length == 0 ? "sensor" : slug)}";
+            for (var n = 2; !seen.Add(id); n++)
+            {
+                id = $"{IdPrefix}1:temp:{slug}-{n}";
+            }
+            yield return (id, t);
+        }
+    }
 
     public int SetFanSpeed(string channelId, int dutyPercent) => WriteDuty(channelId, dutyPercent);
 
@@ -257,22 +312,35 @@ public sealed class CorsairPsuCoolingProvider : IFanControlProvider, ICoolingPro
         }
     }
 
-    private float? PsuTemperature()
+    private IReadOnlyList<PsuTemperature> ReadPsuTemperatures()
     {
         try
         {
-            return _psuTemperatureC?.Invoke();
+            return _psuTemperatures?.Invoke() ?? Array.Empty<PsuTemperature>();
         }
         catch (Exception)
         {
-            return null;
+            return Array.Empty<PsuTemperature>();
         }
+    }
+
+    private float? PsuTemperatureC()
+    {
+        float? max = null;
+        foreach (var t in ReadPsuTemperatures())
+        {
+            if (float.IsFinite(t.Celsius) && (max is null || t.Celsius > max))
+            {
+                max = t.Celsius;
+            }
+        }
+        return max;
     }
 
     /// <summary>Hands the fan to the PSU while it runs hot, and holds writes off until it cools.</summary>
     private void CheckThermal()
     {
-        if (PsuTemperature() is not { } temp)
+        if (PsuTemperatureC() is not { } temp)
         {
             return;
         }

@@ -43,7 +43,7 @@ public sealed class HidCorsairPsuTransport : ICorsairPsuTransport
 
     public byte[]? Exchange(CorsairPsuInfo device, ReadOnlySpan<byte> frame)
     {
-        using var dev = _hid.Open(device.Path, forInput: true);
+        using var dev = _hid.OpenQuiet(device.Path, forInput: true);
         if (dev is null)
         {
             return null;

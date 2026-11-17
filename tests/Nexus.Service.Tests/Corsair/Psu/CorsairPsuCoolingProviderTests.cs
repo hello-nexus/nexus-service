@@ -52,7 +52,8 @@ public class CorsairPsuCoolingProviderTests
         FakePsu psu, Func<bool>? ready = null, long start = 0, Func<float?>? temp = null, int gateWaitMs = 1_500)
     {
         var now = start;
-        return new CorsairPsuCoolingProvider(psu, ready ?? (() => true), () => now += 20_000, temp, gateWaitMs);
+        IReadOnlyList<PsuTemperature> Read() => temp?.Invoke() is { } t ? new[] { new PsuTemperature("PSU VRM", t) } : Array.Empty<PsuTemperature>();
+        return new CorsairPsuCoolingProvider(psu, ready ?? (() => true), () => now += 20_000, Read, gateWaitMs);
     }
 
     private sealed class NoPorts : INp50PortDiscovery
@@ -420,5 +421,64 @@ public class CorsairPsuCoolingProviderTests
         var provider = Make(psu, temp: () => null);
         provider.SetFanSpeed(Id, 60);
         Assert.Equal(1, psu.Mode);
+    }
+    private static CorsairPsuCoolingProvider WithSensors(Func<bool> ready, params PsuTemperature[] sensors) =>
+        new(new FakePsu(), ready, () => 0, () => sensors);
+
+    [Fact]
+    public void Temperature_sources_list_each_psu_sensor_with_stable_ids_and_a_psu_category()
+    {
+        var provider = WithSensors(() => true, new PsuTemperature("PSU VRM", 41.5f), new PsuTemperature("PSU Case", 33f), new PsuTemperature("Ambient", 29f));
+
+        var sources = provider.GetTemperatureSources();
+
+        Assert.Equal(new[] { "corsair-psu:1:temp:psuvrm", "corsair-psu:1:temp:psucase", "corsair-psu:1:temp:ambient" }, sources.Select(s => s.Id));
+        Assert.Equal(new[] { "PSU VRM", "PSU Case", "PSU Ambient" }, sources.Select(s => s.Name));
+        Assert.All(sources, s => { Assert.Equal("PSU", s.Category); Assert.Null(s.DeviceId); });
+        Assert.Equal(41.5f, sources[0].Value);
+        Assert.Equal(sources.Select(s => s.Id), provider.GetTemperatureSources().Select(s => s.Id));
+    }
+
+    [Fact]
+    public void Temperature_sources_are_empty_before_the_sensor_library_opens_and_without_sensors()
+    {
+        Assert.Empty(WithSensors(() => false, new PsuTemperature("PSU VRM", 40f)).GetTemperatureSources());
+        Assert.Null(WithSensors(() => false, new PsuTemperature("PSU VRM", 40f)).ReadTemperature("corsair-psu:1:temp:psuvrm"));
+        Assert.Empty(WithSensors(() => true).GetTemperatureSources());
+    }
+
+    [Fact]
+    public void Non_finite_sensor_values_are_skipped_and_duplicate_names_get_distinct_ids()
+    {
+        var provider = WithSensors(() => true, new PsuTemperature("PSU VRM", float.NaN), new PsuTemperature("Temp", 30f), new PsuTemperature("Temp", 31f));
+
+        var sources = provider.GetTemperatureSources();
+
+        Assert.Equal(new[] { "corsair-psu:1:temp:temp", "corsair-psu:1:temp:temp-2" }, sources.Select(s => s.Id));
+    }
+
+    [Fact]
+    public void ReadTemperature_returns_the_live_value_for_a_listed_id_only()
+    {
+        var provider = WithSensors(() => true, new PsuTemperature("PSU VRM", 41.5f));
+
+        Assert.Equal(41.5f, provider.ReadTemperature("corsair-psu:1:temp:psuvrm"));
+        Assert.Null(provider.ReadTemperature("corsair-psu:1:temp:missing"));
+        Assert.Null(provider.ReadTemperature("cpu:temp"));
+    }
+
+    [Fact]
+    public void Temperature_sources_route_through_the_composite()
+    {
+        var noPorts = new NoPorts();
+        var composite = new CompositeFanControlProvider(
+            new Board(),
+            new Np50CoolingProvider(new Np50Hub(noPorts, _ => null!)),
+            new MiniHubCoolingProvider(new MiniHubHub(noPorts, _ => null!)),
+            new PluginProviderRegistry(),
+            new CompositeFanControlProvider.FanSource(CorsairPsuCoolingProvider.IsCorsairPsuId, WithSensors(() => true, new PsuTemperature("PSU Case", 35f))));
+
+        Assert.Contains(composite.GetTemperatureSources(), s => s.Id == "corsair-psu:1:temp:psucase" && s.Value == 35f);
+        Assert.Equal(35f, composite.ReadTemperature("corsair-psu:1:temp:psucase"));
     }
 }

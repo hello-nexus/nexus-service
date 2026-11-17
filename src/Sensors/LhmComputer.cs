@@ -577,10 +577,10 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         }
     }
 
-    /// <summary>Highest PSU temperature LHM last read, or null when it has no PSU temperature.</summary>
-    public float? MaxPsuTemperature()
+    /// <summary>The PSU temperature sensors LHM last read; none when it has no PSU or a sensor has no value.</summary>
+    public IReadOnlyList<Nexus.Service.Cooling.PsuTemperature> PsuTemperatures()
     {
-        float? max = null;
+        var result = new List<Nexus.Service.Cooling.PsuTemperature>();
         foreach (var hw in _computer.Hardware)
         {
             if (hw.HardwareType != HardwareType.Psu)
@@ -589,13 +589,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             }
             foreach (var sensor in hw.Sensors)
             {
-                if (sensor.SensorType == SensorType.Temperature && sensor.Value is { } v && (max is null || v > max))
+                if (sensor.SensorType == SensorType.Temperature && sensor.Value is { } v)
                 {
-                    max = v;
+                    result.Add(new Nexus.Service.Cooling.PsuTemperature(sensor.Name, v));
                 }
             }
         }
-        return max;
+        return result;
     }
 
     /// <summary>False when the user turned off live drive activity: drive reads then happen only for SMART and explicit requests.</summary>
