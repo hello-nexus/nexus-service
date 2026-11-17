@@ -53,9 +53,9 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
     public List<AudioSessionDto> Snapshot() =>
         RunOnComThread(SnapshotCore, new List<AudioSessionDto>(), "snapshot");
 
-    /// <summary>Writes to every session the strip covers. Null leaves that field alone.</summary>
-    public void Apply(string id, double? volume, bool? muted) =>
-        RunOnComThread(() => { ApplyCore(id, volume, muted); return true; }, false, "apply");
+    /// <summary>Writes to every session the strip covers, or only those on the default endpoint when <paramref name="defaultOnly"/> is set. Null leaves that field alone.</summary>
+    public void Apply(string id, double? volume, bool? muted, bool defaultOnly = false) =>
+        RunOnComThread(() => { ApplyCore(id, volume, muted, defaultOnly); return true; }, false, "apply");
 
     private List<AudioSessionDto> SnapshotCore()
     {
@@ -119,11 +119,12 @@ public sealed unsafe class WindowsAudioSessionEnumerator : IDisposable
         return list;
     }
 
-    private void ApplyCore(string id, double? volume, bool? muted)
+    private void ApplyCore(string id, double? volume, bool? muted, bool defaultOnly)
     {
         if (volume is null && muted is null) return;
         ForEachSession((ctl, pid, isSystem, endpointId, isDefaultEndpoint) =>
         {
+            if (defaultOnly && !isDefaultEndpoint) return;
             var identity = ResolveIdentity(pid, isSystem);
             if (!string.Equals(identity.Key, id, StringComparison.OrdinalIgnoreCase)) return;
 

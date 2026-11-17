@@ -68,6 +68,15 @@ public sealed class UpdateService : BackgroundService
 
     // Gate: 0 = idle, 1 = in progress.
     private int _installing;
+
+    /// <summary>True while an install or background stage holds the install gate.</summary>
+    public bool IsInstalling => Volatile.Read(ref _installing) != 0;
+
+    /// <summary>Takes the install gate for a service restart: false when an install or stage already holds it, and no install can start while it is held.</summary>
+    public bool TryHoldInstallGate() => Interlocked.CompareExchange(ref _installing, 1, 0) == 0;
+
+    /// <summary>Gives back a gate taken by <see cref="TryHoldInstallGate"/> when the restart did not go ahead.</summary>
+    public void ReleaseInstallGate() => Interlocked.Exchange(ref _installing, 0);
     private CancellationTokenSource? _installCts;
 
     // A background auto-stage (download/always) holds _installing while it

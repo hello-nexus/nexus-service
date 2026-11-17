@@ -19,9 +19,9 @@ public sealed class NexusSettings
     /// a migration in <c>JsonConfigStore.Load()</c>. Lives as a constant so
     /// tests and tooling can reference "current" without bit-rotting.
     /// </summary>
-    public const int CurrentSchemaVersion = 30;
+    public const int CurrentSchemaVersion = 32;
 
-    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). v26 was stamped by a branch build with another meaning, so v27 also whitelists the DeepCool app for an install whose Mystique is not on (idempotent, see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.WhitelistDeepCool"/>) and clears the retired desktop overlay's settings from a block that holds no widgets (see <see cref="LegacyOverlaySettings"/>). v28 folds simple mode's rainbow, bars and breathing tiles into the advanced rainbow, sharplines and breathing effects and moves the advanced rainbow's stored presets one slot up (see <see cref="Nexus.Service.Lighting.SimplePatternMigration"/>). v29 gives a USB device in secondary-monitor mode the panel look built on its virtual display (see <see cref="Nexus.Service.Panel.UsbMonitorPanelMigration"/>). v30 derives the stored simple-mode flag of the running sweep from the persisted lighting dashboard mode (see <see cref="Nexus.Service.Lighting.AnimateSimpleMigration"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
+    /// <summary>Persisted profile schema. v2 nests Theme/Panel/Overlay/Monitoring out of UiSettings into matching top-level POCOs that mirror install-defaults.json. v3 drops the <c>{s/n/b}</c> wrapper on per-widget config values; values are raw JSON (string/number/bool/object/array). v4 retires the type-scoped marketplace <c>Widgets</c> bag - every placement keeps its own config under <see cref="Nexus.Service.Models.Panel.PanelWidgetDto.Config"/>. v5 renames the <c>performance</c> cooling preset to <c>turbo</c>. v6 re-keys per-card LED map overrides/aspect ratios into the device-scoped segment-local <see cref="DevicesSettings.DeviceLedOverrides"/> / <see cref="DevicesSettings.DeviceAspectRatios"/> (zones model). v8 marks any pre-existing settings.json as already-onboarded (see <see cref="OnboardingCompleted"/>) so the first-run welcome screen only shows for installs with no settings.json at all. v9 prunes <see cref="AnimateSettings.Templates"/> to user deltas against the canonical defaults (see <see cref="Nexus.Service.Lighting.AnimateTemplateDefaults"/>). v10 prunes <see cref="AnimateSettings.States"/> entries equal to the effect's resolved selected-slot look. v11 rewrites the legacy <c>marketplace:</c> app-placement prefix to <c>app:</c> across all persisted widget types (see <see cref="Nexus.Service.Widgets.AppPrefixMigration"/>). v12 adds the <see cref="ProfileSharing.Device"/> sharing category (Stream Deck bindings), defaulted to Shared so an upgrading install keeps today's workstation-global behavior. v13 marks any pre-existing settings.json as already lighting-onboarded (see <see cref="LightingOnboardingCompleted"/>) so the lighting device-selection screen only shows for fresh installs. v14 seeded a per-page density mode that was later removed; it is now a plain version bump. v15 seeds <see cref="UiSettings.LightingDashboardMode"/> and <see cref="UiSettings.CoolingDashboardMode"/> to "advanced" for any pre-existing settings.json, so the reintroduced per-page density mode default ("simple") only applies to fresh installs. v16 marks any pre-existing settings.json as already features-onboarded (see <see cref="FeaturesOnboardingCompleted"/>) so the feature-pillars onboarding screen only shows for fresh installs; <see cref="Features"/> itself is additive (every flag already defaults true) and carries no migration arm. v18 hoists per-serial Stream Deck presets/config into the host-wide <see cref="StreamDeckSettings.Presets"/> list plus per-instance <see cref="StreamDeckSettings.Instances"/>, and lifts every deck widget's inline layout config the same way (see <see cref="Nexus.Service.Deck.DeckModesMigration"/>). v19 keeps Stream Deck and Tryx on for an upgrading install that never chose (their default turned off) and seeds the default conflict whitelist (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration"/>). v20 keeps the NZXT Kraken and ZMatrices LCD on for an upgrading install that never chose, since their defaults turned off (see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.KeepThirdPartyDevicesOn"/>). v21 marks any pre-existing settings.json as features-onboarded again, since Lighting and Cooling now read off until that flag is set. v22 opts an existing install's mice into OpenRGB (see <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults.KeepMiceOn"/>), since new installs hold them off. v23 rewrites the removed Game Sync lighting mode to static. v24 moves the stored lighting render backend "wgl" (the old default) to "angle", the new default. v25 moves a stored keeb firmware brightness equal to the old default to the new default (the old default was always persisted). v26 was stamped by a branch build with another meaning, so v27 also whitelists the DeepCool app for an install whose Mystique is not on (idempotent, see <see cref="Nexus.Service.Conflicts.ConflictWhitelistMigration.WhitelistDeepCool"/>) and clears the retired desktop overlay's settings from a block that holds no widgets (see <see cref="LegacyOverlaySettings"/>). v28 folds simple mode's rainbow, bars and breathing tiles into the advanced rainbow, sharplines and breathing effects and moves the advanced rainbow's stored presets one slot up (see <see cref="Nexus.Service.Lighting.SimplePatternMigration"/>). v29 gives a USB device in secondary-monitor mode the panel look built on its virtual display (see <see cref="Nexus.Service.Panel.UsbMonitorPanelMigration"/>). v30 derives the stored simple-mode flag of the running sweep from the persisted lighting dashboard mode (see <see cref="Nexus.Service.Lighting.AnimateSimpleMigration"/>). v31 folds each panel record's Flip180 and Portrait into one clockwise Rotation (see <see cref="Nexus.Service.Panel.PanelRotationMigration"/>). v32 places the 8.8 inch strip's single layout in the slot of the orientation it is mounted in (see <see cref="Nexus.Service.Panel.PanelLayoutSlotsMigration"/>). The v1-v4 load-time migrations were removed; records now load as-is and a malformed/older file falls back to defaults (see <see cref="JsonConfigStore"/>).</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public ThemeSettings Theme { get; set; } = new();
@@ -73,6 +73,8 @@ public sealed class NexusSettings
 
     /// <summary>Hash of the picture last uploaded to the Glacial LCD (key: its handler id), so a reconnect or restart does not rewrite a picture the panel already holds. NOT profile-scoped: it describes hardware state.</summary>
     public Dictionary<string, string> GlacialLcdPictureHashes { get; set; } = new();
+    /// <summary>Logitech speaker (G560) settings kept outside the speaker's audio effect. NOT profile-scoped: it describes this PC's speaker.</summary>
+    public LogitechSpeakerSettings LogitechSpeaker { get; set; } = new();
 
     /// <summary>EDID model identities ("CRX:ED00") panel auto-promotion has already acted on (or first observed as user-managed). A listed model is never auto-promoted again, so deleting an auto-created panel record sticks across port changes. NOT profile-scoped.</summary>
     public List<string> AutoPromotedPanelModels { get; set; } = new();
@@ -127,6 +129,9 @@ public sealed class NexusSettings
 
     /// <summary>False stops LHM from reading DIMM SPD temperatures, independent of the memory device's Nexus Control toggle. Applies live. NOT profile-scoped: workstation-level.</summary>
     public bool ReadRamTemperatures { get; set; } = true;
+
+    /// <summary>False stops LHM from opening matching STM32 serial ports to probe for a WireView Pro II. Applies live. NOT profile-scoped: workstation-level.</summary>
+    public bool PowerMonitorsEnabled { get; set; } = true;
 
     /// <summary>Linux only. False keeps the AMD GPU I2C detectors force-disabled in OpenRGB; true lifts that hold. Ignored on every other OS. Applies live. NOT profile-scoped: workstation-level.</summary>
     public bool AmdGpuLighting { get; set; }
@@ -700,6 +705,8 @@ public sealed class UnitsSettings
     public string NumberFormat { get; set; } = "system";
     /// <summary>"system" or a date pattern key such as "yyyy-mm-dd".</summary>
     public string DateFormat { get; set; } = "system";
+    /// <summary>Round temperature, power, percent, flow, noise and frequency readings to integers. Null (absent) means off; stays null until first written so older stores round-trip unchanged.</summary>
+    public bool? MonitoringWholeNumbers { get; set; }
 }
 
 /// <summary>Partial update DTO for the units block of POST /preferences.</summary>
@@ -709,6 +716,7 @@ public sealed class UnitsSettingsPatch
     public string? TimeFormat { get; set; }
     public string? NumberFormat { get; set; }
     public string? DateFormat { get; set; }
+    public bool? MonitoringWholeNumbers { get; set; }
 }
 
 /// <summary>Pin kinds a device can hold; see <see cref="DevicePin"/>.</summary>
@@ -929,6 +937,10 @@ public sealed class LightingSettings
 public sealed class BrightnessSchedule
 {
     public bool Enabled { get; set; }
+    /// <summary>Whether the lighting master brightness follows the schedule while it is on. Null (a file from before the setting) reads as true, so existing installs keep capping lighting.</summary>
+    public bool? LightingFollows { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool LightingFollowsOn => LightingFollows ?? true;
     public List<BrightnessSchedulePoint> Points { get; set; } = Nexus.Service.Lighting.MasterBrightness.DefaultSchedule();
     /// <summary>Generated sun curve replaces <see cref="Points"/> while on; null follows <see cref="SunShiftOn"/>, resolved at read time because profiles and imports skip migrations.</summary>
     public bool? SunShift { get; set; }
@@ -1266,7 +1278,7 @@ public sealed class CoolingSettings
     public Dictionary<string, int> ManualSpeeds { get; set; } = new();
     /// <summary>Per-channel duty offset in points, added to whatever a curve computes for that channel and clamped at the write. Absent entry means 0.</summary>
     public Dictionary<string, int> FanOffsets { get; set; } = new();
-    /// <summary>Per-channel pin override keyed by channel ID. A pinned channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An absent entry defaults to pinned for pumps, unpinned otherwise; see <see cref="Nexus.Service.Cooling.FanProfiles.IsPinned"/>.</summary>
+    /// <summary>Per-channel pin override keyed by channel ID. A pinned channel is exempt from Silent/Balanced/Turbo/Max/Off/Custom preset applies. An absent entry defaults to pinned for pumps and GPU fans, unpinned otherwise; see <see cref="Nexus.Service.Cooling.FanProfiles.IsPinned"/>.</summary>
     public Dictionary<string, bool> FanPinOverrides { get; set; } = new();
     /// <summary>Pre-rename name of <see cref="FanPinOverrides"/>. Read only so an older settings file or profile still loads; <see cref="Nexus.Service.Lighting.PinMigration"/> folds it into the new field and clears it.</summary>
     public Dictionary<string, bool>? FanLockOverrides { get; set; }
@@ -1591,10 +1603,16 @@ public sealed class DevicesSettings
     public List<string> DisabledLightingDevices { get; set; } = new();
     /// <summary>Per-card sampling mode by card id ("nearest", "rows" or "columns"); only non-default entries are stored, a card absent here reads the plain spot ("led").</summary>
     public Dictionary<string, string> SamplingModes { get; set; } = new();
+    /// <summary>Per-card color sampling by card id ("vivid" or "ignore-black"); only non-default entries are stored, a card absent here combines pixels with the plain mean ("standard"). Independent of <see cref="SamplingModes"/>.</summary>
+    public Dictionary<string, string> ColorSamplingModes { get; set; } = new();
     /// <summary>Pre-modes list of area-sampled card ids. Read only so an older file or profile still loads; <see cref="Nexus.Service.Lighting.PinMigration"/> moves each to "nearest" and clears it.</summary>
     public List<string>? AreaSamplingDevices { get; set; }
     /// <summary>Stable display ids the user turned brightness control off for. Nexus issues no DDC/CI transaction to a listed display - not even the capability probe - which is the escape hatch for a monitor whose firmware hangs on DDC. NOT profile-scoped: a panel's tolerance for DDC is a property of the hardware, not of a lighting/cooling persona.</summary>
     public List<string> DdcDisabledDisplays { get; set; } = new();
+    /// <summary>Brightness-schedule follow opt-ins by device key (the Y70, the Corsair LCD, a display id). A device follows only once its key is listed here, so the default is off. Hardware-tied like <see cref="DdcDisabledDisplays"/>, so not profile-scoped.</summary>
+    public List<string> ScheduleFollowing { get; set; } = new();
+    /// <summary>The user's own slider value, percent, per schedule key: a display id, or a device key such as "nzxt-kraken-lcd". The hardware keeps only the scaled level, so the ceiling the schedule scales is remembered here; the schedule never overwrites it.</summary>
+    public Dictionary<string, int> DisplaySliderBrightness { get; set; } = new();
     /// <summary>Ids Nexus stops pushing frames to entirely, so firmware/vendor lighting can take over. Distinct from <see cref="DisabledLightingDevices"/>, which still streams black.</summary>
     public List<string> UncontrolledLightingDevices { get; set; } = new();
     /// <summary>Handler ids the user explicitly opted out of (Nexus Control off). Overrides the brand default; a Hyte/iBUYPOWER handler absent here stays on.</summary>
@@ -1683,6 +1701,8 @@ public sealed class DevicesSettings
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
     public DeepCoolMystiqueSettings DeepCoolMystique { get; set; } = new();
+    /// <summary>What the ROG Ryujin III Extreme's screen is set to. The device cannot be read back, so this is what Nexus last sent, not a reading.</summary>
+    public RyujinDisplaySettings RyujinDisplay { get; set; } = new();
     public AsiahorseUmbraSettings AsiahorseUmbra { get; set; } = new();
     public HydroShift2LightingSettings HydroShift2Lighting { get; set; } = new();
     public HydroShift2CurveSettings HydroShift2Curve { get; set; } = new();
@@ -2276,9 +2296,26 @@ public sealed class StrimerLightingSettings
     public int Speed { get; set; } = 2;
     public int Direction { get; set; } = 0;
     public int Brightness { get; set; } = 4;
+    /// <summary>Palette shared by every mode before each mode kept its own; moved into <see cref="ModeColors"/> by <c>StrimerEffectsMigration</c> and empty afterwards.</summary>
     public List<string> Colors { get; set; } = new();
+    /// <summary>Each mode's own palette by mode key.</summary>
+    public Dictionary<string, List<string>> ModeColors { get; set; } = new();
+    /// <summary>Each mode's own speed level by mode key; a mode with no entry starts at its own default.</summary>
+    public Dictionary<string, int> ModeSpeeds { get; set; } = new();
+    /// <summary>Cables ("ch0" 24-pin, "ch1" 8-pin) and single ports ("p0".."p11") that play their own effect instead of the shared one.</summary>
+    public Dictionary<string, StrimerTargetLook> Targets { get; set; } = new();
     /// <summary>The cable plays the motherboard ARGB header through the controller's sync cable instead of Nexus.</summary>
     public bool ArgbSync { get; set; }
+}
+
+/// <summary>The effect one cable or port plays in place of the shared one.</summary>
+public sealed class StrimerTargetLook
+{
+    public string Mode { get; set; } = "rainbow";
+    public int Direction { get; set; }
+    public int Brightness { get; set; } = 4;
+    public Dictionary<string, int> ModeSpeeds { get; set; } = new();
+    public Dictionary<string, List<string>> ModeColors { get; set; } = new();
 }
 
 /// <summary>The HydroShift II pump ring: "canvas" follows the Lighting page, any other mode is a ring effect the pump head plays on its own.</summary>
@@ -2409,6 +2446,22 @@ public sealed class GlacialLcdSettings
         }
         return copy;
     }
+}
+
+/// <summary>What the ROG Ryujin III Extreme's screen is set to, as Nexus last sent it.</summary>
+public sealed class RyujinDisplaySettings
+{
+    /// <summary>Armoury Crate's default, and the value assumed until the user changes it.</summary>
+    public int Brightness { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorProtocol.DefaultBrightness;
+
+    /// <summary>0 or 90, the two values Armoury Crate sends.</summary>
+    public int Rotation { get; set; }
+
+    /// <summary>How many readings the screen shows, from MinCount to MaxCount.</summary>
+    public int SensorCount { get; set; } = Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.MaxCount;
+
+    /// <summary>Sensor ids, one per screen slot; only the first <see cref="SensorCount"/> are shown.</summary>
+    public List<string> Slots { get; set; } = new(Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.DefaultSlots);
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>
@@ -2788,6 +2841,23 @@ public sealed class SentrySettings
 
     /// <summary>Epoch ms of the last alert the cloud accepted or rate-limited. Null until one has gone out. Drives the one-alert-per-hour cooldown.</summary>
     public long? LastAlertAt { get; set; }
+}
+
+/// <summary>See <see cref="NexusSettings.LogitechSpeaker"/>.</summary>
+public sealed class LogitechSpeakerSettings
+{
+    /// <summary>The subwoofer level (0-100) last set from Nexus; null until then, so a level set elsewhere is left alone.</summary>
+    public int? SubwooferLevel { get; set; }
+    /// <summary>The preset the current EQ bands came from; null once a band was moved by hand.</summary>
+    public string? EqPreset { get; set; }
+    public List<LogitechEqPreset> CustomPresets { get; set; } = new();
+}
+
+/// <summary>A named ten-band EQ, dB per band.</summary>
+public sealed class LogitechEqPreset
+{
+    public string Name { get; set; } = "";
+    public List<float> Bands { get; set; } = new();
 }
 
 /// <summary>Where a phone's Sentry alerts are pushed, as the phone's panel page registered it. Title and body are already translated; <c>{pc}</c> is filled at send time.</summary>

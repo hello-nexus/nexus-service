@@ -28,9 +28,13 @@ public sealed class InMemoryMetricsHistoryStore : IMetricsHistoryStore, IPrivacy
     {
         lock (_lock)
         {
+            if (_sensorSeriesDeletedAt.Count > 0 && samples.Count > 0)
+            {
+                ExpireDeletedSensorSeries(samples.Max(x => x.TsSec));
+            }
             foreach (var s in samples)
             {
-                _rows[s.TsSec] = s;
+                _rows[s.TsSec] = DropDeletedSensorReadings(s);
             }
 
             if (_rows.Count == 0)
@@ -155,6 +159,77 @@ public sealed class InMemoryMetricsHistoryStore : IMetricsHistoryStore, IPrivacy
                 }
             }
             return result;
+        }
+    }
+
+    private readonly Dictionary<string, long> _sensorSeriesDeletedAt = new(StringComparer.Ordinal);
+
+    private MetricSample DropDeletedSensorReadings(MetricSample s)
+    {
+        if (_sensorSeriesDeletedAt.Count == 0 || s.SensorReadings.Count == 0)
+        {
+            return s;
+        }
+        return s with { SensorReadings = s.SensorReadings.Where(r => !_sensorSeriesDeletedAt.TryGetValue(r.Id, out var at) || s.TsSec > at).ToList() };
+    }
+
+    private void ExpireDeletedSensorSeries(long newestSec)
+    {
+        var floor = newestSec - MetricsSampleBuffer.FailureRetentionCapSeconds;
+        foreach (var id in _sensorSeriesDeletedAt.Where(kv => kv.Value < floor).Select(kv => kv.Key).ToList())
+        {
+            _sensorSeriesDeletedAt.Remove(id);
+        }
+    }
+
+    public void PruneSensorSeries(IReadOnlySet<string> liveIds)
+    {
+        lock (_lock)
+        {
+            foreach (var ts in _rows.Keys.ToList())
+            {
+                var row = _rows[ts];
+                if (row.SensorReadings.Any(r => !liveIds.Contains(r.Id)))
+                {
+                    _rows[ts] = row with { SensorReadings = row.SensorReadings.Where(r => liveIds.Contains(r.Id)).ToList() };
+                }
+            }
+        }
+    }
+
+    public IReadOnlyList<SensorSeriesDecimatedSlot> QuerySensorSeriesDecimated(long fromSec, long toSec, int stepSeconds, IReadOnlySet<string>? seriesIds = null)
+    {
+        lock (_lock)
+        {
+            var rows = _rows.Values.Where(s => s.TsSec >= fromSec && s.TsSec <= toSec).ToList();
+            var ids = rows.SelectMany(s => s.SensorReadings).Select(r => r.Id).Where(id => seriesIds is null || seriesIds.Contains(id)).Distinct(StringComparer.Ordinal).ToList();
+            var result = new List<SensorSeriesDecimatedSlot>();
+            foreach (var id in ids)
+            {
+                var value = Slots(rows, s => s.SensorReadings.FirstOrDefault(r => r.Id == id)?.Value, fromSec, toSec, stepSeconds);
+                foreach (var slot in value.Keys.OrderBy(k => k))
+                {
+                    result.Add(new SensorSeriesDecimatedSlot(id, slot, value[slot].Avg, value[slot].Max));
+                }
+            }
+            return result;
+        }
+    }
+
+    public void DeleteSensorSeries(string seriesId, long nowSec)
+    {
+        lock (_lock)
+        {
+            ExpireDeletedSensorSeries(nowSec);
+            _sensorSeriesDeletedAt[seriesId] = nowSec;
+            foreach (var ts in _rows.Keys.ToList())
+            {
+                var row = _rows[ts];
+                if (row.SensorReadings.Any(r => r.Id == seriesId))
+                {
+                    _rows[ts] = row with { SensorReadings = row.SensorReadings.Where(r => r.Id != seriesId).ToList() };
+                }
+            }
         }
     }
 

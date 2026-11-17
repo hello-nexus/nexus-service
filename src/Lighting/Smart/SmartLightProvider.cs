@@ -439,6 +439,9 @@ public sealed class SmartLightProvider : ILightingDeviceProvider, ILightingFrame
         AccumulateOrSubmit(id, new LightFrame(On: true, r, g, b, brightness01, zones));
     }
 
+    /// <summary>True when the device takes one averaged color rather than per-zone colors.</summary>
+    internal bool AveragesToSingle(string id) => !(_plans.TryGetValue(id, out var plan) && !plan.AverageToSingle);
+
     internal static (byte r, byte g, byte b) AverageRgb(ReadOnlySpan<byte> leds, int ledCount)
     {
         if (ledCount <= 0 || leds.Length < 3) return (0, 0, 0);

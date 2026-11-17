@@ -37,6 +37,20 @@ internal static class WindowsSpecsParsers
         return Encoding.ASCII.GetString(table, MsdmDataOffset, length).TrimEnd('\0').Trim();
     }
 
+    // SL_LICENSING_STATUS_LICENSED; the other values (unlicensed, grace, notification) are not activated.
+    private const int SlStatusLicensed = 1;
+
+    /// <summary>
+    /// Whether Windows is activated given the per-SKU licensing statuses of the
+    /// Windows application: true when any SKU is licensed, false when none is,
+    /// null when the list is empty (nothing to judge).
+    /// </summary>
+    public static bool? IsActivated(IReadOnlyCollection<int> skuStatuses)
+    {
+        if (skuStatuses.Count == 0) return null;
+        return skuStatuses.Contains(SlStatusLicensed);
+    }
+
     /// <summary>
     /// Win32_OperatingSystem.Caption without its "Microsoft " prefix. The
     /// registry ProductName still says "Windows 10" on Windows 11, so a build at

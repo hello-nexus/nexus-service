@@ -17,10 +17,15 @@ float ring(float r, float radius, float width) {
 void main() {
     vec2 uv = uv01();
     vec2 p = uvCentered();
-    float t = mod(u_time * u_speed * 0.4, 1000.0);
+    // Unwrapped clock for every trig and drift term: wrapping it would jump each phase.
+    float t = u_time * u_speed * 0.4;
     int count = int(clamp(u_count, 2.0, 28.0));
     float rise = clamp(u_rise, 0.1, 3.0);
     float irid = clamp(u_irid, 0.0, 2.0);
+    // Rise clock for the linear cycles. Every bubble's rate is quantized so the wrap lands
+    // on a whole number of its alpha-period cycles, which makes the wrap invisible and
+    // keeps the value fed to fract small however large u_time grows.
+    float riseClock = mod(t * rise, 1024.0);
 
     // Rich, layered underwater backdrop. Three ingredients stacked:
     // 1. Vertical aqua gradient (top lighter, bottom deeper).
@@ -45,10 +50,12 @@ void main() {
     }
 
     // Caustic-like color blobs so the backdrop has real color variety.
-    vec2 cq = p * 1.2 + vec2(t * 0.06, t * 0.04);
+    // The blotches wander on bounded sin loops instead of scrolling, so the noise
+    // coordinate never grows with the clock.
+    vec2 cq = p * 1.2 + vec2(sin(t * 0.07), cos(t * 0.05)) * 0.6;
     // perf: caustic fbm->fbm3 (low-freq blotches, fine octaves invisible)
-    float blob1 = fbm3(cq + fbm3(cq * 1.3 + t * 0.05));
-    float blob2 = fbm3(cq * 0.7 + vec2(3.1, 7.9) - t * 0.04);
+    float blob1 = fbm3(cq + fbm3(cq * 1.3 + sin(t * 0.09) * 0.3));
+    float blob2 = fbm3(cq * 0.7 + vec2(3.1, 7.9) - vec2(cos(t * 0.06), sin(t * 0.08)) * 0.4);
     bg += tintedPalette(0.2) * smoothstep(0.4, 0.7, blob1) * 0.45;
     bg += tintedPalette(0.9) * smoothstep(0.45, 0.75, blob2) * 0.38;
 
@@ -70,14 +77,17 @@ void main() {
 
         // Per-bubble cycle position in [0,1). Offset by seed so bubbles are
         // out of phase.
-        float cyclePos = fract(t * rise * (0.18 + seed2 * 0.35) + seed);
+        float speed = floor((0.18 + seed2 * 0.35) * 128.0 + 0.5) / 128.0;
+        float cyc = riseClock * speed + seed;
+        float cyclePos = fract(cyc);
         float cy = spawnY - cyclePos * travel;
 
         // Fade-out when drifting above the frame instead of hard-clipping at
         // the top.
         float edgeFade = smoothstep(-0.25, 0.02, cy);
-        // Each bubble has its own slight opacity.
-        edgeFade *= 0.75 + 0.25 * hash21(vec2(fi * 3.7, 1.9));
+        // Opacity is rolled once when the bubble spawns and held for its whole rise,
+        // hashed from the spawn cycle and never from time.
+        edgeFade *= 0.6 + 0.4 * hash21(vec2(fi * 3.7 + 1.9, mod(floor(cyc), 8.0) * 1.31 + 0.7));
 
         // Horizontal position + sinusoidal sway that scales with bubble size
         // (smaller bubbles jiggle more).
@@ -88,7 +98,6 @@ void main() {
         // Bubbles swell slightly as the pressure drops on the way up, and wobble out of round with their own phase.
         float grow = 1.0 + 0.25 * cyclePos;
         float wob = 0.05 * sin(t * (2.0 + seed3 * 2.0) + fi * 1.7);
-        float speed = 0.18 + seed2 * 0.35;
         float squash = 0.04 * speed * rise;
         vec2 sq = vec2(1.0 + wob + squash, 1.0 - wob - squash * 0.5);
 
@@ -126,6 +135,43 @@ void main() {
         float arc1 = exp(-pow((rn - 0.72) / 0.07, 2.0)) * exp(-pow((ang + 2.35) / 0.34, 2.0));
         float arc2 = exp(-pow((rn - 0.8) / 0.05, 2.0)) * exp(-pow((ang - 0.8) / 0.18, 2.0));
         col += vec3(1.0, 0.98, 0.94) * (arc1 * 1.3 + arc2 * 0.5) * edgeFade;
+    }
+
+    // Fine particles rising through the water: one hashed cell per layer, with no loop
+    // over particles. Most cells stay empty and the rest are jittered so no grid shows.
+    // Each column rises at its own rate, quantized so the riseClock wrap shifts a whole
+    // multiple of the row-id period, and the row id repeats with that same period.
+    // Cells keep a minimum width in cell-height units, so a particle's glow, bounded by
+    // its cutoff radius, always fits inside its own cell at any aspect ratio.
+    float aspect = u_resolution.x / u_resolution.y;
+    float rowsPerCol = max(0.62, 1.1 / aspect);
+    float cellW = aspect * rowsPerCol;
+    for (int li = 0; li < 2; li++) {
+        float fl = float(li);
+        float cols = 26.0 + fl * 20.0;
+        float rows = cols * rowsPerCol;
+        float gx = uv.x * cols;
+        float colId = floor(gx);
+        float ch = hash21(vec2(colId + fl * 17.0, 5.3));
+        float rate = floor((0.25 + ch * 0.4 + fl * 0.08) * rows * 32.0 + 0.5) / 32.0;
+        float py = uv.y * rows + riseClock * rate + ch * 16.0;
+        float rowId = mod(floor(py), 32.0);
+        float h1 = hash21(vec2(colId + fl * 31.0, rowId + 0.5));
+        float h2 = hash21(vec2(rowId * 1.7 + 3.0, colId + fl * 11.0));
+        float h3 = hash21(vec2(colId * 0.9 + 7.0, rowId * 2.3 + fl));
+        float r = 0.07 + 0.07 * h3;
+        float cut = r * 2.3;
+        // Jitter shrinks only as far as needed to keep the whole glow inside the cell.
+        float roomY = min(0.25, 0.5 - cut);
+        float roomX = min(1.0, max(0.5 - cut / cellW, 0.0) / 0.37);
+        float cx = 0.5 + ((h2 - 0.5) * 0.5 + 0.12 * sin(t * (0.5 + h3) + h1 * 6.28)) * roomX;
+        vec2 d = vec2((fract(gx) - cx) * cellW, fract(py) - 0.5 - (h3 - 0.5) * 2.0 * roomY);
+        float dot2 = dot(d, d);
+        if (h1 > 0.82 && dot2 < cut * cut) {
+            float glow = exp(-dot2 / (r * r)) * (0.3 + 0.7 * fract(h1 * 37.0 + h3));
+            float vis = smoothstep(0.0, 0.1, uv.y) * smoothstep(1.0, 0.9, uv.y);
+            col += (tintedPalette(0.3 + h1 * 0.4) * 0.55 + vec3(0.45)) * glow * vis * 0.55;
+        }
     }
 
     fragColor = vec4(finish(col), 1.0);

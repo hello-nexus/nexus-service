@@ -36,7 +36,16 @@ public sealed class FanLcdPanelTransport : IStreamedPanelTransport, IOrientableP
 
     public bool IsOpen => !_disposed && Attached();
 
-    public void BindOrientation(Func<(bool Flip180, bool Mirror)> source) => _orientation.Bind(source);
+    /// <summary>
+    /// The half turn and the mirror are applied to the frame in panel mode. The screen's firmware rotation
+    /// is its own device-page setting and is never written from here, so quarter turns are not taken.
+    /// </summary>
+    public void BindOrientation(Func<(int Rotation, bool Mirror)> source) =>
+        _orientation.Bind(() =>
+        {
+            var (rotation, mirror) = source();
+            return (rotation == 180 ? 180 : 0, mirror);
+        });
 
     public void Open()
     {

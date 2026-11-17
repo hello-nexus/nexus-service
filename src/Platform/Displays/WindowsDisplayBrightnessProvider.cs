@@ -28,6 +28,9 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // cached Current: a brightness change made on the monitor's own OSD is not
     // noticed until the next topology change, while every change made through
     // Nexus updates the cache on the way past.
+    // A display that keeps failing its probe is not cached above (the failure is usually
+    // transient); this stops it being re-probed on every poll once it has failed repeatedly.
+    private readonly DdcNegativeProbeCache _negativeProbes = new();
     private readonly object _capsGate = new();
     private string _capsSignature = "";
     private readonly Dictionary<string, DisplayDto> _capsCache = new(StringComparer.Ordinal);
@@ -38,6 +41,11 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     /// line here has to reach nexus-helper.log to exist at all.
     /// </summary>
     private static void Log(string message) => Nexus.Service.Platform.HelperLog.Write($"[ddc] {message}");
+
+    // Enumerate runs every poll and a non-capable monitor is re-probed every
+    // time, so these lines are written on change and then at most once per
+    // interval with a count.
+    private readonly Nexus.Service.Platform.LogGate _enumerateLog = new(DdcGate.RepeatLogInterval);
 
     /// <summary>Reason of the last skip, so a locked hour is one line rather
     /// than seven hundred.</summary>
@@ -56,7 +64,13 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // on replay stays held and goes out again ahead of the next write.
     private const int HeldWriteMaxAttempts = 3;
 
-    public WindowsDisplayBrightnessProvider() => DdcGate.Opened += ApplyHeldWrites;
+    public WindowsDisplayBrightnessProvider()
+    {
+        // A session unlock or settle is the moment a failing display is likely to answer again.
+        // Subscribed first so a throwing ApplyHeldWrites cannot skip it.
+        DdcGate.Opened += _negativeProbes.Clear;
+        DdcGate.Opened += ApplyHeldWrites;
+    }
 
     private bool Skip(string op, string id)
     {
@@ -126,7 +140,17 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             var monitors = EnumerateHMonitors();
             InvalidateCapsIfTopologyChanged(monitors);
             var gated = DdcGate.ShouldSkip(out var gateReason);
-            if (gated) Log($"enumerate: probing suppressed ({gateReason})");
+            if (gated)
+            {
+                if (_enumerateLog.Check("gate", gateReason, out var withheld, out var gateChanged))
+                {
+                    Log($"enumerate: probing suppressed ({gateReason}){Nexus.Service.Platform.LogGate.Suffix(withheld, gateChanged)}");
+                }
+            }
+            else if (_enumerateLog.Reset("gate", out var gatedCount))
+            {
+                Log($"enumerate: probing resumed{Nexus.Service.Platform.LogGate.Suffix(gatedCount)}");
+            }
             for (int idx = 0; idx < monitors.Count; idx++)
             {
                 var entry = monitors[idx];
@@ -154,6 +178,8 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                 // a display switched off must not even be probed.
                 if (excludedIds is not null && excludedIds.Contains(dto.Id))
                 {
+                    // Forgotten while opted out, so turning DDC back on probes it fresh.
+                    _negativeProbes.RecordSuccess(dto.Id);
                     dto.DdcEnabled = false;
                     dto.BrightnessControl.UnsupportedReason = "Brightness control is turned off for this display.";
                     results.Add(dto);
@@ -172,6 +198,13 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                 if (gated)
                 {
                     dto.BrightnessControl.UnsupportedReason = "Brightness control is paused while the session is locked.";
+                    results.Add(dto);
+                    continue;
+                }
+
+                // Failed repeatedly already: report unsupported without another transaction.
+                if (_negativeProbes.ShouldSkip(dto.Id))
+                {
                     results.Add(dto);
                     continue;
                 }
@@ -208,13 +241,25 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                         DestroyPhysicalMonitor(phys);
                     }
                 }
-                Log($"probed id={dto.Id} capable={dto.IsDdcCapable} brightness={dto.Capabilities.Brightness} contrast={dto.Capabilities.Contrast}");
+                var probeState = $"capable={dto.IsDdcCapable} brightness={dto.Capabilities.Brightness} contrast={dto.Capabilities.Contrast}";
+                if (_enumerateLog.Check("probe:" + dto.Id, probeState, out var repeats, out var probeChanged))
+                {
+                    Log($"probed id={dto.Id} {probeState}{Nexus.Service.Platform.LogGate.Suffix(repeats, probeChanged)}");
+                }
                 // Only a successful probe is cached. A failure is transient far
                 // more often than it is real - a monitor still waking, bus
                 // contention - and caching it would pin the display to "no
-                // brightness control" until the attached set changes, where
-                // before the next poll simply retried.
-                if (dto.IsDdcCapable) StoreCaps(dto);
+                // brightness control" until the attached set changes. Failures are
+                // tracked separately in _negativeProbes, which throttles re-probing.
+                if (dto.IsDdcCapable)
+                {
+                    StoreCaps(dto);
+                    _negativeProbes.RecordSuccess(dto.Id);
+                }
+                else
+                {
+                    _negativeProbes.RecordFailure(dto.Id);
+                }
                 results.Add(dto);
             }
         }
@@ -390,12 +435,14 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         if (nameFragments is null || nameFragments.Count == 0) return null;
         try
         {
-            foreach (var entry in EnumerateHMonitors())
+            // Fragment order is priority: the best-ranked fragment wins across
+            // all monitors, not whichever monitor enumerates first.
+            foreach (var fragment in nameFragments)
             {
-                var rawDeviceId = WindowsDisplayIdentity.ReadMonitorDeviceId(entry.AdapterDevice);
-                if (string.IsNullOrEmpty(rawDeviceId)) continue;
-                foreach (var fragment in nameFragments)
+                foreach (var entry in EnumerateHMonitors())
                 {
+                    var rawDeviceId = WindowsDisplayIdentity.ReadMonitorDeviceId(entry.AdapterDevice);
+                    if (string.IsNullOrEmpty(rawDeviceId)) continue;
                     if (rawDeviceId.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         // Return the same stable id SetVcp/GetBrightness key off.
@@ -430,10 +477,12 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             if (_capsSignature == signature) return;
             if (_capsSignature.Length > 0)
             {
-                Log("attached displays changed; dropping the probe cache");
+                // Every display is a first occurrence again; the counts of the old set are reported here.
+                Log($"attached displays changed; dropping the probe cache{Nexus.Service.Platform.LogGate.Suffix(_enumerateLog.ResetPrefix("probe:"))}");
             }
             _capsSignature = signature;
             _capsCache.Clear();
+            _negativeProbes.Clear();
         }
     }
 

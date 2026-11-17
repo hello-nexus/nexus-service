@@ -16,7 +16,7 @@ namespace Nexus.Service.Cooling;
 /// Applying Silent / Balanced / Turbo / Max ensures a single shared "preset
 /// curve" exists with id `preset-{name}`, attaches every non-pinned fan to
 /// it, and detaches those fans from any user curve. User curves are NOT
-/// deleted. Pinned channels (pumps by default, or any channel the user
+/// deleted. Pinned channels (pumps and GPU fans by default, or any channel the user
 /// pinned via <see cref="IsPinned"/>) are exempt and keep whatever already
 /// drives them.
 ///
@@ -50,14 +50,17 @@ public static class FanProfiles
     /// <item>GPU fans, because a preset curve reads a CPU temperature sensor
     /// (<see cref="PreferredInput"/>), so pointing it at the graphics card's
     /// fans tracks the wrong die.</item>
-    /// <item>Every channel on an AIO, radiator fans included - the cooler ships
-    /// its own curve and owns the loop.</item>
+    /// <item>HydroShift II fans, which share one frame with the pump.</item>
     /// </list>
-    /// Each of these keeps whatever already drives it; the user can still pin
-    /// or unlock any of them from the fan card.
+    /// Every other fan channel, including hub, AIO radiator and Q-series fan
+    /// ports, follows the active preset. Each pinned channel keeps whatever
+    /// already drives it; the user can still pin or unlock any channel from the
+    /// fan card.
     /// </summary>
     public static bool IsPinnedByDefault(FanChannel ch) =>
-        ch.Kind == FanKinds.Pump || ch.IsGpu || ch.IsAio;
+        ch.Kind == FanKinds.Pump || ch.IsGpu
+        // HydroShift II sends the pump and fans in one frame, so driving a fan changes the pump.
+        || HydroShift2CoolingProvider.IsHydroShift2Id(ch.Id);
 
     /// <summary>
     /// Write ch's pin override, collapsing to "no entry" when the requested
@@ -394,12 +397,17 @@ public static class FanProfiles
     /// user explicitly broke out of the shared regime. For the preset half that
     /// means an unpinned fan - a pinned one is off the preset's books either
     /// way, and only weighs on the "off" check above.
-    /// Fans classified as Unresponsive are ignored: they're physically
-    /// disconnected, can't be wired to any curve, and would otherwise force
-    /// every preset check to fail on `fanIds.All(...)`.
+    /// An Unresponsive fan (no tach signal) is still driven, so it counts like
+    /// any other fan.
     /// </summary>
     public static string DerivePresetFromCurves(IConfigStore store, IFanControlProvider fans)
-        => DerivePresetFromCurves(store.Load().Cooling, fans.GetFanChannels());
+    {
+        var channels = fans.GetFanChannels();
+        var derived = "custom";
+        // Update mutators reshape Curves/Outputs under the store lock; reading the shared document outside it races them.
+        store.Read(s => derived = DerivePresetFromCurves(s.Cooling, channels));
+        return derived;
+    }
 
     public static string DerivePresetFromCurves(CoolingSettings cooling, IReadOnlyList<FanChannel> channels)
     {
@@ -413,8 +421,7 @@ public static class FanProfiles
         var uncontrolled = cooling.UncontrolledFanChannels;
         var pinOverrides = cooling.FanPinOverrides;
         var fanIds = channels
-            .Where(c => c.Classification != "Unresponsive"
-                && !IsPinned(c, pinOverrides)
+            .Where(c => !IsPinned(c, pinOverrides)
                 && !uncontrolled.Contains(c.Id))
             .Select(c => c.Id)
             .ToHashSet();
@@ -448,8 +455,7 @@ public static class FanProfiles
         // and derives "off" while software still drives the pinned ones.
         // Uncontrolled fans stay out - the write gate keeps them inert whatever
         // a stale attachment says.
-        var pinnedDriven = channels.Any(c => c.Classification != "Unresponsive"
-            && IsPinned(c, pinOverrides)
+        var pinnedDriven = channels.Any(c => IsPinned(c, pinOverrides)
             && !uncontrolled.Contains(c.Id)
             && (cooling.ManualSpeeds.ContainsKey(c.Id)
                 || curves.Any(cv => cv.Outputs.Any(o => o.Id == c.Id))));

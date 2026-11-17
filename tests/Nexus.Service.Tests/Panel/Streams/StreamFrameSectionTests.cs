@@ -107,7 +107,9 @@ public sealed unsafe class StreamFrameSectionTests
             "p");
         session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = new byte[4] });
         session.AcceptFrame(new StreamFrame { Flags = StreamFraming.FlagIdr, Payload = new byte[4] });
-        Assert.Equal(2, session.QueueDepthForTest);
+        // A raw session holds only the newest frame; the older one counts as dropped.
+        Assert.Equal(1, session.QueueDepthForTest);
+        Assert.Equal(2, session.StatsSnapshot().Enqueued);
     }
 
     [Fact]
@@ -223,7 +225,11 @@ public sealed unsafe class StreamFrameSectionTests
         }
         stop.Cancel();
         writer.Join();
-        Assert.True(accepted > 0);
+        // A writer that never pauses can starve the reader for the whole window, so liveness is checked once it is quiet.
+        long settled = 0;
+        Assert.True(Read(section, ref settled, destination, out var settledLength));
+        Assert.Equal(Bytes, settledLength);
+        Assert.True(destination.AsSpan(0, settledLength).IndexOfAnyExcept(destination[0]) < 0);
     }
 
     [Fact]

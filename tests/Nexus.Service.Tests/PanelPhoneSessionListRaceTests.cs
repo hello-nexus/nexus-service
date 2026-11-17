@@ -57,7 +57,6 @@ public class PanelPhoneSessionListRaceTests
                     Assert.Empty(service.GetPushTargets());
                     _ = service.GetSessionDisplayName("s3");
                     _ = service.TryValidateSessionToken("no-such-token", null, out _);
-                    _ = InvokeAlreadyPaired(service);
                 }
             }
             finally
@@ -71,10 +70,4 @@ public class PanelPhoneSessionListRaceTests
             try { Directory.Delete(dir, true); } catch { /* temp cleanup */ }
         }
     }
-
-    private static readonly System.Reflection.MethodInfo AlreadyPairedMethod =
-        typeof(PanelPhonePairingService).GetMethod("AlreadyPaired", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-
-    private static bool InvokeAlreadyPaired(PanelPhonePairingService service) =>
-        (bool)AlreadyPairedMethod.Invoke(service, new object[] { "no-such-device", "" })!;
 }

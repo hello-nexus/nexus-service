@@ -23,7 +23,7 @@ public class DevSimEventsTests
     {
         "guard.limitTrip", "guard.coolingLossTrip", "guard.escalated", "guard.watchdogLatched", "guard.endedTrip",
         "guard.pendingHeal", "guard.gpuHandback",
-        "health.fanStall", "health.pumpStall", "health.sustainedHighTemp", "health.gpuThrottle", "health.gpuTdr",
+        "health.fanStall", "health.pumpStall", "health.gpuThrottle", "health.gpuTdr",
         "health.smartWarning", "health.nvmeCritical", "health.memoryWhea",
         "incident.bsod", "incident.appCrash", "incident.dirtyShutdown",
         "app.updateAvailable", "device.firmwareUpdate", "app.conflict", "device.disconnect",
@@ -41,7 +41,7 @@ public class DevSimEventsTests
             Assert.False(string.IsNullOrWhiteSpace(c.Label));
         });
         Assert.Equal(7, DevSimEvents.Catalog.Count(c => c.Category == "guard"));
-        Assert.Equal(8, DevSimEvents.Catalog.Count(c => c.Category == "health"));
+        Assert.Equal(7, DevSimEvents.Catalog.Count(c => c.Category == "health"));
         Assert.Equal(3, DevSimEvents.Catalog.Count(c => c.Category == "incident"));
     }
 
@@ -185,7 +185,6 @@ public class DevSimEventsTests
     [Theory]
     [InlineData("health.fanStall", "cooling.fanStall", "cooling", HealthStatuses.Act)]
     [InlineData("health.pumpStall", "cooling.pumpStall", "cooling", HealthStatuses.Act)]
-    [InlineData("health.sustainedHighTemp", "cooling.sustainedHighTemp", "cooling", HealthStatuses.Watch)]
     [InlineData("health.gpuThrottle", "gpu.thermalThrottle", "gpu", HealthStatuses.Watch)]
     [InlineData("health.gpuTdr", "gpu.tdr", "gpu", HealthStatuses.Act)]
     [InlineData("health.smartWarning", "smart.reallocated", "storage", HealthStatuses.Watch)]
@@ -207,10 +206,9 @@ public class DevSimEventsTests
     }
 
     [Fact]
-    public void SustainedHighTemp_MergesIntoTheRealCoolingComponent_AndOverallIsRecomputed()
+    public void ASimulationMergesIntoTheRealComponentWithTheSameId_AndOverallIsRecomputed()
     {
         var sim = Sim();
-        sim.Start("health.sustainedHighTemp", out _);
         sim.Start("health.fanStall", out _);
         var real = new DiagnosticsHealthResponse
         {
@@ -218,17 +216,16 @@ public class DevSimEventsTests
             Supported = true,
             Components = new List<HealthComponent>
             {
-                new() { Id = "cooling", Kind = "cooling", Name = "Cooling (2)", Status = HealthStatuses.Ok, Reasons = new List<HealthComponentReason>() },
+                new() { Id = "cooling:sim-fan", Kind = "cooling", Name = "Fan", Status = HealthStatuses.Ok, Reasons = new List<HealthComponentReason>() },
             },
         };
 
         var overlaid = DiagnosticsHealthModel.ApplySimulation(real, sim, new DiagnosticsSettings());
 
-        var cooling = Assert.Single(overlaid.Components, c => c.Id == "cooling");
-        Assert.Equal("Cooling (2)", cooling.Name);
-        Assert.Equal(HealthStatuses.Watch, cooling.Status);
-        Assert.Single(cooling.Reasons);
-        Assert.Contains(overlaid.Components, c => c.Id == "cooling:sim-fan");
+        var fan = Assert.Single(overlaid.Components);
+        Assert.Equal("Fan", fan.Name);
+        Assert.Equal(HealthStatuses.Act, fan.Status);
+        Assert.Single(fan.Reasons);
         Assert.Equal(HealthStatuses.Act, overlaid.Overall);
         // The input was not mutated.
         Assert.Equal(HealthStatuses.Ok, real.Overall);
@@ -346,7 +343,6 @@ public class DevSimEventsTests
         {
             var n = s.Diagnostics.Notifications;
             n.Enabled = true;
-            n.HighTemp = true;
             n.Cooling = true;
             n.StorageHealth = true;
             n.MemoryTest = true;
@@ -510,7 +506,7 @@ public class DevSimEventsTests
 
         var body = DevSimRoutes.Describe(sim);
 
-        Assert.Equal(22, body.Catalog.Count);
+        Assert.Equal(21, body.Catalog.Count);
         var active = Assert.Single(body.Active);
         Assert.Equal("health.fanStall", active.Id);
         Assert.Equal(9, active.StartedAtUtcMs);

@@ -37,7 +37,7 @@ public class ProfilePanelsTests : IDisposable
         DisplayName = "Y70",
         Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Y70, Orientation = "landscape" },
         FirstSeenAt = 5,
-        Flip180 = true,
+        Rotation = 180,
         LcdBrightness = 40,
     };
 
@@ -72,7 +72,7 @@ public class ProfilePanelsTests : IDisposable
             r.AccentColor = "#222222";
             r.Presets = new() { new PanelPreset { Id = "p1", Name = "One", ThemeMode = "dark" } };
             r.ActivePresetId = "p1";
-            r.Flip180 = false;
+            r.Rotation = null;
             r.DisplayName = "Renamed";
         });
 
@@ -82,7 +82,7 @@ public class ProfilePanelsTests : IDisposable
         Assert.Equal("#111111", back.AccentColor);
         Assert.Null(back.Presets);
         Assert.Null(back.ActivePresetId);
-        Assert.False(back.Flip180);
+        Assert.Null(back.Rotation);
         Assert.Equal("Renamed", back.DisplayName);
         Assert.Equal(40, back.LcdBrightness);
         Assert.Equal(5, back.FirstSeenAt);
@@ -522,7 +522,7 @@ public class ProfilePanelsTests : IDisposable
         Assert.Null(r.AccentColor);
         Assert.Null(r.Presets);
         Assert.Equal("Y70", r.DisplayName);
-        Assert.True(r.Flip180);
+        Assert.Equal(180, r.Rotation);
         Assert.Equal(new TryxSettings().OverlayColor, s.Tryx.OverlayColor);
     }
 

@@ -86,6 +86,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                     if (proc.WaitForExit(1000))
                     {
                         ServiceLog.Info($"[openrgb-proc] killed orphan PID {proc.Id}");
+                        SmbusMutexReclaimer.Reclaim("after orphan kill");
                     }
                     else
                     {
@@ -629,6 +630,8 @@ public sealed class OpenRgbProcessManager : IDisposable
 
             CleanupProcessLocked();
             CleanupOrphans();
+            // A child that exited on its own can leave the mutex abandoned too, and no kill path ran for it.
+            SmbusMutexReclaimer.Reclaim("before OpenRGB spawn");
 
             // Use a service-owned config directory so we don't collide with any
             // user-installed OpenRGB. Lives under %ProgramData%\Nexus on Windows.
@@ -675,7 +678,7 @@ public sealed class OpenRgbProcessManager : IDisposable
             psi.ArgumentList.Add("--config");
             psi.ArgumentList.Add(configDir);
             psi.ArgumentList.Add("--loglevel");
-            psi.ArgumentList.Add("error");
+            psi.ArgumentList.Add("warning");
 
             var verbosity = ResolveVerbosityFlag(Environment.GetEnvironmentVariable(VerbosityEnvVar));
             if (verbosity is not null)
@@ -763,6 +766,7 @@ public sealed class OpenRgbProcessManager : IDisposable
                 if (_proc.WaitForExit(500))
                 {
                     ServiceLog.Info($"[openrgb-proc] killed pid={pid}");
+                    SmbusMutexReclaimer.Reclaim("after OpenRGB kill");
                 }
                 else
                 {

@@ -19,6 +19,10 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
     private readonly Func<Np50PortInfo, INp50Transport> _transportFactory;
     private readonly object _lock = new();
     private INp50Transport? _transport;
+    // GT backlight port held beside a non-GT primary (touch enumerates first and wins _transport).
+    private INp50Transport? _gtTransport;
+    private string _gtSerial = "";
+    private string _gtPortName = "";
     private bool _disposed;
     // Starts at 0 (the silent default) so a device absent from boot never logs
     // "discovery returned 0"; only a real change (0->N found, or N->0 disconnect) logs.
@@ -48,6 +52,15 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
     public string Variant => State.Variant;
 
     public string DeviceId => string.IsNullOrEmpty(State.Serial) ? "" : $"y70:{State.Serial}";
+
+    private bool PrimaryIsGt => IsConnected && Variant == Y70DisplayProtocol.VariantGt;
+
+    private INp50Transport? BacklightTransport =>
+        PrimaryIsGt ? _transport : _gtTransport is { IsOpen: true } ? _gtTransport : null;
+
+    /// <summary>Lighting id of the GT backlight, whichever port carries it; empty when none is open.</summary>
+    public string BacklightDeviceId =>
+        PrimaryIsGt ? DeviceId : BacklightTransport is not null && !string.IsNullOrEmpty(_gtSerial) ? $"y70:{_gtSerial}" : "";
 
     // ── IDfuFlashTarget ──
     string IDfuFlashTarget.FirmwareType => IsConnected ? Variant : "";
@@ -84,6 +97,8 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
             }
             foreach (var port in ports)
             {
+                // The GT port held beside the primary is already open; reopening it fails on Windows.
+                if (_gtTransport is { IsOpen: true } && port.PortName == _gtPortName) continue;
                 try
                 {
                     var t = _transportFactory(new Np50PortInfo { PortName = port.PortName, Serial = port.Serial });
@@ -103,13 +118,49 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
         }
     }
 
+    /// <summary>Opens the GT port alongside a non-GT primary so its backlight stays drivable. No-op when the primary is the GT or the GT is already held.</summary>
+    public bool EnsureBacklightConnected()
+    {
+        if (_disposed) return false;
+        lock (_lock)
+        {
+            if (PrimaryIsGt || BacklightTransport is not null) return true;
+            try { _gtTransport?.Dispose(); } catch { /* best effort */ }
+            _gtTransport = null;
+            foreach (var port in _discovery.Discover())
+            {
+                if (port.Variant != Y70DisplayProtocol.VariantGt) continue;
+                try
+                {
+                    _gtTransport = _transportFactory(new Np50PortInfo { PortName = port.PortName, Serial = port.Serial });
+                    _gtSerial = port.Serial;
+                    _gtPortName = port.PortName;
+                    ServiceLog.Info($"[y70-display] backlight connected to {port.PortName} (serial={port.Serial})");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Error($"[y70-display] open {port.PortName} failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+            return false;
+        }
+    }
+
     public void Disconnect()
     {
         lock (_lock)
         {
             try { _transport?.Dispose(); } catch { /* best effort */ }
             _transport = null;
+            DisconnectBacklightLocked();
         }
+    }
+
+    private void DisconnectBacklightLocked()
+    {
+        try { _gtTransport?.Dispose(); } catch { /* best effort */ }
+        _gtTransport = null;
     }
 
     public bool PollFirmwareVersion()
@@ -174,7 +225,7 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
     }
 
     /// <summary>True when the connected panel is the Y70 GT, the only variant with a backlight to stream.</summary>
-    public bool HasBacklight => IsConnected && Variant == Y70DisplayProtocol.VariantGt;
+    public bool HasBacklight => BacklightTransport is not null;
 
     /// <summary>
     /// Stream one backlight frame (RGB triples in wire order). Shares the port
@@ -185,8 +236,8 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
     {
         lock (_lock)
         {
-            if (!HasBacklight) return false;
-            var transport = _transport!;
+            var transport = BacklightTransport;
+            if (transport is null) return false;
             try
             {
                 transport.Write(Y70DisplayProtocol.BuildBacklightStream(rgb));
@@ -195,7 +246,7 @@ public sealed class Y70DisplayHub : IDisposable, IDfuFlashTarget
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[y70-display] backlight write failed: {ex.GetType().Name}: {ex.Message}");
-                Disconnect();
+                if (PrimaryIsGt) Disconnect(); else DisconnectBacklightLocked();
                 return false;
             }
         }

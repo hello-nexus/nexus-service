@@ -104,7 +104,7 @@ public sealed class OpenRgbWriteHealthPoller
             }
             if (uncontrolled.Contains(f.Id))
             {
-                health.Forget(f.Id);
+                health.Forget(f.Id, deviceLeft: false);
                 continue;
             }
             result.Add((f.Id, f.PhysicalIndex));

@@ -87,4 +87,37 @@ public class DesktopRotationTests
     {
         Assert.Equal(expected, DesktopRotation.SwapsAxes(rotation));
     }
+
+    // Transliteration of the PS in Shaders/MirrorDownsample.hlsl, which uses unsigned 32-bit math.
+    private static (uint X, uint Y) ShaderMap(uint x, uint y, uint dstW, uint dstH, uint surfW, uint surfH, int rotation) => rotation switch
+    {
+        DesktopRotation.Rotate90 => (y * surfW / dstH, (dstW - 1 - x) * surfH / dstW),
+        DesktopRotation.Rotate180 => ((dstW - 1 - x) * surfW / dstW, (dstH - 1 - y) * surfH / dstH),
+        DesktopRotation.Rotate270 => ((dstH - 1 - y) * surfW / dstH, x * surfH / dstW),
+        _ => (x * surfW / dstW, y * surfH / dstH),
+    };
+
+    [Theory]
+    [InlineData(1920, 1200, 1)]
+    [InlineData(3840, 2160, 1)]
+    [InlineData(7680, 4320, 1)]
+    [InlineData(1200, 1920, 2)]
+    [InlineData(1920, 1080, 3)]
+    [InlineData(2160, 3840, 4)]
+    public void Shader_unsigned_mapping_matches_cpu_mapping_on_the_mirror_grid(int surfW, int surfH, int rotation)
+    {
+        const int w = 160;
+        const int h = 90;
+        const int dstW = w;
+        const int dstH = h;
+        for (var y = 0; y < dstH; y++)
+        {
+            for (var x = 0; x < dstW; x++)
+            {
+                var cpu = DesktopRotation.MapToSurface(x, y, dstW, dstH, surfW, surfH, rotation);
+                var gpu = ShaderMap((uint)x, (uint)y, (uint)dstW, (uint)dstH, (uint)surfW, (uint)surfH, rotation);
+                Assert.Equal(((uint)cpu.X, (uint)cpu.Y), gpu);
+            }
+        }
+    }
 }

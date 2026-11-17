@@ -267,20 +267,18 @@ public sealed class WindowsDisplayOrientationProvider : IDisplayOrientationProvi
     /// </summary>
     private static string FindY70AdapterDevice()
     {
-        var monitors = EnumerateMonitorAdapters();
-        foreach (var adapterName in monitors)
+        var best = "";
+        var bestRank = int.MaxValue;
+        foreach (var adapterName in EnumerateMonitorAdapters())
         {
-            var deviceId = WindowsDisplayIdentity.ReadMonitorDeviceId(adapterName);
-            if (deviceId.Length == 0) continue;
-            foreach (var name in Y70DisplayProtocol.DdcPanelHardwareNames)
+            var rank = Y70DisplayProtocol.PanelRank(WindowsDisplayIdentity.ReadMonitorDeviceId(adapterName));
+            if (rank >= 0 && rank < bestRank)
             {
-                if (deviceId.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return adapterName;
-                }
+                bestRank = rank;
+                best = adapterName;
             }
         }
-        return "";
+        return best;
     }
 
     private static List<string> EnumerateMonitorAdapters()

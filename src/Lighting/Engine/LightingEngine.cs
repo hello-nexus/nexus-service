@@ -126,6 +126,9 @@ public sealed partial class LightingEngine : IDisposable
     private IEffect? _lastRenderEffect;
 
     public event Action<ReadOnlyMemory<byte>>? OnFrame;
+
+    /// <summary>The same frame as <see cref="OnFrame"/> with the device snapshot it was serialized from, section for section, and whether it is the black frame <see cref="Stop"/> publishes last.</summary>
+    public event Action<ReadOnlyMemory<byte>, DeviceFrame[], bool>? FrameSerialized;
     public event Action? OnEffectChanged;
 
     /// <summary>Raised on the engine thread once per tick, after every device frame is published; handlers must not block.</summary>
@@ -133,6 +136,14 @@ public sealed partial class LightingEngine : IDisposable
     public string CurrentEffectName => _currentEffect?.Name ?? "none";
     public IEffect? CurrentEffect => _currentEffect;
     public DeviceFrame[] Devices => _devices;
+
+    private volatile bool _stopped;
+
+    /// <summary>True from the end of <see cref="Stop"/> until the render loop starts again; nothing reports to the dashboard meanwhile.</summary>
+    public bool IsStopped => _stopped;
+
+    /// <summary>Per-LED output the frame writers actually drive, collected for the dashboard preview.</summary>
+    public LiveLedSink Live { get; } = new();
     public bool Paused => _paused;
     public bool Frozen => _frozen;
     public bool Blackout => _blackout;
@@ -655,6 +666,7 @@ public sealed partial class LightingEngine : IDisposable
             {
                 _cts?.Dispose();
                 _cts = new CancellationTokenSource();
+                _stopped = false;
                 var token = _cts.Token;
                 // Dedicated thread: on Windows the loop blocks on its high-resolution timer instead of awaiting.
                 _loopTask = Task.Factory.StartNew(
@@ -778,9 +790,12 @@ public sealed partial class LightingEngine : IDisposable
                 dev.Clear();
             }
 
+            // Stopped before the final black frame so the dashboard feed drops frames that arrive after it; that one frame is marked final and still reports. A tick racing this on the shared frame buffer is not excluded.
+            _stopped = true;
             try
-            { SerializeAndBroadcast(); }
+            { SerializeAndBroadcast(final: true); }
             catch { }
+            Live.Enabled = false;
         }
         // Handler may start/stop an audio-capture subprocess; must not run under the engine lock.
         OnEffectChanged?.Invoke();
@@ -1222,13 +1237,13 @@ public sealed partial class LightingEngine : IDisposable
     /// True when every requested zone shows a pure function of time: its own static pin, its own animate pin on a
     /// shader that reads no audio, or a time-pure global effect when it follows the global. A zone that follows a
     /// global that reads audio, mirrors the screen or plays media, or is pinned to such a source, forces the live
-    /// path. Also false while paused, frozen, blacked out, ramping, in an LED editor overlay, key-reactive, or inside
+    /// path. Also false while paused, blacked out, ramping, in an LED editor overlay, key-reactive, or inside
     /// the settle window of a change to anything the window shows.
     /// </summary>
     public bool CanRenderAhead(IReadOnlyList<string> deviceIds)
     {
         var current = _currentEffect;
-        if (current is null || _studioOverlay is not null || _paused || _frozen || _blackout || _wakeDurationMs > 0)
+        if (current is null || _studioOverlay is not null || _paused || _blackout || _wakeDurationMs > 0)
         {
             return false;
         }
@@ -1270,7 +1285,8 @@ public sealed partial class LightingEngine : IDisposable
         }
         if (needsGlobal)
         {
-            if (!IsTimePure(current))
+            // A frozen global paints one canvas, so only zones that follow it are held back; pinned zones keep animating.
+            if (_frozen || !IsTimePure(current))
             {
                 return false;
             }
@@ -1940,6 +1956,7 @@ public sealed partial class LightingEngine : IDisposable
             var geo = LedSpotGeometry.Create(
                 rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, ledCount, devLedU, devLedV, fullFrame,
                 FullFrameStripBreadth);
+            var color = ColorModeOf(dev.Id);
             var areaMap = AreaMapFor(
                 dev.Id, ledCount, devLedU, devLedV, devLedDisabled, rectX, rectY, rectW, rectH, frameCx, frameCy, dev.Rotation, cw, ch, geo,
                 fullFrame);
@@ -1952,14 +1969,14 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 if (areaMap is not null)
                 {
-                    var (ar, ag, ab) = SampleAreaCell(areaMap, i);
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i, color);
                     dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
                 geo.Center(i, out var sx, out var sy);
                 var (r, g, b) = fullFrame
-                    ? SampleLedBox(sx - geo.HalfW, sy - geo.HalfH, sx + geo.HalfW, sy + geo.HalfH)
-                    : SampleLedSpot(sx, sy, geo.HalfW, geo.HalfH);
+                    ? SampleLedBox(sx - geo.HalfW, sy - geo.HalfH, sx + geo.HalfW, sy + geo.HalfH, color)
+                    : SampleLedSpot(sx, sy, geo.HalfW, geo.HalfH, color);
                 dev.SetLed(i, r, g, b);
             }
         }
@@ -1978,6 +1995,7 @@ public sealed partial class LightingEngine : IDisposable
     {
         var hasUv = ledU is not null && ledV is not null && ledU.Length == ledCount && ledV.Length == ledCount;
         var runs = quads.Length;
+        var color = ColorModeOf(dev.Id);
         for (var k = 0; k < runs; k++)
         {
             var lo = k * ledCount / runs;
@@ -2042,7 +2060,7 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 if (areaMap is not null)
                 {
-                    var (ar, ag, ab) = SampleAreaCell(areaMap, i - lo);
+                    var (ar, ag, ab) = SampleAreaCell(areaMap, i - lo, color);
                     dev.SetLed(i, ar, ag, ab);
                     continue;
                 }
@@ -2064,14 +2082,14 @@ public sealed partial class LightingEngine : IDisposable
                 }
                 var sx = cx * kx;
                 var sy = cy * ky;
-                var (r, g, b) = SampleLedSpot(sx, sy, halfW, halfH);
+                var (r, g, b) = SampleLedSpot(sx, sy, halfW, halfH, color);
                 dev.SetLed(i, r, g, b);
             }
         }
     }
 
     /// <summary>
-    /// Color of one LED: the plain mean, black included, of a small spot of
+    /// Color of one LED: the mean (per its color sampling mode) of a small spot of
     /// canvas pixels centered on the LED's sample position (<paramref name="sx"/>,
     /// <paramref name="sy"/>, canvas pixels). The spot is
     /// <see cref="SpotSideOfCanvasWidth"/> of the canvas width on a side, centered
@@ -2080,24 +2098,21 @@ public sealed partial class LightingEngine : IDisposable
     /// in canvas pixels) when that is smaller, so dense neighbours do not blur
     /// together. Clamped at the canvas edges.
     /// </summary>
-    private (byte r, byte g, byte b) SampleLedSpot(float sx, float sy, float cellHalfW, float cellHalfH)
+    private (byte r, byte g, byte b) SampleLedSpot(float sx, float sy, float cellHalfW, float cellHalfH, ColorSampling color)
     {
         LedSpotGeometry.SpotRect(
             sx, sy, cellHalfW, cellHalfH, _sampleCanvas.Width, _sampleCanvas.Height, SpotSideOfCanvasWidth,
             out var ix0, out var iy0, out var ix1, out var iy1);
-        long n = 0, rSum = 0, gSum = 0, bSum = 0;
+        var acc = new ColorAccumulator(color);
         for (int py = iy0; py <= iy1; py++)
         {
             for (int px = ix0; px <= ix1; px++)
             {
                 var (r, g, b) = _sampleCanvas.GetPixel(px, py);
-                rSum += r;
-                gSum += g;
-                bSum += b;
-                n++;
+                acc.Add(r, g, b);
             }
         }
-        return ((byte)(rSum / n), (byte)(gSum / n), (byte)(bSum / n));
+        return acc.Result();
     }
 
     /// <summary>
@@ -2110,29 +2125,22 @@ public sealed partial class LightingEngine : IDisposable
     /// holds a steady mid tone). The per-LED spot read does not fit here: a
     /// sweep fills the frame and the cell is the unit.
     /// </summary>
-    private (byte r, byte g, byte b) SampleLedBox(float x0, float y0, float x1, float y1)
+    private (byte r, byte g, byte b) SampleLedBox(float x0, float y0, float x1, float y1, ColorSampling color)
     {
         var ix0 = Math.Clamp((int)MathF.Floor(x0), 0, _sampleCanvas.Width - 1);
         var iy0 = Math.Clamp((int)MathF.Floor(y0), 0, _sampleCanvas.Height - 1);
         var ix1 = Math.Clamp((int)MathF.Ceiling(x1) - 1, ix0, _sampleCanvas.Width - 1);
         var iy1 = Math.Clamp((int)MathF.Ceiling(y1) - 1, iy0, _sampleCanvas.Height - 1);
-        long n = 0, rSum = 0, gSum = 0, bSum = 0;
+        var acc = new ColorAccumulator(color);
         for (int py = iy0; py <= iy1; py++)
         {
             for (int px = ix0; px <= ix1; px++)
             {
                 var (r, g, b) = _sampleCanvas.GetPixel(px, py);
-                rSum += r;
-                gSum += g;
-                bSum += b;
-                n++;
+                acc.Add(r, g, b);
             }
         }
-        if (n == 0)
-        {
-            return (0, 0, 0);
-        }
-        return ((byte)(rSum / n), (byte)(gSum / n), (byte)(bSum / n));
+        return acc.Result();
     }
 
     /// <summary>
@@ -2352,7 +2360,7 @@ public sealed partial class LightingEngine : IDisposable
         }
     }
 
-    private void SerializeAndBroadcast()
+    private void SerializeAndBroadcast(bool final = false)
     {
         var devices = _devices;
         var canvasBytes = _canvas.ByteCount;
@@ -2389,6 +2397,7 @@ public sealed partial class LightingEngine : IDisposable
             pos += dev.LedCount * 3;
         }
         OnFrame?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos));
+        FrameSerialized?.Invoke(new ReadOnlyMemory<byte>(_frameBuffer, 0, pos), devices, final);
     }
 
     /// <summary>

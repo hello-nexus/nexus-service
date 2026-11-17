@@ -58,6 +58,13 @@ public sealed class BulkPanelHub : IDisposable
 
     public void SetOpenAccessDenied(bool denied) => _openAccessDenied = denied;
 
+    private volatile string? _openAccessHolder;
+
+    /// <summary>Conflict app id likely holding the device after a denied open; diagnostic only, null when unknown.</summary>
+    public string? OpenAccessHolder => _openAccessHolder;
+
+    public void SetOpenAccessHolder(string? appId) => _openAccessHolder = appId;
+
     /// <summary>True once an open of the present panel was attempted and failed, until it opens or Nexus Control or the panel goes away.</summary>
     public bool OpenFailed => _openFailed;
 
@@ -70,6 +77,19 @@ public sealed class BulkPanelHub : IDisposable
 
     /// <summary>Bytes in one captured BGRA frame at the attached panel's size.</summary>
     public int FrameBytes { get { lock (_lock) { return _width * _height * 4; } } }
+
+    /// <summary>USB product id of the attached panel, or 0 while nothing is attached or the transport does not report one.</summary>
+    public int ProductId
+    {
+        get
+        {
+            lock (_lock)
+            {
+                var pid = _pipe?.ProductId ?? 0;
+                return pid != 0 ? pid : _hid?.ProductId ?? 0;
+            }
+        }
+    }
 
     public string? Serial { get { lock (_lock) { return _hid?.Serial; } } }
 

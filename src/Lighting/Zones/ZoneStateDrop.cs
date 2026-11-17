@@ -28,6 +28,12 @@ public static class ZoneStateDrop
                 modes.Remove(id);
                 settings.Devices.SamplingModes = modes;
             }
+            if (settings.Devices.ColorSamplingModes.ContainsKey(id))
+            {
+                var colorModes = new Dictionary<string, string>(settings.Devices.ColorSamplingModes);
+                colorModes.Remove(id);
+                settings.Devices.ColorSamplingModes = colorModes;
+            }
             if (settings.Devices.DisabledLightingDevices.Contains(id))
             {
                 // Replace rather than mutate: the frame writers read this list

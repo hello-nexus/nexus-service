@@ -226,7 +226,9 @@ public sealed class FlexScreens : IFanLcdScreens
 
     public bool PushPanelFrame(string serial, byte[] jpeg) => _panelOwnership.Push(serial, jpeg, () => PushImage(serial, jpeg));
 
-    public string PanelFamily => "lianli-flex-lcd";
+    public const string PanelFamilyId = "lianli-flex-lcd";
+
+    public string PanelFamily => PanelFamilyId;
 
     public int PanelFps => 25;
 

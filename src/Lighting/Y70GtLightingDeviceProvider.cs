@@ -38,7 +38,7 @@ public sealed class Y70GtLightingDeviceProvider :
 
     public event Action? DevicesChanged;
 
-    private bool Present => _hub.HasBacklight && !string.IsNullOrEmpty(_hub.DeviceId);
+    private bool Present => _hub.HasBacklight && !string.IsNullOrEmpty(_hub.BacklightDeviceId);
 
     /// <summary>The hub id is shared with the Y70 device handler; only the GT variant owns a lighting card under it.</summary>
     public static bool IsY70GtId(string id) =>
@@ -47,7 +47,7 @@ public sealed class Y70GtLightingDeviceProvider :
     /// <summary>Called by the Y70 heartbeat after each tick so the bridge rebuilds its frame map on (re)connect; a signature compare suppresses repeats.</summary>
     public void OnHubStateUpdated()
     {
-        var sig = Present ? _hub.DeviceId : "disconnected";
+        var sig = Present ? _hub.BacklightDeviceId : "disconnected";
         if (sig == _lastSignature) return;
         _lastSignature = sig;
         try { DevicesChanged?.Invoke(); } catch { /* swallow subscriber failures */ }
@@ -60,7 +60,7 @@ public sealed class Y70GtLightingDeviceProvider :
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
         if (!Present) return resp;
-        var id = _hub.DeviceId;
+        var id = _hub.BacklightDeviceId;
         var settings = _store.Load();
         var isOn = !settings.Devices.DisabledLightingDevices.Contains(id);
         var brightness = 100;
@@ -141,7 +141,7 @@ public sealed class Y70GtLightingDeviceProvider :
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
         if (!Present) return Array.Empty<DeviceStructure>();
-        var id = _hub.DeviceId;
+        var id = _hub.BacklightDeviceId;
         var key = DeviceKey();
         var (u, v) = BuildLedUv();
         var structure = new DeviceStructure { DeviceId = id, Name = BacklightName, DeviceKey = key, Partitionable = false };
@@ -174,7 +174,7 @@ public sealed class Y70GtLightingDeviceProvider :
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
         if (!Present) { _frame = null; return Array.Empty<DeviceFrame>(); }
-        var id = _hub.DeviceId;
+        var id = _hub.BacklightDeviceId;
         var layouts = _store.Load().Lighting.DeviceLayouts;
         var ledCount = Y70DisplayProtocol.BacklightLedCount;
         var (defX, defY, defW, defH) = DefaultLayout();
@@ -205,7 +205,7 @@ public sealed class Y70GtLightingDeviceProvider :
     /// <summary>Per-LED canvas position for the card's wire order, so effects land on the physical cell of the grid rather than along a linear index.</summary>
     internal static (float[] u, float[] v) BuildLedUv()
     {
-        var order = Y70DisplayProtocol.BacklightWireOrder;
+        var order = Y70DisplayProtocol.BacklightCellByWireIndex;
         var u = new float[order.Length];
         var v = new float[order.Length];
         for (var i = 0; i < order.Length; i++)

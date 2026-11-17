@@ -43,16 +43,28 @@ public static class MasterBrightness
     {
         var global = Math.Min(Math.Clamp(lighting.GlobalBrightness, 0f, 1f), idleCap);
         var schedule = lighting.BrightnessSchedule;
-        if (schedule is null || !schedule.Enabled)
+        if (schedule is null || !schedule.LightingFollowsOn)
         {
             return global;
+        }
+        return Math.Min(global, ScheduleLevel(schedule, localNow));
+    }
+
+    /// <summary>The schedule's own level, 0..1, at <paramref name="localNow"/>: 1 while the
+    /// schedule is off or empty. The one evaluation every follower (lighting and each
+    /// device) scales its ceiling by.</summary>
+    public static float ScheduleLevel(BrightnessSchedule? schedule, DateTime localNow)
+    {
+        if (schedule is null || !schedule.Enabled)
+        {
+            return 1f;
         }
         if (schedule.SunShiftOn
             && SunShift.PlanFor(SunShift.Effective(schedule), DateOnly.FromDateTime(localNow), schedule.SunNightLevel, schedule.SunDayLevel) is { Day.Status: SunStatus.Ok } plan)
         {
-            return Math.Min(global, ScheduledSun(plan, localNow.TimeOfDay));
+            return ScheduledSun(plan, localNow.TimeOfDay);
         }
-        return Math.Min(global, Scheduled(schedule.Points, localNow.TimeOfDay));
+        return Scheduled(schedule.Points, localNow.TimeOfDay);
     }
 
     /// <summary>The generated sun curve's level, 0..1, at <paramref name="timeOfDay"/>,

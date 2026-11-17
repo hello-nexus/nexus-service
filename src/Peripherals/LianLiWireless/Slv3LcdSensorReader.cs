@@ -6,7 +6,7 @@ using Nexus.Service.Sensors;
 namespace Nexus.Service.Peripherals.LianLiWireless;
 
 /// <summary>One sensor's display-ready reading: an already unit-converted value plus the gauge scale and labels.</summary>
-public readonly record struct Slv3LcdSensorReading(float Value, float Min, float Max, string Label, string Unit);
+public readonly record struct Slv3LcdSensorReading(float Value, float Min, float Max, string Label, string Unit, string ValueType = "");
 
 /// <summary>
 /// Reads one named live sensor value from <see cref="ISensorProvider"/> for
@@ -34,11 +34,11 @@ public sealed class Slv3LcdSensorReader
         var fahrenheit = string.Equals(tempUnit, "f", StringComparison.OrdinalIgnoreCase);
         return source switch
         {
-            "cpuLoad" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.CpuUsage) ?? 0f, 0f, 100f, "CPU", "%"),
-            "gpuLoad" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.GpuUsage) ?? 0f, 0f, 100f, "GPU", "%"),
+            "cpuLoad" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.CpuUsage) ?? 0f, 0f, 100f, "CPU", "%", "Load"),
+            "gpuLoad" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.GpuUsage) ?? 0f, 0f, 100f, "GPU", "%", "Load"),
             "gpuTemp" => TempReading(SummarySensors.Value(_sensors, SummarySensorKind.GpuTemp) ?? 0f, "GPU", fahrenheit),
-            "memoryUsage" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.MemoryUsage) ?? 0f, 0f, 100f, "MEM", "%"),
-            "vramUsage" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.VramUsage) ?? 0f, 0f, 100f, "VRAM", "%"),
+            "memoryUsage" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.MemoryUsage) ?? 0f, 0f, 100f, "MEM", "%", "Load"),
+            "vramUsage" => new Slv3LcdSensorReading(SummarySensors.Value(_sensors, SummarySensorKind.VramUsage) ?? 0f, 0f, 100f, "VRAM", "%", "Load"),
             "fanRpm" => FanReading(),
             // "cpuTemp" and any unrecognized/missing source default to CPU temperature.
             _ => TempReading(SummarySensors.Value(_sensors, SummarySensorKind.CpuTemp) ?? 0f, "CPU", fahrenheit),
@@ -56,16 +56,16 @@ public sealed class Slv3LcdSensorReader
                 max = mobo[i].Value;
             }
         }
-        return new Slv3LcdSensorReading(max, 0f, FanRpmCeiling, "FAN", "RPM");
+        return new Slv3LcdSensorReading(max, 0f, FanRpmCeiling, "FAN", "RPM", "Fan");
     }
 
     private static Slv3LcdSensorReading TempReading(float celsius, string label, bool fahrenheit)
     {
         if (!fahrenheit)
         {
-            return new Slv3LcdSensorReading(celsius, 0f, 100f, label, "°C");
+            return new Slv3LcdSensorReading(celsius, 0f, 100f, label, "°C", "Temperature");
         }
         var fahrenheitValue = celsius * 9f / 5f + 32f;
-        return new Slv3LcdSensorReading(fahrenheitValue, 32f, 212f, label, "°F");
+        return new Slv3LcdSensorReading(fahrenheitValue, 32f, 212f, label, "°F", "Temperature");
     }
 }

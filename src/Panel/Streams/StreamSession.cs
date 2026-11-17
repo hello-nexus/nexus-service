@@ -34,29 +34,26 @@ public sealed class StreamSession
     private long _lastIngestTicks;
     private long _bindGeneration;
     private IDisposable? _section;
+    private readonly System.Threading.ManualResetEventSlim _arrived = new(false);
 
     public StreamSession(string sessionId, StreamedPanelDeviceInfo info, string panelDeviceId)
     {
         SessionId = sessionId;
         Info = info;
         PanelDeviceId = panelDeviceId;
-        Upscaler = RawFrameUpscaler.For(sessionId, info.Profile);
         // Enough queue to absorb a transport blip while resuming near-live;
         // when even the newest GOP exceeds it, resync from the next IDR.
         // Raw frames are every one a keyframe and megabytes each, and the device
-        // is the ceiling: queueing them buys nothing but latency, so hold a single
-        // frame of slack and let the trim keep the newest.
+        // is the ceiling: a queued raw frame only adds latency, so the newest
+        // frame replaces the one waiting.
         _maxQueuedFrames = info.Profile.Codec == StreamCodec.RawBgra
-            ? 2
+            ? 1
             : Math.Max(30, info.Profile.Fps * 2);
     }
 
     public string SessionId { get; }
     public StreamedPanelDeviceInfo Info { get; }
     public string PanelDeviceId { get; }
-
-    /// <summary>Set when the overlay renders below native; ingest runs every frame through it before <see cref="Enqueue"/>.</summary>
-    public RawFrameUpscaler? Upscaler { get; }
 
     public StreamSessionState State
     {
@@ -118,7 +115,7 @@ public sealed class StreamSession
 
     /// <summary>
     /// One raw frame from either ingest path (HTTP body or shared section): records the arrival
-    /// gap, scales it to native when the overlay renders below native, and queues it.
+    /// gap and queues it.
     /// </summary>
     public void AcceptFrame(StreamFrame frame)
     {
@@ -126,9 +123,7 @@ public sealed class StreamSession
         var last = System.Threading.Interlocked.Exchange(ref _lastIngestTicks, now);
         if (last != 0)
             RecordIngestGap((now - last) * 1000 / System.Diagnostics.Stopwatch.Frequency);
-        var native = Upscaler is { } upscaler ? upscaler.Apply(frame) : frame;
-        if (native is not null)
-            Enqueue(native);
+        Enqueue(frame);
     }
 
     public void Enqueue(StreamFrame frame)
@@ -139,8 +134,35 @@ public sealed class StreamSession
             _enqueued++;
             _queue.Enqueue(frame);
             if (_queue.Count > _maxQueuedFrames)
-                TrimToNewestIdrLocked();
+            {
+                // A raw frame stands alone, so the newest replaces the waiting one: a drop, not a resync.
+                if (Info.Profile.Codec == StreamCodec.RawBgra)
+                {
+                    while (_queue.Count > _maxQueuedFrames)
+                    {
+                        _queue.Dequeue().Release();
+                        _dropped++;
+                    }
+                }
+                else
+                {
+                    TrimToNewestIdrLocked();
+                }
+            }
         }
+        _arrived.Set();
+    }
+
+    /// <summary>
+    /// Blocks until a frame was queued since the last wait (or the session closed), so a raw
+    /// writer can send on arrival instead of on a fixed tick. A true result is a hint: the
+    /// caller still dequeues, which says whether anything is there.
+    /// </summary>
+    public bool WaitForFrame(int timeoutMs)
+    {
+        if (!_arrived.Wait(timeoutMs)) return false;
+        _arrived.Reset();
+        return true;
     }
 
     /// <summary>
@@ -210,6 +232,7 @@ public sealed class StreamSession
             section = _section;
             _section = null;
         }
+        _arrived.Set();
         // Outside the lock: disposing joins the reader thread, which may be inside Enqueue.
         section?.Dispose();
     }

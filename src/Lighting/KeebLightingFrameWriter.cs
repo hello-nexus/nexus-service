@@ -229,7 +229,7 @@ public sealed class KeebLightingFrameWriter : IHostedService, IDisposable
         var zones = Nexus.Service.Lighting.Zones.ZoneResolution.Resolve(structure, settings);
         Nexus.Service.Lighting.Zones.SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
         var touched = Nexus.Service.Lighting.Zones.SegmentFrameComposer.Compose(
-            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, keebLevel, nowTicks, _identify, _segmentBuffers);
+            structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, keebLevel, nowTicks, _identify, _segmentBuffers, _engine.Live, segmentGated: true);
 
         // Keys and underglow stream over separate HID reports, so each segment
         // can be handed back to firmware independently: a fully uncontrolled

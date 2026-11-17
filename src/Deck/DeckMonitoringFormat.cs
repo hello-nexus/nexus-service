@@ -1,7 +1,7 @@
 using System;
-using System.Globalization;
 using System.Text.RegularExpressions;
 using Nexus.Service.Models.Sensors;
+using Nexus.Service.Sensors;
 
 namespace Nexus.Service.Deck;
 
@@ -87,28 +87,50 @@ internal static partial class DeckMonitoringFormat
     }
 
     /// <summary>
-    /// Value text for a resolved sensor, mirroring formatSensorValue: a
-    /// Celsius temperature converts to Fahrenheit (keeping the source
-    /// string's decimal precision) when tempUnit is "f", auto-scales a
-    /// byte-based Units reading along the B/KB/MB/GB/TB/PB ladder (mirroring
-    /// formatScaledDataValue), or falls back to the service's own formatted
-    /// string for any other unit (percent, clock, RPM, ...). The result is
-    /// then re-separated to numberFormat, mirroring localizeNumbers.
+    /// Value text for a resolved sensor, mirroring formatSensorValue. A Celsius
+    /// temperature converts to Fahrenheit when tempUnit is "f". Types covered by
+    /// <see cref="MonitoringDecimals"/> take their decimals from it (wholeNumbers is the
+    /// monitoringWholeNumbers preference), swapping the number inside the provider's formatted
+    /// string. A byte-based Units reading auto-scales along the B/KB/MB/GB/TB/PB ladder
+    /// (mirroring formatScaledDataValue); any other reading keeps the provider's formatted
+    /// string. The result is then re-separated to numberFormat, mirroring localizeNumbers.
     /// </summary>
-    internal static string ResolveValueText(HardwareSensor sensor, string? tempUnit, string? numberFormat)
+    internal static string ResolveValueText(HardwareSensor sensor, string? tempUnit, string? numberFormat, bool wholeNumbers = false)
     {
         if (string.Equals(tempUnit, "f", StringComparison.OrdinalIgnoreCase) && IsCelsiusUnit(sensor.Units))
         {
-            var decimals = CountFractionDigits(sensor.Formatted);
-            var fahrenheit = sensor.Value * 9f / 5f + 32f;
-            return LocalizeNumbers($"{Fixed(fahrenheit, decimals)} °F", numberFormat);
+            // Converted in double on the web's parsed value, like convertTemperature.
+            var fahrenheit = MonitoringDecimals.ToWebDouble(sensor.Value) * 9d / 5d + 32d;
+            if (!float.IsFinite(sensor.Value) || !MonitoringDecimals.Governs(sensor.Type))
+            {
+                // Outside the shared rule the web keeps the source string's own precision.
+                return LocalizeNumbers($"{MonitoringDecimals.ToFixed(fahrenheit, CountFractionDigits(sensor.Formatted))} °F", numberFormat);
+            }
+            if (NumberTokenRegex().IsMatch(sensor.Formatted))
+            {
+                return LocalizeNumbers($"{MonitoringDecimals.FormatNumber(fahrenheit, sensor.Type, wholeNumbers)} °F", numberFormat);
+            }
         }
-        return LocalizeNumbers(FormatScaledDataValue(sensor.Value, sensor.Units) ?? sensor.Formatted, numberFormat);
+        if (FormatScaledDataValue(sensor.Value, sensor.Units) is { } scaled)
+        {
+            return LocalizeNumbers(scaled, numberFormat);
+        }
+        return LocalizeNumbers(ApplyDecimals(sensor, wholeNumbers), numberFormat);
     }
 
-    /// <summary>Mirrors isCelsiusUnit: strips a degree sign and trims before the case-insensitive "C" compare.</summary>
-    private static bool IsCelsiusUnit(string units) =>
-        string.Equals(units.Replace("°", "").Trim(), "C", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Swaps the number in the provider's formatted string for the shared per-type rule's
+    /// text, keeping the provider's own spacing and unit. Types the rule does not cover, or a
+    /// formatted string with no number, pass through unchanged.
+    /// </summary>
+    private static string ApplyDecimals(HardwareSensor sensor, bool wholeNumbers)
+    {
+        var number = MonitoringDecimals.FormatNumber(sensor.Value, sensor.Type, wholeNumbers);
+        var match = NumberTokenRegex().Match(sensor.Formatted);
+        return number is null || !match.Success
+            ? sensor.Formatted
+            : string.Concat(sensor.Formatted.AsSpan(0, match.Index), number, sensor.Formatted.AsSpan(match.Index + match.Length));
+    }
 
     /// <summary>Mirrors formatted.match(/\.(\d+)/) digit-count: the source string's own decimal precision, or 0 when it has none.</summary>
     private static int CountFractionDigits(string formatted)
@@ -126,9 +148,9 @@ internal static partial class DeckMonitoringFormat
         return count;
     }
 
-    // Away-from-zero matches JS toFixed; banker's rounding would diverge on ties.
-    private static string Fixed(float value, int decimals) =>
-        Math.Round((double)value, decimals, MidpointRounding.AwayFromZero).ToString("F" + decimals, CultureInfo.InvariantCulture);
+    /// <summary>Mirrors isCelsiusUnit: strips a degree sign and trims before the case-insensitive "C" compare.</summary>
+    private static bool IsCelsiusUnit(string units) =>
+        string.Equals(units.Replace("°", "").Trim(), "C", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Mirrors localizeNumbers's separator swap for the "comma" number format

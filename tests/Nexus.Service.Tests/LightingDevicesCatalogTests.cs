@@ -16,6 +16,14 @@ public class LightingDevicesCatalogTests
             "the embedded resource is likely missing or stale");
     }
 
+    [Theory]
+    [InlineData(0x1532, 0x0F2C)]
+    [InlineData(0x1532, 0x02D0)]
+    public void OpenRgbUsbIds_IncludesRazerDevicesAddedForReplugRedetect(int vid, int pid)
+    {
+        Assert.Contains((vid << 16) | pid, LightingDevicesCatalog.OpenRgbUsbIds);
+    }
+
     [Fact]
     public void Catalog_ContainsKnownHidDeviceWithVidPid()
     {

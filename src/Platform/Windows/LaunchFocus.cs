@@ -87,7 +87,7 @@ public static class LaunchFocus
         }
         catch (Exception ex)
         {
-            HelperLog.Write($"[launch-focus] hook thread failed: {ex.Message}");
+            HelperLog.Warn($"[launch-focus] hook thread failed: {ex.Message}");
         }
     }
 

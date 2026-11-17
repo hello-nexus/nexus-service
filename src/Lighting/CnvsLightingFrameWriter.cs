@@ -171,6 +171,7 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         EnsureCapacity(CnvsHub.LedCount);
         var dst = _buffer!;
         FillBufferSlice(dst, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks);
+        _engine.Live.Report(id, frame.LedBytes, ledCount, brightnessMul, adjust, hasIdentify, startTicks, nowTicks, IdentifyFlashHalfPeriodMs);
         // Any LEDs beyond the engine-frame count: zero so the mat is fully
         // owned by us, no firmware residue.
         for (var i = ledCount; i < CnvsHub.LedCount; i++) dst[i] = default;
@@ -220,7 +221,7 @@ public sealed class CnvsLightingFrameWriter : IHostedService, IDisposable
         return globalBrightness.Combine(Math.Clamp(devBrightness, 0, 100) / 100.0);
     }
 
-    private static void FillBufferSlice(CnvsColor[] dst, ReadOnlySpan<byte> src, int ledCount,
+    internal static void FillBufferSlice(CnvsColor[] dst, ReadOnlySpan<byte> src, int ledCount,
         double brightnessMul, DeviceColorAdjust adjust, bool hasIdentify, long identifyStartTicks, long nowTicks)
     {
         if (hasIdentify)

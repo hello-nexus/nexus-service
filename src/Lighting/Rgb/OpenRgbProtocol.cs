@@ -333,7 +333,7 @@ public static class OpenRgbProtocol
         for (int i = 0; i < modeCount; i++)
         {
             var modeStart = pos;
-            var (modeName, colorMode) = ReadMode(body, ref pos, protocolVersion, $"mode[{i}]");
+            var (modeName, colorMode, modeFlags) = ReadMode(body, ref pos, protocolVersion, $"mode[{i}]");
             var modeBytes = body.Slice(modeStart, pos - modeStart).ToArray();
             if (protocolVersion >= 3)
             {
@@ -344,6 +344,7 @@ public static class OpenRgbProtocol
                 Index = i,
                 Name = modeName,
                 ColorMode = colorMode,
+                Flags = modeFlags,
                 Bytes = modeBytes,
             });
         }
@@ -478,12 +479,12 @@ public static class OpenRgbProtocol
     }
 
     /// <summary>
-    /// Advance past one mode entry and return its name and color_mode. Fixed
+    /// Advance past one mode entry and return its name, color_mode and flags. Fixed
     /// block: [value, dropped at v6] flags speed_min speed_max [v3+ brightness
     /// min/max] colors_min colors_max speed [v3+ brightness] direction
     /// color_mode, then uint16 num_colors and the colors.
     /// </summary>
-    private static (string name, uint colorMode) ReadMode(ReadOnlySpan<byte> body, ref int pos, uint protocolVersion, string field)
+    private static (string name, uint colorMode, uint flags) ReadMode(ReadOnlySpan<byte> body, ref int pos, uint protocolVersion, string field)
     {
         var name = ReadBString(body, ref pos);
         var modeFixed = (protocolVersion >= 6 ? 0 : 4) + 8 * 4;
@@ -493,12 +494,13 @@ public static class OpenRgbProtocol
         }
         EnsureBytes(body, pos, modeFixed + 2, $"{field} fixed block");
         var colorMode = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + modeFixed - 4, 4));
+        var flags = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + (protocolVersion >= 6 ? 0 : 4), 4));
         pos += modeFixed;
         var colorCount = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(pos, 2));
         pos += 2;
         EnsureBytes(body, pos, 4 * colorCount, $"{field} colors[]");
         pos += 4 * colorCount;
-        return (name, colorMode);
+        return (name, colorMode, flags);
     }
 
     /// <summary>

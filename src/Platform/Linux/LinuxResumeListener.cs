@@ -30,14 +30,19 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
     private readonly RgbBridge _bridge;
     private readonly Nexus.Service.QSeries.QSeriesPortWatcher? _qseries;
     private readonly Nexus.Service.Peripherals.LianLi.LianLiHubSet? _lianLi;
+    private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? _hydroShift2;
+    private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? _hydroShift2Curve;
     private DBusConnection? _dbus;
     private CancellationTokenSource? _cts;
 
     /// <summary>Raised on logind's PrepareForSleep(true), before the machine suspends.</summary>
     public event Action? Suspending;
 
-    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null)
+    public LinuxResumeListener(RgbBridge bridge, Nexus.Service.QSeries.QSeriesPortWatcher? qseries = null, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null,
+        Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? hydroShift2 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? hydroShift2Curve = null)
     {
+        _hydroShift2 = hydroShift2;
+        _hydroShift2Curve = hydroShift2Curve;
         _bridge = bridge;
         _qseries = qseries;
         _lianLi = lianLi;
@@ -59,6 +64,14 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
     }
 
     public void Dispose() => _dbus?.Dispose();
+
+    private void ResumeHydroShift2()
+    {
+        try { _hydroShift2Curve?.OnSystemResumed(); }
+        catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II Curve resume failed: {ex.Message}"); }
+        try { _hydroShift2?.OnSystemResumed(); }
+        catch (Exception ex) { ServiceLog.Warn($"[power-events] HydroShift II resume failed: {ex.Message}"); }
+    }
 
     private async Task RunAsync(CancellationToken ct)
     {
@@ -109,6 +122,7 @@ public sealed class LinuxResumeListener : IHostedService, IDisposable
                         _bridge.OnSystemResume();
                         _qseries?.OnHostResumed();
                         _lianLi?.OnSystemResumed();
+                        ResumeHydroShift2();
                     }
                 }
             }

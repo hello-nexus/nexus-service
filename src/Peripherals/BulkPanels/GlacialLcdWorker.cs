@@ -133,7 +133,7 @@ public sealed class GlacialLcdWorker : BackgroundService
         var screen = new GlacialLcdScreen(
             hid,
             ReadSettings,
-            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index, GlacialLcdSensors.Gather(_sensors, slot.Category ?? "", _fps, FanHeaderNames)),
+            (slot, index) => GlacialLcdSensors.Read(_sensors, slot, index, GlacialLcdSensors.Gather(_sensors, slot.Category ?? "", _fps, FanHeaderNames, _fans), _wholeNumbers),
             _confirmed,
             Seed,
             message => Log(message, error: false),
@@ -221,10 +221,17 @@ public sealed class GlacialLcdWorker : BackgroundService
         }
     }
 
+    // Refreshed with each settings read, which the screen takes before it reads the slots of a frame.
+    private bool _wholeNumbers;
+
     private GlacialLcdSettings ReadSettings()
     {
         GlacialLcdSettings copy = new();
-        _store.Read(s => copy = s.Devices.GlacialLcd.Copy());
+        _store.Read(s =>
+        {
+            copy = s.Devices.GlacialLcd.Copy();
+            _wholeNumbers = s.Units.MonitoringWholeNumbers == true;
+        });
         return copy;
     }
 

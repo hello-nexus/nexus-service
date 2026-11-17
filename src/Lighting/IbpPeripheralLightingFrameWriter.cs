@@ -139,7 +139,7 @@ public sealed class IbpPeripheralLightingFrameWriter : IHostedService, IDisposab
             _buffers[unit.DeviceId] = buffers;
 
             var touched = SegmentFrameComposer.Compose(
-                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, buffers);
+                structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, buffers, _engine.Live);
             if (touched[IbpPeripheralLightingDeviceProvider.LedsSegment])
             {
                 _hub.WriteFrame(unit.DeviceId, buffers[IbpPeripheralLightingDeviceProvider.LedsSegment]);

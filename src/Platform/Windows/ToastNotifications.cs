@@ -93,13 +93,13 @@ public static class ToastNotifications
                 }
                 else
                 {
-                    HelperLog.Write($"[toast] attribution icon missing at {icon}; Windows draws its placeholder");
+                    HelperLog.Warn($"[toast] attribution icon missing at {icon}; Windows draws its placeholder");
                 }
             }
         }
         catch (Exception ex)
         {
-            HelperLog.Write($"[toast] AppUserModelID registration failed: {ex.Message}");
+            HelperLog.Warn($"[toast] AppUserModelID registration failed: {ex.Message}");
         }
 
         try
@@ -109,7 +109,7 @@ public static class ToastNotifications
         }
         catch (Exception ex)
         {
-            HelperLog.Write($"[toast] AppUserModelID failed: {ex.Message}");
+            HelperLog.Warn($"[toast] AppUserModelID failed: {ex.Message}");
         }
     }
 
@@ -131,7 +131,7 @@ public static class ToastNotifications
         }
         catch (Exception ex)
         {
-            HelperLog.Write($"[toast] branding cache reset failed: {ex.Message}");
+            HelperLog.Warn($"[toast] branding cache reset failed: {ex.Message}");
         }
     }
 
@@ -166,7 +166,7 @@ public static class ToastNotifications
         }
         catch (Exception ex)
         {
-            HelperLog.Write($"[toast] show failed, falling back to balloon: {ex.Message}");
+            HelperLog.Warn($"[toast] show failed, falling back to balloon: {ex.Message}");
             return false;
         }
     }
@@ -203,7 +203,7 @@ public static class ToastNotifications
         }
         catch (Exception ex)
         {
-            HelperLog.Write($"[toast] conflict launch toast failed, falling back to balloon: {ex.Message}");
+            HelperLog.Warn($"[toast] conflict launch toast failed, falling back to balloon: {ex.Message}");
             return false;
         }
     }
@@ -215,7 +215,7 @@ public static class ToastNotifications
         toast.Activated += (_, args) =>
         {
             try { onActivated((args as ToastActivatedEventArgs)?.Arguments ?? ""); }
-            catch (Exception ex) { HelperLog.Write($"[toast] activation failed: {ex.Message}"); }
+            catch (Exception ex) { HelperLog.Warn($"[toast] activation failed: {ex.Message}"); }
             finally { Release(toast); }
         };
         // A timed-out toast moves to Action Center with its button still live, so it stays rooted.

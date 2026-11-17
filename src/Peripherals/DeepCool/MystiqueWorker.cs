@@ -338,7 +338,7 @@ public sealed class MystiqueWorker : BackgroundService
                     continue;
                 }
                 var settings = ReadSettings();
-                if (!session.Apply(settings) || !session.Tick(MystiqueSensors.Read(_sensors, settings, MystiqueSensors.FanNames(_store, _fans)), DateTime.Now))
+                if (!session.Apply(settings) || !session.Tick(MystiqueSensors.Read(_sensors, settings, MystiqueSensors.FanNames(_store, _fans), _fans), DateTime.Now))
                 {
                     Log("a write was refused; reopening", error: false);
                     return false;

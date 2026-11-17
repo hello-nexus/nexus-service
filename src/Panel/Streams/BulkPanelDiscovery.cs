@@ -63,6 +63,7 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
                     SupportsBrightness = driver.SupportsBrightness,
                     SupportsSecondaryMonitor = driver.SupportsSecondaryMonitor && _monitors is { IsAvailable: true },
                     SupportsPortrait = driver.SupportsPortrait,
+                    SupportsRenderTurn = !driver.SupportsPortrait,
                     SupportsTouch = driver.HasTouch,
                     Dpi = driver.Dpi,
                     MultiInstance = driver.MultiInstance,
@@ -75,5 +76,5 @@ public sealed class BulkPanelDiscovery : IStreamedPanelDiscovery
     }
 
     public IStreamedPanelTransport CreateTransport(StreamedPanelDeviceInfo info) =>
-        new BulkPanelStreamTransport(_hub, info.Serial, _monitors);
+        new BulkPanelStreamTransport(_hub, info.Serial, _monitors, info.Profile.RenderTurned);
 }

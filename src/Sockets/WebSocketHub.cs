@@ -119,6 +119,19 @@ public class WebSocketHub
             ? Task.CompletedTask
             : BroadcastAsync(payload, WebSocketMessageType.Binary);
 
+    /// <summary>
+    /// Send a frame to every client, latest wins per client: while a send is in flight a newer
+    /// frame replaces the one waiting instead of queueing behind it, so a slow client falls
+    /// behind by at most one frame. For streams where only the newest frame matters.
+    /// </summary>
+    public void BroadcastLatestBinary(byte[] payload)
+    {
+        foreach (var (_, entry) in _clients)
+        {
+            entry.SendLatest(payload);
+        }
+    }
+
     private async Task BroadcastAsync(ReadOnlyMemory<byte> payload, WebSocketMessageType type)
     {
         foreach (var (_, entry) in _clients)
@@ -134,6 +147,37 @@ public class WebSocketHub
         private readonly CancellationTokenSource _disposeCts = new();
 
         public ClientEntry(WebSocket socket) { _socket = socket; }
+
+        private byte[]? _pendingLatest;
+        private int _pumping;
+
+        public void SendLatest(byte[] payload)
+        {
+            Interlocked.Exchange(ref _pendingLatest, payload);
+            if (Interlocked.CompareExchange(ref _pumping, 1, 0) == 0)
+            {
+                _ = PumpLatestAsync();
+            }
+        }
+
+        private async Task PumpLatestAsync()
+        {
+            while (true)
+            {
+                var next = Interlocked.Exchange(ref _pendingLatest, null);
+                if (next is null)
+                {
+                    Volatile.Write(ref _pumping, 0);
+                    // A frame that arrived after the empty check but before the flag cleared needs a pump.
+                    if (Volatile.Read(ref _pendingLatest) is null || Interlocked.CompareExchange(ref _pumping, 1, 0) != 0)
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                await SendAsync(next, WebSocketMessageType.Binary);
+            }
+        }
 
         public async Task SendAsync(ReadOnlyMemory<byte> payload, WebSocketMessageType type)
         {

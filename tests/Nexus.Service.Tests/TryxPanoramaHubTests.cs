@@ -40,11 +40,19 @@ public class TryxPanoramaHubTests
         public Dictionary<string, byte[]> PanelFiles { get; } = new();
         public int PullChunkSize { get; set; } = 65536;
         public int Pulls { get; private set; }
+        public bool SupportsFilePull { get; set; } = true;
         // Answers this many pulls with an error reply first, like a stray reply to another frame.
         public int FailNextPulls { get; set; }
+        // Answers this many pulls with a timeout (null), the transient link failure.
+        public int TimeoutNextPulls { get; set; }
         public TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs)
         {
             Pulls++;
+            if (TimeoutNextPulls > 0)
+            {
+                TimeoutNextPulls--;
+                return null;
+            }
             if (FailNextPulls > 0)
             {
                 FailNextPulls--;
@@ -401,18 +409,18 @@ public class TryxPanoramaHubTests
         hub.SetOverlay(overlay);
 
         var expected = TryxRkProtocol.BuildOverlay(
-            new[] { new TryxOverlayLine("CPU Temp", "0°C") },
+            new[] { new TryxOverlayLine("CPU Temp", "0.0°C") },
             new[] { (0.03, 0.10) }, colorRgb: 0xFFFFFF, fontName: "monospace", sizePercent: 50, align: "right");
 
         Assert.Equal(expected, Assert.Single(recording.Writes));
     }
 
     [Theory]
-    [InlineData("Temperature", 45f, "45°C")]
-    [InlineData("Load", 18f, "18%")]
+    [InlineData("Temperature", 45f, "45.0°C")]
+    [InlineData("Load", 18f, "18.0%")]
     [InlineData("Clock", 4713f, "4713MHz")]
-    [InlineData("Frequency", 2400f, "2400MHz")]
-    [InlineData("Power", 65f, "65W")]
+    [InlineData("Frequency", 2400f, "2400.0MHz")]
+    [InlineData("Power", 65f, "65.0W")]
     [InlineData("Fan", 1200f, "1200RPM")]
     [InlineData("Framerate", 60f, "60fps")]
     [InlineData("FrameTime", 16.7f, "16.7ms")]
@@ -437,7 +445,7 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
-    public void SetOverlay_formats_voltage_to_two_decimals()
+    public void SetOverlay_formats_voltage_to_three_decimals()
     {
         var recording = new RecordingTransport();
         var sensors = new StubSensors { CpuSensors = [MakeSensor("VCore", "Voltage", 1.2f)] };
@@ -450,7 +458,7 @@ public class TryxPanoramaHubTests
             Items = [new TryxOverlaySensorItem { SensorId = "test/VCore", Device = "cpu", Label = "Stat" }],
         });
 
-        Assert.Contains("1.20V", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
+        Assert.Contains("1.200V", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
     }
 
     [Fact]
@@ -560,7 +568,7 @@ public class TryxPanoramaHubTests
     {
         var sensors = new StubSensors { CpuSensors = [MakeSensor("CPU Total", "Load", 37f)] };
 
-        Assert.Contains("37%", OverlayText(sensors, null, "quick", "summary/cpu-usage"));
+        Assert.Contains("37.0%", OverlayText(sensors, null, "quick", "summary/cpu-usage"));
     }
 
     [Fact]
@@ -599,7 +607,7 @@ public class TryxPanoramaHubTests
             Items = [new TryxOverlaySensorItem { SensorId = "test/Temp", Device = "storage", Label = "Stat" }],
         });
 
-        Assert.Contains("40°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
+        Assert.Contains("40.0°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
     }
 
     [Fact]
@@ -679,7 +687,7 @@ public class TryxPanoramaHubTests
             Items = [new TryxOverlaySensorItem { SensorId = "test/Core", Device = "gpu", Label = "Stat" }],
         });
 
-        Assert.Contains("70°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
+        Assert.Contains("70.0°C", Encoding.UTF8.GetString(Assert.Single(recording.Writes)));
     }
 
     // ── Task 4: fps overlay sensor + demand coordination ──
@@ -1307,6 +1315,122 @@ public class TryxPanoramaHubTests
         Assert.Equal(10, head.DurationSec);
         Assert.Equal(43, head.Keyframe.Slices[0].Length);
         Assert.True(recording.Pulls * 16 < file.Length, "stops pulling once the keyframe is complete");
+    }
+
+    [Fact]
+    public void FillDuration_stores_the_duration_of_a_clip_the_panel_holds_without_a_sidecar()
+    {
+        byte[] es =
+        [
+            0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32, 0xAA,
+            0, 0, 0, 1, 0x68, 0xEB, 0xCC,
+            0, 0, 0, 1, 0x65, 0x88, .. new byte[40],  0x11,
+            0, 0, 0, 1, 0x41, 0x9A, 0x44,
+            .. new byte[200],
+        ];
+        var name = $"kanali-dur-{Guid.NewGuid():N}.mp4.h264_2240x1080";
+        var recording = new RecordingTransport { PullChunkSize = 16 };
+        recording.PanelFiles[name] = TryxRkProtocol.WrapMediaContainer(es, fps: 30, width: 2240, height: 1080, frameCount: 600, magic: 1);
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        try
+        {
+            Assert.Equal(0, TryxThumbnailCache.ReadDuration(name));
+
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(20, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally
+        {
+            try { File.Delete(System.IO.Path.Combine(TryxThumbnailCache.CacheDir, name + ".dur")); } catch { }
+        }
+    }
+
+    private static byte[] HeaderOnlyFile(int frames)
+    {
+        var full = TryxRkProtocol.WrapMediaContainer([0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32], fps: 30, width: 2240, height: 1080, frameCount: frames, magic: 1);
+        var headerLen = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(full);
+        return full[..(4 + headerLen)];
+    }
+
+    private (TryxPanoramaHub Hub, RecordingTransport Transport, string Name) HubWithClip(byte[] file)
+    {
+        var name = $"kanali-dur-{Guid.NewGuid():N}.mp4.h264_2240x1080";
+        var recording = new RecordingTransport { PullChunkSize = 4096 };
+        recording.PanelFiles[name] = file;
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        return (hub, recording, name);
+    }
+
+    private static void DeleteDur(string name)
+    {
+        try { File.Delete(System.IO.Path.Combine(TryxThumbnailCache.CacheDir, name + ".dur")); } catch { }
+    }
+
+    [Fact]
+    public void FillDuration_reads_a_header_only_file_without_needing_a_keyframe()
+    {
+        var (hub, _, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+        try
+        {
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(15, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally { DeleteDur(name); }
+    }
+
+    [Fact]
+    public void FillDuration_skips_the_pull_when_a_duration_is_already_stored()
+    {
+        var (hub, transport, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+        try
+        {
+            TryxThumbnailCache.WriteDuration(name, 7);
+
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(0, transport.Pulls);
+            Assert.Equal(7, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally { DeleteDur(name); }
+    }
+
+    [Fact]
+    public void TryEnqueueDuration_dedupes_a_clip_already_attempted()
+    {
+        var (hub, _, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+
+        Assert.True(hub.TryEnqueueDuration(name, out _));
+        Assert.False(hub.TryEnqueueDuration(name, out _));
+    }
+
+    [Fact]
+    public void FillDuration_link_failures_are_retried_until_the_cap_then_left()
+    {
+        var (hub, transport, name) = HubWithClip(HeaderOnlyFile(frames: 450));
+        transport.TimeoutNextPulls = 100;
+        Assert.True(hub.TryEnqueueDuration(name, out var key));
+
+        hub.FillDuration(name, key);
+        Assert.True(hub.TryEnqueueDuration(name, out key));
+        hub.FillDuration(name, key);
+        Assert.True(hub.TryEnqueueDuration(name, out key));
+        hub.FillDuration(name, key);
+
+        Assert.False(hub.TryEnqueueDuration(name, out _));
+        Assert.Equal(0, TryxThumbnailCache.ReadDuration(name));
+    }
+
+    [Fact]
+    public void TryEnqueueDuration_is_skipped_when_the_transport_cannot_pull_files()
+    {
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => new RecordingTransport { SupportsFilePull = false });
+        hub.EnsureConnected();
+
+        Assert.False(hub.TryEnqueueDuration("clip.mp4.h264_2240x1080", out _));
     }
 
     [Fact]

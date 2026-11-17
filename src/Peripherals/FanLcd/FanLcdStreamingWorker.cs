@@ -228,7 +228,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                             var reading = _sensorReader.Read(settings.SensorSource, settings.TempUnit);
                             var jpeg = Slv3LcdSensorRenderer.Render(
                                 settings.SensorStyle, reading.Value, reading.Min, reading.Max, reading.Label, reading.Unit,
-                                settings.ColorA, settings.ColorB);
+                                settings.ColorA, settings.ColorB, reading.ValueType, _store.Load().Units.MonitoringWholeNumbers == true);
                             _screens.PushImage(serial, jpeg);
                             await IdleAsync(serial, pick, SensorClockPollMs, ct).ConfigureAwait(false);
                             break;

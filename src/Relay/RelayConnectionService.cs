@@ -543,6 +543,12 @@ public sealed class RelayConnectionService : BackgroundService
         // consumed and this link is obsolete (Reconcile removes it). Set so the
         // reconnect loop stops instead of re-registering a dead pair rendezvous.
         private volatile bool _pairClaimDone;
+        /// <summary>Per-key counters for one peer-up: strictly increasing inbound, never repeating outbound.</summary>
+        private sealed class PairChannel
+        {
+            public long LastInbound = -1;
+            public ulong NextReply;
+        }
         private volatile bool _unauthorized;
 
         /// <summary>The reconcile key this link satisfies (sess:&lt;id&gt; or pair:&lt;rid&gt;).</summary>
@@ -775,6 +781,7 @@ public sealed class RelayConnectionService : BackgroundService
             await SendHelloAsync(transport, ct).ConfigureAwait(false);
 
             byte[]? claimKey = null; // non-null once a client has peered up
+            PairChannel channel = new();
             var buffer = new byte[ReceiveBufferSize];
             using var message = new System.IO.MemoryStream();
 
@@ -799,16 +806,28 @@ public sealed class RelayConnectionService : BackgroundService
 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    claimKey = HandlePairControl(message.ToArray());
+                    claimKey = HandlePairControl(message.ToArray(), out var saltKey);
+                    if (claimKey is not null)
+                    {
+                        // A salt seen before would re-derive the same key: refuse the peer-up.
+                        // The set lives with the pair token, so rebuilding this link (a relay or remote toggle) cannot reset it.
+                        if (!_owner._pairing.TryRegisterRelaySalt(_desired.PairToken ?? "", saltKey))
+                            claimKey = null;
+                        else
+                            channel = new PairChannel();
+                    }
                 }
                 else if (result.MessageType == WebSocketMessageType.Binary)
                 {
                     if (claimKey is null)
                         continue; // a forwarded frame with no peer-up; ignore
-                    // The one sealed claim request. Process it, reply, end the link.
-                    var consumed = await ProcessClaimFrameAsync(transport, claimKey, message.ToArray())
+                    // A sealed claim or claim-confirm request. Process it and reply;
+                    // a claim parked on host approval keeps the link open for polls.
+                    var outcome = await ProcessClaimFrameAsync(transport, claimKey, message.ToArray(), channel)
                         .ConfigureAwait(false);
-                    if (consumed)
+                    if (outcome is ClaimFrameOutcome.Pending or ClaimFrameOutcome.Ignored)
+                        continue;
+                    if (outcome == ClaimFrameOutcome.Done)
                         _pairClaimDone = true;
                     return;
                 }
@@ -821,8 +840,9 @@ public sealed class RelayConnectionService : BackgroundService
         /// clears it so a stale key can't be reused for a different peer. Returns
         /// the derived key (or null) for the caller's "awaiting claim" state.
         /// </summary>
-        private byte[]? HandlePairControl(byte[] textBytes)
+        private byte[]? HandlePairControl(byte[] textBytes, out string saltKey)
         {
+            saltKey = "";
             string? evt;
             string? saltB64;
             try
@@ -846,6 +866,7 @@ public sealed class RelayConnectionService : BackgroundService
                 catch { return null; }
                 if (connSalt.Length != RelayCrypto.ConnSaltLength)
                     return null;
+                saltKey = saltB64;
                 // claimKey = DeriveAeadKey(pairRoot, connSalt) - identical to the
                 // runtime AEAD derivation, just keyed off the pairRoot.
                 return RelayCrypto.DeriveAeadKey(_root, connSalt);
@@ -855,50 +876,98 @@ public sealed class RelayConnectionService : BackgroundService
             return null;
         }
 
+        private enum ClaimFrameOutcome
+        {
+            /// <summary>Decrypt or parse failed, or a wrong-direction frame: nothing was decided.</summary>
+            Dropped,
+            /// <summary>The claim reached a final answer (token spent or decided); the link is one-shot done.</summary>
+            Done,
+            /// <summary>A replayed or out-of-order inbound counter: drop it without a reply and keep the link.</summary>
+            Ignored,
+            /// <summary>The claim waits on the host's Allow; the link stays open for claim-confirm polls.</summary>
+            Pending,
+        }
+
         /// <summary>
-        /// Open the single sealed claim request (dir=2, counter 0), run ClaimCore
-        /// for this link's pair token, and send back exactly one sealed reply
-        /// (dir=1, counter 0): claim-ok with the new session token on success,
-        /// claim-err otherwise. A decrypt failure ends the link with no reply (the
-        /// peer doesn't hold the token; possession is what the AEAD decrypt proves)
-        /// - neither consumes the token. Returns true when ClaimCore ran (the token
-        /// is now spent / decided, so the link is one-shot done); false on a
-        /// decrypt / wrong-direction / malformed-request path where the token is
-        /// still outstanding and the phone may retry on a fresh peer-up.
+        /// Open one sealed phone request (dir=2) and send back exactly one sealed
+        /// reply. A <c>claim</c> runs ClaimCore for this link's pair token: it
+        /// answers claim-pending (the host must click Allow; the link stays up),
+        /// or claim-err. A <c>claim-confirm</c> polls the parked request: claim-waiting
+        /// until the host decides, then claim-ok with the session token or
+        /// claim-err (denied / expired). A decrypt failure ends the link with no
+        /// reply (the peer doesn't hold the token; possession is what the AEAD
+        /// decrypt proves) and never consumes the token.
         /// </summary>
-        private async Task<bool> ProcessClaimFrameAsync(
-            WebSocket transport, byte[] claimKey, byte[] frame)
+        private async Task<ClaimFrameOutcome> ProcessClaimFrameAsync(
+            WebSocket transport, byte[] claimKey, byte[] frame, PairChannel channel)
         {
             RelayClaimRequest? request;
+            ulong replyCounter = 0;
             try
             {
-                var (dir, _, plaintext) = RelayCrypto.Open(claimKey, frame);
+                var (dir, inCounter, plaintext) = RelayCrypto.Open(claimKey, frame);
                 if (dir != RelayCrypto.DirClientToHost)
-                    return false; // wrong direction ⇒ not a client→host claim; drop.
+                    return ClaimFrameOutcome.Dropped; // wrong direction ⇒ not a client→host request; drop.
+                // Strictly increasing inbound counter per key: a replayed frame is ignored.
+                if (inCounter > long.MaxValue || (long)inCounter <= channel.LastInbound)
+                    return ClaimFrameOutcome.Ignored;
+                channel.LastInbound = (long)inCounter;
+                replyCounter = channel.NextReply++;
                 request = JsonSerializer.Deserialize(plaintext, AppJsonContext.Default.RelayClaimRequest);
             }
             catch (CryptographicException)
             {
                 // Tag-verify failed: the peer doesn't hold the pair token. Drop.
-                return false;
+                return ClaimFrameOutcome.Dropped;
             }
             catch (JsonException)
             {
                 // Decryptable (so the peer holds the token) but malformed JSON.
-                await SendSealedAsync(transport, claimKey, ClaimError("bad-request")).ConfigureAwait(false);
-                return false;
+                await SendSealedAsync(transport, claimKey, ClaimError("bad-request"), replyCounter).ConfigureAwait(false);
+                return ClaimFrameOutcome.Dropped;
+            }
+
+            var pairToken = _desired.PairToken ?? "";
+
+            if (request is not null &&
+                string.Equals(request.Type, RelayClaimMessageTypes.ClaimConfirm, StringComparison.Ordinal))
+            {
+                var confirm = _owner._pairing.ConfirmRelayClaim(pairToken, request.RequestId ?? "", request.Approved);
+                switch (confirm.Status)
+                {
+                    case "approved":
+                        await SendSealedAsync(transport, claimKey, new RelayClaimResponse
+                        {
+                            Type = RelayClaimMessageTypes.ClaimOk,
+                            SessionToken = confirm.Token,
+                            MachineName = confirm.MachineName,
+                            Spki = confirm.SpkiFingerprint,
+                        }, replyCounter).ConfigureAwait(false);
+                        return ClaimFrameOutcome.Done;
+                    case "waiting-host":
+                        await SendSealedAsync(
+                            transport, claimKey, new RelayClaimResponse { Type = RelayClaimMessageTypes.ClaimWaiting }, replyCounter)
+                            .ConfigureAwait(false);
+                        return ClaimFrameOutcome.Pending;
+                    case "unknown":
+                        await SendSealedAsync(transport, claimKey, ClaimError("unknown"), replyCounter).ConfigureAwait(false);
+                        return ClaimFrameOutcome.Pending; // token may still be claimable
+                    default: // denied | expired
+                        await SendSealedAsync(transport, claimKey, ClaimError(confirm.Status), replyCounter).ConfigureAwait(false);
+                        return ClaimFrameOutcome.Done;
+                }
             }
 
             if (request is null ||
                 !string.Equals(request.Type, RelayClaimMessageTypes.Claim, StringComparison.Ordinal))
             {
-                await SendSealedAsync(transport, claimKey, ClaimError("bad-request")).ConfigureAwait(false);
-                return false;
+                await SendSealedAsync(transport, claimKey, ClaimError("bad-request"), replyCounter).ConfigureAwait(false);
+                return ClaimFrameOutcome.Dropped;
             }
 
             // Possession proven by the successful decrypt; rid_pair already pins
-            // which token. Consume it + mint the session (E2E ⇒ long-idle).
-            var pairToken = _desired.PairToken ?? "";
+            // which token. Without a live session of the phone's own the claim
+            // parks on the host's Allow; the token is spent when it is decided.
             var claim = _owner._pairing.ClaimCore(
                 pairToken,
                 deviceName: request.DeviceName ?? "",
@@ -906,7 +975,22 @@ public sealed class RelayConnectionService : BackgroundService
                 remoteAddress: "",
                 deviceId: request.DeviceId ?? "",
                 overRelay: true,
-                claimedOverHttps: false);
+                claimedOverHttps: false,
+                supportsSasApproval: request.SupportsSasApproval);
+
+            if (claim.Ok && claim.NeedsApproval)
+            {
+                await SendSealedAsync(transport, claimKey, new RelayClaimResponse
+                {
+                    Type = RelayClaimMessageTypes.ClaimPending,
+                    RequestId = claim.RequestId,
+                    Sas = claim.Sas,
+                    ExpiresAt = claim.ExpiresAt,
+                    MachineName = claim.MachineName,
+                    Spki = claim.Spki,
+                }, replyCounter).ConfigureAwait(false);
+                return ClaimFrameOutcome.Pending;
+            }
 
             RelayClaimResponse reply = claim.Ok
                 ? new RelayClaimResponse
@@ -918,28 +1002,31 @@ public sealed class RelayConnectionService : BackgroundService
                 }
                 : ClaimError(claim.Error);
 
-            await SendSealedAsync(transport, claimKey, reply).ConfigureAwait(false);
+            await SendSealedAsync(transport, claimKey, reply, replyCounter).ConfigureAwait(false);
+            // These refusals leave the token (and any parked request) untouched, so the link stays up.
+            if (!claim.Ok && claim.Error is "update_required" or "claim-in-progress" or "code-in-use")
+                return ClaimFrameOutcome.Pending;
             // ClaimCore ran ⇒ the token is spent or otherwise decided; one-shot done.
-            return true;
+            return ClaimFrameOutcome.Done;
         }
 
         private static RelayClaimResponse ClaimError(string error)
             => new() { Type = RelayClaimMessageTypes.ClaimErr, Error = error };
 
         /// <summary>
-        /// Seal one host→client reply (counter 0) and write it as a single BINARY
-        /// relay frame. Sent on <see cref="CancellationToken.None"/> on purpose: a
+        /// Seal one host→client reply and write it as a single BINARY relay
+        /// frame. Sent on <see cref="CancellationToken.None"/> on purpose: a
         /// successful claim consumes the pair token, which fires the
         /// token-changed reconcile that CANCELS this link's token - but the phone
         /// is still waiting for its claim-ok, so the terminal reply must complete
         /// regardless. The link ends immediately after either way.
         /// </summary>
         private static async Task SendSealedAsync(
-            WebSocket transport, byte[] claimKey, RelayClaimResponse reply)
+            WebSocket transport, byte[] claimKey, RelayClaimResponse reply, ulong counter)
         {
             var ct = CancellationToken.None;
             var json = JsonSerializer.SerializeToUtf8Bytes(reply, AppJsonContext.Default.RelayClaimResponse);
-            var sealed_ = RelayCrypto.Seal(claimKey, RelayCrypto.DirHostToClient, counter: 0, json);
+            var sealed_ = RelayCrypto.Seal(claimKey, RelayCrypto.DirHostToClient, counter, json);
             await transport
                 .SendAsync(sealed_, WebSocketMessageType.Binary, endOfMessage: true, ct)
                 .ConfigureAwait(false);

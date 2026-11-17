@@ -18,7 +18,7 @@ public static partial class DevicesRoutes
         {
             DeepCoolMystiqueSettings copy = new();
             store.Read(s => copy = s.Devices.DeepCoolMystique.Copy());
-            return Results.Json(BuildMystiqueState(copy, worker.IsConnected, sensors, MystiqueSensors.FanNames(store, fans)), AppJsonContext.Default.DeepCoolMystiqueStateResponse);
+            return Results.Json(BuildMystiqueState(copy, worker.IsConnected, sensors, MystiqueSensors.FanNames(store, fans), fans), AppJsonContext.Default.DeepCoolMystiqueStateResponse);
         });
 
         app.MapPut("/devices/deepcool-mystique/settings", (DeepCoolMystiqueSettingsRequest body, IConfigStore store, MystiqueWorker worker, ISensorProvider sensors, Nexus.Service.Cooling.IFanControlProvider? fans) =>
@@ -62,12 +62,12 @@ public static partial class DevicesRoutes
             DeepCoolMystiqueSettings stored = new();
             store.Read(s => stored = s.Devices.DeepCoolMystique.Copy());
             var fanNames = MystiqueSensors.FanNames(store, fans);
-            if (!ValidMystiquePick(body.CpuTemperature, stored.CpuTemperature, MystiqueValue.CpuTemperature, sensors, fanNames)
-                || !ValidMystiquePick(body.CpuFrequency, stored.CpuFrequency, MystiqueValue.CpuFrequency, sensors, fanNames)
-                || !ValidMystiquePick(body.CpuUsage, stored.CpuUsage, MystiqueValue.CpuUsage, sensors, fanNames)
-                || !ValidMystiquePick(body.RamUsage, stored.RamUsage, MystiqueValue.RamUsage, sensors, fanNames)
-                || !ValidMystiquePick(body.CpuFan, stored.CpuFan, MystiqueValue.CpuFan, sensors, fanNames)
-                || !ValidMystiquePick(body.Pump, stored.Pump, MystiqueValue.Pump, sensors, fanNames))
+            if (!ValidMystiquePick(body.CpuTemperature, stored.CpuTemperature, MystiqueValue.CpuTemperature, sensors, fanNames, fans)
+                || !ValidMystiquePick(body.CpuFrequency, stored.CpuFrequency, MystiqueValue.CpuFrequency, sensors, fanNames, fans)
+                || !ValidMystiquePick(body.CpuUsage, stored.CpuUsage, MystiqueValue.CpuUsage, sensors, fanNames, fans)
+                || !ValidMystiquePick(body.RamUsage, stored.RamUsage, MystiqueValue.RamUsage, sensors, fanNames, fans)
+                || !ValidMystiquePick(body.CpuFan, stored.CpuFan, MystiqueValue.CpuFan, sensors, fanNames, fans)
+                || !ValidMystiquePick(body.Pump, stored.Pump, MystiqueValue.Pump, sensors, fanNames, fans))
             {
                 return Results.BadRequest(ApiResponse.Fail("invalid sensor"));
             }
@@ -83,7 +83,7 @@ public static partial class DevicesRoutes
     /// </summary>
     private static bool ValidMystiquePick(
         DeepCoolMystiqueSensorDto? pick, DeepCoolMystiqueSensorPick stored, MystiqueValue value, ISensorProvider sensors,
-        IReadOnlyDictionary<string, string>? fanNames)
+        IReadOnlyDictionary<string, string>? fanNames, Nexus.Service.Cooling.IFanControlProvider? fans)
     {
         if (pick is null || (pick.Category == stored.Category && pick.Sensor == stored.Sensor))
         {
@@ -98,7 +98,7 @@ public static partial class DevicesRoutes
             return pick.Sensor.Length == 0;
         }
         return SensorSnapshotResolver.IsSupportedCategory(pick.Category)
-            && SensorSnapshotResolver.ResolveExact(sensors, pick.Category, pick.Sensor, new SensorSnapshotSources(null, null, null, fanNames)) is { } found
+            && SensorSnapshotResolver.ResolveExact(sensors, pick.Category, pick.Sensor, Nexus.Service.Monitoring.HubCoolerSensors.SourcesFor(sensors, pick.Category, fans, fanNames)) is { } found
             && found.Type == MystiqueSensors.RequiredType(value);
     }
 
@@ -134,7 +134,8 @@ public static partial class DevicesRoutes
     private static DeepCoolMystiqueSensorPick ToPick(DeepCoolMystiqueSensorDto dto) => new() { Category = dto.Category, Sensor = dto.Sensor };
 
     internal static DeepCoolMystiqueStateResponse BuildMystiqueState(
-        DeepCoolMystiqueSettings m, bool connected, ISensorProvider sensors, IReadOnlyDictionary<string, string>? fanNames = null) => new()
+        DeepCoolMystiqueSettings m, bool connected, ISensorProvider sensors, IReadOnlyDictionary<string, string>? fanNames = null,
+        Nexus.Service.Cooling.IFanControlProvider? fans = null) => new()
     {
         IsConnected = connected,
         ModeChosen = m.ModeEdited,
@@ -160,18 +161,19 @@ public static partial class DevicesRoutes
         Brightness = m.Brightness,
         Gyroscope = m.Gyroscope,
         RgbSync = m.RgbSync,
-        CpuTemperature = MystiquePickDto(sensors, m.CpuTemperature, MystiqueValue.CpuTemperature, fanNames),
-        CpuFrequency = MystiquePickDto(sensors, m.CpuFrequency, MystiqueValue.CpuFrequency, fanNames),
-        CpuUsage = MystiquePickDto(sensors, m.CpuUsage, MystiqueValue.CpuUsage, fanNames),
-        RamUsage = MystiquePickDto(sensors, m.RamUsage, MystiqueValue.RamUsage, fanNames),
-        CpuFan = MystiquePickDto(sensors, m.CpuFan, MystiqueValue.CpuFan, fanNames),
-        Pump = MystiquePickDto(sensors, m.Pump, MystiqueValue.Pump, fanNames),
+        CpuTemperature = MystiquePickDto(sensors, m.CpuTemperature, MystiqueValue.CpuTemperature, fanNames, fans),
+        CpuFrequency = MystiquePickDto(sensors, m.CpuFrequency, MystiqueValue.CpuFrequency, fanNames, fans),
+        CpuUsage = MystiquePickDto(sensors, m.CpuUsage, MystiqueValue.CpuUsage, fanNames, fans),
+        RamUsage = MystiquePickDto(sensors, m.RamUsage, MystiqueValue.RamUsage, fanNames, fans),
+        CpuFan = MystiquePickDto(sensors, m.CpuFan, MystiqueValue.CpuFan, fanNames, fans),
+        Pump = MystiquePickDto(sensors, m.Pump, MystiqueValue.Pump, fanNames, fans),
     };
 
     private static DeepCoolMystiqueSensorDto MystiquePickDto(
-        ISensorProvider sensors, DeepCoolMystiqueSensorPick pick, MystiqueValue value, IReadOnlyDictionary<string, string>? fanNames)
+        ISensorProvider sensors, DeepCoolMystiqueSensorPick pick, MystiqueValue value, IReadOnlyDictionary<string, string>? fanNames,
+        Nexus.Service.Cooling.IFanControlProvider? fans)
     {
-        var found = MystiqueSensors.Find(sensors, pick, value, fanNames);
+        var found = MystiqueSensors.Find(sensors, pick, value, fanNames, fans);
         return new DeepCoolMystiqueSensorDto
         {
             Category = pick.Category,

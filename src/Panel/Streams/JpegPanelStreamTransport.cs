@@ -33,6 +33,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
     private Func<int?>? _brightness;
     // Seeded from what the panel was last told, so a reconnect re-sends nothing it has.
     private int _brightnessApplied = -1;
+    private readonly BacklightLog _backlightLog = new();
     private int _brightnessPrevious = -1;
     private long _brightnessNextReadMs;
     private bool _brightnessFaultLogged;
@@ -67,7 +68,7 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
 
     public bool IsOpen => !_disposed && _hub.IsConnected;
 
-    public void BindOrientation(Func<(bool Flip180, bool Mirror)> source) => _orientation.Bind(source);
+    public void BindOrientation(Func<(int Rotation, bool Mirror)> source) => _orientation.Bind(source);
 
     /// <summary>Ignored for a panel with no backlight command, so those never pay the poll.</summary>
     public void BindBrightness(Func<int?> source)
@@ -127,13 +128,14 @@ public sealed class JpegPanelStreamTransport : IStreamedPanelTransport, IOrienta
         // No record value means the panel keeps what it powered up with.
         if (wanted is not int percent || percent == _brightnessApplied)
         {
+            _backlightLog.Settled(_hub.Model.HandlerId, nowMs);
             return true;
         }
         if (_hub.SetBrightness(percent))
         {
             _brightnessPrevious = _brightnessApplied;
             _brightnessApplied = percent;
-            ServiceLog.Info($"[{_hub.Model.HandlerId}] backlight {percent}%");
+            _backlightLog.Applied(_hub.Model.HandlerId, percent, nowMs);
             return true;
         }
         return false;

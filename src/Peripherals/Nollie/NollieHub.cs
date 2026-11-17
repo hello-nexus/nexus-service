@@ -255,26 +255,27 @@ public sealed class NollieHub : IDisposable
         }
     }
 
-    public void Detach(string deviceId)
+    /// <param name="deviceLeft">False when Nexus hands the board to its firmware or shuts down, which is no drop worth a snapshot.</param>
+    public void Detach(string deviceId, bool deviceLeft = true)
     {
         lock (_lock)
         {
             if (_controllers.Remove(deviceId, out var controller))
             {
-                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(deviceId);
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(deviceId, deviceLeft);
                 controller.Dispose();
                 Resnapshot();
             }
         }
     }
 
-    public void DetachAll()
+    public void DetachAll(bool deviceLeft = true)
     {
         lock (_lock)
         {
             foreach (var c in _controllers.Values)
             {
-                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(c.DeviceId);
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(c.DeviceId, deviceLeft);
                 c.Dispose();
             }
             _controllers.Clear();
@@ -307,7 +308,7 @@ public sealed class NollieHub : IDisposable
             _disposed = true;
             foreach (var c in _controllers.Values)
             {
-                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(c.DeviceId);
+                Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(c.DeviceId, deviceLeft: false);
                 c.Dispose();
             }
             _controllers.Clear();

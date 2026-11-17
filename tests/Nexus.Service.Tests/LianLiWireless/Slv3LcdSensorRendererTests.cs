@@ -75,4 +75,40 @@ public class Slv3LcdSensorRendererTests
         var info = TestImages.Identify(jpeg);
         Assert.Equal(400, info!.Width);
     }
+
+    [Theory]
+    [InlineData(65.34f, "Temperature", false, "65.3")]
+    [InlineData(65.5f, "Temperature", true, "66")]
+    [InlineData(-0.5f, "Temperature", true, "-1")]
+    [InlineData(149.54f, "Temperature", false, "149.5")]
+    [InlineData(42.26f, "Load", false, "42.3")]
+    [InlineData(42.4f, "Load", true, "42")]
+    [InlineData(1200.4f, "Fan", false, "1200")]
+    // No value type (older callers): the original integer rendering.
+    [InlineData(42.6f, "", false, "43")]
+    public void FormatValueText_FollowsTheSharedRule(float value, string type, bool whole, string expected)
+    {
+        Assert.Equal(expected, Slv3LcdSensorRenderer.FormatValueText(value, type, whole));
+    }
+
+    [Fact]
+    public void Render_accepts_a_value_type_and_whole_numbers()
+    {
+        var jpeg = Slv3LcdSensorRenderer.Render("ring", 65.4f, 0f, 100f, "CPU", "°C", null, null, "Temperature", wholeNumbers: false);
+
+        Assert.NotEmpty(jpeg);
+    }
+
+    /// <summary>The widest decimal readings must stay inside the gauge: the ring's inner circle and the bar canvas.</summary>
+    [Theory]
+    [InlineData("100.0", 72f, 270f)]
+    [InlineData("212.0", 72f, 270f)]
+    [InlineData("100.0", 96f, 340f)]
+    [InlineData("212.0", 96f, 340f)]
+    public void Decimal_value_text_fits_the_layout(string text, float size, float limit)
+    {
+        using var font = Nexus.Service.Rendering.RenderKit.CreateFont(Nexus.Service.Rendering.RenderKit.ResolveFont(), size, bold: true);
+
+        Assert.True(font.MeasureText(text) <= limit, $"{text} at {size} measures {font.MeasureText(text)}");
+    }
 }

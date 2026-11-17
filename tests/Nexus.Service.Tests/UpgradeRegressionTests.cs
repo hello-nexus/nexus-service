@@ -50,6 +50,47 @@ public class UpgradeRegressionTests : IDisposable
         return node;
     }
 
+    private static readonly JsonNode FreshDefaults =
+        JsonNode.Parse(JsonSerializer.Serialize(new NexusSettings(), PersistenceJsonContext.Default.NexusSettings))!;
+
+    // Stored values return unchanged; a loaded key the capture lacks passes only when the fresh default document holds the same value there.
+    // Arrays compare exactly, so a new default field on an array element type needs a capture refresh or a per-element template.
+    private static bool Survives(JsonNode? before, JsonNode? after, JsonNode? fresh)
+    {
+        if (before is null)
+        {
+            return after is null;
+        }
+        if (before is not JsonObject stored)
+        {
+            return JsonNode.DeepEquals(before, after);
+        }
+        if (after is not JsonObject loaded)
+        {
+            return false;
+        }
+        var defaults = fresh as JsonObject;
+        foreach (var (key, value) in stored)
+        {
+            if (!Survives(value, loaded[key], defaults?[key]))
+            {
+                return false;
+            }
+        }
+        foreach (var (key, value) in loaded)
+        {
+            if (stored.ContainsKey(key))
+            {
+                continue;
+            }
+            if (value is null || defaults?[key] is not { } def || !JsonNode.DeepEquals(value, def))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static int AssertStablePathsSurvive(JsonNode raw, JsonNode loaded, string label)
     {
         var compared = 0;
@@ -60,7 +101,7 @@ public class UpgradeRegressionTests : IDisposable
             {
                 continue;
             }
-            Assert.True(JsonNode.DeepEquals(before, At(loaded, path)), $"{label}: {path} changed on load");
+            Assert.True(Survives(before, At(loaded, path), At(FreshDefaults, path)), $"{label}: {path} changed on load");
             compared++;
         }
         return compared;
@@ -75,6 +116,8 @@ public class UpgradeRegressionTests : IDisposable
         new object[] { "v28-dev" },
         new object[] { "v29-dev" },
         new object[] { "v30-3.1.8-beta" },
+        new object[] { "v32-main-t1" },
+        new object[] { "v32-main-t1-edited" },
     };
 
     [Theory]
@@ -109,6 +152,9 @@ public class UpgradeRegressionTests : IDisposable
 
             Assert.True(AssertStablePathsSurvive(raw, loadedNode, "settings.json") >= 5);
             store.FlushNow();
+            // A store that never set the preference writes back without the key.
+            var written = JsonNode.Parse(File.ReadAllText(settingsPath))!;
+            Assert.Null(At(written, "units.monitoringWholeNumbers"));
             var profiles = Directory.GetFiles(source, "profile-*.json");
             Assert.NotEmpty(profiles);
             foreach (var file in profiles)
@@ -124,6 +170,24 @@ public class UpgradeRegressionTests : IDisposable
             store.Dispose();
         }
     }
+
+    [Fact]
+    public void Survives_rejects_changes_and_allows_only_fresh_default_keys()
+    {
+        var defaults = JsonNode.Parse("""{ "a": { "flag": true, "map": {} } }""");
+        static JsonNode J(string json) => JsonNode.Parse(json)!;
+        bool Check(string before, string? after) => Survives(J(before), after is null ? null : J(after), defaults!["a"]);
+
+        Assert.True(Check("""{ "flag": true }""", """{ "flag": true }"""));
+        Assert.False(Check("""{ "old": 1 }""", """{ "new": 1 }"""));
+        Assert.False(Check("""{ "map": {} }""", """{ "map": { "x": 1 } }"""));
+        Assert.True(Check("""{ "x": 1 }""", """{ "x": 1, "flag": true }"""));
+        Assert.False(Check("""{ "x": 1 }""", """{ "x": 1, "flag": false }"""));
+        Assert.False(Check("""{ "x": 1 }""", """{ "x": 1, "extra": 2 }"""));
+        Assert.False(Check("""{ "x": null }""", """{ "x": 5 }"""));
+        Assert.True(Check("""{ "x": null }""", """{ "flag": true }"""));
+    }
+
 
     [Fact]
     public void Schema_19_file_loads_and_keeps_the_onboarding_state_it_had()

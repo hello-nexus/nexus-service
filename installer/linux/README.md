@@ -42,7 +42,9 @@ Three things Nexus cannot bundle, all checked by `install.sh`, which prints a
 warning naming the package if any is missing:
 
 - **hidapi + libusb**, for the RGB engine. Fedora/Bazzite and Arch ship them;
-  Debian/Ubuntu/Mint need `sudo apt install libhidapi-hidraw0 libusb-1.0-0`.
+  Debian/Ubuntu/Mint need `sudo apt install libhidapi-hidraw0 libhidapi-libusb0
+  libusb-1.0-0` (libhidapi-libusb0 reaches USB devices hidraw cannot, such as
+  the HyperX Quadcast S).
 - **fontconfig**, for the device-screen renderer (Stream Deck keys, LCD
   screens). Desktop installs ship it; otherwise `sudo apt install libfontconfig1`
   (`fontconfig` on Fedora/Bazzite and Arch).

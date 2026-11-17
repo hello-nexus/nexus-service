@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Persistence;
@@ -67,6 +68,7 @@ public sealed class SensorFeed : IDisposable
 
     private readonly Func<string, string, float>? _resolve;
     private readonly ISensorProvider? _sensors;
+    private readonly Func<Nexus.Service.Cooling.IFanControlProvider?>? _fans;
     private readonly Func<long> _clockMs;
     private readonly ConcurrentDictionary<string, Channel> _channels = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
@@ -76,9 +78,10 @@ public sealed class SensorFeed : IDisposable
     private int _running;
     private int _disposed;
 
-    public SensorFeed(ISensorProvider sensors)
+    public SensorFeed(ISensorProvider sensors, Func<Nexus.Service.Cooling.IFanControlProvider?>? fans = null)
         : this(sensors, null, null)
     {
+        _fans = fans;
     }
 
     internal SensorFeed(ISensorProvider? sensors, Func<string, string, float>? resolve, Func<long>? clockMs, int pollMs = PollMs, bool background = true)
@@ -203,7 +206,12 @@ public sealed class SensorFeed : IDisposable
                     // One walk for every extras-backed binding. A walk that throws leaves those readings missing.
                     try
                     {
-                        sources = new SensorSnapshotSources(Extras: _sensors.GetSensorExtras());
+                        var extras = _sensors.GetSensorExtras();
+                        if (wanted.Any(kv => Nexus.Service.Monitoring.HubCoolerSensors.UsesHubSensors(kv.Key[..kv.Key.IndexOf('\n')])))
+                        {
+                            Nexus.Service.Monitoring.HubCoolerSensors.Merge(extras, _fans);
+                        }
+                        sources = new SensorSnapshotSources(Extras: extras);
                     }
                     catch (Exception ex)
                     {

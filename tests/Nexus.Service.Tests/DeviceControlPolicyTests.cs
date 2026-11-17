@@ -48,6 +48,7 @@ public class DeviceControlPolicyTests
     [InlineData("zmatrices-max-e87")]
     [InlineData("nollie")]
     [InlineData("asus-ryujin-lcd")]
+    [InlineData("asus-ryujin-extreme")]
     [InlineData("asus-glacial-lcd")]
     [InlineData("deepcool-mystique")]
     [InlineData("asrock-lcd")]

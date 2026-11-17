@@ -6628,7 +6628,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.61,
+     "u_fill_bgSat": 0.3,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6654,7 +6657,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.61,
+     "u_fill_bgSat": 0.3,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6680,7 +6686,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.61,
+     "u_fill_bgSat": 0.3,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6706,7 +6715,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.61,
+     "u_fill_bgSat": 0.3,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6737,7 +6749,10 @@
      "u_fill_softness": 0.04,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.64,
+     "u_fill_bgSat": 0.7,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6763,7 +6778,10 @@
      "u_fill_softness": 0.04,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.64,
+     "u_fill_bgSat": 0.7,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6789,7 +6807,10 @@
      "u_fill_softness": 0.04,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.64,
+     "u_fill_bgSat": 0.7,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6815,7 +6836,10 @@
      "u_fill_softness": 0.04,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.64,
+     "u_fill_bgSat": 0.7,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6847,7 +6871,10 @@
      "u_fill_size": 0.8,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.0,
+     "u_fill_bgSat": 0.0,
+     "u_fill_bgVal": 0.0
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6874,7 +6901,10 @@
      "u_fill_size": 0.8,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.0,
+     "u_fill_bgSat": 0.0,
+     "u_fill_bgVal": 0.0
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6901,7 +6931,10 @@
      "u_fill_size": 0.8,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.0,
+     "u_fill_bgSat": 0.0,
+     "u_fill_bgVal": 0.0
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6928,7 +6961,10 @@
      "u_fill_size": 0.8,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.0,
+     "u_fill_bgSat": 0.0,
+     "u_fill_bgVal": 0.0
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6961,7 +6997,10 @@
      "u_fill_softness": 0.05,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.56,
+     "u_fill_bgSat": 0.8,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -6989,7 +7028,10 @@
      "u_fill_softness": 0.05,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.56,
+     "u_fill_bgSat": 0.8,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -7017,7 +7059,10 @@
      "u_fill_softness": 0.05,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.56,
+     "u_fill_bgSat": 0.8,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -7045,7 +7090,10 @@
      "u_fill_softness": 0.05,
      "u_col_low": 0.5,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.56,
+     "u_fill_bgSat": 0.8,
+     "u_fill_bgVal": 0.12
     },
     "sensors": {
      "u_fill_level_s": {
@@ -7076,7 +7124,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.76,
+     "u_fill_bgSat": 0.5,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -7102,7 +7153,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.76,
+     "u_fill_bgSat": 0.5,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -7128,7 +7182,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.76,
+     "u_fill_bgSat": 0.5,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {
@@ -7154,7 +7211,10 @@
      "u_fill_softness": 0.06,
      "u_col_low": 0.55,
      "u_col_shade": 1.0,
-     "u_col_reverse": 0.0
+     "u_col_reverse": 0.0,
+     "u_fill_bgHue": 0.76,
+     "u_fill_bgSat": 0.5,
+     "u_fill_bgVal": 0.1
     },
     "sensors": {
      "u_fill_level_s": {

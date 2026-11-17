@@ -139,6 +139,25 @@ public class BulkPanelDriverTests
     // ── Ryujin: bulk pixels, HID commit ──
 
     [Fact]
+    public void Ryujin_binds_the_360_only_and_never_the_extreme()
+    {
+        Assert.Equal(new[] { 0x1AA2 }, new RyujinPanelDriver().ProductIds);
+        Assert.DoesNotContain(RyujinProtocol.ProductIdExtreme, new RyujinPanelDriver().ProductIds);
+    }
+
+    [Theory]
+    [InlineData(0x1AA2)]
+    public void Ryujin_hub_reports_the_attached_product_id(int pid)
+    {
+        using var hub = new BulkPanelHub(new RyujinPanelDriver());
+        Assert.Equal(0, hub.ProductId);
+
+        Assert.True(hub.Attach(new FakeBulkPipe(), new FakeHid { Pid = pid }));
+
+        Assert.Equal(pid, hub.ProductId);
+    }
+
+    [Fact]
     public void Ryujin_needs_its_hid_channel_to_connect_at_all()
     {
         var driver = new RyujinPanelDriver();
@@ -309,9 +328,12 @@ public class BulkPanelDriverTests
         }
 
         var pictures = pipe.Writes.Chunk(3).ToList();
-        Assert.Equal(14, pictures.Count);
+        Assert.Equal(15, pictures.Count);
         Assert.Equal(pictures[1], pictures[0]);
-        Assert.Equal(pictures[8], pictures[7]);
+        // The copy for the next discarded slot follows the real picture, not the picture after it.
+        Assert.Equal(pictures[7], pictures[6]);
+        Assert.NotEqual(pictures[8][0], pictures[7][0]);
+        Assert.Equal(pictures[15 - 1], pictures[15 - 2]);
         Assert.NotEqual(pictures[2][0], pictures[1][0]);
     }
 
@@ -437,7 +459,8 @@ public class BulkPanelDriverTests
         public bool FailWrites { get; set; }
 
         public int VendorId => 0x0B05;
-        public int ProductId => RyujinProtocol.ProductIdWithLcd;
+        public int Pid { get; set; } = RyujinProtocol.ProductIdWithLcd;
+        public int ProductId => Pid;
         public string Path => "/dev/fake-ryujin";
         public string? Serial => "FAKE";
         public int UsagePage => 0xFF01;

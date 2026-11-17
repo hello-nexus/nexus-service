@@ -520,6 +520,32 @@ internal sealed partial class ErrorReporter
         return OpaqueIdRegex().Replace(text, "<id>");
     }
 
+    // Shared folders and the profile templates are not a person's name.
+    private static readonly HashSet<string> SharedProfileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Public", "Shared", "Default", "Default User", "All Users", "Guest", "Administrator", "<user>",
+    };
+
+    // Look like an address (icon@2x.png, user@1000.service) but name a file or a systemd unit.
+    private static readonly HashSet<string> NotAMailDomain = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "service", "socket", "mount", "target", "timer", "scope", "slice", "path",
+        "js", "mjs", "css", "json", "txt", "log", "mp4", "webm", "woff", "woff2", "ttf", "dll", "exe", "so", "dylib", "xml", "html",
+    };
+
+    /// <summary>Only the user-path and email parts of <see cref="Scrub"/>, keeping everything else (addresses, serials, ids) verbatim and the path prefix so the text stays readable. Covers any drive, JSON-escaped backslashes and quotes, 8.3 short names, names with spaces on Windows forms, and the Linux mount homes; the macOS /Users/ branch is case-sensitive so a route such as /api/users/42 stays; /home, /media and /run/media count only at the start of a path, so a URL route such as /api/media/x is left alone. Shared profile folders (Public, Shared, Default) stay.</summary>
+    internal static string RedactUserPaths(string text)
+    {
+        if (text.Length == 0)
+            return text;
+        static string Redact(Match m) => SharedProfileNames.Contains(m.Groups[2].Value) ? m.Value : m.Groups[1].Value + "<user>";
+        text = WindowsUsersRegex().Replace(text, Redact);
+        text = DriveSlashUsersRegex().Replace(text, Redact);
+        text = SlashUsersRegex().Replace(text, Redact);
+        text = MountedHomeRegex().Replace(text, Redact);
+        return BundleEmailRegex().Replace(text, m => NotAMailDomain.Contains(m.Groups[1].Value) ? m.Value : "<email>");
+    }
+
     internal static string Scrub(string text)
     {
         if (text.Length == 0)
@@ -545,6 +571,23 @@ internal sealed partial class ErrorReporter
 
     [GeneratedRegex(@"[A-Za-z]:[\\/]Users[\\/][^\\/\s]+")]
     private static partial Regex WindowsUserPathRegex();
+
+    // No lookbehind on the Users branches: the folder also sits behind /System/Volumes/Data, \\Device\\HarddiskVolume3, /Volumes/<disk> and \\server\\share. Spaces in the name are allowed on the backslash form when a backslash follows later in the name-like text, and on the drive forward-slash form for at most one internal space with the next slash directly after the second word.
+    [GeneratedRegex(@"((?:[A-Za-z]:)?\\{1,2}Users\\{1,2})((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-])| (?=[\w~'\- .]*[\\/]))+)", RegexOptions.IgnoreCase)]
+    private static partial Regex WindowsUsersRegex();
+
+    [GeneratedRegex(@"([A-Za-z]:/Users/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+(?: (?:[\w~'\-]|\\u[0-9a-fA-F]{4})+(?=/))?)", RegexOptions.IgnoreCase)]
+    private static partial Regex DriveSlashUsersRegex();
+
+    // Case-sensitive: macOS paths are /Users/, while /api/users/42 and /users/settings are routes.
+    [GeneratedRegex(@"(/Users/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+)")]
+    private static partial Regex SlashUsersRegex();
+
+    [GeneratedRegex(@"((?<![\w.\-<>])/(?:home|media|run/media)/)((?:[\w~'\-]|\\u[0-9a-fA-F]{4}|\.(?=[\w~'\-]))+)", RegexOptions.IgnoreCase)]
+    private static partial Regex MountedHomeRegex();
+
+    [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.([A-Za-z]{2,})")]
+    private static partial Regex BundleEmailRegex();
 
     [GeneratedRegex(@"/Users/[^/\s]+")]
     private static partial Regex MacUserPathRegex();

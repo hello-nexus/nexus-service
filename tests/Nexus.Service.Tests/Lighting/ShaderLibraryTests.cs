@@ -139,4 +139,34 @@ public class ShaderLibraryTests
         Assert.DoesNotMatch(@"mod\(\s*t\s*,\s*\d", src);
         Assert.Contains("haloCol = tintedPalette(fi * 0.14 + 0.35) * halo * seam;", src);
     }
+
+    [Fact]
+    public void Bubbles_keep_continuous_motion_and_a_per_spawn_opacity()
+    {
+        var src = ShaderLibrary.Get("bubbles");
+        // The master clock is never wrapped; only the rise clock, whose wrap must land on whole cycles.
+        Assert.DoesNotMatch(@"float\s+t\s*=\s*mod\(", src);
+        Assert.Contains("mod(t * rise, 1024.0)", src);
+        // Bubble rates are quantized and the alpha cycle id repeats with a period that divides them.
+        Assert.Contains("floor((0.18 + seed2 * 0.35) * 128.0 + 0.5) / 128.0", src);
+        Assert.Contains("mod(floor(cyc), 8.0)", src);
+        // Particle column rates are quantized to the row-id period so the wrap lands on whole rows.
+        Assert.Contains("* rows * 32.0 + 0.5) / 32.0", src);
+        Assert.Contains("mod(floor(py), 32.0)", src);
+        // Opacity is hashed from the bubble's spawn cycle, never from time.
+        Assert.Contains("hash21(vec2(fi * 3.7 + 1.9, mod(floor(cyc), 8.0)", src);
+    }
+
+    [Fact]
+    public void Plasma_takes_every_color_from_the_wheel_palette()
+    {
+        // The effect body only: the prelude legitimately defines the palettes.
+        var full = ShaderLibrary.Get("plasma");
+        var src = full[full.IndexOf("uniform float u_warp;", System.StringComparison.Ordinal)..];
+        Assert.Contains("tintedPalette(", src);
+        // No private palette: no hue ramp or cosine palette of its own.
+        Assert.DoesNotContain("hsv2rgb(", src);
+        Assert.DoesNotContain("rainbowPalette(", src);
+        Assert.DoesNotContain("palette(t,", src);
+    }
 }

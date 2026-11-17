@@ -65,7 +65,7 @@ public sealed class StoreAppUpdater : BackgroundService
         _announce = announce;
     }
 
-    private static string NexusVersion() => BuildInfo.Version.TrimStart('v', 'V');
+    private static string NexusVersion() => StoreCatalogProxy.ClientVersion(null);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

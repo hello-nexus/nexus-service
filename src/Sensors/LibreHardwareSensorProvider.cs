@@ -26,15 +26,19 @@ namespace Nexus.Service.Sensors;
 public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 {
     private readonly LhmComputer _lhm;
+    private readonly Nexus.Service.Peripherals.Nzxt.KrakenHub? _kraken;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (float Min, float Max)> _krakenRange = new();
+    private int _krakenRangeDetaches;
     private readonly AstralGpuSupplement _astral;
     private readonly AstralMonitor? _astralMonitor;
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
 
-    public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null)
+    public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
         _lhm = lhm;
+        _kraken = kraken;
         _astralMonitor = astral;
         _astral = new AstralGpuSupplement(new AstralNvApiClient(), astral);
     }
@@ -288,6 +292,39 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     public IReadOnlyDictionary<string, StorageComponent> GetStorageComponents(bool includeSmart = true)
     {
         _lhm.Update();
+        var result = ReadVolumeComponents();
+        AddSmartStorageComponents(result, includeSmart);
+        return result;
+    }
+
+    // Free space is a volume query that wakes a sleeping drive. With live drive activity off the first
+    // read is kept, so a dashboard open on the page does not repeat it every second.
+    // Keyed by the logical drive letters (GetLogicalDrives is a bitmask read, no drive I/O), so plugging
+    // or removing a volume refreshes it. Free space of a volume that stays mounted is frozen until
+    // live activity is turned back on or the service restarts. Consumers only read the cached objects.
+    private volatile VolumeSnapshot? _volumeCache;
+
+    private sealed record VolumeSnapshot(string Letters, Dictionary<string, StorageComponent> Components);
+
+    private Dictionary<string, StorageComponent> ReadVolumeComponents()
+    {
+        if (_lhm.LiveDriveActivity)
+        {
+            _volumeCache = null;
+            return ReadVolumesNow();
+        }
+        var letters = string.Join('|', Environment.GetLogicalDrives());
+        var cached = _volumeCache;
+        if (cached is null || cached.Letters != letters)
+        {
+            cached = new VolumeSnapshot(letters, ReadVolumesNow());
+            _volumeCache = cached;
+        }
+        return new Dictionary<string, StorageComponent>(cached.Components);
+    }
+
+    private static Dictionary<string, StorageComponent> ReadVolumesNow()
+    {
         var result = new Dictionary<string, StorageComponent>();
         foreach (var di in System.IO.DriveInfo.GetDrives())
         {
@@ -315,15 +352,21 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 },
             };
         }
+        return result;
+    }
+
+    private void AddSmartStorageComponents(Dictionary<string, StorageComponent> result, bool includeSmart)
+    {
         // LHM SMART per physical drive (composite/warning/critical temp, life,
         // activity, power-on hours, etc), additional to the DriveInfo rows above.
         // The "smart/" id keeps these out of consumers that only want the
         // logical-volume subset (LhmComponentIdentifiers.IsSmartStorageComponent).
         if (includeSmart)
         {
+            var hideLive = !_lhm.LiveDriveActivity;
             foreach (var hw in FindHardware(HardwareType.Storage))
             {
-                var component = BuildComponent(hw);
+                var component = BuildComponent(hw, hideLiveStorage: hideLive);
                 var id = LhmComponentIdentifiers.BuildSmartStorageId(hw.Identifier.ToString());
                 result[id] = new StorageComponent
                 {
@@ -333,7 +376,6 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 };
             }
         }
-        return result;
     }
 
     public IReadOnlyList<string> GetStoragePartitions()
@@ -355,7 +397,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             }).ToList();
     }
 
-    public IReadOnlyList<HardwareSensor> GetMotherboardSensors()
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensors() => ReadMotherboardSensors(updateSubHardware: true);
+
+    public IReadOnlyList<HardwareSensor> GetMotherboardSensorsCached() => ReadMotherboardSensors(updateSubHardware: false);
+
+    private IReadOnlyList<HardwareSensor> ReadMotherboardSensors(bool updateSubHardware)
     {
         _lhm.Update();
         var mobo = FindHardware(HardwareType.Motherboard).FirstOrDefault();
@@ -366,7 +412,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         sensors.AddRange(MapSensors(mobo));
         foreach (var sub in mobo.SubHardware)
         {
-            sub.Update();
+            if (updateSubHardware) sub.Update();
             sensors.AddRange(MapSensors(sub));
         }
         return sensors;
@@ -445,19 +491,35 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.Nics.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Cooler:
-                    extras.Coolers.Add(BuildComponent(hw));
+                {
+                    var cooler = BuildComponent(hw);
+                    if (_kraken is not null && _lhm.IsHubDriven(hw))
+                    {
+                        // Session min and max belong to one connection.
+                        var detaches = _kraken.Detaches;
+                        if (System.Threading.Interlocked.Exchange(ref _krakenRangeDetaches, detaches) != detaches)
+                        {
+                            _krakenRange.Clear();
+                        }
+                        KrakenLhmSensors.Apply(cooler, _kraken.Snapshot, _kraken.StatusFresh, _krakenRange);
+                    }
+                    extras.Coolers.Add(cooler);
                     break;
+                }
+                // Inline power meters (WireView Pro II) share the PSU group: same
+                // per-rail voltage/current/power shape, no separate wire type.
                 case HardwareType.Psu:
+                case HardwareType.PowerMonitor:
                     extras.Psus.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Storage:
-                    extras.NvmeStorage.Add(BuildComponent(hw));
+                    extras.NvmeStorage.Add(BuildComponent(hw, hideLiveStorage: !_lhm.LiveDriveActivity));
                     break;
                 case HardwareType.EmbeddedController:
                     extras.EmbeddedControllers.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Memory:
-                    if (LhmComponentIdentifiers.IsDimmModule(hw.Identifier.ToString()))
+                    if (!_lhm.DimmReadsPaused && LhmComponentIdentifiers.IsDimmModule(hw.Identifier.ToString()))
                         extras.MemoryModules.Add(BuildComponent(hw));
                     break;
             }
@@ -466,11 +528,11 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         return extras;
     }
 
-    private static HardwareComponent BuildComponent(IHardware hw)
+    private static HardwareComponent BuildComponent(IHardware hw, bool hideLiveStorage = false)
     {
         // Sub-hardware (e.g. SuperIO chips on motherboards) carries the actual
         // sensors for some HardwareTypes; walk one level so we surface them all.
-        var sensors = MapSensors(hw);
+        var sensors = MapSensors(hw, hideLiveStorage);
         foreach (var sub in hw.SubHardware)
         {
             sub.Update();
@@ -497,17 +559,26 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     private static readonly SensorHoldLast Hold = new();
 
-    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), s.Value, Environment.TickCount64, out _);
+    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), LhmWalkWatch.Shared.Read(s.Value), Environment.TickCount64, out _);
 
-    private static List<HardwareSensor> MapSensors(IHardware hw)
+    private static List<HardwareSensor> MapSensors(IHardware hw, bool hideLiveStorage = false)
     {
+        var isStorage = hw.HardwareType == HardwareType.Storage;
         var isGpu = hw.HardwareType is HardwareType.GpuAmd or HardwareType.GpuNvidia or HardwareType.GpuIntel;
-        return hw.Sensors.Select(s =>
+        var isPowerMonitor = hw.HardwareType == HardwareType.PowerMonitor;
+        return hw.Sensors
+            .Where(s => !(hideLiveStorage && isStorage && LhmComponentIdentifiers.IsLiveStorageActivity(
+                s.SensorType == SensorType.Throughput, s.SensorType == SensorType.Load, s.Name)))
+            .Where(s => !isPowerMonitor || !LhmComponentIdentifiers.HidePowerMonitorSensor(
+                s.SensorType == SensorType.Control, s.SensorType == SensorType.Temperature, s.Value))
+            .Select(s =>
         {
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
-            var value = Hold.Resolve(key, s.Value, now, out var missed);
-            if (missed && isGpu)
+            var reading = LhmWalkWatch.Shared.Read(s.Value);
+            var value = Hold.Resolve(key, reading, now, out var missed);
+            var stale = !missed && (reading is not { } raw || !float.IsFinite(raw));
+            if (missed && isGpu && !LhmWalkWatch.Shared.IsStale)
             {
                 var hwKey = hw.Identifier.ToString();
                 var count = Hold.NoteMiss(hwKey, now);
@@ -537,6 +608,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     FormattedMax = LhmDataSensors.Format(max, unit),
                     FormattedMin = LhmDataSensors.Format(min, unit),
                     Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                    Stale = stale,
                 };
             }
             return new HardwareSensor
@@ -552,6 +624,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                 FormattedMax = FormatValue(max, s.SensorType),
                 FormattedMin = FormatValue(min, s.SensorType),
                 Parent = new SensorParent { Id = hw.Identifier.ToString(), Name = hw.Name },
+                Stale = stale,
             };
         }).ToList();
     }
@@ -597,45 +670,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         _ => "",
     };
 
-    private static string FormatValue(float value, SensorType type) => type switch
-    {
-        SensorType.Temperature => $"{value:F1} °C",
-        SensorType.Load or SensorType.Control or SensorType.Level => $"{value:F1}%",
-        SensorType.Clock => $"{value:F0} MHz",
-        SensorType.Voltage => $"{value:F3} V",
-        SensorType.Current => $"{value:F3} A",
-        SensorType.Fan => $"{value:F0} RPM",
-        SensorType.Power => $"{value:F1} W",
-        SensorType.Energy => $"{value:F0} mWh",
-        SensorType.Throughput => FormatThroughput(value),
-        SensorType.TimeSpan => FormatTimeSpan(value),
-        _ => $"{value:F1}",
-    };
-
-    private static string FormatThroughput(float bytesPerSec)
-    {
-        if (bytesPerSec <= 0)
-            return "0 B/s";
-        if (bytesPerSec >= 1024 * 1024 * 1024)
-            return $"{bytesPerSec / 1024.0 / 1024.0 / 1024.0:F2} GB/s";
-        if (bytesPerSec >= 1024 * 1024)
-            return $"{bytesPerSec / 1024.0 / 1024.0:F2} MB/s";
-        if (bytesPerSec >= 1024)
-            return $"{bytesPerSec / 1024.0:F1} KB/s";
-        return $"{bytesPerSec:F0} B/s";
-    }
-
-    // LHM reports Battery "Remaining Time" and PSU "Uptime"/"Total uptime" in seconds.
-    private static string FormatTimeSpan(float seconds)
-    {
-        if (seconds <= 0)
-            return "0";
-        if (seconds < 3600)
-            return $"{seconds / 60:F0}m";
-        if (seconds < 86400)
-            return $"{seconds / 3600:F1}h";
-        return $"{seconds / 86400:F1}d";
-    }
+    private static string FormatValue(float value, SensorType type) => SensorValueText.Format(value, MapSensorType(type));
 
     private static string FormatGb(double gb) => gb >= 1000 ? $"{gb / 1024.0:F2} TB" : $"{gb:F2} GB";
 

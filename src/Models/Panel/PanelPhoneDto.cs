@@ -180,6 +180,12 @@ public static class RelayClaimMessageTypes
     public const string ClaimOk = "claim-ok";
     /// <summary>PC→phone sealed failure: <c>{"type":"claim-err","error":"…"}</c>.</summary>
     public const string ClaimErr = "claim-err";
+    /// <summary>PC→phone sealed: the claim awaits the host's Allow; carries <c>requestId</c>, <c>sas</c>, <c>expiresAt</c>.</summary>
+    public const string ClaimPending = "claim-pending";
+    /// <summary>phone→PC sealed poll (or cancel) for a pending claim: <c>{"type":"claim-confirm","requestId":"…","approved":true}</c>.</summary>
+    public const string ClaimConfirm = "claim-confirm";
+    /// <summary>PC→phone sealed reply to a poll while the host has not decided yet.</summary>
+    public const string ClaimWaiting = "claim-waiting";
 }
 
 /// <summary>
@@ -201,6 +207,19 @@ public sealed class RelayClaimRequest
     /// / missing falls back to no relay-side dedup (legacy behavior).
     /// </summary>
     public string DeviceId { get; set; } = "";
+
+    /// <summary>
+    /// True when the app can show the SAS and poll claim-confirm. A claim without
+    /// it is answered claim-err update_required
+    /// and never raises a prompt on the PC.
+    /// </summary>
+    public bool SupportsSasApproval { get; set; }
+
+    /// <summary>claim-confirm only: the pending request being polled.</summary>
+    public string RequestId { get; set; } = "";
+
+    /// <summary>claim-confirm only: true polls for the decision, false cancels the request.</summary>
+    public bool Approved { get; set; } = true;
 }
 
 /// <summary>
@@ -218,6 +237,12 @@ public sealed class RelayClaimResponse
     public string MachineName { get; set; } = "";
     public string Spki { get; set; } = "";
     public string Error { get; set; } = "";
+    /// <summary>claim-pending only: id the phone echoes on every claim-confirm poll.</summary>
+    public string RequestId { get; set; } = "";
+    /// <summary>claim-pending only: 6-digit code the phone shows for comparison with the PC.</summary>
+    public string Sas { get; set; } = "";
+    /// <summary>claim-pending only: Unix-ms expiry of the request.</summary>
+    public long ExpiresAt { get; set; }
 }
 
 /// <summary>

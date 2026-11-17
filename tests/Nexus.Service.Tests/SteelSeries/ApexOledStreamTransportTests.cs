@@ -261,7 +261,7 @@ public class ApexOledStreamTransportTests
         var hid = new FakeHid();
         var screen = hid.Add(0x1628);
         using var transport = Open(hid, 0x1628);
-        transport.BindOrientation(() => (true, false));
+        transport.BindOrientation(() => (180, false));
         var frame = Frame(0);
         frame[0] = frame[1] = frame[2] = 255; // top-left pixel
 

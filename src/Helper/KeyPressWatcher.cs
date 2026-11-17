@@ -104,7 +104,7 @@ public sealed class KeyPressWatcher : IDisposable
         started.Set();
         if (!registered)
         {
-            Platform.HelperLog.Write($"[key-press] raw input registration failed err={Marshal.GetLastWin32Error()}");
+            Platform.HelperLog.Warn($"[key-press] raw input registration failed err={Marshal.GetLastWin32Error()}");
             if (hwnd != IntPtr.Zero) DestroyWindow(hwnd);
             return;
         }

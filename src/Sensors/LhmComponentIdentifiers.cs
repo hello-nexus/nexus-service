@@ -21,6 +21,22 @@ internal static class LhmComponentIdentifiers
     // back out of ISensorProvider.GetStorageComponents.
     private const string SmartStorageIdPrefix = "smart/";
 
+    private const string PowerMonitorIdPrefix = "/gpu-powermonitor/";
+
+    internal static bool IsPowerMonitor(string identifier) =>
+        identifier.StartsWith(PowerMonitorIdPrefix, StringComparison.OrdinalIgnoreCase);
+
+    // No value yet (before the first walk) is hidden so Hold never publishes 0. The WireView reports an unplugged external probe as -100 C (raw -1000 tenths), and its Control sensor is the fan duty, which Nexus never drives.
+    internal static bool HidePowerMonitorSensor(bool isControl, bool isTemperature, float? value) =>
+        isControl || value is null || (isTemperature && value is <= -100f);
+
+    /// <summary>
+    /// Storage sensors that only mean something while the drive is read every walk: throughput and the
+    /// activity loads. Used space stays, as the last known value.
+    /// </summary>
+    internal static bool IsLiveStorageActivity(bool isThroughput, bool isLoad, string name) =>
+        isThroughput || (isLoad && !string.Equals(name, "Used Space", StringComparison.OrdinalIgnoreCase));
+
     internal static bool IsDimmModule(string hardwareIdentifier) =>
         hardwareIdentifier.StartsWith(DimmIdentifierPrefix, StringComparison.Ordinal);
 

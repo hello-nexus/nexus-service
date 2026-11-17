@@ -188,6 +188,18 @@ if [ -n "$MISSING_LIBS" ]; then
   echo "  Fedora/Bazzite:     sudo dnf install hidapi libusb1"
   echo "  Arch:               sudo pacman -S hidapi libusb"
 fi
+# openrgb-headless dlopen()s libhidapi-libusb, so ldd above cannot see it; the
+# HID devices only libusb can reach (HyperX Quadcast S, DuoCast) need it.
+LDCONFIG="$(command -v ldconfig || echo /sbin/ldconfig)"
+# Captured first: grep -q exits on the first match, and under pipefail the
+# SIGPIPE it leaves ldconfig would read as "not installed".
+LDCACHE="$([ -x "$LDCONFIG" ] && "$LDCONFIG" -p 2>/dev/null || true)"
+if [ -n "$LDCACHE" ] && ! grep -q 'libhidapi-libusb\.so\(\.0\)\? ' <<<"$LDCACHE"; then
+  echo "WARNING: libhidapi-libusb is not installed, so some USB RGB devices (e.g. HyperX Quadcast S) will not be detected:"
+  echo "  Debian/Ubuntu/Mint: sudo apt install libhidapi-libusb0"
+  echo "  Fedora/Bazzite:     sudo dnf install hidapi"
+  echo "  Arch:               sudo pacman -S hidapi"
+fi
 MISSING_RENDER_LIBS="$(ldd "$APP_DIR/libSkiaSharp.so" 2>/dev/null | awk '/not found/ {print $1}' | sort -u || true)"
 if [ -n "$MISSING_RENDER_LIBS" ]; then
   echo "WARNING: the device-screen renderer is missing shared libraries, so Stream Deck keys and LCD screens will not draw:"

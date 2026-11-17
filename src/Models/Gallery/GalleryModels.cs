@@ -47,11 +47,45 @@ public sealed class GalleryPlaylist
     public List<string> ExcludedIds { get; set; } = new();
 }
 
+/// <summary>Values for <see cref="GallerySort.By"/>.</summary>
+public static class GallerySortKeys
+{
+    /// <summary>Natural order of the item's display name.</summary>
+    public const string Name = "name";
+    /// <summary>The file's last-write time.</summary>
+    public const string Modified = "modified";
+    /// <summary>When the item's source (file, or the folder holding it) was added.</summary>
+    public const string Added = "added";
+}
+
+/// <summary>Values for <see cref="GallerySort.Direction"/>.</summary>
+public static class GallerySortDirections
+{
+    public const string Asc = "asc";
+    public const string Desc = "desc";
+}
+
+/// <summary>One per system: orders the item list every surface reads.</summary>
+public sealed class GallerySort
+{
+    public string By { get; set; } = GallerySortKeys.Name;
+    public string Direction { get; set; } = GallerySortDirections.Asc;
+}
+
+public sealed class GallerySortMutationResponse
+{
+    public GallerySort? Sort { get; set; }
+    public bool Error { get; set; }
+    public string Msg { get; set; } = "";
+}
+
 /// <summary>Persistence shape of gallery/sources.json.</summary>
 public sealed class GallerySourcesFile
 {
     public List<GallerySource> Sources { get; set; } = new();
     public List<GalleryPlaylist> Playlists { get; set; } = new();
+    /// <summary>Absent from files written before the sort setting existed.</summary>
+    public GallerySort? Sort { get; set; }
 }
 
 public sealed class GallerySourcesResponse
@@ -125,6 +159,8 @@ public sealed class GalleryItemsResponse
     /// the one read it already makes.
     /// </summary>
     public List<GalleryPlaylist> Playlists { get; set; } = new();
+    /// <summary>The order <see cref="Items"/> is already in.</summary>
+    public GallerySort Sort { get; set; } = new();
 }
 
 /// <summary>Create (name only) or update body. A null field is left as is.</summary>

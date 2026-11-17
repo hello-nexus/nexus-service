@@ -27,7 +27,7 @@ public sealed class StrimerHub : IDisposable
         {
             _device = device;
             State.IsConnected = true;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey, deviceLeft: false);
         }
     }
 
@@ -74,6 +74,16 @@ public sealed class StrimerHub : IDisposable
         {
             if (_device == null) return false;
             return WriteCommand(StrimerProtocol.BuildApplyLatch(gpuZoneCount));
+        }
+    }
+
+    /// <summary>Latches the zones in <paramref name="mask"/>, bit n being zone n.</summary>
+    public bool SendApplyLatchMask(int mask)
+    {
+        lock (_lock)
+        {
+            if (_device == null) return false;
+            return WriteCommand(StrimerProtocol.BuildApplyLatchMask(mask));
         }
     }
 
