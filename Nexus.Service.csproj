@@ -135,8 +135,10 @@
 
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre748" />
-    <!-- Direct pin: LHM pre748 pulls DiskInfoToolkit 2.2.0; 2.2.x adds overlapped USB I/O and timeout tolerance. -->
+    <!-- The DiskInfoToolkit pulled in transitively by LHM predates the USB overlapped-I/O and timeout fixes, so it is pinned directly.
+         The newer one needs BlackSharp.Core 1.2.5, which LHM's RAMSPDToolkit-NDD only supports from its pinned version on. -->
     <PackageReference Include="DiskInfoToolkit" Version="2.2.2" />
+    <PackageReference Include="RAMSPDToolkit-NDD" Version="1.6.4" />
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.13" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="9.0.0" />
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />

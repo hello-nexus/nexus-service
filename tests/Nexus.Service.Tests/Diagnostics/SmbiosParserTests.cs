@@ -234,6 +234,65 @@ public class SmbiosParserTests
         Assert.Equal("Corsair", modules.Single().Manufacturer);
     }
 
+    [Theory]
+    [InlineData("", "DIMM 1")]
+    [InlineData("DIMM 1", "DIMM 1")]
+    public void CollidingLocators_WithUnusableBankLabel_StayUnchanged(string bank, string locator)
+    {
+        var table = BuildTable(
+            BuildType17Banked(locator, bank, "Corsair", 0x02, 0x9E),
+            BuildType17Banked(locator, bank, "Corsair", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.All(modules, m => Assert.Equal(locator, m.Slot));
+    }
+
+    [Fact]
+    public void EmptyCollidingLocators_GetNoBankPrefix()
+    {
+        var table = BuildTable(
+            BuildType17Banked("", "BANK 0", "Corsair", 0x02, 0x9E),
+            BuildType17Banked("", "BANK 1", "Corsair", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.All(modules, m => Assert.Equal("", m.Slot));
+    }
+
+    [Fact]
+    public void ShortStructBelowBankLabel_CollidingLocators_Unchanged()
+    {
+        const byte length = 0x11;
+        byte[] Short()
+        {
+            var b = new byte[length];
+            b[0] = MemoryDeviceType;
+            b[1] = length;
+            WriteU16(b, 0x0C, 16384);
+            b[0x10] = 1;
+            return AppendStrings(b, new List<string> { "DIMM 1" });
+        }
+
+        var (modules, _) = SmbiosParser.Parse(BuildTable(Short(), Short()));
+
+        Assert.Equal(2, modules.Count);
+        Assert.All(modules, m => Assert.Equal("DIMM 1", m.Slot));
+    }
+
+    [Fact]
+    public void ParseModules_ReturnsRawSlotAndManufacturer()
+    {
+        var table = BuildTable(
+            BuildType17Banked("DIMM 1", "P0 CHANNEL A", "Unknown", 0x02, 0x9E),
+            BuildType17Banked("DIMM 1", "P0 CHANNEL B", "Unknown", 0x02, 0x9E));
+
+        var modules = SmbiosParser.ParseModules(table);
+
+        Assert.All(modules, m => Assert.Equal("DIMM 1", m.Info.Slot));
+        Assert.All(modules, m => Assert.Equal("Unknown", m.Info.Manufacturer));
+    }
+
     private static byte[] BuildEmptySlotType17(ushort handle, string deviceLocator)
     {
         const byte length = 0x22;

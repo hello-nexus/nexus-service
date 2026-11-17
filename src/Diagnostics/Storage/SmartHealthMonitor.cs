@@ -189,7 +189,10 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
         {
             if (_warnedDrives.Add("trace:" + hardwareId))
             {
-                var trace = dit.ProbeTrace is { } t ? string.Join(" | ", t) : "";
+                // Some probe paths echo the drive serial into the trace; never log those lines.
+                var trace = dit.ProbeTrace is { } t
+                    ? string.Join(" | ", t.Where(e => e is not null && !e.Contains("serial=", StringComparison.OrdinalIgnoreCase)))
+                    : "";
                 ServiceLog.Info($"[smart] no SMART for {hardwareId} (bus {bus}); probes: {trace}");
             }
 

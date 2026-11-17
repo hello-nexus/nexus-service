@@ -75,7 +75,7 @@ public static class SmbiosParser
         {
             var info = p.Info;
             // Boards that reuse one DeviceLocator across channels (e.g. "DIMM 1") only differ by BankLabel.
-            if (duplicateSlots.Contains(info.Slot) && p.BankLabel.Length > 0 && p.BankLabel != info.Slot)
+            if (info.Slot.Length > 0 && duplicateSlots.Contains(info.Slot) && p.BankLabel.Length > 0 && p.BankLabel != info.Slot)
             {
                 info = info with { Slot = $"{p.BankLabel} / {info.Slot}" };
             }
@@ -154,7 +154,7 @@ public static class SmbiosParser
         return null;
     }
 
-    /// <summary>Each populated module with its raw SMBIOS memory-type byte (Win32_PhysicalMemory.SMBIOSMemoryType).</summary>
+    /// <summary>Each populated module with its raw SMBIOS memory-type byte (Win32_PhysicalMemory.SMBIOSMemoryType). Intentionally returns raw slot and manufacturer strings, unlike <see cref="Parse"/>.</summary>
     internal static IReadOnlyList<(MemoryModuleInfo Info, byte? MemoryType)> ParseModules(byte[]? rawFirmwareTableBuffer)
     {
         var result = new List<(MemoryModuleInfo, byte?)>();
