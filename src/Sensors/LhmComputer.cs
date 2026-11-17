@@ -50,6 +50,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly object _rotationalLock = new();
     private readonly LhmWalkWatch _walkWatch = LhmWalkWatch.Shared;
     private long _lastUpdateTicks;
+    private readonly LhmSlowWalkReport _slowWalk = new(() => Environment.TickCount64);
+    private readonly LhmDimmBackoff _dimmBackoff = new(() => Environment.TickCount64);
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
     private readonly IConfigStore _config;
@@ -174,8 +176,14 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     public Computer Instance => _computer;
 
-    private void OnWalkStalled(TimeSpan age) =>
-        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s; sensor readings reported as missing until it completes");
+    /// <summary>True while DIMM reads are paused; the sticks' sensors hold their last value, so callers must not publish them.</summary>
+    internal bool DimmReadsPaused => _dimmBackoff.Paused;
+
+    private void OnWalkStalled(TimeSpan age)
+    {
+        var inside = _walkWatch.CurrentItem is { } at ? $", inside {at.Item}" : "";
+        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s{inside}; sensor readings reported as missing until it completes");
+    }
 
     /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
     internal bool IsHubDriven(IHardware hw) =>
@@ -441,6 +449,9 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 _walkWatch.BeginWalk();
             }
+            _slowWalk.Begin();
+            _dimmBackoff.BeginWalk();
+            var walkStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
                 using (WindowsTimerResolution.Elevate())
@@ -480,6 +491,19 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             }
             finally
             {
+                if (_slowWalk.Finish((long)System.Diagnostics.Stopwatch.GetElapsedTime(walkStart).TotalMilliseconds) is { } slowLine)
+                {
+                    ServiceLog.Warn(slowLine);
+                }
+                switch (_dimmBackoff.EndWalk())
+                {
+                    case LhmDimmBackoff.Outcome.Paused:
+                        ServiceLog.Warn($"[lhm] DIMM SPD reads blocked by another SMBus user ({_dimmBackoff.LastSlowestMs / 1000.0:F1}s per stick); pausing RAM temperature reads for {LhmDimmBackoff.PauseMs / 60_000} min");
+                        break;
+                    case LhmDimmBackoff.Outcome.Recovered:
+                        ServiceLog.Info("[lhm] DIMM SPD reads fast again; RAM temperature reads resumed");
+                        break;
+                }
                 if (!_testHost && _walkWatch.EndWalk())
                 {
                     ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
@@ -508,13 +532,27 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         try
         {
             var item = hw.Identifier.ToString();
-            if (_walkWatch.SpdQuiesced && item.StartsWith("/memory/dimm", StringComparison.Ordinal))
+            var isDimm = LhmComponentIdentifiers.IsDimmModule(item);
+            if (isDimm && (_walkWatch.SpdQuiesced || _dimmBackoff.ShouldSkip))
             {
                 _walkWatch.SetItem(null);
                 return;
             }
             _walkWatch.SetItem(item);
-            hw.Update();
+            var itemStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            try
+            {
+                hw.Update();
+            }
+            finally
+            {
+                var ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(itemStart).TotalMilliseconds;
+                _slowWalk.Record(item, ms);
+                if (isDimm)
+                {
+                    _dimmBackoff.RecordStick(ms);
+                }
+            }
         }
         catch (Exception ex)
         {
