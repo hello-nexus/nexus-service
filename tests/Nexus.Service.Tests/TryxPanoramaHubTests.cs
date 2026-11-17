@@ -1310,6 +1310,36 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
+    public void FillDuration_stores_the_duration_of_a_clip_the_panel_holds_without_a_sidecar()
+    {
+        byte[] es =
+        [
+            0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32, 0xAA,
+            0, 0, 0, 1, 0x68, 0xEB, 0xCC,
+            0, 0, 0, 1, 0x65, 0x88, .. new byte[40],  0x11,
+            0, 0, 0, 1, 0x41, 0x9A, 0x44,
+            .. new byte[200],
+        ];
+        var name = $"kanali-dur-{Guid.NewGuid():N}.mp4.h264_2240x1080";
+        var recording = new RecordingTransport { PullChunkSize = 16 };
+        recording.PanelFiles[name] = TryxRkProtocol.WrapMediaContainer(es, fps: 30, width: 2240, height: 1080, frameCount: 600, magic: 1);
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording);
+        hub.EnsureConnected();
+        try
+        {
+            Assert.Equal(0, TryxThumbnailCache.ReadDuration(name));
+
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(20, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally
+        {
+            try { File.Delete(System.IO.Path.Combine(TryxThumbnailCache.CacheDir, name + ".dur")); } catch { }
+        }
+    }
+
+    [Fact]
     public void PullMediaHead_returns_null_when_the_panel_refuses_the_pull()
     {
         var recording = new RecordingTransport();

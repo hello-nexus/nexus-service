@@ -82,6 +82,21 @@ public sealed class TryxSlideshow
         }
     }
 
+    /// <summary>A duration became known for <paramref name="name"/>. If it is on screen, its
+    /// hold (measured from when it started) is recomputed with it so a clip longer than the
+    /// interval plays out; a hold that was already due is left to the next tick.</summary>
+    public void DurationLearned(string name, long nowMs)
+    {
+        lock (_lock)
+        {
+            if (!string.Equals(_current, name, StringComparison.Ordinal) || _deadlineMs == long.MaxValue) return;
+            var intervalMs = _config.IntervalSec * 1000L;
+            var startMs = _deadlineMs - intervalMs;
+            var deadline = startMs + HoldMsLocked(name);
+            if (deadline > _deadlineMs && nowMs < _deadlineMs) _deadlineMs = deadline;
+        }
+    }
+
     /// <summary>The clip to switch to now, or null while the current one still holds, the
     /// slideshow is off, or the library has fewer than two clips. The caller selects it and
     /// re-arms through <see cref="Rearm"/>. <paramref name="library"/> is only read once due.</summary>

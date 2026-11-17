@@ -239,4 +239,49 @@ public class TryxSlideshowTests
         Assert.NotEqual("a.mp4", lap[0]);
         Assert.Equal(Library.OrderBy(n => n), lap.OrderBy(n => n));
     }
+
+    [Fact]
+    public void A_clip_longer_than_the_interval_holds_for_one_full_play()
+    {
+        var s = Build(_ => 20);
+        s.Configure(On(intervalSec: 5), "a.mp4", Library, 0);
+
+        Assert.Null(s.Tick(() => Library, 19_999));
+        Assert.Equal("b.mp4", s.Tick(() => Library, 20_000));
+    }
+
+    [Fact]
+    public void An_unknown_duration_holds_the_plain_interval()
+    {
+        var s = Build(_ => 0);
+        s.Configure(On(intervalSec: 5), "a.mp4", Library, 0);
+
+        Assert.Equal("b.mp4", s.Tick(() => Library, 5_000));
+    }
+
+    [Fact]
+    public void A_duration_learned_for_the_current_clip_stretches_its_running_hold()
+    {
+        var duration = 0.0;
+        var s = Build(_ => duration);
+        s.Configure(On(intervalSec: 5), "a.mp4", Library, 0);
+
+        duration = 20;
+        s.DurationLearned("a.mp4", 2_000);
+
+        Assert.Null(s.Tick(() => Library, 5_000));
+        Assert.Null(s.Tick(() => Library, 19_999));
+        Assert.Equal("b.mp4", s.Tick(() => Library, 20_000));
+    }
+
+    [Fact]
+    public void A_duration_learned_for_another_clip_leaves_the_hold_alone()
+    {
+        var s = Build(_ => 20);
+        s.Configure(On(intervalSec: 5), "a.mp4", Library, 0);
+
+        s.DurationLearned("b.mp4", 1_000);
+
+        Assert.Equal("b.mp4", s.Tick(() => Library, 20_000));
+    }
 }

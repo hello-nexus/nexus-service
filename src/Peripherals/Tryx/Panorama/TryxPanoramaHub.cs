@@ -460,6 +460,7 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         _slideshow.Configure(config, State.CurrentMedia, ListCustomMedia(), NowMs());
         var applied = _slideshow.Config;
+        if (applied.Enabled && State.CurrentMediaIsCustom) QueueDuration(State.CurrentMedia);
         _configStore.Update(s =>
         {
             s.Tryx.SlideshowEnabled = applied.Enabled;
@@ -639,6 +640,7 @@ public sealed class TryxPanoramaHub : IDisposable
     private readonly HashSet<string> _thumbAttempted = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _thumbTransientFailures = new(StringComparer.Ordinal);
     private bool _thumbWorkerRunning;
+    private readonly HashSet<string> _durAttempted = new(StringComparer.Ordinal);
 
     /// <summary>Queues a thumbnail for a panel-stored file that has none, decoded from its first
     /// frame pulled off the panel. Runs in the background; the next media read returns it.</summary>
@@ -654,6 +656,53 @@ public sealed class TryxPanoramaHub : IDisposable
             _thumbWorkerRunning = true;
         }
         _ = Task.Run(DrainThumbnailQueue);
+    }
+
+    /// <summary>Fills the missing duration of a panel-stored clip (one Kanali uploaded has no
+    /// sidecar) from its container header pulled off the panel, then lets the slideshow
+    /// stretch the current hold. Runs in the background on the thumbnail worker, once per
+    /// file and size; a link failure is retried a few times.</summary>
+    public void QueueDuration(string deviceFileName)
+    {
+        if (!TryxThumbnailCache.IsSafeDeviceName(deviceFileName)
+            || TryxThumbnailCache.ReadDuration(deviceFileName) > 0)
+        {
+            return;
+        }
+        lock (_thumbLock)
+        {
+            var key = "dur|" + ThumbKey(deviceFileName);
+            if (!_durAttempted.Add(key)) return;
+            _thumbQueue.Enqueue((deviceFileName, key));
+            if (_thumbWorkerRunning) return;
+            _thumbWorkerRunning = true;
+        }
+        _ = Task.Run(DrainThumbnailQueue);
+    }
+
+    internal void FillDuration(string deviceFileName, string key)
+    {
+        if (_disposed) return;
+        var head = PullMediaHead(deviceFileName, out var transient);
+        if (head is null)
+        {
+            if (!transient) return;
+            lock (_thumbLock)
+            {
+                _thumbTransientFailures.TryGetValue(key, out var failures);
+                _thumbTransientFailures[key] = ++failures;
+                if (failures < MaxThumbnailTransientFailures) _durAttempted.Remove(key);
+            }
+            return;
+        }
+        RecordDuration(deviceFileName, head.DurationSec);
+    }
+
+    private void RecordDuration(string deviceFileName, double durationSec)
+    {
+        if (durationSec <= 0 || TryxThumbnailCache.ReadDuration(deviceFileName) > 0) return;
+        TryxThumbnailCache.WriteDuration(deviceFileName, durationSec);
+        _slideshow.DurationLearned(deviceFileName, NowMs());
     }
 
     private string ThumbKey(string deviceFileName)
@@ -674,7 +723,11 @@ public sealed class TryxPanoramaHub : IDisposable
                     return;
                 }
             }
-            try { GeneratePanelThumbnail(item.Name, item.Key); }
+            try
+            {
+                if (item.Key.StartsWith("dur|", StringComparison.Ordinal)) FillDuration(item.Name, item.Key);
+                else GeneratePanelThumbnail(item.Name, item.Key);
+            }
             catch (Exception ex) { ServiceLog.Warn($"[tryx] thumbnail for {item.Name} failed: {ex.GetType().Name}: {ex.Message}"); }
         }
     }
@@ -704,10 +757,7 @@ public sealed class TryxPanoramaHub : IDisposable
         {
             File.WriteAllBytes(mkv, TryxMediaHead.BuildMatroska(head.Keyframe, head.Width, head.Height));
             TryxThumbnailCache.Write(ffmpeg, mkv, deviceFileName);
-            if (head.DurationSec > 0 && TryxThumbnailCache.ReadDuration(deviceFileName) <= 0)
-            {
-                TryxThumbnailCache.WriteDuration(deviceFileName, head.DurationSec);
-            }
+            RecordDuration(deviceFileName, head.DurationSec);
         }
         finally
         {
@@ -846,6 +896,7 @@ public sealed class TryxPanoramaHub : IDisposable
                     _overlay.Font, _overlay.Size, _overlay.Align));
             }
             _slideshow.Rearm(State.CurrentMedia, NowMs());
+            if (State.CurrentMediaIsCustom) QueueDuration(State.CurrentMedia);
             return true;
         }
         catch (Exception ex)
@@ -1475,6 +1526,7 @@ public sealed class TryxPanoramaHub : IDisposable
             _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = true; });
             _slideshow.Rearm(deviceFileName, NowMs());
         }
+        QueueDuration(deviceFileName);
         return true;
     }
 

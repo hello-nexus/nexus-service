@@ -345,6 +345,7 @@ public static class TryxRoutes
                 {
                     label ??= TryxKanaliData.DisplayName(name);
                 }
+                if (TryxThumbnailCache.ReadDuration(name) <= 0) hub.QueueDuration(name);
                 resp.Media.Add(new TryxMediaItem
                 {
                     Name = name,
