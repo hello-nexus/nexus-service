@@ -24,6 +24,7 @@ public sealed class OpenRgbProcessManager : IDisposable
     private static readonly TimeSpan StableUptime = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan GracefulStopTimeout = TimeSpan.FromSeconds(3);
 
     /// <summary>Machine-scope override raising what the daemon prints, for diagnosing
     /// drivers that report their negotiated wire parameters only at debug.</summary>
@@ -762,6 +763,17 @@ public sealed class OpenRgbProcessManager : IDisposable
             if (_proc is { HasExited: false })
             {
                 var pid = _proc.Id;
+                // Graceful first: the daemon's controller destructors restore devices
+                // (e.g. Corsair V2 hardware mode) that a kill would leave in software mode.
+                if (OpenRgbGracefulStop.TryRequest(pid) && _proc.WaitForExit((int)GracefulStopTimeout.TotalMilliseconds))
+                {
+                    ServiceLog.Info($"[openrgb-proc] stopped pid={pid} gracefully");
+                    SmbusMutexReclaimer.Reclaim("after OpenRGB graceful stop");
+                    _proc.Dispose();
+                    _proc = null;
+                    return;
+                }
+
                 _proc.Kill(entireProcessTree: true);
                 if (_proc.WaitForExit(500))
                 {
