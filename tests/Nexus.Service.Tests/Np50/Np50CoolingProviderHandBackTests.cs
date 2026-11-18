@@ -95,6 +95,22 @@ public class Np50CoolingProviderHandBackTests
     }
 
     [Fact]
+    public void A_release_while_the_hub_is_offline_still_hands_back_after_reconnect()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed(Fp12, 60);
+        t.Open = false;
+        provider.ReleaseFan(Fp12);
+        Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
+
+        t.Open = true;
+        provider.ReleaseFan(Fp12);
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
     public void A_user_pinned_firmware_mode_swallows_curve_writes_without_a_port_duty_frame()
     {
         var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
@@ -107,9 +123,9 @@ public class Np50CoolingProviderHandBackTests
         Assert.DoesNotContain(t.Writes, IsPortDutyFrame);
     }
 
-    // FF CC 02 <port> then one 9-byte record per slot; the mode frame is 15 bytes.
+    // Header, port byte, then one fixed-size record per device slot.
     private static bool IsPortDutyFrame(byte[] w) =>
-        w.Length > 15 && w[0] == 0xFF && w[1] == 0xCC && w[2] == 0x02;
+        w.Length == 4 + Np50Protocol.MaxDevicesPerPort * 9 && w[0] == 0xFF && w[1] == 0xCC && w[2] == 0x02;
 
     private const string Fp12 = "np50:NPTEST:port1:dev1";
 
@@ -164,7 +180,8 @@ public class Np50CoolingProviderHandBackTests
         public Func<byte[], byte[]> OnRead = _ => Array.Empty<byte>();
         private byte[] _lastWrite = Array.Empty<byte>();
 
-        public bool IsOpen => true;
+        public bool Open = true;
+        public bool IsOpen => Open;
         public string Serial => "NPTEST";
         public void DiscardInput() { }
 

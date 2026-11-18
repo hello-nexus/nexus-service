@@ -205,14 +205,16 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // on first appearance at boot) has nothing to hand back, and handing the
         // hub to firmware here would make ApplyChannelWrite swallow later curve
         // writes to other channels.
+        if (channelId.EndsWith(":legacy", StringComparison.Ordinal)) _hub.ClearDesiredLegacyDuty();
+        // Offline: keep the channel tracked so the release re-issued on
+        // reconnect still finds it driven and hands back.
+        if (!_hub.IsConnected) return;
         bool handBack;
         lock (_controlLock)
         {
             var wasDriven = _softwareControlled.Remove(channelId);
             handBack = wasDriven && _softwareControlled.Count == 0;
         }
-        if (channelId.EndsWith(":legacy", StringComparison.Ordinal)) _hub.ClearDesiredLegacyDuty();
-        if (!_hub.IsConnected) return;
         if (handBack)
         {
             HandBack();
@@ -324,14 +326,19 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
             // sticking on "Manual".
             lock (_controlLock) _softwareControlled.Remove(channelId);
             _hub.ClearDesiredLegacyDuty();
-            if (_lastDropLoggedMode != mode)
+            bool logDrop;
+            lock (_controlLock)
             {
+                logDrop = _lastDropLoggedMode != mode;
                 _lastDropLoggedMode = mode;
+            }
+            if (logDrop)
+            {
                 ServiceLog.Info($"[np50-cooling] write to {channelId} dropped: hub pinned to non-software mode {mode}");
             }
             return;
         }
-        _lastDropLoggedMode = null;
+        lock (_controlLock) _lastDropLoggedMode = null;
 
         // Driving a channel implies software control; record so the next
         // GetFanChannels reports Mode="Manual" and the panel doesn't snap
