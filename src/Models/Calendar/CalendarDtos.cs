@@ -52,6 +52,8 @@ public sealed class CalendarEventsResponse
     public List<CalendarEventDto> Events { get; set; } = new();
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public long? SyncedAt { get; set; }
+    /// <summary>True when the range held more events than one response carries; the rest were dropped.</summary>
+    public bool Truncated { get; set; }
 }
 
 public sealed class CalendarCreateRequest
@@ -135,4 +137,5 @@ public static class CalendarErrors
     public const string InvalidUrl = "invalidUrl";
     public const string InvalidRefresh = "invalidRefresh";
     public const string InvalidRange = "invalidRange";
+    public const string LimitReached = "limitReached";
 }

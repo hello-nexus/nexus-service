@@ -44,7 +44,7 @@ internal sealed class VTimeZoneZone : IIcsZone
 
     public long LocalToUtcMs(DateTime local)
     {
-        var offset = OffsetForLocal(local);
+        var offset = OffsetForConversion(local);
         var utcTicks = local.Ticks - offset * TimeSpan.TicksPerSecond;
         return new DateTimeOffset(new DateTime(Math.Clamp(utcTicks, 0, DateTime.MaxValue.Ticks), DateTimeKind.Utc)).ToUnixTimeMilliseconds();
     }
@@ -81,6 +81,35 @@ internal sealed class VTimeZoneZone : IIcsZone
                 yield return o.OffsetToSeconds;
             }
         }
+    }
+
+    /// <summary>The offset for converting a wall time to an instant. A wall time inside a spring-forward gap uses the offset before the change, which equals shifting the clock forward like <see cref="TimeZoneInfoZone"/>.</summary>
+    private int OffsetForConversion(DateTime local)
+    {
+        var (onset, offsetTo, offsetFrom, found) = LatestTransition(local);
+        if (found && offsetTo > offsetFrom && local < onset.AddSeconds(offsetTo - offsetFrom))
+        {
+            return offsetFrom;
+        }
+        return OffsetForLocal(local);
+    }
+
+    private (DateTime Onset, int OffsetTo, int OffsetFrom, bool Found) LatestTransition(DateTime local)
+    {
+        var best = default((DateTime OnsetLocal, int OffsetTo, int OffsetFrom));
+        var found = false;
+        for (var y = local.Year - 1; y <= local.Year; y++)
+        {
+            foreach (var t in Transitions(y))
+            {
+                if (t.OnsetLocal <= local && (!found || t.OnsetLocal > best.OnsetLocal))
+                {
+                    best = t;
+                    found = true;
+                }
+            }
+        }
+        return (best.OnsetLocal, best.OffsetTo, best.OffsetFrom, found);
     }
 
     private int OffsetForLocal(DateTime local)

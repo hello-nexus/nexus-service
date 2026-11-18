@@ -75,7 +75,21 @@ public static class CalendarUrl
         if (ip.AddressFamily == AddressFamily.InterNetworkV6)
         {
             var b6 = ip.GetAddressBytes();
-            return !(ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast || (b6[0] & 0xFE) == 0xFC);
+            if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast || (b6[0] & 0xFE) == 0xFC)
+            {
+                return false;
+            }
+            // Forms that carry an IPv4 address: NAT64, IPv4-compatible and 6to4. Judge the embedded address.
+            var nat64 = b6[0] == 0x00 && b6[1] == 0x64 && b6[2] == 0xFF && b6[3] == 0x9B && IsZero(b6, 4, 12);
+            if (nat64 || IsZero(b6, 0, 12))
+            {
+                return IsPublicAddress(new IPAddress(new[] { b6[12], b6[13], b6[14], b6[15] }));
+            }
+            if (b6[0] == 0x20 && b6[1] == 0x02)
+            {
+                return IsPublicAddress(new IPAddress(new[] { b6[2], b6[3], b6[4], b6[5] }));
+            }
+            return true;
         }
         var b = ip.GetAddressBytes();
         if (b[0] == 0 || b[0] == 10 || b[0] >= 224)
@@ -93,6 +107,26 @@ public static class CalendarUrl
         if (b[0] == 100 && b[1] >= 64 && b[1] <= 127)
         {
             return false;
+        }
+        if (b[0] == 198 && (b[1] == 18 || b[1] == 19))
+        {
+            return false;
+        }
+        if (b[0] == 192 && b[1] == 0 && b[2] == 0)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    private static bool IsZero(byte[] bytes, int from, int to)
+    {
+        for (var i = from; i < to; i++)
+        {
+            if (bytes[i] != 0)
+            {
+                return false;
+            }
         }
         return true;
     }

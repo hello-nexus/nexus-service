@@ -28,18 +28,28 @@ public interface ICalendarFetcher
 }
 
 /// <summary>
-/// One shared client: 20 s timeout, 10 MB body cap, conditional GET, and a
-/// connect-time check that every resolved address is public (so a DNS name or a
+/// One shared client: one deadline over headers and body, a body size cap that
+/// also applies after decompression, conditional GET, and a connect-time check that every resolved address is public (so a DNS name or a
 /// redirect cannot reach the LAN). The system proxy is not used: its address is
 /// usually private and would fail that check.
 /// </summary>
 public sealed class HttpCalendarFetcher : ICalendarFetcher
 {
     public const int MaxBodyBytes = 10 * 1024 * 1024;
+    public static readonly TimeSpan TotalTimeout = TimeSpan.FromSeconds(20);
     private readonly HttpClient _http;
+    private readonly TimeSpan _timeout;
+    private readonly Func<IPAddress, bool> _isAllowed;
 
-    public HttpCalendarFetcher()
+    public HttpCalendarFetcher() : this(null, null)
     {
+    }
+
+    /// <summary>Tests point this at a loopback server by widening the address rule or shortening the deadline.</summary>
+    internal HttpCalendarFetcher(Func<IPAddress, bool>? isAllowed, TimeSpan? timeout)
+    {
+        _isAllowed = isAllowed ?? CalendarUrl.IsPublicAddress;
+        _timeout = timeout ?? TotalTimeout;
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,
@@ -49,11 +59,15 @@ public sealed class HttpCalendarFetcher : ICalendarFetcher
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             ConnectCallback = ConnectPublicOnlyAsync,
         };
-        _http = new HttpClient(handler, disposeHandler: true) { Timeout = TimeSpan.FromSeconds(20) };
+        _http = new HttpClient(handler, disposeHandler: true) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
     }
 
-    public async Task<CalendarFetchResult> FetchAsync(Uri url, string? etag, string? lastModified, CancellationToken ct)
+    public async Task<CalendarFetchResult> FetchAsync(Uri url, string? etag, string? lastModified, CancellationToken callerToken)
     {
+        // HttpClient.Timeout stops at the headers when streaming; this deadline covers the body too.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
+        deadline.CancelAfter(_timeout);
+        var ct = deadline.Token;
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
@@ -106,7 +120,7 @@ public sealed class HttpCalendarFetcher : ICalendarFetcher
                 HttpStatus = status,
             };
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
             throw;
         }
@@ -120,7 +134,7 @@ public sealed class HttpCalendarFetcher : ICalendarFetcher
     private static CalendarFetchResult Fail(string code, int status) =>
         new() { Outcome = CalendarFetchOutcome.Error, ErrorCode = code, HttpStatus = status };
 
-    private static async ValueTask<System.IO.Stream> ConnectPublicOnlyAsync(SocketsHttpConnectionContext ctx, CancellationToken ct)
+    private async ValueTask<System.IO.Stream> ConnectPublicOnlyAsync(SocketsHttpConnectionContext ctx, CancellationToken ct)
     {
         var host = ctx.DnsEndPoint.Host;
         var addresses = IPAddress.TryParse(host, out var literal)
@@ -129,7 +143,7 @@ public sealed class HttpCalendarFetcher : ICalendarFetcher
         Exception? last = null;
         foreach (var address in addresses)
         {
-            if (!CalendarUrl.IsPublicAddress(address))
+            if (!_isAllowed(address))
             {
                 continue;
             }

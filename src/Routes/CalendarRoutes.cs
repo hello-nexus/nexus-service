@@ -10,6 +10,11 @@ namespace Nexus.Service.Routes;
 
 public static class CalendarRoutes
 {
+    /// <summary>
+    /// Adding, probing, renaming and removing calendars carry a feed address the PC would fetch, so they
+    /// are desktop only: no AllowPanel, which keeps panel and phone sessions out. Reading, the refresh
+    /// interval and refresh stay panel reachable.
+    /// </summary>
     public static void MapCalendarEndpoints(this WebApplication app)
     {
         app.MapGet("/api/calendar/calendars", (CalendarService calendar) =>
@@ -27,7 +32,7 @@ public static class CalendarRoutes
             return result.Source is { } source
                 ? Results.Json(source, AppJsonContext.Default.CalendarSourceDto)
                 : BadRequest(result.Error ?? CalendarErrors.Unreachable);
-        }).AllowPanel();
+        });
 
         app.MapPost("/api/calendar/probe", async (HttpRequest req, CalendarService calendar, CancellationToken ct) =>
         {
@@ -40,7 +45,7 @@ public static class CalendarRoutes
             return result.Response is { } probe
                 ? Results.Json(probe, AppJsonContext.Default.CalendarProbeResponse)
                 : BadRequest(result.Error ?? CalendarErrors.Unreachable);
-        }).AllowPanel();
+        });
 
         app.MapPatch("/api/calendar/calendars/{id}", async (string id, HttpRequest req, CalendarService calendar, CancellationToken ct) =>
         {
@@ -52,11 +57,10 @@ public static class CalendarRoutes
             return calendar.Patch(id, body.Name, body.Color) is { } dto
                 ? Results.Json(dto, AppJsonContext.Default.CalendarSourceDto)
                 : Results.NotFound();
-        }).AllowPanel();
+        });
 
         app.MapDelete("/api/calendar/calendars/{id}", (string id, CalendarService calendar) =>
-            calendar.Remove(id) ? Results.NoContent() : Results.NotFound())
-            .AllowPanel();
+            calendar.Remove(id) ? Results.NoContent() : Results.NotFound());
 
         app.MapGet("/api/calendar/settings", (CalendarService calendar) =>
             Results.Json(calendar.GetSettings(), AppJsonContext.Default.CalendarSettingsDto))

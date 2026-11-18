@@ -11,6 +11,7 @@ internal sealed class FakeCalendarFetcher : ICalendarFetcher
     public Func<Uri, string?, CalendarFetchResult> Handler { get; set; } = (_, _) => Ok(IcsFixtures.Google);
     public List<(Uri Url, string? ETag)> Calls { get; } = new();
     public TaskCompletionSource? Gate { get; set; }
+    public Func<Uri, Task?>? GateFor { get; set; }
 
     public async Task<CalendarFetchResult> FetchAsync(Uri url, string? etag, string? lastModified, CancellationToken ct)
     {
@@ -21,6 +22,10 @@ internal sealed class FakeCalendarFetcher : ICalendarFetcher
         if (Gate is { } gate)
         {
             await gate.Task;
+        }
+        if (GateFor?.Invoke(url) is { } perUrl)
+        {
+            await perUrl;
         }
         return Handler(url, etag);
     }
@@ -107,6 +112,12 @@ public sealed class CalendarServiceTests : IDisposable
     [InlineData("http://[::1]/a.ics")]
     [InlineData("https://nas.local/a.ics")]
     [InlineData("https://intranet/a.ics")]
+    [InlineData("http://[64:ff9b::7f00:1]/a.ics")]
+    [InlineData("http://[::ffff:127.0.0.1]/a.ics")]
+    [InlineData("http://[::7f00:1]/a.ics")]
+    [InlineData("http://[2002:c0a8:101::1]/a.ics")]
+    [InlineData("http://198.18.0.1/a.ics")]
+    [InlineData("http://192.0.0.5/a.ics")]
     public async Task Add_rejects_bad_schemes_and_non_public_hosts_without_fetching(string url)
     {
         var svc = New();

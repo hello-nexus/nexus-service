@@ -74,7 +74,11 @@ public sealed class CalendarService
             if (File.Exists(SourcesPath))
             {
                 var file = JsonSerializer.Deserialize(File.ReadAllText(SourcesPath), PersistenceJsonContext.Default.CalendarSourcesFile);
-                if (file is not null)
+                if (file is null)
+                {
+                    MoveCorruptAside();
+                }
+                else
                 {
                     _refreshMinutes = AllowedRefreshMinutes.Contains(file.RefreshMinutes) ? file.RefreshMinutes : 15;
                     foreach (var rec in file.Sources)
@@ -91,12 +95,52 @@ public sealed class CalendarService
                         LoadCache(st);
                         _sources.Add(st);
                     }
+                    DeleteOrphanCaches();
                 }
             }
         }
         catch (Exception ex)
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[calendar] could not read sources ({ex.GetType().Name})");
+            MoveCorruptAside();
+        }
+    }
+
+    /// <summary>An unreadable sources file is kept for recovery rather than overwritten by the next mutation.</summary>
+    private void MoveCorruptAside()
+    {
+        try
+        {
+            File.Move(SourcesPath, SourcesPath + ".corrupt-" + _time.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture), overwrite: true);
+        }
+        catch (Exception)
+        {
+            // Best effort; the next successful write still keeps a backup of whatever is there.
+        }
+    }
+
+    /// <summary>A cache whose source is gone (a delete racing a sync, or an edited sources file) holds personal data nothing reads.</summary>
+    private void DeleteOrphanCaches()
+    {
+        try
+        {
+            var dir = Path.Combine(_dir, "cache");
+            if (!Directory.Exists(dir))
+            {
+                return;
+            }
+            var known = new HashSet<string>(_sources.Select(s => s.Record.Id), StringComparer.Ordinal);
+            foreach (var path in Directory.GetFiles(dir, "*.json"))
+            {
+                if (!known.Contains(Path.GetFileNameWithoutExtension(path)))
+                {
+                    TryDelete(path);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Housekeeping only.
         }
     }
 
@@ -132,7 +176,7 @@ public sealed class CalendarService
             Directory.CreateDirectory(_dir);
             var path = SourcesPath;
             RestrictToOwner(AtomicJsonFile.TempPathFor(path));
-            AtomicJsonFile.Write(path, JsonSerializer.Serialize(file, PersistenceJsonContext.Default.CalendarSourcesFile));
+            AtomicJsonFile.Write(path, JsonSerializer.Serialize(file, PersistenceJsonContext.Default.CalendarSourcesFile), keepBackup: true);
         }
         catch (Exception ex)
         {
@@ -229,10 +273,17 @@ public sealed class CalendarService
         return GetSettings();
     }
 
-    /// <returns>Null when the range is invalid (not increasing, or wider than the cap).</returns>
+    /// <summary>Most events one response carries; beyond it the response is flagged truncated.</summary>
+    public const int MaxEventsPerResponse = 10_000;
+    private const long MinRangeMs = -62_135_596_800_000L;
+    private const long MaxRangeMs = 253_402_300_799_000L;
+
+    /// <returns>Null when the range is invalid (out of bounds, not increasing, or wider than the cap).</returns>
     public CalendarEventsResponse? Query(long fromMs, long toMs, IReadOnlyCollection<string>? calendarIds)
     {
-        if (toMs <= fromMs || toMs - fromMs > MaxQuerySpanDays * 86_400_000L)
+        // Bounds first: with both inside them the subtraction below cannot overflow.
+        if (fromMs < MinRangeMs || fromMs > MaxRangeMs || toMs < MinRangeMs || toMs > MaxRangeMs
+            || toMs <= fromMs || toMs - fromMs > MaxQuerySpanDays * 86_400_000L)
         {
             return null;
         }
@@ -249,14 +300,34 @@ public sealed class CalendarService
         var events = new List<CalendarEventDto>();
         foreach (var (id, feed) in feeds)
         {
-            IcsEventExpander.Expand(feed, id, fromMs, toMs, events);
+            try
+            {
+                var skipped = IcsEventExpander.Expand(feed, id, fromMs, toMs, events, MaxEventsPerResponse);
+                if (skipped > 0)
+                {
+                    Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {id} skipped {skipped} events it could not expand");
+                }
+            }
+            catch (Exception ex)
+            {
+                Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {id} could not be expanded ({ex.GetType().Name})");
+            }
+            if (events.Count > MaxEventsPerResponse)
+            {
+                break;
+            }
         }
+        var truncated = events.Count > MaxEventsPerResponse;
         events.Sort(static (a, b) =>
         {
             var c = a.Start.CompareTo(b.Start);
             return c != 0 ? c : string.CompareOrdinal(a.Id, b.Id);
         });
-        return new CalendarEventsResponse { Events = events, SyncedAt = syncedAt };
+        if (truncated)
+        {
+            events.RemoveRange(MaxEventsPerResponse, events.Count - MaxEventsPerResponse);
+        }
+        return new CalendarEventsResponse { Events = events, SyncedAt = syncedAt, Truncated = truncated };
     }
 
     // Mutations
@@ -272,10 +343,12 @@ public sealed class CalendarService
         {
             if (_sources.Count >= MaxSources)
             {
-                return new CalendarAddResult { Error = CalendarErrors.InvalidUrl };
+                return new CalendarAddResult { Error = CalendarErrors.LimitReached };
             }
             st = new SourceState
             {
+                // Marked busy from the start so the worker cannot fetch the same source concurrently.
+                Syncing = true,
                 Record = new CalendarSourceRecord
                 {
                     Id = "cal_" + Guid.NewGuid().ToString("N").Substring(0, 12),
@@ -289,12 +362,13 @@ public sealed class CalendarService
             };
             _sources.Add(st);
         }
-        await RunSyncAsync(st, ct).ConfigureAwait(false);
+        await RunSyncAsync(st, ct, alreadyMarked: true).ConfigureAwait(false);
         string? failure;
         CalendarSourceDto? created = null;
         lock (_gate)
         {
-            failure = st.Error;
+            // A cancelled first fetch leaves no error and no sync time: it is a failure, not a source.
+            failure = st.Error ?? (st.Record.LastSyncedAt is null ? CalendarErrors.Unreachable : null);
             if (failure is not null)
             {
                 _sources.Remove(st);
@@ -308,6 +382,7 @@ public sealed class CalendarService
         }
         if (failure is not null)
         {
+            ct.ThrowIfCancellationRequested();
             RaiseChanged();
             return new CalendarAddResult { Error = failure };
         }
@@ -322,8 +397,9 @@ public sealed class CalendarService
 
     private readonly Dictionary<string, (DateTimeOffset At, ProbeResult Result)> _probes = new();
     private static readonly TimeSpan ProbeCacheFor = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan ProbeFailureCacheFor = TimeSpan.FromSeconds(10);
 
-    /// <summary>Fetches an address as an add would and reports its name; persists nothing. Results are kept 60 s, keyed by a hash of the URL.</summary>
+    /// <summary>Fetches an address as an add would and reports its name; persists nothing. Results are kept briefly (failures for less time), keyed by a hash of the URL.</summary>
     public async Task<ProbeResult> ProbeAsync(string? url, CancellationToken ct)
     {
         if (!CalendarUrl.TryNormalize(url, out var uri))
@@ -334,7 +410,7 @@ public sealed class CalendarService
         var now = _time.GetUtcNow();
         lock (_gate)
         {
-            if (_probes.TryGetValue(key, out var hit) && now - hit.At < ProbeCacheFor)
+            if (_probes.TryGetValue(key, out var hit) && now - hit.At < (hit.Result.Error is null ? ProbeCacheFor : ProbeFailureCacheFor))
             {
                 return hit.Result;
             }
@@ -361,15 +437,12 @@ public sealed class CalendarService
         {
             result = new ProbeResult { Error = CalendarErrors.NotIcs };
         }
-        if (result.Error is null)
+        lock (_gate)
         {
-            lock (_gate)
+            _probes[key] = (now, result);
+            foreach (var stale in _probes.Where(p => now - p.Value.At >= ProbeCacheFor).Select(p => p.Key).ToList())
             {
-                _probes[key] = (now, result);
-                foreach (var stale in _probes.Where(p => now - p.Value.At >= ProbeCacheFor).Select(p => p.Key).ToList())
-                {
-                    _probes.Remove(stale);
-                }
+                _probes.Remove(stale);
             }
         }
         return result;
@@ -467,7 +540,7 @@ public sealed class CalendarService
 
     // Sync
 
-    /// <summary>Starts a sync of every source. False while one is running or if the last one finished under the throttle window ago.</summary>
+    /// <summary>Starts a sync of every source. False while one is running or if the last one finished within the manual throttle window.</summary>
     public bool TryStartRefreshAll()
     {
         var now = _time.GetUtcNow();
@@ -552,10 +625,8 @@ public sealed class CalendarService
                 s.Syncing = true;
             }
         }
-        foreach (var s in due)
-        {
-            await RunSyncAsync(s, ct, alreadyMarked: true).ConfigureAwait(false);
-        }
+        // In parallel: one slow source must not delay the others' schedules.
+        await Task.WhenAll(due.Select(s => RunSyncAsync(s, ct, alreadyMarked: true))).ConfigureAwait(false);
     }
 
     private bool IsDue(SourceState s, DateTimeOffset now)
@@ -586,8 +657,13 @@ public sealed class CalendarService
                 st.Syncing = true;
             }
         }
-        RaiseChanged();
         string? error = null;
+        var dataChanged = false;
+        string? previousError;
+        lock (_gate)
+        {
+            previousError = st.Error;
+        }
         try
         {
             if (!Uri.TryCreate(SecretProtector.Unprotect(st.Record.UrlProtected), UriKind.Absolute, out var uri))
@@ -609,6 +685,7 @@ public sealed class CalendarService
                         break;
                     case CalendarFetchOutcome.Ok:
                         error = ApplyBody(st, result);
+                        dataChanged = error is null;
                         break;
                     default:
                         error = result.ErrorCode ?? CalendarErrors.Unreachable;
@@ -630,6 +707,15 @@ public sealed class CalendarService
             error = CalendarErrors.Unreachable;
             Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {st.Record.Id} sync failed ({ex.GetType().Name})");
         }
+        FinishSync(st, error);
+        if (dataChanged || error != previousError)
+        {
+            RaiseChanged();
+        }
+    }
+
+    private void FinishSync(SourceState st, string? error)
+    {
         var finished = _time.GetUtcNow();
         lock (_gate)
         {
@@ -652,7 +738,6 @@ public sealed class CalendarService
                 SaveSources();
             }
         }
-        RaiseChanged();
     }
 
     /// <summary>The only line a sync logs: ids, a status code, a byte count and an error code. Never a title, location, note, URL or host.</summary>
@@ -681,8 +766,12 @@ public sealed class CalendarService
             }
             st.ETag = result.ETag;
             st.LastModified = result.LastModified;
+            // A source deleted mid-sync must not get its cache re-created.
+            if (_sources.Contains(st))
+            {
+                SaveCache(st);
+            }
         }
-        SaveCache(st);
         return null;
     }
 

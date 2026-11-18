@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Auth;
 using Nexus.Service.Calendar;
@@ -45,14 +46,25 @@ public sealed class CalendarRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
-    public async Task Every_calendar_route_is_reachable_by_the_panel()
+    public async Task Only_read_settings_and_refresh_routes_are_panel_reachable()
     {
         var sources = _factory.Services.GetServices<EndpointDataSource>().SelectMany(d => d.Endpoints).OfType<RouteEndpoint>()
             .Where(e => e.RoutePattern.RawText?.StartsWith("/api/calendar", StringComparison.Ordinal) == true)
             .ToList();
 
         Assert.Equal(10, sources.Count);
-        Assert.All(sources, e => Assert.NotNull(e.Metadata.GetMetadata<AllowPanelAccess>()));
+        var panel = sources.Where(e => e.Metadata.GetMetadata<AllowPanelAccess>() is not null)
+            .Select(e => string.Join(",", e.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods) + " " + e.RoutePattern.RawText)
+            .OrderBy(x => x, StringComparer.Ordinal).ToList();
+        Assert.Equal(new[]
+        {
+            "GET /api/calendar/calendars",
+            "GET /api/calendar/events",
+            "GET /api/calendar/settings",
+            "POST /api/calendar/calendars/{id}/sync",
+            "POST /api/calendar/refresh",
+            "PUT /api/calendar/settings",
+        }, panel);
     }
 
     [Fact]

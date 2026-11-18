@@ -19,8 +19,10 @@ public static class IcsEventExpander
     private const long AllDaySlackMs = 14L * 3_600_000L;
     private const int MaxInstancesPerEvent = 5_000;
 
-    public static void Expand(IcsFeed feed, string calendarId, long fromMs, long toMs, List<CalendarEventDto> into)
+    /// <returns>How many events were skipped because their dates could not be expanded.</returns>
+    public static int Expand(IcsFeed feed, string calendarId, long fromMs, long toMs, List<CalendarEventDto> into, int limit = int.MaxValue)
     {
+        var skipped = 0;
         var zones = new IcsZoneResolver(feed);
 
         var overrides = new Dictionary<string, List<IcsEvent>>(StringComparer.Ordinal);
@@ -38,21 +40,42 @@ public static class IcsEventExpander
 
         foreach (var e in feed.Events)
         {
-            if (e.RecurrenceId is not null)
+            if (into.Count > limit)
             {
-                if (!e.Cancelled)
+                break;
+            }
+            try
+            {
+                if (e.RecurrenceId is not null)
                 {
-                    AddIfOverlapping(e, calendarId, KeyOf(e, e.RecurrenceId, zones), SingleOccurrence(e, zones), fromMs, toMs, into);
+                    if (!e.Cancelled)
+                    {
+                        AddIfOverlapping(e, calendarId, KeyOf(e, e.RecurrenceId, zones), SingleOccurrence(e, zones), fromMs, toMs, into);
+                    }
+                    continue;
                 }
-                continue;
+                if (e.Cancelled)
+                {
+                    continue;
+                }
+                overrides.TryGetValue(e.Uid, out var mine);
+                ExpandMaster(e, mine, calendarId, zones, fromMs, toMs, into);
             }
-            if (e.Cancelled)
+            catch (Exception ex) when (ex is ArgumentException or OverflowException or InvalidTimeZoneException)
             {
-                continue;
+                // One event with dates outside the representable range must not take the feed down.
+                skipped++;
             }
-            overrides.TryGetValue(e.Uid, out var mine);
-            ExpandMaster(e, mine, calendarId, zones, fromMs, toMs, into);
         }
+        return skipped;
+    }
+
+    /// <summary>AddDays that clamps at the ends of the calendar instead of throwing.</summary>
+    private static DateTime SafeAddDays(DateTime d, double days)
+    {
+        var max = (DateTime.MaxValue - d).TotalDays;
+        var min = (DateTime.MinValue - d).TotalDays;
+        return d.AddDays(Math.Clamp(days, min, max));
     }
 
     private readonly record struct Occurrence(long StartMs, long EndMs, string? StartDate, string? EndDate);
@@ -143,7 +166,7 @@ public static class IcsEventExpander
             : zone.UtcMsToLocal(Math.Clamp(utcMs, -62135596800000L, 253402300799000L));
         try
         {
-            return local.AddDays(padDays);
+            return SafeAddDays(local, padDays);
         }
         catch (ArgumentOutOfRangeException)
         {
@@ -160,7 +183,7 @@ public static class IcsEventExpander
         var t = new DateTime(ticks, DateTimeKind.Unspecified);
         if (dateOnly)
         {
-            return t.AddDays(1).AddTicks(-1);
+            return SafeAddDays(t, 1).AddTicks(-1);
         }
         if (utc && !allDay)
         {
@@ -181,15 +204,19 @@ public static class IcsEventExpander
             }
             else if (e.DurationSeconds is { } d)
             {
-                endDate = startDate.AddDays(Math.Max(1, (int)Math.Ceiling(d / 86400.0)));
+                endDate = SafeAddDays(startDate, Math.Max(1, Math.Ceiling(d / 86400.0)));
             }
             else
             {
-                endDate = startDate.AddDays(1);
+                endDate = SafeAddDays(startDate, 1);
             }
             if (endDate <= startDate)
             {
-                endDate = startDate.AddDays(1);
+                endDate = SafeAddDays(startDate, 1);
+            }
+            if (endDate <= startDate)
+            {
+                endDate = startDate;
             }
             return new Occurrence(DateMs(startDate), DateMs(endDate), DateKey(startDate), DateKey(endDate));
         }
@@ -203,7 +230,7 @@ public static class IcsEventExpander
         }
         else if (e.DurationSeconds is { } d)
         {
-            end = start + d * 1000;
+            end = start + Math.Clamp(d, 0, 100L * 365 * 86400) * 1000;
         }
         else
         {
@@ -214,9 +241,9 @@ public static class IcsEventExpander
 
     private static Occurrence AllDayOccurrence(DateTime day, Occurrence master)
     {
-        var spanDays = (int)Math.Max(1, Math.Round((master.EndMs - master.StartMs) / (double)DayMs));
+        var spanDays = Math.Max(1, Math.Round((master.EndMs - master.StartMs) / (double)DayMs));
         var start = day.Date;
-        var end = start.AddDays(spanDays);
+        var end = SafeAddDays(start, spanDays);
         return new Occurrence(DateMs(start), DateMs(end), DateKey(start), DateKey(end));
     }
 

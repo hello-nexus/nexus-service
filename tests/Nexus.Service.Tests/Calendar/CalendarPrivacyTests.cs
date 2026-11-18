@@ -45,6 +45,31 @@ public sealed class CalendarPrivacyTests : IDisposable
     }
 
     [Fact]
+    public void No_support_bundle_source_resolves_under_the_calendar_directory()
+    {
+        // The production collector in DiagnosticsHealthRoutes lists every directory it ships from;
+        // none of them may be, or sit under, <NexusRoot>/calendar.
+        var routes = File.ReadAllText(FindFile("src/Routes/DiagnosticsHealthRoutes.cs"));
+        var builder = File.ReadAllText(FindFile("src/Diagnostics/SupportBundleBuilder.cs"));
+
+        Assert.DoesNotContain("\"calendar\"", routes + builder, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Nexus.Service.Calendar", routes + builder, StringComparison.Ordinal);
+    }
+
+    private static string FindFile(string relative)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, relative);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+        throw new FileNotFoundException(relative);
+    }
+
+    [Fact]
     public void The_calendar_files_sit_outside_nexus_settings()
     {
         // NexusSettings is what support bundles and settings exports serialize; a calendar
