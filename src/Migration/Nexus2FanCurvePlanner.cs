@@ -767,11 +767,6 @@ internal static class Nexus2FanCurvePlanner
         {
             target.Reason = Nexus2FanCurveReasons.PumpKept;
         }
-        else if (channel.IsAio)
-        {
-            // The cooler ships its own curve and owns the loop; presets treat its channels as pinned for the same reason.
-            target.Reason = Nexus2FanCurveReasons.UnsupportedTarget;
-        }
         else if (env.Uncontrolled.Contains(channel.Id))
         {
             target.Reason = Nexus2FanCurveReasons.UncontrolledChannel;

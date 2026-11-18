@@ -45,13 +45,18 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     // Pending duty for the legacy 4-pin channel. Tracked separately because
     // it uses a different protocol command.
     private int _pendingLegacyDuty;
+    private int _lastLoggedLegacyDuty = -1;
 
     // Channels under user-set software control. Used to surface Mode="Manual"
     // back to the panel - without it the panel snaps a freshly Manual-clicked
     // hub fan back to BIOS on the next cooling-topic refresh (see
     // CoolingView.refreshCoolingConfig which derives Manual purely from
     // FanChannel.Mode for channels not bound to a curve).
+    // Guarded by _controlLock: cooling calls arrive on pool threads. Never held
+    // across hub I/O.
     private readonly HashSet<string> _softwareControlled = new();
+    private readonly object _controlLock = new();
+    private byte? _lastDropLoggedMode;
 
     public Np50CoolingProvider(Np50Hub hub)
     {
@@ -75,7 +80,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
             Name = "Legacy 4-pin",
             DutyPercent = _pendingLegacyDuty,
             Rpm = _hub.State.HubInfo.LegacyFanRpm,
-            Mode = _softwareControlled.Contains(legacyId) ? FanModes.Manual : FanModes.Auto,
+            Mode = IsSoftwareControlled(legacyId) ? FanModes.Manual : FanModes.Auto,
             DeviceId = deviceId,
             DeviceName = Np50Hub.ProductName,
             PortLabel = "Legacy 4-pin",
@@ -102,7 +107,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
                     Name = $"{fan.Model} (Port {port.Index} #{fan.Index})",
                     DutyPercent = duty,
                     Rpm = fan.Rpm,
-                    Mode = _softwareControlled.Contains(id) ? FanModes.Manual : FanModes.Auto,
+                    Mode = IsSoftwareControlled(id) ? FanModes.Manual : FanModes.Auto,
                     DeviceId = deviceId,
                     DeviceName = Np50Hub.ProductName,
                     PortLabel = $"Port {port.Index}",
@@ -113,6 +118,11 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         }
 
         return result;
+    }
+
+    private bool IsSoftwareControlled(string id)
+    {
+        lock (_controlLock) return _softwareControlled.Contains(id);
     }
 
     /// <summary>True for Nexus Link modules that carry an actual fan blade. LS-series are light strips only.</summary>
@@ -191,9 +201,21 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
         // doesn't yank PWM out from under sibling fans that are still
         // actively driven.
         if (!channelId.StartsWith("np50:", StringComparison.Ordinal)) return;
-        _softwareControlled.Remove(channelId);
+        // A channel that was never software-driven (the legacy header released
+        // on first appearance at boot) has nothing to hand back, and handing the
+        // hub to firmware here would make ApplyChannelWrite swallow later curve
+        // writes to other channels.
+        if (channelId.EndsWith(":legacy", StringComparison.Ordinal)) _hub.ClearDesiredLegacyDuty();
+        // Offline: keep the channel tracked so the release re-issued on
+        // reconnect still finds it driven and hands back.
         if (!_hub.IsConnected) return;
-        if (_softwareControlled.Count == 0)
+        bool handBack;
+        lock (_controlLock)
+        {
+            var wasDriven = _softwareControlled.Remove(channelId);
+            handBack = wasDriven && _softwareControlled.Count == 0;
+        }
+        if (handBack)
         {
             HandBack();
         }
@@ -201,7 +223,7 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
 
     public void ReleaseAll()
     {
-        _softwareControlled.Clear();
+        lock (_controlLock) _softwareControlled.Clear();
         if (!_hub.IsConnected) return;
         HandBack();
     }
@@ -212,6 +234,8 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
     // EEPROM read fails does it fall back to plain motherboard PWM.
     private void HandBack()
     {
+        ServiceLog.Info("[np50-cooling] handing hub back to firmware control");
+        _hub.ClearDesiredLegacyDuty();
         if (_hub.ApplyFirmwareStandaloneMode()) return;
         _hub.SetDesiredCoolingMode(Np50Protocol.ModeMotherboard);
     }
@@ -300,27 +324,53 @@ public sealed class Np50CoolingProvider : IFanControlProvider, ICoolingProvider
             // GetFanChannels call surfaces Mode="Auto" and the panel renders
             // the fan in its hub-pinned state (BIOS / Static) instead of
             // sticking on "Manual".
-            _softwareControlled.Remove(channelId);
+            lock (_controlLock) _softwareControlled.Remove(channelId);
+            _hub.ClearDesiredLegacyDuty();
+            bool logDrop;
+            lock (_controlLock)
+            {
+                logDrop = _lastDropLoggedMode != mode;
+                _lastDropLoggedMode = mode;
+            }
+            if (logDrop)
+            {
+                ServiceLog.Info($"[np50-cooling] write to {channelId} dropped: hub pinned to non-software mode {mode}");
+            }
             return;
         }
+        lock (_controlLock) _lastDropLoggedMode = null;
 
         // Driving a channel implies software control; record so the next
         // GetFanChannels reports Mode="Manual" and the panel doesn't snap
         // the user's Manual selection back to BIOS on the cooling-topic
         // refresh.
-        _softwareControlled.Add(channelId);
+        lock (_controlLock) _softwareControlled.Add(channelId);
 
         // Latch desired mode to Software so the heartbeat re-asserts it on
-        // every tick (firmware 2.0.3.1 occasionally needs the mode-switch
-        // command repeated to actually flip). SetDesiredCoolingMode also
-        // sends the first attempt immediately, so the next duty write often
-        // lands while the hub is already in Software mode.
-        _hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
+        // drift (firmware 2.0.3.1 occasionally needs the mode-switch command
+        // repeated to actually flip). SetDesiredCoolingMode sends the first
+        // attempt immediately. The legacy header skips the frame once latched:
+        // a full mode frame ahead of every duty write made the hub drop the
+        // duty, and the heartbeat already repairs mode drift.
+        var isLegacy = channelId.EndsWith(":legacy", StringComparison.Ordinal);
+        var modeSent = !isLegacy
+            || _hub.DesiredCoolingMode != Np50Protocol.ModeSoftware
+            || _hub.SoftwareModeResendDue();
+        if (modeSent)
+        {
+            _hub.SetDesiredCoolingMode(Np50Protocol.ModeSoftware);
+        }
 
-        if (channelId.EndsWith(":legacy", StringComparison.Ordinal))
+        if (isLegacy)
         {
             _pendingLegacyDuty = dutyPercent;
             _hub.SetLegacyFanSpeed(dutyPercent);
+            // Slider drags and curve ticks repeat values; log only changes and mode switches.
+            if (modeSent || dutyPercent != _lastLoggedLegacyDuty)
+            {
+                _lastLoggedLegacyDuty = dutyPercent;
+                ServiceLog.Info($"[np50-cooling] legacy duty write {dutyPercent}% (mode frame sent: {modeSent})");
+            }
             return;
         }
 

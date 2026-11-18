@@ -222,6 +222,19 @@ public class DiagnosticsAlertServiceTests
     }
 
     [Fact]
+    public void FailedLinuxUnits_NeverNotify_ButWindowsPnpProblemsStill_Do()
+    {
+        var notifications = new DiagnosticsNotifications { Enabled = true, SystemDevices = true };
+        var failedUnits = Component("system", "system", HealthStatuses.Watch, HealthStatuses.Watch, "system.failedUnits");
+        var pnp = Component("system", "system", HealthStatuses.Watch, HealthStatuses.Watch, "system.pnpProblems");
+
+        Assert.Empty(DiagnosticsAlertService.EvaluateNotifications(
+            new[] { failedUnits }, notifications, new Dictionary<string, DateTime>(), T0));
+        Assert.Single(DiagnosticsAlertService.EvaluateNotifications(
+            new[] { pnp }, notifications, new Dictionary<string, DateTime>(), T0));
+    }
+
+    [Fact]
     public void CategoryEnabled_ActComponent_Notifies()
     {
         var notifications = new DiagnosticsNotifications { Enabled = true, StorageHealth = true };

@@ -56,9 +56,9 @@ public sealed class AudioSessionPusher : IDisposable
     }
 
     /// <summary>Writes a strip's level, then re-samples so the push confirms it.</summary>
-    public void Apply(string id, double? volume, bool? muted)
+    public void Apply(string id, double? volume, bool? muted, bool defaultOnly)
     {
-        _enumerator.Apply(id, volume, muted);
+        _enumerator.Apply(id, volume, muted, defaultOnly);
         Wake();
     }
 

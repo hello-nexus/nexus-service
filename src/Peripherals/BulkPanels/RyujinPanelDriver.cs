@@ -20,8 +20,8 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public int VendorId => 0x0B05;
 
     /// <summary>
-    /// Only this product id carries a screen. Other Ryujin controllers share the VID and
-    /// have no panel at all.
+    /// Only the Ryujin III 360 takes a live stream. The Extreme's screen stores uploaded media
+    /// and has no streaming path, so it is driven by <see cref="Nexus.Service.Peripherals.Ryujin.RyujinCoolingWorker"/> instead.
     /// </summary>
     public IReadOnlyList<int> ProductIds { get; } = new[] { RyujinProtocol.ProductIdWithLcd };
 
@@ -42,13 +42,16 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
             return null;
         }
         _hasFrame = false;
-        foreach (var command in RyujinProtocol.EncodeLiveStart())
+        lock (RyujinProtocol.HidWriteGate)
         {
-            if (!hid.Write(command))
+            foreach (var command in RyujinProtocol.EncodeLiveStart())
             {
-                return null;
+                if (!hid.Write(command))
+                {
+                    return null;
+                }
+                Thread.Sleep(RyujinProtocol.StartCommandGapMs);
             }
-            Thread.Sleep(RyujinProtocol.StartCommandGapMs);
         }
         return (RyujinProtocol.Width, RyujinProtocol.Height);
     }
@@ -67,6 +70,14 @@ public sealed class RyujinPanelDriver : IBulkPanelDriver
     public bool Resend(IBulkUsbPipe pipe, IHidDevice? hid) => !_hasFrame || (hid is not null && Push(pipe, hid));
 
     private bool Push(IBulkUsbPipe pipe, IHidDevice hid)
+    {
+        lock (RyujinProtocol.HidWriteGate)
+        {
+            return PushLocked(pipe, hid);
+        }
+    }
+
+    private bool PushLocked(IBulkUsbPipe pipe, IHidDevice hid)
     {
         for (int offset = 0; offset < _bgr.Length; offset += RyujinProtocol.ChunkBytes)
         {

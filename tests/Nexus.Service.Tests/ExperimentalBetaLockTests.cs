@@ -48,6 +48,7 @@ public class ExperimentalBetaLockTests : IDisposable
     [InlineData("nzxt-kraken")]
     [InlineData("smbus-dram")]
     [InlineData("asus-ryujin-lcd")]
+    [InlineData("asus-ryujin-extreme")]
     [InlineData("asus-glacial-lcd")]
     [InlineData("deepcool-mystique")]
     public void RequiresBeta_FirstPartyOrStableHandler_IsFalse(string handlerId)

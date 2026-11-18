@@ -8,6 +8,8 @@ using Nexus.Service.QSeries;
 namespace Nexus.Service.Serialization;
 
 [JsonSerializable(typeof(NexusSettings))]
+[JsonSerializable(typeof(Nexus.Service.Calendar.CalendarSourcesFile))]
+[JsonSerializable(typeof(Nexus.Service.Calendar.CalendarFeedCache))]
 [JsonSerializable(typeof(CoolingSettings))]
 [JsonSerializable(typeof(TryxSettings))]
 [JsonSerializable(typeof(TryxOverlaySensorItemSettings))]
@@ -152,6 +154,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Dictionary<string, List<Nexus.Service.Lighting.Mappings.MappingGroup>>))]
 [JsonSerializable(typeof(LianLiLightingSettings))]
 [JsonSerializable(typeof(StrimerLightingSettings))]
+[JsonSerializable(typeof(StrimerTargetLook))]
 [JsonSerializable(typeof(NollieSettings))]
 [JsonSerializable(typeof(NollieStandaloneSettings))]
 [JsonSerializable(typeof(Dictionary<string, NollieStandaloneSettings>))]
@@ -159,6 +162,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(GlacialLcdSettings))]
 [JsonSerializable(typeof(GlacialLcdSlot))]
 [JsonSerializable(typeof(List<GlacialLcdSlot>))]
+[JsonSerializable(typeof(RyujinDisplaySettings))]
 [JsonSerializable(typeof(DeepCoolMystiqueSettings))]
 [JsonSerializable(typeof(DeepCoolMystiqueSensorPick))]
 [JsonSerializable(typeof(DeepCoolMystiqueMediaItem))]

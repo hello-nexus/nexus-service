@@ -214,6 +214,11 @@ public sealed class DiagnosticsAlertService : BackgroundService
             {
                 continue;
             }
+            // Failed Linux services are a status-card finding only; they never toast.
+            if (component.Reasons.Count > 0 && component.Reasons.All(r => r.Code == "system.failedUnits"))
+            {
+                continue;
+            }
             if (CategoryFor(component) is not { } category || !CategoryEnabled(notifications, category))
             {
                 continue;

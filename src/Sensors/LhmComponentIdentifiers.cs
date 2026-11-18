@@ -30,6 +30,13 @@ internal static class LhmComponentIdentifiers
     internal static bool HidePowerMonitorSensor(bool isControl, bool isTemperature, float? value) =>
         isControl || value is null || (isTemperature && value is <= -100f);
 
+    /// <summary>
+    /// Storage sensors that only mean something while the drive is read every walk: throughput and the
+    /// activity loads. Used space stays, as the last known value.
+    /// </summary>
+    internal static bool IsLiveStorageActivity(bool isThroughput, bool isLoad, string name) =>
+        isThroughput || (isLoad && !string.Equals(name, "Used Space", StringComparison.OrdinalIgnoreCase));
+
     internal static bool IsDimmModule(string hardwareIdentifier) =>
         hardwareIdentifier.StartsWith(DimmIdentifierPrefix, StringComparison.Ordinal);
 

@@ -146,6 +146,11 @@ public sealed class JsonConfigStore : IConfigStore, IDisposable
             _cached.Diagnostics.Notifications.Enabled = false;
             pinsMigrated = true;
         }
+        // Keyed on the file's own content rather than the schema version, so it runs once on any build.
+        if (Nexus.Service.Lighting.StrimerEffectsMigration.Apply(_cached, json))
+        {
+            pinsMigrated = true;
+        }
         // A file with no schemaVersion key deserializes to the current
         // version and would skip Migrate(), yet it is not a fresh install.
         if (!HasTopLevelSchemaVersion(json))

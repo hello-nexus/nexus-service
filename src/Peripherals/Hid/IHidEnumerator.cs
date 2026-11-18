@@ -21,6 +21,9 @@ public interface IHidEnumerator
     /// of busy-spinning. No-op on Linux (poll() already bounds the read).
     /// </summary>
     IHidDevice? Open(string path, bool forInput = false);
+
+    /// <summary><see cref="Open"/> without the per-open log line, for a caller that opens on every exchange.</summary>
+    IHidDevice? OpenQuiet(string path, bool forInput = false) => Open(path, forInput);
 }
 
 public sealed class HidDeviceInfo
