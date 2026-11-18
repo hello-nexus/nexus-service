@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Nexus.Service.Lighting;
 using Nexus.Service.Lighting.Engine;
+using Nexus.Service.Lighting.Engine.Effects;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 using Xunit;
@@ -99,6 +100,97 @@ public class Slv3LightingFrameWriterTests
 
         // Header packet sent 4x plus at least one data packet.
         Assert.True(RgbSyncFrames(tx).Count >= 5);
+    }
+
+    // An engine with an effect set holds a chain whose frame is unrendered. The loop renders its first tick and then
+    // sleeps for the long period, so frames the test swaps in stay exactly as the rebuild left them.
+    private static async Task StartActiveEngine(LightingEngine engine)
+    {
+        engine.FrameIntervalMs = 600_000;
+        var first = new TaskCompletionSource<bool>();
+        engine.FramePublished += () => first.TrySetResult(true);
+        engine.SetEffect(new FlatColorEffect(0, 0, 0));
+        await Task.WhenAny(first.Task, Task.Delay(5000));
+        Assert.True(first.Task.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Tick_does_not_upload_black_for_a_chain_with_no_engine_frame()
+    {
+        var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
+        try
+        {
+            await StartActiveEngine(engine);
+            // The engine's device list lacks this chain's frame (a rebuild is pending).
+            engine.UpdateDevices(new[] { new DeviceFrame(0, "other-device", 4) });
+            frames[0].Fill(159, 0, 113);
+            frames[0].Publish();
+
+            writer.Tick();
+
+            Assert.Empty(RgbSyncFrames(tx));
+        }
+        finally
+        {
+            engine.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Tick_holds_a_chain_whose_rebuilt_frame_lands_before_the_engine_paints_it()
+    {
+        var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
+        try
+        {
+            await StartActiveEngine(engine);
+            FillAll(frames, 159, 0, 113);
+            writer.Tick();
+            var sent = RgbSyncFrames(tx).Count;
+            Assert.True(sent > 0);
+
+            // A neighbor left and rejoined: the chain's frame is rebuilt zeroed and unpublished.
+            var fresh = frames.ConvertAll(f => new DeviceFrame(f.Index, f.Id, f.LedCount));
+            engine.UpdateDevices(fresh.ToArray());
+            writer.Tick();
+            writer.Tick();
+            Assert.Equal(sent, RgbSyncFrames(tx).Count);
+
+            // Once the engine paints it, the new color streams.
+            FillAll(fresh, 0, 255, 0);
+            writer.Tick();
+            Assert.True(RgbSyncFrames(tx).Count > sent);
+        }
+        finally
+        {
+            engine.Stop();
+        }
+    }
+
+    [Fact]
+    public void Tick_streams_black_to_a_new_chain_while_lighting_is_off()
+    {
+        var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
+        // No effect (lighting Off): a chain that binds now gets black, as before.
+        engine.UpdateDevices(frames.ConvertAll(f => new DeviceFrame(f.Index, f.Id, f.LedCount)).ToArray());
+
+        writer.Tick();
+
+        Assert.True(RgbSyncFrames(tx).Count > 0);
+    }
+
+    [Fact]
+    public void Tick_still_sends_a_published_black_frame()
+    {
+        var (_, _, tx, _, _, writer, frames) = CreateBoundSetup();
+        FillAll(frames, 159, 0, 113);
+        writer.Tick();
+        var sent = RgbSyncFrames(tx).Count;
+
+        // The engine's suspend fade and a user-chosen black both publish zeros.
+        FillAll(frames, 0, 0, 0);
+        writer.Tick();
+
+        Assert.True(RgbSyncFrames(tx).Count > sent);
     }
 
     [Fact]
@@ -239,7 +331,10 @@ public class Slv3LightingFrameWriterTests
         var store = new InMemoryConfigStore();
         var provider = new Slv3LightingDeviceProvider(hub, store, identify);
         var engine = new LightingEngine();
-        engine.UpdateDevices(provider.BuildFrames(0).ToArray());
+        var frames = provider.BuildFrames(0).ToArray();
+        // The engine has rendered a first (black) frame by the time the writer streams from it.
+        foreach (var frame in frames) frame.Publish();
+        engine.UpdateDevices(frames);
         var writer = new Slv3LightingFrameWriter(engine, hub, store, identify, provider, clock);
         return (hub, tx, store, engine, writer);
     }

@@ -164,6 +164,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
+        // One read per tick: the engine takes its lock for it, and Stop holds that lock while disposing effects.
+        var effectActive = _engine.HasActiveEffect;
 
         var globalBrightness = MasterBrightness.Resolve(settings);
         var disabled = settings.Devices.DisabledLightingDevices;
@@ -226,6 +228,17 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 continue;
             }
 
+            // While an effect is active, a zone with no engine frame or a fresh one it has not painted yet would
+            // compose as black; keep what the chain already shows until the engine catches up. With no effect
+            // (lighting Off) the frame streams as it always did.
+            if (effectActive && !AllZoneFramesRendered(zones, devices))
+            {
+                // Keeps the dashboard preview on the held frame instead of expiring to the zeroed engine frame.
+                _engine.Live.TouchZones(zones);
+                LogMembership(macHex, "held", "held back, engine frame missing or not yet rendered", nowMs);
+                continue;
+            }
+
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
                 structure, zones, devices, disabled, uncontrolled, prefs, globalBrightness, 1.0, nowTicks, _identify, _segmentBuffers, _engine.Live, stageLive: true);
@@ -270,6 +283,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
         }
 
+        LogChainMembership(liveMacs, nowMs);
         ApplyWindowPlan(nowMs);
         RequestSharedWindow(nowMs);
 
@@ -475,7 +489,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     }
 
     // Starts at the chain's remembered divisor and steps down while the firmware cap refuses the payload.
-    internal async Task<bool> UploadWindowAsync(string macHex, ChainRolling st, byte[] full, int ledCount, long firstFrame, int startDivisor, double interval)
+    internal async Task<bool> UploadWindowAsync(string macHex, ChainRolling st, byte[] full, int ledCount, long firstFrame, int startDivisor, double interval, long windowId = -1)
     {
         var result = Slv3Hub.WindowUploadResult.TooLarge;
         var used = startDivisor;
@@ -484,7 +498,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             used = d;
             var payload = d == 1 ? full : ReduceWindow(full, ledCount, firstFrame, d);
             st.UploadPayload = payload;
-            result = await _hub.SendRgbWindowResultAsync(macHex, payload, ledCount, WindowFrames / d, interval * d, PassThroughBrightnessPercent).ConfigureAwait(false);
+            result = await _hub.SendRgbWindowResultAsync(macHex, payload, ledCount, WindowFrames / d, interval * d, PassThroughBrightnessPercent, windowId).ConfigureAwait(false);
             if (result != Slv3Hub.WindowUploadResult.TooLarge) break;
         }
         st.UploadResult = result;
@@ -854,7 +868,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadStretch = _windowStretch;
                 var interval = WindowInterval;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
-                st.Upload = Task.Run(() => UploadWindowAsync(macHex, st, payload, ledCount, first, divisor, interval));
+                var windowId = _windowId;
+                st.Upload = Task.Run(() => UploadWindowAsync(macHex, st, payload, ledCount, first, divisor, interval, windowId));
                 return true;
             }
         }
@@ -917,6 +932,65 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             _lastSent[macHex] = (ComputeHash(colors), effectIndexHex);
             _lastPushTicks[macHex] = _nowTicks();
         }
+    }
+
+    private static bool AllZoneFramesRendered(IReadOnlyList<ResolvedZone> zones, IReadOnlyList<DeviceFrame> devices)
+    {
+        foreach (var zone in zones)
+        {
+            var found = false;
+            for (var i = 0; i < devices.Count; i++)
+            {
+                if (devices[i].Id != zone.Id) continue;
+                found = devices[i].HasPublished;
+                break;
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    private const long MembershipLogGapMs = 30_000;
+    private readonly HashSet<string> _presentMacs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _everSeenMacs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _membershipLoggedMs = new(StringComparer.OrdinalIgnoreCase);
+
+    // Names which provider filter dropped a chain, so a bundle explains a transient leave.
+    private void LogChainMembership(HashSet<string> liveMacs, double nowMs)
+    {
+        foreach (var mac in _presentMacs)
+        {
+            if (liveMacs.Contains(mac)) continue;
+            LogMembership(mac, "left", $"left list ({DropReason(mac)})", nowMs);
+        }
+        foreach (var mac in liveMacs)
+        {
+            if (!_presentMacs.Contains(mac) && _everSeenMacs.Contains(mac))
+            {
+                LogMembership(mac, "rejoined", "rejoined list", nowMs);
+            }
+        }
+        _presentMacs.Clear();
+        foreach (var mac in liveMacs)
+        {
+            _presentMacs.Add(mac);
+            _everSeenMacs.Add(mac);
+        }
+    }
+
+    private void LogMembership(string mac, string eventKey, string what, double nowMs)
+    {
+        var key = mac + "|" + eventKey;
+        if (_membershipLoggedMs.TryGetValue(key, out var last) && nowMs - last < MembershipLogGapMs) return;
+        _membershipLoggedMs[key] = (long)nowMs;
+        ServiceLog.Info($"[lianli-wireless-lighting-writer] {mac} {what}");
+    }
+
+    private string DropReason(string mac)
+    {
+        var fan = FindFanInfo(mac);
+        if (fan is null) return "absent from hub state";
+        return Slv3LightingDeviceProvider.ExclusionReason(fan, _store.Load().Devices.LianLiWireless.Chains) ?? "no longer excluded";
     }
 
     private bool CoversChain(List<string> ids)
