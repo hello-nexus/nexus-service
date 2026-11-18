@@ -259,7 +259,13 @@ public static class EventXmlParser
         {
             return null;
         }
-        var p1 = GetNamedData(eventData, "P1") ?? "";
+        // Normalized (no 0x prefix, lowercase) because route grouping keys on it.
+        var p1 = (GetNamedData(eventData, "P1") ?? "").Trim();
+        if (p1.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            p1 = p1[2..];
+        }
+        p1 = p1.ToLowerInvariant();
         var p2 = GetNamedData(eventData, "P2") ?? "";
         var data = new Dictionary<string, string>(StringComparer.Ordinal);
         if (!string.IsNullOrEmpty(p1))
@@ -272,7 +278,7 @@ public static class EventXmlParser
         }
         var detail = string.IsNullOrEmpty(p1)
             ? "Live kernel event reported by Windows Error Reporting."
-            : $"Live kernel event, bugcheck parameter {p1}.";
+            : $"Live kernel event, code 0x{p1}.";
         return new ExtractedFields(DiagnosticSeverity.Critical, "Live kernel event", detail, null, data);
     }
 

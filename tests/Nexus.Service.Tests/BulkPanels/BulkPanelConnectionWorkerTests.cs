@@ -131,6 +131,40 @@ public class BulkPanelConnectionWorkerTests
         }
     }
 
+    [Fact]
+    public async Task A_denied_open_records_the_holder_and_unplugging_or_a_later_open_clears_it()
+    {
+        var usb = new SwitchableUsb { Present = true };
+        var driver = new FakeDriver();
+        var hub = new BulkPanelHub(driver);
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Devices.NexusControlEnabled.Add(driver.HandlerId));
+        var pipes = new DenyingPipeFactory { Deny = true };
+        var worker = new BulkPanelConnectionWorker(
+            new NoHid(), pipes, hub, new DeviceControlGate(store), new HardwarePresence(usb),
+            connectPollMs: 50, presencePollMs: 50, holderLookup: _ => "lian-li-l-connect");
+
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.True(await Eventually(() => hub.OpenAccessHolder == "lian-li-l-connect"));
+
+            usb.Present = false;
+            Assert.True(await Eventually(() => hub.OpenAccessHolder is null));
+
+            usb.Present = true;
+            Assert.True(await Eventually(() => hub.OpenAccessHolder == "lian-li-l-connect"));
+
+            pipes.Deny = false;
+            Assert.True(await Eventually(() => hub.IsConnected));
+            Assert.Null(hub.OpenAccessHolder);
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static async Task<bool> Eventually(Func<bool> condition, int timeoutMs = 4000)
     {
         var sw = Stopwatch.StartNew();

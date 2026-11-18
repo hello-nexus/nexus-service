@@ -52,6 +52,9 @@ public sealed class AudioMixerSetPayload
     public double Volume { get; set; }
     public bool HasMuted { get; set; }
     public bool Muted { get; set; }
+    /// <summary>Touch only sessions on the default output endpoint. Absent from an
+    /// older service, which means every endpoint, as before.</summary>
+    public bool DefaultOnly { get; set; }
 }
 
 // JSON source-gen registration lives in src/Serialization/AppJsonContext.cs.
@@ -91,7 +94,7 @@ public static class AudioMixerCommands
         catch { return false; }
     }
 
-    public static Task SetAsync(HelperRegistry registry, string id, double? volume, bool? muted, CancellationToken ct = default)
+    public static Task SetAsync(HelperRegistry registry, string id, double? volume, bool? muted, bool defaultOnly = false, CancellationToken ct = default)
     {
         var conn = registry.GetAny();
         if (conn is null) return Task.CompletedTask;
@@ -104,6 +107,7 @@ public static class AudioMixerCommands
                 Volume = volume ?? 0,
                 HasMuted = muted.HasValue,
                 Muted = muted ?? false,
+                DefaultOnly = defaultOnly,
             },
             payloadType: AppJsonContext.Default.AudioMixerSetPayload,
             ct: ct);
@@ -114,12 +118,12 @@ public static class AudioMixerCommands
 public sealed class AudioMixerHandler
 {
     private readonly Action<bool> _setStreaming;
-    private readonly Action<string, double?, bool?> _apply;
+    private readonly Action<string, double?, bool?, bool> _apply;
     private readonly Func<string, bool> _setDefaultDevice;
 
     public AudioMixerHandler(
         Action<bool> setStreaming,
-        Action<string, double?, bool?> apply,
+        Action<string, double?, bool?, bool> apply,
         Func<string, bool> setDefaultDevice)
     {
         _setStreaming = setStreaming;
@@ -146,7 +150,7 @@ public sealed class AudioMixerHandler
             var p = JsonSerializer.Deserialize(env.Payload.Value, AppJsonContext.Default.AudioMixerSetPayload);
             if (p is not null && p.Id.Length > 0)
             {
-                try { _apply(p.Id, p.HasVolume ? p.Volume : null, p.HasMuted ? p.Muted : null); } catch { }
+                try { _apply(p.Id, p.HasVolume ? p.Volume : null, p.HasMuted ? p.Muted : null, p.DefaultOnly); } catch { }
             }
             return Task.FromResult(env.Ok());
         });

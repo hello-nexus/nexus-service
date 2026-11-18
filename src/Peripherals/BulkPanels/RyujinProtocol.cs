@@ -9,12 +9,20 @@ namespace Nexus.Service.Peripherals.BulkPanels;
 /// animation. Reconstructed from third-party documentation of the Ryujin II, which shares
 /// the controller; no unit has been run against it.
 ///
-/// Only product id 0x1AA2 carries the screen; the other documented Ryujin ids are the same
-/// controller without one.
+/// Product id 0x1AA2 (Ryujin III 360) takes the live stream. 0x1BCB (Ryujin III Extreme) has a
+/// screen that only plays stored media, so it never reaches this protocol.
 /// </summary>
 public static class RyujinProtocol
 {
     public const int ProductIdWithLcd = 0x1AA2;
+    public const int ProductIdExtreme = 0x1BCB;
+
+    /// <summary>
+    /// Held across any sequence that must reach the device unbroken. The panel driver takes it
+    /// around an upload and its commit, and the cooling writer around each duty report, so the
+    /// two never interleave on the one HID interface.
+    /// </summary>
+    public static readonly object HidWriteGate = new();
     public const int Width = 320;
     public const int Height = 240;
 

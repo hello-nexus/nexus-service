@@ -118,7 +118,7 @@ public sealed class DeckDialValueServiceTests
         public List<(string Id, bool Muted)> MuteWrites { get; } = new();
         public event Action? SessionsChanged { add { } remove { } }
         public IReadOnlyList<AudioSessionDto> GetSessions() => Sessions;
-        public void SetVolume(string id, double volume) => VolumeWrites.Add((id, volume));
+        public void SetVolume(string id, double volume, bool defaultOnly = false) => VolumeWrites.Add((id, volume));
         public void SetMuted(string id, bool muted) => MuteWrites.Add((id, muted));
         public void StartStreaming() { }
         public void StopStreaming() { }
