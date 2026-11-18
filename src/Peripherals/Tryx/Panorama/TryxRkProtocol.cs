@@ -214,8 +214,26 @@ public static class TryxRkProtocol
             var labelHeight = (int)Math.Round(OverlayLabelWidgetHeight * scale);
 
             var widgetIdBase = i * 2;
-            var value = RotateBox(alignF6, x, valueY, w, valueHeight, frameW, frameH, rotation);
-            var label = RotateBox(alignF6, x, labelY, w, labelHeight, frameW, frameH, rotation);
+            (int AlignF6, int X, int Y, int W, int H) value;
+            (int AlignF6, int X, int Y, int W, int H) label;
+            if (rotation is 90 or 270)
+            {
+                // Only the stat's anchor point turns. The stat is then laid out in panel space like
+                // the unrotated path (label stacked below the value, normal heights), centered on
+                // the turned anchor, because panel glyphs run horizontally whatever the mount.
+                var (px, py) = rotation == 90
+                    ? (frameH - valueY, anchorX)
+                    : (valueY, frameW - anchorX);
+                var (centerF6, cx, cw) = CenterBox(Math.Clamp(px, 0, OverlayPanelWidth), OverlayPanelWidth);
+                var labelOffset = (int)Math.Round(OverlayValueLabelOffsetY * scale);
+                value = (centerF6, cx, py, cw, valueHeight);
+                label = (centerF6, cx, py + labelOffset, cw, labelHeight);
+            }
+            else
+            {
+                value = RotateBox(alignF6, x, valueY, w, valueHeight, frameW, frameH, rotation);
+                label = RotateBox(alignF6, x, labelY, w, labelHeight, frameW, frameH, rotation);
+            }
             AppendOverlayWidget(
                 f201Body, widgetIdBase, value.X, value.Y, value.W, value.H, value.AlignF6,
                 valueFontSize, colorRgb, fontName, lines[i].Value);
@@ -238,45 +256,26 @@ public static class TryxRkProtocol
         return d < 0 ? d + 360 : d;
     }
 
-    /// <summary>Turns a widget box authored in the viewer frame (<paramref name="frameW"/> x
-    /// <paramref name="frameH"/>) clockwise by <paramref name="rotation"/> onto the 2240x1080 panel.
-    /// 0 returns the box untouched. 180 mirrors the box and swaps left/right alignment. 90 and 270
-    /// transpose it; the panel draws glyphs horizontally whatever the box does, so the box is
-    /// widened symmetrically about its center and centered, which keeps the line at its rotated
-    /// position while the text itself stays unrotated.</summary>
+    /// <summary>Turns a widget box authored in the viewer frame onto the panel for the 0 and 180
+    /// cases. 180 mirrors the box and swaps left/right alignment. The 90/270 cases lay out from
+    /// the stat's turned anchor instead (see <see cref="BuildOverlay"/>).</summary>
     internal static (int AlignF6, int X, int Y, int W, int H) RotateBox(
         int alignF6, int x, int y, int w, int h, int frameW, int frameH, int rotation)
     {
-        switch (rotation)
+        if (rotation != 180)
         {
-            case 180:
-            {
-                var mirrored = alignF6 switch
-                {
-                    OverlayAlignLeftF6 => OverlayAlignRightF6,
-                    OverlayAlignRightF6 => OverlayAlignLeftF6,
-                    _ => alignF6,
-                };
-                return ClampBox(mirrored, frameW - (x + w), frameH - (y + h), w, h);
-            }
-            case 90:
-                return TransposedBox(frameH - (y + h), x, h, w);
-            case 270:
-                return TransposedBox(y, frameW - (x + w), h, w);
-            default:
-                return (alignF6, x, y, w, h);
+            return (alignF6, x, y, w, h);
         }
+        var mirrored = alignF6 switch
+        {
+            OverlayAlignLeftF6 => OverlayAlignRightF6,
+            OverlayAlignRightF6 => OverlayAlignLeftF6,
+            _ => alignF6,
+        };
+        return ClampBox(mirrored, frameW - (x + w), frameH - (y + h), w, h);
     }
 
-    private static (int AlignF6, int X, int Y, int W, int H) TransposedBox(int x, int y, int w, int h)
-    {
-        var center = Math.Clamp(x + w / 2.0, 0, OverlayPanelWidth);
-        var half = (int)Math.Floor(Math.Min(center, OverlayPanelWidth - center));
-        var left = (int)Math.Round(center) - half;
-        return ClampBox(OverlayAlignCenterF6, left, y, 2 * half, h);
-    }
-
-    // A rotated box can start above or left of the panel; the varint writes are unsigned, so pull
+    // A mirrored box can start above or left of the panel; the varint writes are unsigned, so pull
     // the origin to 0 and shrink the extent by what was cut.
     private static (int AlignF6, int X, int Y, int W, int H) ClampBox(int alignF6, int x, int y, int w, int h)
     {

@@ -314,8 +314,8 @@ public class TryxRkProtocolTests
     [Theory]
     [InlineData(0, 560, 540, 1680, 220, 1, 560, 690, 1680, 160, 1)]
     [InlineData(180, 0, 320, 1680, 220, 3, 0, 230, 1680, 160, 3)]
-    [InlineData(90, 0, 270, 2020, 810, 2, 0, 270, 1780, 810, 2)]
-    [InlineData(270, 220, 0, 2020, 810, 2, 460, 0, 1780, 810, 2)]
+    [InlineData(90, 0, 270, 2240, 220, 2, 0, 420, 2240, 160, 2)]
+    [InlineData(270, 0, 810, 2240, 220, 2, 0, 960, 2240, 160, 2)]
     public void BuildOverlay_turns_the_widget_boxes_clockwise_onto_the_panel(
         int rotation,
         int vx, int vy, int vw, int vh, int va,
@@ -326,6 +326,24 @@ public class TryxRkProtocolTests
         Assert.Equal(2, widgets.Count);
         Assert.Equal((vx, vy, vw, vh, va), widgets[0]);
         Assert.Equal((lx, ly, lw, lh, la), widgets[1]);
+    }
+
+    [Theory]
+    [InlineData(90)]
+    [InlineData(270)]
+    public void BuildOverlay_sideways_stat_stacks_label_below_value_on_one_center_line(int rotation)
+    {
+        // Anchor (0.25, 0.5) of the portrait frame turns to panel x 1120 and y 270 (90) or 810 (270).
+        var widgets = Widgets(OneStat(rotation));
+        var value = widgets[0];
+        var label = widgets[1];
+
+        // Same stacking as the unrotated path: the label sits 150 below the value's top, so the
+        // two text lines are apart vertically and share a horizontal center.
+        Assert.Equal(value.Y + 150, label.Y);
+        Assert.Equal(value.X + value.W / 2, label.X + label.W / 2);
+        Assert.Equal(1120, value.X + value.W / 2);
+        Assert.Equal(rotation == 90 ? 270 : 810, value.Y);
     }
 
     [Fact]

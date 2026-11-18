@@ -1029,17 +1029,22 @@ public sealed class TryxPanoramaHub : IDisposable
         }
     }
 
-    /// <summary>Sets the screen rotation (any multiple of 90), persists it and re-sends the overlay in the
-    /// rotated frame. New uploads pick it up on their next transcode; clips already on the panel and
-    /// on-panel themes keep their orientation.</summary>
+    /// <summary>Sets the screen rotation (any multiple of 90), persists it and pushes the overlay in the
+    /// rotated frame. Succeeds once the value is stored: a failed push is not an error here because the
+    /// heartbeat re-sends the overlay. New uploads pick it up on their next transcode; clips already on
+    /// the panel and on-panel themes keep their orientation.</summary>
     public bool SetRotation(int degrees)
     {
         var rotation = TryxRkProtocol.NormalizeRotation(degrees);
         State.Rotation = rotation;
         _configStore.Update(s => s.Tryx.ScreenRotation = rotation);
-        return _overlay.Items.Count == 0 || SendReliable(TryxRkProtocol.BuildOverlay(
-            BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
-            _overlay.Font, _overlay.Size, _overlay.Align, rotation));
+        if (_overlay.Items.Count > 0)
+        {
+            SendReliable(TryxRkProtocol.BuildOverlay(
+                BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
+                _overlay.Font, _overlay.Size, _overlay.Align, rotation));
+        }
+        return true;
     }
 
     public bool SetBrightness(int brightness)

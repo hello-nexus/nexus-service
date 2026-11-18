@@ -1052,6 +1052,26 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
+    public void SetRotation_succeeds_and_persists_even_when_the_overlay_push_fails()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Tryx.OverlayItems = [new TryxOverlaySensorItemSettings { SensorId = "test/Package", Device = "cpu", Label = "CPU Temp", X = 0.25, Y = 0.5 }]);
+        var recording = new RecordingTransport();
+        var sensors = new StubSensors { CpuSensors = [MakeSensor("Package", "Temperature", 0f)] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, sensors: sensors, configStore: store);
+        hub.EnsureConnected();
+        recording.IsOpen = false;
+        recording.Writes.Clear();
+
+        var ok = hub.SetRotation(180);
+
+        Assert.Empty(recording.Writes);
+        Assert.True(ok);
+        Assert.Equal(180, store.Load().Tryx.ScreenRotation);
+        Assert.Equal(180, hub.State.Rotation);
+    }
+
+    [Fact]
     public void EnsureConnected_sends_the_overlay_in_the_persisted_rotation()
     {
         var store = new InMemoryConfigStore();
