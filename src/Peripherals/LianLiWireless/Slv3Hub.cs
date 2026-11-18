@@ -450,6 +450,53 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool IsConnected => State.IsConnected;
 
+    private volatile bool _ownershipSettled;
+    private long _settleBasePoll;
+    private volatile bool _linkDisabled;
+
+    /// <summary>
+    /// Whether it is known which units the dongle has bound: an AIO bound to us is confirmed, the
+    /// new-chain confirm window has run out with nothing pending, no dongle is present, or the
+    /// link is switched off. Cleared when the link connects or drops, so the stretch before the
+    /// chain list repopulates is unsettled again.
+    /// </summary>
+    public bool OwnershipSettled => _ownershipSettled;
+
+    /// <summary>Counts device-list polls; a wired unit records it when it attaches.</summary>
+    public long PollMark => Volatile.Read(ref _devicePolls);
+
+    /// <summary>
+    /// The link is switched off, or ownership is settled and a full confirm window of polls has
+    /// run since <paramref name="mark"/>, so a chain already bound when a unit attached has had
+    /// time to surface. A link that is merely down does not count: the dongle may not have
+    /// enumerated yet, so a unit with no dongle waits out its caller's cap instead.
+    /// </summary>
+    public bool OwnershipSettledSince(long mark) =>
+        _linkDisabled || (_ownershipSettled && PollMark - mark >= ChainConfirmWindowPolls);
+
+    /// <summary>The worker's connect attempt failed; only a missing dongle settles ownership.</summary>
+    public void NoteConnectFailed()
+    {
+        if (State.LinkStatus == Slv3LinkStatus.None)
+        {
+            _ownershipSettled = true;
+        }
+    }
+
+    /// <summary>The link is switched off (setting or vendor conflict), so this link drives no unit and cannot own one.</summary>
+    public void NoteLinkDisabled()
+    {
+        _linkDisabled = true;
+        _ownershipSettled = true;
+    }
+
+    private void ResetOwnershipLocked()
+    {
+        _ownershipSettled = false;
+        _linkDisabled = false;
+        _settleBasePoll = _devicePolls;
+    }
+
     /// <summary>Opens the TX + RX dongles and learns our master MAC. Both must open for the link to be usable.</summary>
     public bool EnsureConnected()
     {
@@ -554,6 +601,7 @@ public sealed partial class Slv3Hub : IDisposable
 
             State.LinkStatus = Slv3LinkStatus.Ok;
             State.IsConnected = true;
+            ResetOwnershipLocked();
             ServiceLog.Info($"[lianli-wireless] connected (tx={txPort.PortName}, rx={rxPort.PortName}, master={State.MasterMac})");
             return true;
         }
@@ -574,6 +622,7 @@ public sealed partial class Slv3Hub : IDisposable
         _tx = null;
         _rx = null;
         State.IsConnected = false;
+        ResetOwnershipLocked();
         // A failure path sets its own reason just before tearing down; only an
         // 'ok' from a link that was live outlives its meaning here.
         if (State.LinkStatus is Slv3LinkStatus.Ok or Slv3LinkStatus.Recovering)
@@ -2382,6 +2431,10 @@ public sealed partial class Slv3Hub : IDisposable
         // set, so a partial report can't shrink the next read below the full list.
         _lastRecordCount = Math.Max(count, _knownChains.Count);
         PublishFansLocked(nowMs);
+        if (_unconfirmedChains.Count == 0 && (_anyAioBound || _devicePolls - _settleBasePoll >= ChainConfirmWindowPolls))
+        {
+            _ownershipSettled = true;
+        }
         return true;
     }
 

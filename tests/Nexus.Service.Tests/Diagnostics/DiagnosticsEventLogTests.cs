@@ -156,6 +156,21 @@ public class DiagnosticsEventLogTests
         Assert.Equal("critical", incident.Severity);
         Assert.Equal("1b8", incident.Data["p1"]);
         Assert.Equal("a", incident.Data["p2"]);
+        Assert.Equal("Live kernel event, code 0x1b8.", incident.Detail);
+    }
+
+    [Theory]
+    [InlineData("1B8")]
+    [InlineData("0x1b8")]
+    [InlineData("0X1B8")]
+    public void Live_kernel_p1_is_normalized(string raw)
+    {
+        var xml = Wer1001LiveKernelXml.Replace("<Data Name='P1'>1b8</Data>", $"<Data Name='P1'>{raw}</Data>");
+        var incident = EventXmlParser.Parse(xml);
+
+        Assert.NotNull(incident);
+        Assert.Equal("1b8", incident!.Data["p1"]);
+        Assert.Equal("Live kernel event, code 0x1b8.", incident.Detail);
     }
 
     [Fact]
