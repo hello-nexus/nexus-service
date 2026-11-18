@@ -889,7 +889,6 @@ public sealed partial class LightingEngine : IDisposable
                                 _lastRenderMs = nowMs;
                                 _lastRenderEffect = effect;
                                 effect.RenderFrame(_canvas, _lastRenderMs);
-                                _canvasClearedByHold = false;
                                 // A shader still compiling drew nothing of its own: keep asking until it does.
                                 if (effect is not Gpu.ShaderEffect { IsRenderPending: true })
                                 {
@@ -906,6 +905,7 @@ public sealed partial class LightingEngine : IDisposable
                         if (markRendered && liveBatch?.Lost != true)
                         {
                             Volatile.Write(ref _frozenRenderedEpoch, epoch);
+                            _canvasClearedByHold = false;
                         }
                         // After RenderPins, which updates pinned looks in place.
                         TrackAheadParams(effect);
@@ -989,7 +989,10 @@ public sealed partial class LightingEngine : IDisposable
                                 _resampleOnce = false;
                                 // Repaint the effect's own frame: the canvas may be stale or cleared by a hold, and the devices may carry overlay pixels.
                                 effect.RenderFrame(_canvas, ReferenceEquals(effect, _lastRenderEffect) ? _lastRenderMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                                _canvasClearedByHold = false;
+                                if (effect is not Gpu.ShaderEffect { IsRenderPending: true })
+                                {
+                                    _canvasClearedByHold = false;
+                                }
                                 SampleDevicesFromCanvas(devices);
                                 ApplyLedColorLocks(devices);
                             }

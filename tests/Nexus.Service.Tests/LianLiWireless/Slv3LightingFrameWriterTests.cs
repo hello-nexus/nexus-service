@@ -118,40 +118,52 @@ public class Slv3LightingFrameWriterTests
     public async Task Tick_does_not_upload_black_for_a_chain_with_no_engine_frame()
     {
         var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
-        await StartActiveEngine(engine);
-        // The engine's device list lacks this chain's frame (a rebuild is pending).
-        engine.UpdateDevices(new[] { new DeviceFrame(0, "other-device", 4) });
-        frames[0].Fill(159, 0, 113);
-        frames[0].Publish();
+        try
+        {
+            await StartActiveEngine(engine);
+            // The engine's device list lacks this chain's frame (a rebuild is pending).
+            engine.UpdateDevices(new[] { new DeviceFrame(0, "other-device", 4) });
+            frames[0].Fill(159, 0, 113);
+            frames[0].Publish();
 
-        writer.Tick();
+            writer.Tick();
 
-        Assert.Empty(RgbSyncFrames(tx));
-        engine.Stop();
+            Assert.Empty(RgbSyncFrames(tx));
+        }
+        finally
+        {
+            engine.Stop();
+        }
     }
 
     [Fact]
     public async Task Tick_holds_a_chain_whose_rebuilt_frame_lands_before_the_engine_paints_it()
     {
         var (_, _, tx, _, engine, writer, frames) = CreateBoundSetup();
-        await StartActiveEngine(engine);
-        FillAll(frames, 159, 0, 113);
-        writer.Tick();
-        var sent = RgbSyncFrames(tx).Count;
-        Assert.True(sent > 0);
+        try
+        {
+            await StartActiveEngine(engine);
+            FillAll(frames, 159, 0, 113);
+            writer.Tick();
+            var sent = RgbSyncFrames(tx).Count;
+            Assert.True(sent > 0);
 
-        // A neighbor left and rejoined: the chain's frame is rebuilt zeroed and unpublished.
-        var fresh = frames.ConvertAll(f => new DeviceFrame(f.Index, f.Id, f.LedCount));
-        engine.UpdateDevices(fresh.ToArray());
-        writer.Tick();
-        writer.Tick();
-        Assert.Equal(sent, RgbSyncFrames(tx).Count);
+            // A neighbor left and rejoined: the chain's frame is rebuilt zeroed and unpublished.
+            var fresh = frames.ConvertAll(f => new DeviceFrame(f.Index, f.Id, f.LedCount));
+            engine.UpdateDevices(fresh.ToArray());
+            writer.Tick();
+            writer.Tick();
+            Assert.Equal(sent, RgbSyncFrames(tx).Count);
 
-        // Once the engine paints it, the new color streams.
-        FillAll(fresh, 0, 255, 0);
-        writer.Tick();
-        Assert.True(RgbSyncFrames(tx).Count > sent);
-        engine.Stop();
+            // Once the engine paints it, the new color streams.
+            FillAll(fresh, 0, 255, 0);
+            writer.Tick();
+            Assert.True(RgbSyncFrames(tx).Count > sent);
+        }
+        finally
+        {
+            engine.Stop();
+        }
     }
 
     [Fact]

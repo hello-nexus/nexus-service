@@ -131,9 +131,17 @@ public class LightingEngineTests
         engine.FramePublished += () => first.TrySetResult(true);
         await Task.WhenAny(first.Task, Task.Delay(2000));
         engine.SetPaused(true);
-        // The first publish after the pause is the paused branch's, so the render count is stable from here.
+        // A tick in flight when the pause landed may still render and publish once; the second publish after
+        // that begins after the pause, so it is the paused branch's and the render count is stable from there.
         var afterPause = new TaskCompletionSource<bool>();
-        engine.FramePublished += () => afterPause.TrySetResult(true);
+        var publishesAfterPause = 0;
+        engine.FramePublished += () =>
+        {
+            if (System.Threading.Interlocked.Increment(ref publishesAfterPause) >= 2)
+            {
+                afterPause.TrySetResult(true);
+            }
+        };
         await Task.WhenAny(afterPause.Task, Task.Delay(2000));
         var renders = effect.RenderCount;
 

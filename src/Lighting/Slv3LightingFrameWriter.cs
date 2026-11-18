@@ -164,6 +164,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         var devices = _engine.Devices;
         if (devices.Length == 0) return;
+        // One read per tick: the engine takes its lock for it, and Stop holds that lock while disposing effects.
+        var effectActive = _engine.HasActiveEffect;
 
         var globalBrightness = MasterBrightness.Resolve(settings);
         var disabled = settings.Devices.DisabledLightingDevices;
@@ -229,7 +231,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             // While an effect is active, a zone with no engine frame or a fresh one it has not painted yet would
             // compose as black; keep what the chain already shows until the engine catches up. With no effect
             // (lighting Off) the frame streams as it always did.
-            if (_engine.HasActiveEffect && !AllZoneFramesRendered(zones, devices))
+            if (effectActive && !AllZoneFramesRendered(zones, devices))
             {
                 // Keeps the dashboard preview on the held frame instead of expiring to the zeroed engine frame.
                 _engine.Live.TouchZones(zones);
