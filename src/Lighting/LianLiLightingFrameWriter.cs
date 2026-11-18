@@ -112,6 +112,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private long _argbReleasedAtMs;
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
+    // A hub still booting accepts a write call yet drops the command, so the first commit after attach can leave a port dark with no error.
+    // The mode is re-asserted at each mark after the attach-time init; no retry window covers it because the write reported success.
+    private static readonly long[] AttachRecommitMs = { 2000, 6000, 12_000, 24_000 };
+    private long _hubInitAtMs;
+    private int _attachRecommitsDone = AttachRecommitMs.Length;
+
     private bool _customMergeCleared;
     // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
     private bool _mergeMaybeActive;
@@ -294,6 +300,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
+                _hubInitAtMs = NowMs();
+                _attachRecommitsDone = 0;
             }
             else
             {
@@ -304,6 +312,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             _retryPending = true;
         }
+        ReassertAfterAttach(profile, ls.Mode);
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
 
@@ -418,6 +427,23 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    /// <summary>SL V2 only: makes the next tick re-send the firmware mode once per mark after the hub was initialised.</summary>
+    private void ReassertAfterAttach(in LianLiFanProfile profile, string mode)
+    {
+        if (profile.Family != LianLiFanFamily.SlV2) return;
+        if (!_hubInitialised || _attachRecommitsDone >= AttachRecommitMs.Length) return;
+        var since = NowMs() - _hubInitAtMs;
+        if (since < AttachRecommitMs[_attachRecommitsDone]) return;
+        while (_attachRecommitsDone < AttachRecommitMs.Length && since >= AttachRecommitMs[_attachRecommitsDone])
+        {
+            _attachRecommitsDone++;
+        }
+        // Custom mode streams every frame, so a dropped commit repairs itself and a merge exit would blink the ports.
+        if (mode == "custom") return;
+        _lastFirmwareSig = null;
+        _mergeMaybeActive = true;
+    }
+
     // The hub loses commanded LED state on USB re-enumeration and across sleep,
     // so forget what it was sent: the next tick re-initialises it and re-commits
     // the firmware mode even when settings are unchanged. The cooling path
@@ -429,6 +455,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         _hubInitialised = false;
         _argbSyncSent = false;
         _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
+        _attachRecommitsDone = AttachRecommitMs.Length;
         _argbSyncRetry.Reset();
         _customMergeCleared = false;
         _mergeMaybeActive = false;

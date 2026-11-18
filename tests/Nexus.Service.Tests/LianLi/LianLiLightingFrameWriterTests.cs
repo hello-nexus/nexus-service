@@ -901,6 +901,101 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(afterAccepted, Calls.Count);
     }
 
+    // ── Post-attach re-assert (a hub still booting drops a commit its write call accepted) ──
+
+    [Theory]
+    [InlineData(0xA103)]
+    [InlineData(0xA105)]
+    public void Sl_v2_firmware_commit_is_repeated_at_each_post_attach_mark_then_stops(int pid)
+    {
+        UseFakeClock();
+        Attach(pid, port: 0, fans: 3);
+        SetMode("rainbowWave");
+
+        _writer.Tick();
+        var first = Calls.Count;
+        Assert.True(first > 0);
+
+        Advance(1999);
+        _writer.Tick();
+        Assert.Equal(first, Calls.Count);
+
+        foreach (var at in new long[] { 2000, 6000, 12_000, 24_000 })
+        {
+            Advance(at - _now);
+            var before = Calls.Count;
+            _writer.Tick();
+            Assert.True(Calls.Count > before, $"no re-assert at {at} ms");
+            var after = Calls.Count;
+            _writer.Tick();
+            Assert.Equal(after, Calls.Count);
+        }
+
+        Advance(120_000);
+        var settled = Calls.Count;
+        _writer.Tick();
+        Assert.Equal(settled, Calls.Count);
+    }
+
+    [Fact]
+    public void Sl_v2_merged_effect_is_repeated_after_attach()
+    {
+        UseFakeClock();
+        AttachMerged(0xA105, "runway");
+
+        _writer.Tick();
+        var first = Calls.Count;
+        Advance(2000);
+        _writer.Tick();
+
+        Assert.Equal(first * 2, Calls.Count);
+        Assert.Equal(new byte[] { 0xE0, 0x10, 0x2B, 0x00, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+    }
+
+    [Fact]
+    public void Re_assert_leaves_custom_mode_and_other_families_alone()
+    {
+        UseFakeClock();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("custom");
+        _writer.Tick();
+        var afterFirst = Calls.Count;
+        _writer.Tick();
+        var steady = Calls.Count - afterFirst;
+        Advance(30_000);
+        var before = Calls.Count;
+        _writer.Tick();
+        Assert.Equal(steady, Calls.Count - before);
+
+        var other = new LianLiLightingFrameWriterTests();
+        other.UseFakeClock();
+        other.Attach(0xA102, port: 0, fans: 3);
+        other.SetMode("rainbowWave");
+        other._writer.Tick();
+        var first = other.Calls.Count;
+        other.Advance(30_000);
+        other._writer.Tick();
+        Assert.Equal(first, other.Calls.Count);
+    }
+
+    [Fact]
+    public void Re_assert_does_not_cut_a_commit_retry_backoff_short()
+    {
+        UseFakeClock();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("rainbowWave");
+        _spy.RejectWrites = true;
+
+        _writer.Tick();
+        Advance(1000);
+        _writer.Tick();
+        // Past the first mark but still inside the widened retry window.
+        Advance(1000);
+        var before = Calls.Count;
+        _writer.Tick();
+        Assert.Equal(before, Calls.Count);
+    }
+
     [Fact]
     public void Firmware_commit_backoff_widens_and_caps_at_thirty_seconds()
     {
