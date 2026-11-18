@@ -51,7 +51,7 @@ public sealed class CalendarRoutesTests : IClassFixture<NexusAppFactory>
             .Where(e => e.RoutePattern.RawText?.StartsWith("/api/calendar", StringComparison.Ordinal) == true)
             .ToList();
 
-        Assert.Equal(9, sources.Count);
+        Assert.Equal(10, sources.Count);
         Assert.All(sources, e => Assert.NotNull(e.Metadata.GetMetadata<AllowPanelAccess>()));
     }
 
@@ -189,5 +189,22 @@ public sealed class CalendarRoutesTests : IClassFixture<NexusAppFactory>
         {
             svc.Changed -= Handler;
         }
+    }
+
+    [Fact]
+    public async Task Probe_route_returns_name_and_host_or_the_error_envelope()
+    {
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok("BEGIN:VCALENDAR\r\nX-WR-CALNAME:Probe Me\r\nEND:VCALENDAR\r\n");
+
+        var ok = await _client.PostAsync("/api/calendar/probe", Json($$"""{"url":"{{SecretUrl}}"}"""));
+        using var doc = JsonDocument.Parse(await ok.Content.ReadAsStringAsync());
+        var bad = await _client.PostAsync("/api/calendar/probe", Json("""{"url":"ftp://x.example.com/a"}"""));
+
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("Probe Me", doc.RootElement.GetProperty("name").GetString());
+        Assert.Equal("calendar.example.com", doc.RootElement.GetProperty("host").GetString());
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        Assert.Contains("invalidUrl", await bad.Content.ReadAsStringAsync());
+        Assert.Contains("\"calendars\":[]", await _client.GetStringAsync("/api/calendar/calendars"));
     }
 }

@@ -117,6 +117,10 @@ public static class IcsParser
             {
                 feed.DefaultTz = line.Value.Trim();
             }
+            else if (line.Name == "X-WR-CALNAME")
+            {
+                feed.CalName = CleanCalName(line.Value);
+            }
         }
 
         if (!sawCalendar)
@@ -254,6 +258,22 @@ public static class IcsParser
             feed.UnsupportedRules++;
         }
         return true;
+    }
+
+    internal const int MaxCalNameChars = 80;
+
+    private static string? CleanCalName(string raw)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in IcsLexer.UnescapeText(raw))
+        {
+            if (!char.IsControl(c))
+            {
+                sb.Append(c);
+            }
+        }
+        var name = Cap(sb.ToString().Trim(), MaxCalNameChars).Trim();
+        return name.Length == 0 ? null : name;
     }
 
     private static string Cap(string s, int max) => s.Length > max ? s.Substring(0, max) : s;

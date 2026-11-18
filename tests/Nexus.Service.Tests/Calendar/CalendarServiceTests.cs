@@ -436,3 +436,153 @@ public sealed class CalendarServiceTests : IDisposable
         Assert.Equal(new[] { "a", "b" }, Nexus.Service.Routes.CalendarRoutes.ParseIds("a, b,,"));
     }
 }
+
+public sealed class CalendarNamingTests : IDisposable
+{
+    private const string Url = "https://calendar.example.com/ical/tok/basic.ics";
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "nexus-test-calname-" + Guid.NewGuid().ToString("N")[..8]);
+    private readonly FakeCalendarFetcher _fetcher = new();
+    private readonly FakeClock _clock = new();
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_root, recursive: true); } catch { }
+    }
+
+    private CalendarService New() => new(_root, _fetcher, _clock);
+
+    private static string Feed(string? calName) =>
+        "BEGIN:VCALENDAR\r\n" + (calName is null ? "" : "X-WR-CALNAME:" + calName + "\r\n") +
+        "BEGIN:VEVENT\r\nUID:a\r\nSUMMARY:A\r\nDTSTART:20261105T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    private async Task<(CalendarService Svc, string Id)> AddAsync(string? calName, string? name)
+    {
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(Feed(calName));
+        var svc = New();
+        var id = (await svc.AddAsync(Url, name, "#000000", CancellationToken.None)).Source!.Id;
+        return (svc, id);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Blank_name_takes_the_feed_name(string? name)
+    {
+        var (svc, _) = await AddAsync("Family\\, Friends", name);
+
+        Assert.Equal("Family, Friends", svc.ListSources()[0].Name);
+    }
+
+    [Fact]
+    public async Task Blank_name_without_a_feed_name_uses_the_host()
+    {
+        var (svc, _) = await AddAsync(null, "");
+
+        Assert.Equal("calendar.example.com", svc.ListSources()[0].Name);
+    }
+
+    [Fact]
+    public async Task A_given_name_wins_over_the_feed_name()
+    {
+        var (svc, _) = await AddAsync("Feed Name", "Mine");
+
+        Assert.Equal("Mine", svc.ListSources()[0].Name);
+    }
+
+    [Fact]
+    public async Task Feed_name_is_unescaped_stripped_of_control_chars_and_capped()
+    {
+        var (svc, _) = await AddAsync("A\\nB\tC;\\; " + new string('x', 200), null);
+
+        var name = svc.ListSources()[0].Name;
+        Assert.DoesNotContain('\n', name);
+        Assert.DoesNotContain('\t', name);
+        Assert.StartsWith("ABC;; x", name);
+        Assert.Equal(80, name.Length);
+    }
+
+    [Fact]
+    public async Task Host_named_source_is_renamed_once_when_the_feed_gains_a_name()
+    {
+        var (svc, id) = await AddAsync(null, null);
+        Assert.Equal("calendar.example.com", svc.ListSources()[0].Name);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(Feed("Work"));
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        await svc.RunDueAsync(CancellationToken.None);
+        Assert.Equal("Work", svc.ListSources()[0].Name);
+
+        svc.Patch(id, "calendar.example.com", null);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(Feed("Other"));
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        await svc.RunDueAsync(CancellationToken.None);
+
+        Assert.Equal("calendar.example.com", svc.ListSources()[0].Name);
+    }
+
+    [Fact]
+    public async Task Legacy_source_named_after_its_host_is_migrated_and_a_user_name_is_kept()
+    {
+        var (svc, _) = await AddAsync(null, "calendar.example.com");
+        Assert.Equal("calendar.example.com", svc.ListSources()[0].Name);
+        // A pre-existing record (no NameFixed marker) whose name equals the host.
+        var path = Path.Combine(_root, "calendar", "sources.json");
+        File.WriteAllText(path, File.ReadAllText(path).Replace("\"nameFixed\": true", "\"nameFixed\": false"));
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(Feed("Work"));
+        var legacy = New();
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        await legacy.RunDueAsync(CancellationToken.None);
+        Assert.Equal("Work", legacy.ListSources()[0].Name);
+
+        var (kept, _) = await AddAsync("Feed", "My Own");
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        await kept.RunDueAsync(CancellationToken.None);
+        Assert.Contains(kept.ListSources(), s => s.Name == "My Own");
+    }
+
+    [Fact]
+    public async Task Patch_with_a_blank_name_resolves_the_feed_name_else_the_host_and_null_leaves_it()
+    {
+        var (svc, id) = await AddAsync("Feed", "Mine");
+
+        Assert.Equal("Mine", svc.Patch(id, null, "#111111")!.Name);
+        Assert.Equal("Feed", svc.Patch(id, "  ", null)!.Name);
+
+        var (plain, pid) = await AddAsync(null, "Mine");
+        Assert.Equal("calendar.example.com", plain.Patch(pid, "", null)!.Name);
+    }
+
+    [Fact]
+    public async Task Probe_reports_the_feed_name_and_host_persists_nothing_and_is_cached()
+    {
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(Feed("Work"));
+        var svc = New();
+
+        var first = await svc.ProbeAsync("webcal://calendar.example.com/ical/tok/basic.ics", CancellationToken.None);
+        var second = await svc.ProbeAsync("webcal://calendar.example.com/ical/tok/basic.ics", CancellationToken.None);
+
+        Assert.Equal("Work", first.Response!.Name);
+        Assert.Equal("calendar.example.com", first.Response.Host);
+        Assert.Same(first, second);
+        Assert.Single(_fetcher.Calls);
+        Assert.Empty(svc.ListSources());
+        Assert.False(Directory.Exists(Path.Combine(_root, "calendar")));
+        _clock.Advance(TimeSpan.FromSeconds(61));
+        await svc.ProbeAsync(Url.Replace("https", "webcal"), CancellationToken.None);
+        Assert.Equal(2, _fetcher.Calls.Count);
+    }
+
+    [Fact]
+    public async Task Probe_has_a_null_name_without_calname_and_reports_the_add_error_codes()
+    {
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(Feed(null));
+        var svc = New();
+        Assert.Null((await svc.ProbeAsync(Url, CancellationToken.None)).Response!.Name);
+
+        Assert.Equal("invalidUrl", (await svc.ProbeAsync("http://192.168.1.2/a.ics", CancellationToken.None)).Error);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Fail("unauthorized");
+        Assert.Equal("unauthorized", (await svc.ProbeAsync("https://other.example.com/a.ics", CancellationToken.None)).Error);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok("<html>x</html>");
+        Assert.Equal("notIcs", (await svc.ProbeAsync("https://third.example.com/a.ics", CancellationToken.None)).Error);
+    }
+}

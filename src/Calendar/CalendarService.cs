@@ -280,7 +280,8 @@ public sealed class CalendarService
                 {
                     Id = "cal_" + Guid.NewGuid().ToString("N").Substring(0, 12),
                     Kind = CalendarKinds.Ics,
-                    Name = CleanName(name, uri.Host),
+                    Name = CleanName(name, uri.Host.ToLowerInvariant()),
+                    NameFixed = !string.IsNullOrWhiteSpace(name),
                     Color = CleanColor(color) ?? "#4f8cff",
                     UrlProtected = SecretProtector.Protect(uri.AbsoluteUri),
                     Host = uri.Host.ToLowerInvariant(),
@@ -313,6 +314,67 @@ public sealed class CalendarService
         return new CalendarAddResult { Source = created };
     }
 
+    public sealed class ProbeResult
+    {
+        public CalendarProbeResponse? Response { get; init; }
+        public string? Error { get; init; }
+    }
+
+    private readonly Dictionary<string, (DateTimeOffset At, ProbeResult Result)> _probes = new();
+    private static readonly TimeSpan ProbeCacheFor = TimeSpan.FromSeconds(60);
+
+    /// <summary>Fetches an address as an add would and reports its name; persists nothing. Results are kept 60 s, keyed by a hash of the URL.</summary>
+    public async Task<ProbeResult> ProbeAsync(string? url, CancellationToken ct)
+    {
+        if (!CalendarUrl.TryNormalize(url, out var uri))
+        {
+            return new ProbeResult { Error = CalendarErrors.InvalidUrl };
+        }
+        var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(uri.AbsoluteUri)));
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            if (_probes.TryGetValue(key, out var hit) && now - hit.At < ProbeCacheFor)
+            {
+                return hit.Result;
+            }
+        }
+        ProbeResult result;
+        try
+        {
+            var fetched = await _fetcher.FetchAsync(uri, null, null, ct).ConfigureAwait(false);
+            if (fetched.Outcome != CalendarFetchOutcome.Ok)
+            {
+                result = new ProbeResult { Error = fetched.ErrorCode ?? CalendarErrors.Unreachable };
+            }
+            else
+            {
+                var feed = IcsParser.Parse(fetched.Body ?? "");
+                result = new ProbeResult { Response = new CalendarProbeResponse { Name = feed.CalName, Host = uri.Host.ToLowerInvariant() } };
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            result = new ProbeResult { Error = CalendarErrors.NotIcs };
+        }
+        if (result.Error is null)
+        {
+            lock (_gate)
+            {
+                _probes[key] = (now, result);
+                foreach (var stale in _probes.Where(p => now - p.Value.At >= ProbeCacheFor).Select(p => p.Key).ToList())
+                {
+                    _probes.Remove(stale);
+                }
+            }
+        }
+        return result;
+    }
+
     public CalendarSourceDto? Patch(string id, string? name, string? color)
     {
         CalendarSourceDto dto;
@@ -323,9 +385,19 @@ public sealed class CalendarService
             {
                 return null;
             }
-            if (!string.IsNullOrWhiteSpace(name))
+            if (name is not null)
             {
-                st.Record.Name = CleanName(name, st.Record.Name);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    var feedName = st.Feed?.CalName;
+                    st.Record.Name = CleanName(feedName, st.Record.Host ?? st.Record.Name);
+                    st.Record.NameFixed = feedName is not null;
+                }
+                else
+                {
+                    st.Record.Name = CleanName(name, st.Record.Name);
+                    st.Record.NameFixed = true;
+                }
             }
             if (CleanColor(color) is { } c)
             {
@@ -601,6 +673,12 @@ public sealed class CalendarService
         lock (_gate)
         {
             st.Feed = feed;
+            if (!st.Record.NameFixed && feed.CalName is { } calName
+                && string.Equals(st.Record.Name, st.Record.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                st.Record.Name = calName;
+                st.Record.NameFixed = true;
+            }
             st.ETag = result.ETag;
             st.LastModified = result.LastModified;
         }

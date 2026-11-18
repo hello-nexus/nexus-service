@@ -29,6 +29,19 @@ public static class CalendarRoutes
                 : BadRequest(result.Error ?? CalendarErrors.Unreachable);
         }).AllowPanel();
 
+        app.MapPost("/api/calendar/probe", async (HttpRequest req, CalendarService calendar, CancellationToken ct) =>
+        {
+            var body = await ReadBody(req, AppJsonContext.Default.CalendarProbeRequest, ct);
+            if (body is null)
+            {
+                return BadRequest(CalendarErrors.InvalidUrl);
+            }
+            var result = await calendar.ProbeAsync(body.Url, ct);
+            return result.Response is { } probe
+                ? Results.Json(probe, AppJsonContext.Default.CalendarProbeResponse)
+                : BadRequest(result.Error ?? CalendarErrors.Unreachable);
+        }).AllowPanel();
+
         app.MapPatch("/api/calendar/calendars/{id}", async (string id, HttpRequest req, CalendarService calendar, CancellationToken ct) =>
         {
             var body = await ReadBody(req, AppJsonContext.Default.CalendarPatchRequest, ct);

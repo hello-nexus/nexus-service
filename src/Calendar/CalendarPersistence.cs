@@ -23,6 +23,8 @@ public sealed class CalendarSourceRecord
     /// <summary>The feed URL after SecretProtector.Protect.</summary>
     public string UrlProtected { get; set; } = "";
     public string? Host { get; set; }
+    /// <summary>True once the name is final: user-chosen, or already taken from the feed. Auto-naming runs only while false.</summary>
+    public bool NameFixed { get; set; }
     public long? LastSyncedAt { get; set; }
     public string? LastError { get; set; }
 }

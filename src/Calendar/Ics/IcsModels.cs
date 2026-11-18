@@ -12,6 +12,8 @@ public sealed class IcsFeed
     public List<IcsZoneDef> Zones { get; set; } = new();
     /// <summary>X-WR-TIMEZONE, the zone floating times in the feed are meant in.</summary>
     public string? DefaultTz { get; set; }
+    /// <summary>X-WR-CALNAME, cleaned: the name the feed gives itself.</summary>
+    public string? CalName { get; set; }
     /// <summary>Events whose recurrence uses parts this parser does not expand; they show as a single instance.</summary>
     public int UnsupportedRules { get; set; }
 }

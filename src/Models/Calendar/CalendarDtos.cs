@@ -80,6 +80,19 @@ public sealed class CalendarSettingsRequest
     public int RefreshMinutes { get; set; }
 }
 
+public sealed class CalendarProbeRequest
+{
+    public string? Url { get; set; }
+}
+
+/// <summary>What an address would be named if added: the feed's own calendar name (or null) and its host.</summary>
+public sealed class CalendarProbeResponse
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? Name { get; set; }
+    public string Host { get; set; } = "";
+}
+
 public sealed class CalendarRefreshResponse
 {
     public bool Started { get; set; }
