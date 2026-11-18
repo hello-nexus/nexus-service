@@ -542,7 +542,18 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             var itemStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                hw.Update();
+                // The PSU driver's command and reply pair must not interleave with a fan write.
+                if (hw.HardwareType == HardwareType.Psu)
+                {
+                    lock (Nexus.Service.Peripherals.Corsair.Psu.CorsairPsuBus.Gate)
+                    {
+                        hw.Update();
+                    }
+                }
+                else
+                {
+                    hw.Update();
+                }
             }
             finally
             {
@@ -564,6 +575,29 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             _updateErrorLoggedAt[key] = now;
             ServiceLog.Warn($"[lhm] update failed for {hw.Name}: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>The PSU temperature sensors, leaving out a reading from a stalled walk and one the curve sources would also drop.</summary>
+    public IReadOnlyList<Nexus.Service.Cooling.PsuTemperature> PsuTemperatures()
+    {
+        var result = new List<Nexus.Service.Cooling.PsuTemperature>();
+        foreach (var hw in _computer.Hardware)
+        {
+            if (hw.HardwareType != HardwareType.Psu)
+            {
+                continue;
+            }
+            foreach (var sensor in hw.Sensors)
+            {
+                if (sensor.SensorType == SensorType.Temperature
+                    && LhmWalkWatch.Shared.Read(sensor.Value) is { } v
+                    && Nexus.Service.Cooling.TemperatureSourceFilter.IsPlausible(v))
+                {
+                    result.Add(new Nexus.Service.Cooling.PsuTemperature(sensor.Name, v));
+                }
+            }
+        }
+        return result;
     }
 
     /// <summary>False when the user turned off live drive activity: drive reads then happen only for SMART and explicit requests.</summary>

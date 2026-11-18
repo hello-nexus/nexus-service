@@ -228,7 +228,15 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
 
     public void ReleaseAllKeepingDrivenPorts() => ReleaseEverything(keepDrivenPorts: true);
 
-    public void RetakeControlAfterResume() => _motherboard.RetakeControlAfterResume();
+    public void RetakeControlAfterResume()
+    {
+        _motherboard.RetakeControlAfterResume();
+        foreach (var e in Extras())
+        {
+            var source = e.Provider;
+            Run(source, "a resume retake", source.RetakeControlAfterResume);
+        }
+    }
 
     // Cooling mode. Hubs and USB coolers are written first, each off-thread under CallBudget, so a
     // stalled motherboard path (whose calls run on this thread) can never keep them waiting.
