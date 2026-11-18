@@ -248,20 +248,11 @@ public static class TryxThumbnailCache
     {
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
+            if (!RunCapture(ffprobePath, ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", filePath],
+                    ProbeTimeoutMs, out var stdout, out _))
             {
-                FileName = ffprobePath,
-                Arguments = $"-v error -show_entries format=duration -of default=nw=1:nk=1 \"{filePath}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (p is null) return 0;
-            var errTask = p.StandardError.ReadToEndAsync();
-            var stdout = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(10_000);
-            errTask.GetAwaiter().GetResult();
+                return 0;
+            }
             return double.TryParse(stdout.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
         }
         catch { return 0; }
@@ -271,21 +262,8 @@ public static class TryxThumbnailCache
     {
         try
         {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = ffmpegPath,
-                // No -loglevel: the Duration line appears in default-level stderr output.
-                Arguments = $"-i \"{filePath}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (p is null) return 0;
-            var outTask = p.StandardOutput.ReadToEndAsync();
-            var stderr = p.StandardError.ReadToEnd();
-            p.WaitForExit(10_000);
-            outTask.GetAwaiter().GetResult();
+            // No -loglevel: the Duration line appears in default-level stderr output.
+            if (!RunCapture(ffmpegPath, ["-i", filePath], ProbeTimeoutMs, out _, out var stderr)) return 0;
             var m = DurationRegex.Match(stderr);
             if (!m.Success) return 0;
             var h = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
@@ -294,5 +272,37 @@ public static class TryxThumbnailCache
             return h * 3600 + min * 60 + sec;
         }
         catch { return 0; }
+    }
+
+    private const int ProbeTimeoutMs = 10_000;
+
+    /// <summary>Runs a process with both streams drained asynchronously and a hard timeout; a
+    /// process still running at the timeout is killed with its tree and false is returned.</summary>
+    internal static bool RunCapture(string fileName, string[] args, int timeoutMs, out string stdout, out string stderr)
+    {
+        stdout = stderr = "";
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi);
+        if (p is null) return false;
+        var outTask = p.StandardOutput.ReadToEndAsync();
+        var errTask = p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(timeoutMs))
+        {
+            try { p.Kill(entireProcessTree: true); } catch { /* already exited */ }
+            return false;
+        }
+        // Bounded: a grandchild holding the pipes open must not stall the caller either.
+        if (!Task.WaitAll([outTask, errTask], 2_000)) return false;
+        stdout = outTask.Result;
+        stderr = errTask.Result;
+        return true;
     }
 }

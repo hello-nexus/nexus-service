@@ -34,7 +34,9 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     // Serializes request/response exchanges. The firmware-defaults/animation
     // routes and FW Control exchange off the heartbeat thread, and an
     // interleaved DiscardInput/Write/Read pair eats or misaligns the other's
-    // reply. Write-only frames (duty, LEDs) stay outside it.
+    // reply. Control frames (mode, duty) take it too so they never land between
+    // a poll's write and read; LED stream frames stay outside it so a slow
+    // poll cannot stall the render loop.
     private readonly object _exchangeLock = new();
     private INp50Transport? _transport;
     private bool _disposed;
@@ -75,6 +77,8 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     public void SetDesiredCoolingMode(byte? mode, byte? staticSpeedPercent = null)
     {
         DesiredCoolingMode = mode;
+        // Leaving software control: a held legacy duty must not be re-sent.
+        if (mode != Np50Protocol.ModeSoftware) ClearDesiredLegacyDuty();
         if (staticSpeedPercent is byte sp)
         {
             DesiredStaticSpeedPercent = (byte)Math.Clamp((int)sp, 0, 100);
@@ -174,6 +178,9 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         {
             try { _transport?.Dispose(); } catch { /* best effort */ }
             _transport = null;
+            // The reported mode is stale once the port is gone; resetting it
+            // ensures a stale "Software" never suppresses a mode resend after reconnect.
+            State.HubInfo.CoolingMode = "Motherboard";
         }
     }
 
@@ -261,8 +268,26 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
 
     // ── Writes ──
 
+    private const long ModeResendMinMs = 2_000;
+    private const long ModeSettleMs = 1_000;
+    private long _lastModeSendMs = long.MinValue / 2;
+
+    /// <summary>
+    /// True when the hub reports a known non-Software mode and no mode frame
+    /// (from any sender) went out in the last couple of seconds. "Unknown" is
+    /// no information and never asks for a resend; the spacing keeps a hub that
+    /// ignores the switch from getting a mode frame in front of every duty.
+    /// </summary>
+    public bool SoftwareModeResendDue()
+    {
+        var reported = State.HubInfo.CoolingMode;
+        if (reported == "Software" || reported == "Unknown") return false;
+        return Clock() - Volatile.Read(ref _lastModeSendMs) >= ModeResendMinMs;
+    }
+
     public bool SetCoolingMode(byte mode)
     {
+        Volatile.Write(ref _lastModeSendMs, Clock());
         // v2 mode-switch wants every parameter filled - pass through the
         // current firmware-animation state so changing cooling mode doesn't
         // accidentally clobber the user's LED setup.
@@ -276,12 +301,55 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
             fwBrightness: hi.FirmwareAnimBrightness == 0 ? (byte)100 : hi.FirmwareAnimBrightness));
     }
 
+    // Last duty the cooling provider asked for on the legacy 4-pin header. The
+    // write is fire-and-forget, so the heartbeat re-sends it to self-heal a
+    // frame the hub dropped.
+    private int? _desiredLegacyDuty;
+    private long _lastLegacyDutyMs;
+    private const long LegacyDutyReassertMs = 3_000;
+
+    internal Func<long> Clock { get; set; } = static () => Environment.TickCount64;
+
     public bool SetLegacyFanSpeed(int percent)
     {
         // Spec: hub must be in software mode for the legacy 4-pin write to take.
         // Don't re-send mode every call; assume the heartbeat / curve engine
         // owns mode state. Callers that need a mode change call SetCoolingMode first.
-        return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(percent));
+        // Record and write under the exchange lock so a heartbeat re-assert can
+        // never send an older duty after this one.
+        lock (_exchangeLock)
+        {
+            _desiredLegacyDuty = Math.Clamp(percent, 0, 100);
+            _lastLegacyDutyMs = Clock();
+            return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(percent));
+        }
+    }
+
+    /// <summary>Stop holding the legacy duty (fan handed back to firmware).</summary>
+    public void ClearDesiredLegacyDuty()
+    {
+        lock (_exchangeLock) _desiredLegacyDuty = null;
+    }
+
+    /// <summary>
+    /// Re-send the held legacy duty at most every few seconds, only while the
+    /// hub reports Software mode and software control is the desired mode.
+    /// Returns true when a frame was sent.
+    /// </summary>
+    public bool ReassertLegacyDutyIfDue()
+    {
+        lock (_exchangeLock)
+        {
+            if (_desiredLegacyDuty is not int duty) return false;
+            if (DesiredCoolingMode != Np50Protocol.ModeSoftware) return false;
+            if (State.HubInfo.CoolingMode is not ("Software" or "Unknown")) return false;
+            var nowMs = Clock();
+            if (nowMs - _lastLegacyDutyMs < LegacyDutyReassertMs) return false;
+            // A mode frame just went out; the duty follows on a later tick, not back to back.
+            if (nowMs - Volatile.Read(ref _lastModeSendMs) < ModeSettleMs) return false;
+            _lastLegacyDutyMs = nowMs;
+            return SendOnly(Np50Protocol.BuildSetLegacyFanSpeed(duty));
+        }
     }
 
     public bool SetPortFanSpeeds(int port, IReadOnlyList<int> perFanPercent)
@@ -430,7 +498,7 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
     }
 
     public bool WriteLighting(int port, ReadOnlySpan<RgbColor> leds)
-        => SendOnly(Np50Protocol.BuildLightingStream(port, leds));
+        => SendOnly(Np50Protocol.BuildLightingStream(port, leds), serialize: false);
 
     public void Dispose()
     {
@@ -520,13 +588,24 @@ public sealed class Np50Hub : IDisposable, IDfuFlashTarget
         return false;
     }
 
-    private bool SendOnly(byte[] request)
+    private bool SendOnly(byte[] request, bool serialize = true)
     {
         if (!EnsureConnected()) return false;
         var transport = _transport!;
         try
         {
-            transport.Write(request);
+            if (serialize)
+            {
+                lock (_exchangeLock)
+                {
+                    transport = _transport ?? throw new ObjectDisposedException(nameof(Np50Hub));
+                    transport.Write(request);
+                }
+            }
+            else
+            {
+                transport.Write(request);
+            }
             _consecutiveWriteFailures = 0;
             Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(DeviceId, "np50");
             return true;

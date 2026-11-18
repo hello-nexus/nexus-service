@@ -136,7 +136,8 @@ public static class MonitoringHistoryRoutes
     {
         app.MapGet("/monitoring/history", (
             long? from, long? to, int? maxPoints, string? series,
-            IMetricsHistoryStore store, MetricsSampleBuffer buffer, ISensorProvider sensors) =>
+            IMetricsHistoryStore store, MetricsSampleBuffer buffer, ISensorProvider sensors,
+            Nexus.Service.Persistence.IConfigStore config, Nexus.Service.Cooling.IFanControlProvider fans) =>
         {
             if (from is null || to is null || to < from)
             {
@@ -153,6 +154,10 @@ public static class MonitoringHistoryRoutes
             {
                 var stepSeconds = MetricsDecimation.StepSecondsFor(Math.Max(0, toSec - fromSec), clampedMaxPoints);
                 var response = QueryHistory(fromSec, toSec, stepSeconds, clampedMaxPoints, seriesFilter, store, buffer, sensors);
+                if (Nexus.Service.Monitoring.FanNameOverlay.Build(config, fans) is { } overlay)
+                {
+                    response = overlay.Apply(response);
+                }
 
                 LogTimingThrottled(
                     ref s_lastHistoryTimingLogTicks, "monitoring-history",

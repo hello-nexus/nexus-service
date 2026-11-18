@@ -296,7 +296,17 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CorsairPsuCoolingProvider.IsCorsairPsuId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairPsuCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
+        services.AddSingleton<Nexus.Service.Cooling.CorsairPsuCoolingProvider>(sp =>
+        {
+            var lhm = sp.GetService<LhmComputer>();
+            return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
+                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
+                () => lhm is null || lhm.OpenTask.IsCompleted,
+                psuTemperatures: () => lhm?.PsuTemperatures() ?? System.Array.Empty<Nexus.Service.Cooling.PsuTemperature>());
+        });
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
@@ -545,7 +555,11 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusMonitoringHistory(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Monitoring.History.NetworkRateReader>();
-        services.AddSingleton<Nexus.Service.Monitoring.History.DiskRateReader>();
+        services.AddSingleton(sp =>
+        {
+            var config = sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+            return new Nexus.Service.Monitoring.History.DiskRateReader(() => config.Load().Monitoring.LiveDriveActivity);
+        });
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsSource, Nexus.Service.Monitoring.History.SystemMetricsSource>();
         services.AddSingleton<Nexus.Service.Monitoring.History.MetricsSampleBuffer>();
         services.AddSingleton<Nexus.Service.Monitoring.History.IMetricsHistoryStore>(sp =>
@@ -1638,7 +1652,8 @@ public static class NexusServiceCollectionExtensions
                     sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                     bulkPanelHub,
                     sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+                    sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                    holderLookup: Nexus.Service.Conflicts.AccessDeniedHolder.Find);
             });
             services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             {
@@ -1732,7 +1747,8 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.BulkPanels.IBulkUsbPipeFactory>(),
                 glacialStreamHub,
                 sp.GetRequiredService<Nexus.Service.Devices.DeviceControlGate>(),
-                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>());
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>(),
+                holderLookup: Nexus.Service.Conflicts.AccessDeniedHolder.Find);
         });
         services.AddSingleton<Nexus.Service.Panel.Streams.IStreamedPanelDiscovery>(sp =>
             new Nexus.Service.Panel.Streams.BulkPanelDiscovery(
@@ -2190,7 +2206,9 @@ public static class NexusServiceCollectionExtensions
                 && Array.Exists(wireless.State.Fans, f => f.BoundToUs
                     && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)
                     && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))),
-                mac => !store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac, out var screen) || screen.NexusWidgets);
+                mac => !store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac, out var screen) || screen.NexusWidgets,
+                ownershipMark: () => wireless.PollMark,
+                ownershipSettledSince: wireless.OwnershipSettledSince);
             // Each switch to RF control redraws the AIO's own screen over the glass, so Nexus
             // widgets wipe it again. A change of owner stops or starts the stream now; the AIO's
             // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
@@ -2286,6 +2304,22 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddNexusCalendar(this IServiceCollection services)
+    {
+        services.AddSingleton<Nexus.Service.Calendar.ICalendarFetcher, Nexus.Service.Calendar.HttpCalendarFetcher>();
+        services.AddSingleton(sp =>
+        {
+            var calendar = new Nexus.Service.Calendar.CalendarService(
+                Nexus.Service.Persistence.NexusDataPaths.NexusRoot(),
+                sp.GetRequiredService<Nexus.Service.Calendar.ICalendarFetcher>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            calendar.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastCalendar(hub);
+            return calendar;
+        });
+        services.AddHostedService<Nexus.Service.Calendar.CalendarSyncWorker>();
+        return services;
+    }
+
     public static IServiceCollection AddNexusStocks(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Platform.Stocks.IStockQuoteProvider, Nexus.Service.Platform.Stocks.YahooStockQuoteProvider>();
@@ -2369,6 +2403,7 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.IEdgeSwipePolicy,
             Nexus.Service.Platform.Displays.WindowsEdgeSwipePolicy>();
         services.AddHostedService<Nexus.Service.Platform.Displays.TouchMappingGuardService>();
+        services.AddSingleton<Nexus.Service.Platform.Displays.TouchDigitizerRecovery>();
         // Screen-mirror frames also flow through the helper - DXGI desktop
         // duplication is Session 0-blind, so the helper captures + downsamples
         // and pushes canvas-resolution RGB24 over the pipe.
@@ -2430,7 +2465,12 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter,
             Nexus.Service.Platform.Displays.NullTouchDigitizerDevnodeRestarter>();
 #endif
-        services.AddSingleton<Nexus.Service.Platform.Displays.TouchMappingGuard>();
+        services.AddSingleton(sp => new Nexus.Service.Platform.Displays.TouchMappingGuard(
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.ITouchMapSnapshotSource>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.IDigimonRegistryWriter>(),
+            sp.GetRequiredService<Nexus.Service.Platform.Displays.ITouchDigitizerDevnodeRestarter>(),
+            sp.GetService<Nexus.Service.Platform.Displays.IEdgeSwipePolicy>(),
+            recovery: sp.GetService<Nexus.Service.Platform.Displays.TouchDigitizerRecovery>()));
         services.AddSingleton<Nexus.Service.Platform.Displays.DisplayBrightnessController>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.ScheduleFollowState>();
         services.AddSingleton<Nexus.Service.Lighting.ScheduleFollow.IScheduleSurface>(sp => new Nexus.Service.Lighting.ScheduleFollow.DdcScheduleSurface(
