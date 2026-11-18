@@ -185,16 +185,21 @@ public class SmbiosParserTests
     private static byte[] BuildType17Banked(string deviceLocator, string bankLabel, string manufacturer, byte idBank, byte idByte)
     {
         const byte length = 0x30;
-        var strings = new List<string> { deviceLocator, bankLabel, manufacturer, "CMH32GX5M2E6000C36" };
+        // An empty bank label is modeled as string index 0 (absent); an empty string would emit a double null and end the set early.
+        var strings = new List<string> { deviceLocator, manufacturer, "CMH32GX5M2E6000C36" };
+        if (bankLabel.Length > 0) strings.Insert(1, bankLabel);
+        var bankIdx = (byte)(bankLabel.Length > 0 ? 2 : 0);
+        var mfrIdx = (byte)(bankLabel.Length > 0 ? 3 : 2);
+        var partIdx = (byte)(bankLabel.Length > 0 ? 4 : 3);
         var b = new byte[length];
         b[0] = MemoryDeviceType;
         b[1] = length;
         WriteU16(b, 0x0C, 16384);
         b[0x10] = 1;
-        b[0x11] = 2;
+        b[0x11] = bankIdx;
         b[0x12] = MemoryTypeDdr5;
-        b[0x17] = 3;
-        b[0x1A] = 4;
+        b[0x17] = mfrIdx;
+        b[0x1A] = partIdx;
         b[0x2C] = idBank;
         b[0x2D] = idByte;
         return AppendStrings(b, strings);
@@ -245,6 +250,7 @@ public class SmbiosParserTests
 
         var (modules, _) = SmbiosParser.Parse(table);
 
+        Assert.Equal(2, modules.Count);
         Assert.All(modules, m => Assert.Equal(locator, m.Slot));
     }
 
@@ -257,6 +263,7 @@ public class SmbiosParserTests
 
         var (modules, _) = SmbiosParser.Parse(table);
 
+        Assert.Equal(2, modules.Count);
         Assert.All(modules, m => Assert.Equal("", m.Slot));
     }
 
