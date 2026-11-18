@@ -392,6 +392,14 @@ public static class PanelRoutes
             {
                 return Results.Json(ApiResponse.Fail("invalid_font"), AppJsonContext.Default.ApiResponse, statusCode: 400);
             }
+            if (body.SkinOverrides is not null && Nexus.Service.Panel.PanelSkinOverrides.Validate(body.SkinOverrides) is { } skinOverridesError)
+            {
+                return Results.Json(ApiResponse.Fail(skinOverridesError), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
+            if (body.Skin is not null && !Nexus.Service.Panel.PanelSkinValue.TryNormalize(body.Skin, out _))
+            {
+                return Results.Json(ApiResponse.Fail("invalid_skin"), AppJsonContext.Default.ApiResponse, statusCode: 400);
+            }
             if ((body.Rotation.HasValue || body.Flip180.HasValue || body.Portrait.HasValue)
                 && registry.Get(id) is { } rotating
                 && !PanelRotation.TryResolve(rotating, body, out _))

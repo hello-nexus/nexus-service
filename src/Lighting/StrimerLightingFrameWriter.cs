@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -139,13 +140,16 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
             return;
         }
 
-        var mode = StrimerLightingModes.Find(ls.Mode);
-        if (mode == null) return;
+        if (StrimerLightingModes.Find(ls.Mode) == null) return;
 
-        var sig = ComputeFirmwareSig(ls, globalBrightness);
+        // The plan walks dictionaries a settings write edits in place, so it is built under the store's lock.
+        var gpuZones = StrimerProtocol.NormalizeGpuZoneCount(settings.Devices.StrimerGpuZones);
+        List<StrimerZonePlan> plan = new();
+        _store.Read(s => plan = StrimerEffectLooks.BuildPlan(s.Devices.StrimerLighting, globalBrightness, gpuZones));
+        var sig = ComputeFirmwareSig(plan);
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value) return;
 
-        CommitFirmwareMode(ls, mode, globalBrightness);
+        CommitFirmwareMode(_hub, plan);
         _lastFirmwareSig = sig;
     }
 
@@ -220,17 +224,17 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    private void CommitFirmwareMode(StrimerLightingSettings ls, StrimerModeInfo mode, MasterLevel globalBrightness)
+    // Per zone the effect command goes first and its colors after, then one latch for the zones written.
+    internal static void CommitFirmwareMode(StrimerHub hub, IReadOnlyList<StrimerZonePlan> plan)
     {
-        var speedByte      = StrimerLightingModes.SpeedCodes[Math.Clamp(ls.Speed, 0, 4)];
-        var dirByte        = StrimerLightingModes.DirectionByte(ls.Direction);
-        var brightnessByte = ComputeBrightnessByte(ls.Brightness, globalBrightness);
-
-        for (var zone = 0; zone < StrimerProtocol.ZoneCount; zone++)
+        var mask = 0;
+        foreach (var z in plan)
         {
-            _hub.SendEffectCommit(zone, mode.EffectByte, speedByte, dirByte, brightnessByte);
+            hub.SendEffectCommit(z.Zone, z.Mode.EffectByte, z.Speed, z.Direction, z.Brightness);
+            if (z.Colors.Length > 0) hub.SendColorData(z.Zone, z.Colors);
+            mask |= 1 << z.Zone;
         }
-        _hub.SendApplyLatch();
+        hub.SendApplyLatchMask(mask);
     }
 
     internal static byte ComputeBrightnessByte(int brightness, MasterLevel globalBrightness)
@@ -240,14 +244,18 @@ public sealed class StrimerLightingFrameWriter : IHostedService, IDisposable
         return StrimerLightingModes.BrightnessCodes[Math.Clamp(idx, 0, 4)];
     }
 
-    private static int ComputeFirmwareSig(StrimerLightingSettings ls, MasterLevel globalBrightness)
+    private static int ComputeFirmwareSig(IReadOnlyList<StrimerZonePlan> plan)
     {
         var hc = new HashCode();
-        hc.Add(ls.Mode);
-        hc.Add(ls.Speed);
-        hc.Add(ls.Direction);
-        hc.Add(ls.Brightness);
-        hc.Add(globalBrightness);
+        foreach (var z in plan)
+        {
+            hc.Add(z.Zone);
+            hc.Add(z.Mode.EffectByte);
+            hc.Add(z.Speed);
+            hc.Add(z.Direction);
+            hc.Add(z.Brightness);
+            foreach (var b in z.Colors) hc.Add(b);
+        }
         return hc.ToHashCode();
     }
 }

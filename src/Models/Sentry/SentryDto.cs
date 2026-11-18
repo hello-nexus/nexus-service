@@ -55,6 +55,23 @@ public sealed class SentryPushRequest
     public List<SentryPushTarget> Targets { get; set; } = new();
 }
 
+/// <summary>POST /push/alert on nexus-api: one Watchlist alert to a set of phones.</summary>
+public sealed class AlertPushRequest
+{
+    public string Entry { get; set; } = "";
+    public bool Urgent { get; set; }
+    public string Title { get; set; } = "";
+    public string Body { get; set; } = "";
+    public List<AlertPushTarget> Targets { get; set; } = new();
+}
+
+public sealed class AlertPushTarget
+{
+    public string Platform { get; set; } = "";
+    public string Token { get; set; } = "";
+    public string Environment { get; set; } = "";
+}
+
 public sealed class SentryPushResult
 {
     public string Token { get; set; } = "";

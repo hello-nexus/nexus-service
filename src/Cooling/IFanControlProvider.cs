@@ -82,6 +82,11 @@ public interface IFanControlProvider
     /// </summary>
     void ReleaseAllKeepingDrivenPorts() => ReleaseAll();
 
+    /// <summary>The system just resumed from sleep. A provider that keeps a header in software control by
+    /// writing only the duty must take control back on the next write, because firmware can reset the mode
+    /// during sleep. Default: nothing to do.</summary>
+    void RetakeControlAfterResume() { }
+
     /// <summary>
     /// Cooling mode: drives each channel to full speed without recording a manual duty. A channel
     /// that fails does not stop the rest.

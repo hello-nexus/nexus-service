@@ -137,7 +137,7 @@ public static class LightingPresetLooks
         }
         if (states is not null && states.TryGetValue(effect, out var stored) && stored is not null)
         {
-            return stored;
+            return AnimateTemplateDefaults.WithPresetParams(stored, AnimateTemplateDefaults.ResolveSelected(templates, effect));
         }
         return AnimateTemplateDefaults.ResolveSelected(templates, effect);
     }
@@ -154,7 +154,7 @@ public static class LightingPresetLooks
             return;
         }
         var baseline = AnimateTemplateDefaults.ResolveSelected(lighting.Animate.Templates, effect);
-        if (baseline is not null && AnimateTemplateDefaults.StateEquals(state, baseline))
+        if (baseline is not null && AnimateTemplateDefaults.StateEquals(AnimateTemplateDefaults.WithPresetParams(state, baseline), baseline))
         {
             states.Remove(effect);
         }

@@ -56,6 +56,9 @@ public interface ITryxPanoramaTransport : IDisposable
     /// not Ok on a panel error reply, null on timeout or when the transport cannot pull.</summary>
     TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs) => null;
 
+    /// <summary>True when <see cref="PullFileChunk"/> is implemented; the serial firmware path cannot pull.</summary>
+    bool SupportsFilePull => false;
+
     /// <summary>Writes <paramref name="frame"/> and returns the first reply payload carrying top-level
     /// field <paramref name="replyField"/>; null on timeout or when the transport has no reply channel.
     /// Matching is by field only, so a late reply to an earlier timed-out request can answer this one.</summary>

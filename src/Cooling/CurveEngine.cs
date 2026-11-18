@@ -234,6 +234,37 @@ public sealed class CurveEngine : BackgroundService
         lock (_manualReplayed) { _manualReplayed.Clear(); }
     }
 
+    // Walk sequence recorded at resume; negative when no re-drive is pending.
+    private long _resumeWalkSeq = -1;
+
+    /// <summary>Firmware or the driver can hand a fan back to its own control across sleep, and the write
+    /// dedup would then hold the duty back forever. Arms a one-shot re-drive that the tick performs once an
+    /// LHM walk begun after the resume has completed: readings cached from before sleep look fresh, and a
+    /// write before the chip settles would be reverted again.</summary>
+    public void OnSystemResumed()
+    {
+        var seq = _guard.WalkBeginSeq();
+        Interlocked.Exchange(ref _resumeWalkSeq, seq);
+        ServiceLog.Info($"[curve-engine] resume: re-drive armed, waiting for a sensor walk begun after walk {seq}");
+    }
+
+    private void ConsumeResumeRedrive()
+    {
+        var pending = Interlocked.Read(ref _resumeWalkSeq);
+        if (pending < 0 || _guard.WalkCompletedSeq() <= pending)
+        {
+            return;
+        }
+        // Idempotent steps first; the pending mark is cleared only once the retake succeeded, so a throw retries on the next tick.
+        lock (_lastWrite) { _lastWrite.Clear(); }
+        ClearManualReplayed();
+        _fans.RetakeControlAfterResume();
+        if (Interlocked.CompareExchange(ref _resumeWalkSeq, -1, pending) == pending)
+        {
+            ServiceLog.Info($"[curve-engine] resume: re-drive fired after sensor walk {_guard.WalkCompletedSeq()}, every curve and manual duty is written again");
+        }
+    }
+
     internal void Tick()
     {
         try
@@ -260,6 +291,14 @@ public sealed class CurveEngine : BackgroundService
             _guardPendingRelease.Clear();
             return;
         }
+
+        // Cached temperatures are not a basis for curve writes: the watchdog's full-speed cooling mode stays in place until the walk delivers fresh readings.
+        if (!_guard.ReadingsFresh())
+        {
+            _step = "waiting for fresh readings";
+            return;
+        }
+        Isolated("resume retake", ConsumeResumeRedrive);
 
         // The watchdog drove cooling mode from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.

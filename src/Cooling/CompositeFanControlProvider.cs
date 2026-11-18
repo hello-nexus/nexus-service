@@ -132,9 +132,9 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
         }
     }
 
-    // A device that exposes a pump head is an AIO, so every channel on it -
-    // the radiator fans included - belongs to the cooler and is left to the
-    // cooler's own curve. Runs after InferPumpKind so a name-inferred pump
+    // A device that exposes a pump head is an AIO, so every channel on it,
+    // radiator fans included, is flagged IsAio (informational; it no longer
+    // changes pinning). Runs after InferPumpKind so a name-inferred pump
     // counts. Motherboard channels carry no DeviceId, which is what keeps a
     // header called "pump" from dragging every case fan in with it.
     internal static void MarkAioDevices(List<FanChannel> channels)
@@ -227,6 +227,16 @@ public sealed class CompositeFanControlProvider : IFanControlProvider, ICoolingP
     public void ReleaseAll() => ReleaseEverything(keepDrivenPorts: false);
 
     public void ReleaseAllKeepingDrivenPorts() => ReleaseEverything(keepDrivenPorts: true);
+
+    public void RetakeControlAfterResume()
+    {
+        _motherboard.RetakeControlAfterResume();
+        foreach (var e in Extras())
+        {
+            var source = e.Provider;
+            Run(source, "a resume retake", source.RetakeControlAfterResume);
+        }
+    }
 
     // Cooling mode. Hubs and USB coolers are written first, each off-thread under CallBudget, so a
     // stalled motherboard path (whose calls run on this thread) can never keep them waiting.

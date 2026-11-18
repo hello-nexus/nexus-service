@@ -171,6 +171,8 @@ public sealed class WindowsTryxRkTransport : ITryxPanoramaTransport
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
+    public bool SupportsFilePull => true;
+
     // One pull in flight at a time: the hub issues pulls under its send gate.
     public TryxMediaList.FilePullChunk? PullFileChunk(string deviceFileName, long offset, int timeoutMs)
     {
