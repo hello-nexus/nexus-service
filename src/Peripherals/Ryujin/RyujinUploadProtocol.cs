@@ -27,7 +27,7 @@ internal static class RyujinUploadProtocol
     public const int PacedGroupGapMs = 2300;
     public const int PacedGroupChunks = 4;
 
-    /// <summary>The last byte of Armoury Crate's 72; its select plays slot 0 whatever that byte is, so the two numberings may differ.</summary>
+    /// <summary>Slot Nexus writes to and plays. The last byte of 72 and the slot byte of 5D/51 use the same numbering; slot 0 holds Armoury Crate's file.</summary>
     public const int DefaultSlot = 1;
 
     public static byte[][] EncodeBegin(int length, int slot = DefaultSlot)
@@ -52,7 +52,7 @@ internal static class RyujinUploadProtocol
     }
 
     /// <summary>Selects the stored-media layout; Armoury Crate sent it with the clock before the gif upload.</summary>
-    public static byte[][] EncodeSelectStoredMedia(int slot = 0)
+    public static byte[][] EncodeSelectStoredMedia(int slot = DefaultSlot)
     {
         var layout = Report(0x5D);
         layout[3] = 0x01;
@@ -67,39 +67,17 @@ internal static class RyujinUploadProtocol
         return new[] { layout, commit };
     }
 
-    /// <summary>The disk-info reply to F1: EC 71 00 01 then total KB, free KB (u32 LE) and the JPG and GIF slot bitmaps, per a public protocol doc.</summary>
-    public static bool TryParseDiskInfo(ReadOnlySpan<byte> report, out uint totalKb, out uint freeKb, out uint jpgSlots, out uint gifSlots)
+    /// <summary>The disk-info reply to F1: EC 71 00 01 then total KB and free KB as u32 LE.</summary>
+    public static bool TryParseDiskInfo(ReadOnlySpan<byte> report, out uint totalKb, out uint freeKb)
     {
-        totalKb = freeKb = jpgSlots = gifSlots = 0;
-        if (report.Length < 27 || report[0] != Id || report[1] != 0x71 || report[2] != 0x00 || report[3] != 0x01)
+        totalKb = freeKb = 0;
+        if (report.Length < 12 || report[0] != Id || report[1] != 0x71 || report[2] != 0x00 || report[3] != 0x01)
         {
             return false;
         }
         totalKb = BitConverter.ToUInt32(report[4..8]);
         freeKb = BitConverter.ToUInt32(report[8..12]);
-        jpgSlots = BitConverter.ToUInt32(report[18..22]);
-        gifSlots = BitConverter.ToUInt32(report[23..27]);
         return true;
-    }
-
-    /// <summary>The device's display-state report (EC 5C 00 ...): rotation byte 3 (0x5A for 90 degrees) and brightness byte 5, as in the settings report Nexus sends.</summary>
-    public static bool TryParseDisplayState(ReadOnlySpan<byte> report, out int rotationDegrees, out int brightness)
-    {
-        rotationDegrees = brightness = 0;
-        if (report.Length < 6 || report[0] != Id || report[1] != 0x5C || report[2] != 0x00)
-        {
-            return false;
-        }
-        rotationDegrees = report[3] == 0x5A ? 90 : 0;
-        brightness = report[5];
-        return true;
-    }
-
-    /// <summary>The query pair Armoury Crate opens an upload with, without the write.</summary>
-    public static byte[][] EncodeDiskInfoQuery()
-    {
-        var begin = EncodeBegin(0);
-        return new[] { begin[0], begin[1] };
     }
 
     public static int ChunkCount(int length) => (length + ChunkBytes - 1) / ChunkBytes;

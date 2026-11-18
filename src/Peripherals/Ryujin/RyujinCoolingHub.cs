@@ -314,40 +314,6 @@ public sealed class RyujinCoolingHub : IDisposable
         return true;
     }
 
-    /// <summary>Sends the disk-info query pair and logs every report that comes back for the given time. Worker thread only.</summary>
-    internal void QueryDiskInfoAndLog(int listenMs, CancellationToken ct)
-    {
-        IHidDevice? device;
-        lock (_stateLock)
-        {
-            device = _device;
-        }
-        if (device is null || !SendAll(device, RyujinUploadProtocol.EncodeDiskInfoQuery()))
-        {
-            return;
-        }
-        Span<byte> buffer = stackalloc byte[RyujinCoolingProtocol.ReportLength];
-        long deadline = NowMs() + listenMs;
-        while (NowMs() < deadline && !ct.IsCancellationRequested)
-        {
-            int n = device.Read(buffer, 200);
-            if (n < 0)
-            {
-                return;
-            }
-            if (n == 0)
-            {
-                continue;
-            }
-            var report = buffer[..n];
-            Info($"[ryujin-upload] post-select inbound {Convert.ToHexString(report[..Math.Min(report.Length, 32)])}");
-            if (RyujinUploadProtocol.TryParseDiskInfo(report, out uint total, out uint free, out uint jpg, out uint gif))
-            {
-                Info($"[ryujin-upload] disk info after the select total_kb={total} free_kb={free} jpg_slots=0x{jpg:X} gif_slots=0x{gif:X}");
-            }
-        }
-    }
-
     private static bool SendAll(IHidDevice device, IReadOnlyList<byte[]>? frames)
     {
         if (frames is null)

@@ -289,30 +289,14 @@ public class RyujinUploadTests
     [Fact]
     public void Disk_info_reply_is_decoded_from_the_captured_fields()
     {
-        // The reply logged from the first hardware run: total E0FE0000, free B0E50000, 20070000 after it.
+        // The reply logged from the first hardware run: total E0FE0000, free B0E50000.
         var report = new byte[65];
         Convert.FromHexString("EC710001E0FE0000B0E5000020070000").CopyTo(report, 0);
-        report[18] = 0x03;
-        report[23] = 0x1F;
 
-        Assert.True(RyujinUploadProtocol.TryParseDiskInfo(report, out uint total, out uint free, out uint jpg, out uint gif));
+        Assert.True(RyujinUploadProtocol.TryParseDiskInfo(report, out uint total, out uint free));
         Assert.Equal(65248u, total);
         Assert.Equal(58800u, free);
-        Assert.Equal(3u, jpg);
-        Assert.Equal(0x1Fu, gif);
-        Assert.False(RyujinUploadProtocol.TryParseDiskInfo(Report("EC 71 00 00"), out _, out _, out _, out _));
-    }
-
-    [Fact]
-    public void Display_state_report_is_decoded_from_the_hardware_reply()
-    {
-        var report = new byte[65];
-        Convert.FromHexString("EC5C000000400000004014000000004000000000").CopyTo(report, 0);
-
-        Assert.True(RyujinUploadProtocol.TryParseDisplayState(report, out int rotation, out int brightness));
-        Assert.Equal(0, rotation);
-        Assert.Equal(0x40, brightness);
-        Assert.False(RyujinUploadProtocol.TryParseDisplayState(Report("EC 5C 01"), out _, out _));
+        Assert.False(RyujinUploadProtocol.TryParseDiskInfo(Report("EC 71 00 00"), out _, out _));
     }
 
     [Fact]
@@ -410,13 +394,15 @@ public class RyujinUploadTests
         var log = new List<string>();
         var uploader = new RyujinUploader(link, log.Add, log.Add)
         {
-            AckTimeoutMs = 30, EndWaitMs = 30, KeepaliveMs = 3_600_000, Keepalive = () => link.Events.Add("keepalive"),
+            AckTimeoutMs = 30, EndWaitMs = 30, KeepaliveMs = 0, Keepalive = () => link.Events.Add("keepalive"),
         };
 
         var result = uploader.Upload(new byte[4096], null, CancellationToken.None);
 
         Assert.True(result.Ok);
-        Assert.Equal(new[] { "keepalive", "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F", "chunk" }, link.Events.Take(7));
+        // With a keepalive due on every wait, the begin commands still go out back to back.
+        Assert.Equal(new[] { "keepalive", "hid 71", "hid F1", "hid 7201", "hid 7301", "hid 7F" }, link.Events.Take(6));
+        Assert.Equal(new[] { 27, 140, 110, 520 }, link.Pauses.Take(4));
     }
 
     [Fact]
@@ -434,6 +420,8 @@ public class RyujinUploadTests
         // The begin gaps stay whole (contiguous commands); the paced group gap is sliced.
         Assert.DoesNotContain(link.Pauses, p => p == 2300);
         Assert.All(link.Pauses.Where(p => p is not (27 or 140 or 110 or 520 or 510)), p => Assert.InRange(p, 1, 250));
+        // Every begin gap is still taken: two attempts of 27 + 140 + 110 + 520 (the last gap is the erase wait on the fast one, a pause on the paced one).
+        Assert.True(link.Pauses.Where(p => p is 27 or 140 or 110 or 520 or 510).Sum() >= 2 * (27 + 140 + 110 + 520));
     }
 
     [Fact]
