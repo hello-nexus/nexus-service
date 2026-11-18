@@ -726,7 +726,6 @@ public sealed class TryxPanoramaHub : IDisposable
         var seconds = (double)boxed!;
         if (seconds > 0)
         {
-            ServiceLog.Info($"[tryx] duration {deviceFileName}: found {seconds:0.###}s in the panel head");
             RecordDuration(deviceFileName, seconds);
             return;
         }
@@ -744,7 +743,6 @@ public sealed class TryxPanoramaHub : IDisposable
             ServiceLog.Info($"[tryx] duration {deviceFileName}: probing the Kanali original failed: {ex.GetType().Name}");
             return;
         }
-        ServiceLog.Info($"[tryx] duration {deviceFileName}: Kanali original probe {probed:0.###}s");
         RecordDuration(deviceFileName, probed);
     }
 
