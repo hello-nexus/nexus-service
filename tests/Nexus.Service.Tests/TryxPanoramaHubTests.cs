@@ -1382,6 +1382,38 @@ public class TryxPanoramaHubTests
         finally { DeleteDur(name); }
     }
 
+    private static byte[] BareAnnexB() => [0, 0, 0, 1, 0x67, 0x4D, 0x40, 0x32, 0, 0, 0, 1, 0x68, 0xEB, 0xCC, .. new byte[64]];
+
+    [Fact]
+    public void FillDuration_uses_the_probed_kanali_original_when_the_panel_head_has_no_duration()
+    {
+        var (hub, _, name) = HubWithClip(BareAnnexB());
+        hub.KanaliOriginalPath = _ => "original.mp4";
+        hub.ProbeOriginalDuration = _ => 12.5;
+        try
+        {
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(12.5, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally { DeleteDur(name); }
+    }
+
+    [Fact]
+    public void FillDuration_stays_zero_when_the_head_has_no_duration_and_no_original_exists()
+    {
+        var (hub, _, name) = HubWithClip(BareAnnexB());
+        hub.KanaliOriginalPath = _ => null;
+        hub.ProbeOriginalDuration = _ => throw new InvalidOperationException("must not probe");
+        try
+        {
+            hub.FillDuration(name, "dur|" + name);
+
+            Assert.Equal(0, TryxThumbnailCache.ReadDuration(name));
+        }
+        finally { DeleteDur(name); }
+    }
+
     [Fact]
     public void FillDuration_skips_the_pull_when_a_duration_is_already_stored()
     {

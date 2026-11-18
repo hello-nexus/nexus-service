@@ -691,16 +691,29 @@ public sealed class TryxPanoramaHub : IDisposable
         }
     }
 
+    // Seams for the Kanali-original fallback: the original upload for a panel name, and the
+    // probed duration of a file (0 when unknown).
+    internal Func<string, string?> KanaliOriginalPath { get; set; } = TryxKanaliData.VideoPath;
+    internal Func<string, double> ProbeOriginalDuration { get; set; } = path
+        => FfmpegResolver.Path is { } ffmpeg ? TryxThumbnailCache.ProbeDuration(ffmpeg, path) : 0;
+
     internal void FillDuration(string deviceFileName, string key)
     {
         if (_disposed || TryxThumbnailCache.ReadDuration(deviceFileName) > 0) return;
+        var headHex = "";
         var found = PullHeader(
             deviceFileName,
-            (buf, len) => TryxMediaHead.ParseDuration(buf.AsSpan(0, len)) is { } d ? (object)d : null,
+            (buf, len) =>
+            {
+                var d = TryxMediaHead.ParseDuration(buf.AsSpan(0, len));
+                if (d is not null) headHex = Convert.ToHexString(buf.AsSpan(0, Math.Min(16, len)));
+                return d is { } v ? (object)v : null;
+            },
             out var boxed,
             out var transient);
         if (!found)
         {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: {(transient ? "transient pull failure" : "head unreadable")}");
             if (!transient) return;
             lock (_thumbLock)
             {
@@ -710,13 +723,36 @@ public sealed class TryxPanoramaHub : IDisposable
             }
             return;
         }
-        RecordDuration(deviceFileName, (double)boxed!);
+        var seconds = (double)boxed!;
+        if (seconds > 0)
+        {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: found {seconds:0.###}s in the panel head");
+            RecordDuration(deviceFileName, seconds);
+            return;
+        }
+        ServiceLog.Info($"[tryx] duration {deviceFileName}: none in the panel head, head bytes {headHex}");
+        var original = KanaliOriginalPath(deviceFileName);
+        if (original is null)
+        {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: no Kanali original to probe");
+            return;
+        }
+        double probed;
+        try { probed = ProbeOriginalDuration(original); }
+        catch (Exception ex)
+        {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: probing the Kanali original failed: {ex.GetType().Name}");
+            return;
+        }
+        ServiceLog.Info($"[tryx] duration {deviceFileName}: Kanali original probe {probed:0.###}s");
+        RecordDuration(deviceFileName, probed);
     }
 
     private void RecordDuration(string deviceFileName, double durationSec)
     {
         if (durationSec <= 0 || TryxThumbnailCache.ReadDuration(deviceFileName) > 0) return;
         TryxThumbnailCache.WriteDuration(deviceFileName, durationSec);
+        ServiceLog.Info($"[tryx] duration {deviceFileName}: recorded {durationSec:0.###}s");
         _slideshow.DurationLearned(deviceFileName, NowMs());
     }
 
