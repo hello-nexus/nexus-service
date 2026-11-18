@@ -450,6 +450,53 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool IsConnected => State.IsConnected;
 
+    private volatile bool _ownershipSettled;
+    private long _settleBasePoll;
+    private volatile bool _linkDisabled;
+
+    /// <summary>
+    /// Whether it is known which units the dongle has bound: an AIO bound to us is confirmed, the
+    /// new-chain confirm window has run out with nothing pending, no dongle is present, or the
+    /// link is switched off. Cleared when the link connects or drops, so the stretch before the
+    /// chain list repopulates is unsettled again.
+    /// </summary>
+    public bool OwnershipSettled => _ownershipSettled;
+
+    /// <summary>Counts device-list polls; a wired unit records it when it attaches.</summary>
+    public long PollMark => Volatile.Read(ref _devicePolls);
+
+    /// <summary>
+    /// The link is switched off, or ownership is settled and a full confirm window of polls has
+    /// run since <paramref name="mark"/>, so a chain already bound when a unit attached has had
+    /// time to surface. A link that is merely down does not count: the dongle may not have
+    /// enumerated yet, so a unit with no dongle waits out its caller's cap instead.
+    /// </summary>
+    public bool OwnershipSettledSince(long mark) =>
+        _linkDisabled || (_ownershipSettled && PollMark - mark >= ChainConfirmWindowPolls);
+
+    /// <summary>The worker's connect attempt failed; only a missing dongle settles ownership.</summary>
+    public void NoteConnectFailed()
+    {
+        if (State.LinkStatus == Slv3LinkStatus.None)
+        {
+            _ownershipSettled = true;
+        }
+    }
+
+    /// <summary>The link is switched off (setting or vendor conflict), so this link drives no unit and cannot own one.</summary>
+    public void NoteLinkDisabled()
+    {
+        _linkDisabled = true;
+        _ownershipSettled = true;
+    }
+
+    private void ResetOwnershipLocked()
+    {
+        _ownershipSettled = false;
+        _linkDisabled = false;
+        _settleBasePoll = _devicePolls;
+    }
+
     /// <summary>Opens the TX + RX dongles and learns our master MAC. Both must open for the link to be usable.</summary>
     public bool EnsureConnected()
     {
@@ -554,6 +601,7 @@ public sealed partial class Slv3Hub : IDisposable
 
             State.LinkStatus = Slv3LinkStatus.Ok;
             State.IsConnected = true;
+            ResetOwnershipLocked();
             ServiceLog.Info($"[lianli-wireless] connected (tx={txPort.PortName}, rx={rxPort.PortName}, master={State.MasterMac})");
             return true;
         }
@@ -574,6 +622,7 @@ public sealed partial class Slv3Hub : IDisposable
         _tx = null;
         _rx = null;
         State.IsConnected = false;
+        ResetOwnershipLocked();
         // A failure path sets its own reason just before tearing down; only an
         // 'ok' from a link that was live outlives its meaning here.
         if (State.LinkStatus is Slv3LinkStatus.Ok or Slv3LinkStatus.Recovering)
@@ -1128,6 +1177,8 @@ public sealed partial class Slv3Hub : IDisposable
         var nowMs = _nowMs();
         if ((_tx is not { IsOpen: true } || _rx is not { IsOpen: true }) && !RecoverHandlesLocked(nowMs))
         {
+            // No RX answer is coming, so this time is blind, not unseen.
+            _blindSinceMs ??= nowMs;
             return false;
         }
         if (_rx is not { IsOpen: true })
@@ -2382,6 +2433,10 @@ public sealed partial class Slv3Hub : IDisposable
         // set, so a partial report can't shrink the next read below the full list.
         _lastRecordCount = Math.Max(count, _knownChains.Count);
         PublishFansLocked(nowMs);
+        if (_unconfirmedChains.Count == 0 && (_anyAioBound || _devicePolls - _settleBasePoll >= ChainConfirmWindowPolls))
+        {
+            _ownershipSettled = true;
+        }
         return true;
     }
 
@@ -3263,12 +3318,24 @@ public sealed partial class Slv3Hub : IDisposable
     /// the window profile and a chain-safe effect index.
     /// </summary>
     public async Task<bool> SendRgbWindowAsync(
+        string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent) =>
+        await SendRgbWindowResultAsync(macHex, frames, ledCount, frameCount, intervalTicks, brightnessPercent).ConfigureAwait(false) == WindowUploadResult.Sent;
+
+    /// <summary>Why a window upload did or did not go out; <see cref="TooLarge"/> is refused before any radio traffic.</summary>
+    public enum WindowUploadResult
+    {
+        Sent,
+        Failed,
+        TooLarge,
+    }
+
+    public async Task<WindowUploadResult> SendRgbWindowResultAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _, out var tooLarge))
         {
-            return false;
+            return tooLarge ? WindowUploadResult.TooLarge : WindowUploadResult.Failed;
         }
         BeginUpload();
         try
@@ -3277,13 +3344,13 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 if (_tx is null)
                 {
-                    return false;
+                    return WindowUploadResult.Failed;
                 }
                 for (var i = 0; i < WindowHeaderRepeats; i++)
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[0]))
                     {
-                        return false;
+                        return WindowUploadResult.Failed;
                     }
                 }
                 for (var pass = 0; pass < WindowDataPasses; pass++)
@@ -3292,7 +3359,7 @@ public sealed partial class Slv3Hub : IDisposable
                     {
                         if (!SendRfPayloadLocked(channel, rxType, packets[p]))
                         {
-                            return false;
+                            return WindowUploadResult.Failed;
                         }
                     }
                 }
@@ -3324,12 +3391,12 @@ public sealed partial class Slv3Hub : IDisposable
                     {
                         if (_tx is null || !WriteRfPayloadLocked(channel, rxType, packets[p]))
                         {
-                            return false;
+                            return WindowUploadResult.Failed;
                         }
                     }
                 }
             }
-            return true;
+            return WindowUploadResult.Sent;
         }
         finally
         {
@@ -3359,8 +3426,9 @@ public sealed partial class Slv3Hub : IDisposable
 
     private bool TryPrepareUpload(
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, bool window,
-        out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex)
+        out byte channel, out byte rxType, out byte[][] packets, out byte[] effectIndex, out bool tooLarge)
     {
+        tooLarge = false;
         if (IsWiredOnly(macHex))
         {
             channel = 0;
@@ -3391,6 +3459,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
             catch (InvalidOperationException)
             {
+                tooLarge = true;
                 return false;
             }
 
@@ -3411,7 +3480,7 @@ public sealed partial class Slv3Hub : IDisposable
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex)
     {
         effectIndexHex = "";
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalMs, window: false, out var channel, out var rxType, out var packets, out var effectIndex, out _))
         {
             return false;
         }

@@ -699,6 +699,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
         HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel => "GPU",
         HardwareType.Motherboard => "Motherboard",
         HardwareType.Storage => "Storage",
+        HardwareType.Psu => "PSU",
         _ => "Other",
     };
 
