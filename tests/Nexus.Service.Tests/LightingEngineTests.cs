@@ -143,6 +143,7 @@ public class LightingEngineTests
             }
         };
         await Task.WhenAny(afterPause.Task, Task.Delay(2000));
+        Assert.True(afterPause.Task.IsCompletedSuccessfully);
         var renders = effect.RenderCount;
 
         var fresh = new DeviceFrame(9, "fresh", 4);

@@ -973,6 +973,7 @@ public sealed partial class LightingEngine : IDisposable
                         {
                             // Paused: the effect holds, the studio overlay keeps animating over it, and once it clears the effect's paused frame is repainted onto the devices.
                             var devices = _devices;
+                            var skipPausedPublish = false;
                             if (_studioOverlay is not null)
                             {
                                 ApplyTestOverlays(devices);
@@ -989,16 +990,25 @@ public sealed partial class LightingEngine : IDisposable
                                 _resampleOnce = false;
                                 // Repaint the effect's own frame: the canvas may be stale or cleared by a hold, and the devices may carry overlay pixels.
                                 effect.RenderFrame(_canvas, ReferenceEquals(effect, _lastRenderEffect) ? _lastRenderMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                                if (effect is not Gpu.ShaderEffect { IsRenderPending: true })
+                                if (effect is Gpu.ShaderEffect { IsRenderPending: true })
+                                {
+                                    // Nothing was drawn yet: publishing the cleared canvas would stream black. Ask again next tick.
+                                    _resampleOnce = true;
+                                    skipPausedPublish = true;
+                                }
+                                else
                                 {
                                     _canvasClearedByHold = false;
+                                    SampleDevicesFromCanvas(devices);
+                                    ApplyLedColorLocks(devices);
                                 }
-                                SampleDevicesFromCanvas(devices);
-                                ApplyLedColorLocks(devices);
                             }
-                            foreach (var dev in devices)
+                            if (!skipPausedPublish)
                             {
-                                dev.Publish();
+                                foreach (var dev in devices)
+                                {
+                                    dev.Publish();
+                                }
                             }
                         }
                     }
