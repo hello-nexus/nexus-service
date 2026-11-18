@@ -147,7 +147,11 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
     /// <summary>hidapi's own default queue depth for an input handle (hid.c HidD_SetNumInputBuffers call).</summary>
     private const uint InputBufferDepth = 64;
 
-    public IHidDevice? Open(string path, bool forInput = false)
+    public IHidDevice? Open(string path, bool forInput = false) => OpenCore(path, forInput, quiet: false);
+
+    public IHidDevice? OpenQuiet(string path, bool forInput = false) => OpenCore(path, forInput, quiet: true);
+
+    private IHidDevice? OpenCore(string path, bool forInput, bool quiet)
     {
         // Try progressively less restrictive access if another process (e.g. vendor
         // apps like Razer Synapse, G HUB) holds exclusive access. We log the mode
@@ -185,7 +189,10 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
             return null;
         }
 
-        ServiceLog.Info($"[hid] opened {path.Substring(System.Math.Max(0, path.Length - 60))} with access={modeUsed}");
+        if (!quiet)
+        {
+            ServiceLog.Info($"[hid] opened {path.Substring(System.Math.Max(0, path.Length - 60))} with access={modeUsed}");
+        }
 
         if (forInput)
         {

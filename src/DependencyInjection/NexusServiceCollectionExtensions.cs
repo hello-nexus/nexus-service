@@ -296,7 +296,17 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CorsairPsuCoolingProvider.IsCorsairPsuId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairPsuCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
+        services.AddSingleton<Nexus.Service.Cooling.CorsairPsuCoolingProvider>(sp =>
+        {
+            var lhm = sp.GetService<LhmComputer>();
+            return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
+                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
+                () => lhm is null || lhm.OpenTask.IsCompleted,
+                psuTemperatures: () => lhm?.PsuTemperatures() ?? System.Array.Empty<Nexus.Service.Cooling.PsuTemperature>());
+        });
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
@@ -2289,6 +2299,22 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Weather.IWeatherProvider, Nexus.Service.Platform.Weather.OpenMeteoWeatherProvider>();
         services.AddSingleton<Nexus.Service.Lighting.Sun.SunLocationResolver>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Sun.SunLocationResolver>());
+        return services;
+    }
+
+    public static IServiceCollection AddNexusCalendar(this IServiceCollection services)
+    {
+        services.AddSingleton<Nexus.Service.Calendar.ICalendarFetcher, Nexus.Service.Calendar.HttpCalendarFetcher>();
+        services.AddSingleton(sp =>
+        {
+            var calendar = new Nexus.Service.Calendar.CalendarService(
+                Nexus.Service.Persistence.NexusDataPaths.NexusRoot(),
+                sp.GetRequiredService<Nexus.Service.Calendar.ICalendarFetcher>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            calendar.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastCalendar(hub);
+            return calendar;
+        });
+        services.AddHostedService<Nexus.Service.Calendar.CalendarSyncWorker>();
         return services;
     }
 
