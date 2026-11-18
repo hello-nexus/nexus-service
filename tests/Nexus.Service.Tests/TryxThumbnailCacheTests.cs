@@ -34,4 +34,27 @@ public class TryxThumbnailCacheTests
         TryxThumbnailCache.WriteLabel("../escape", "x");
         Assert.Null(TryxThumbnailCache.ReadLabel("../escape"));
     }
+
+    [Fact]
+    public void RunCapture_kills_a_hung_process_at_the_timeout()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var ok = TryxThumbnailCache.RunCapture("/bin/sleep", ["30"], 300, out _, out _);
+
+        Assert.False(ok);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public void RunCapture_returns_the_output_of_a_process_that_exits()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var ok = TryxThumbnailCache.RunCapture("/bin/echo", ["a b"], 5000, out var stdout, out _);
+
+        Assert.True(ok);
+        Assert.Equal("a b", stdout.Trim());
+    }
 }
