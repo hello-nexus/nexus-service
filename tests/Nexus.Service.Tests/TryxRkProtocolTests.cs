@@ -235,6 +235,138 @@ public class TryxRkProtocolTests
 
     private static readonly (double X, double Y)[] NoPositions = Array.Empty<(double, double)>();
 
+    // Reference frame for the unrotated layout, built independently of the encoder under test
+    // (a 0.25,0.5 left-aligned stat). Rotation 0 must stay byte-identical to it.
+    private const string UnrotatedOverlayHex =
+        "54525958720000000a00ca0c6d0a35080010b004189c0420900d28dc0130013813422108001001420e726f626f746f2d726567756c617248820150b0e0fc075a033434430a34080110b00418b20520900d28a00130013813422008011001420e726f626f746f2d726567756c6172483450b0e0fc075a03435055";
+
+    private static byte[] OneStat(int rotation, string align = "left", double x = 0.25, double y = 0.5)
+        => TryxRkProtocol.BuildOverlay(
+            new[] { new TryxOverlayLine("CPU", "44C") }, new[] { (x, y) },
+            colorRgb: 0xFF3030, fontName: "roboto-regular", sizePercent: 100, align: align, rotation: rotation);
+
+    [Fact]
+    public void BuildOverlay_rotation_zero_is_byte_identical_to_the_unrotated_frame()
+    {
+        Assert.Equal(UnrotatedOverlayHex, Convert.ToHexString(OneStat(0)).ToLowerInvariant());
+        Assert.Equal(OneStat(0), TryxRkProtocol.BuildOverlay(
+            new[] { new TryxOverlayLine("CPU", "44C") }, new[] { (0.25, 0.5) },
+            colorRgb: 0xFF3030, fontName: "roboto-regular", sizePercent: 100, align: "left"));
+    }
+
+    // Reads each widget's f2..f6 (x, y, w, h, align) out of the f201 body.
+    private static List<(int X, int Y, int W, int H, int Align)> Widgets(byte[] frame)
+    {
+        var result = new List<(int, int, int, int, int)>();
+        var payload = frame.AsSpan(8);
+        var pos = 0;
+        while (pos < payload.Length)
+        {
+            var tag = ReadVarint(payload, ref pos);
+            var field = (int)(tag >> 3);
+            var len = (int)ReadVarint(payload, ref pos);
+            if (field == 201)
+            {
+                var body = payload.Slice(pos, len);
+                var bp = 0;
+                while (bp < body.Length)
+                {
+                    ReadVarint(body, ref bp);
+                    var wl = (int)ReadVarint(body, ref bp);
+                    var w = body.Slice(bp, wl);
+                    var wp = 0;
+                    var vals = new Dictionary<int, int>();
+                    while (wp < w.Length)
+                    {
+                        var wt = ReadVarint(w, ref wp);
+                        if ((wt & 7) == 0)
+                        {
+                            vals[(int)(wt >> 3)] = (int)ReadVarint(w, ref wp);
+                        }
+                        else
+                        {
+                            var skip = (int)ReadVarint(w, ref wp);
+                            wp += skip;
+                        }
+                    }
+                    result.Add((vals[2], vals[3], vals[4], vals[5], vals[6]));
+                    bp += wl;
+                }
+            }
+            pos += len;
+        }
+        return result;
+    }
+
+    private static ulong ReadVarint(ReadOnlySpan<byte> data, ref int pos)
+    {
+        ulong v = 0;
+        var shift = 0;
+        while (true)
+        {
+            var b = data[pos++];
+            v |= (ulong)(b & 0x7f) << shift;
+            if ((b & 0x80) == 0) return v;
+            shift += 7;
+        }
+    }
+
+    [Theory]
+    [InlineData(0, 560, 540, 1680, 220, 1, 560, 690, 1680, 160, 1)]
+    [InlineData(180, 0, 320, 1680, 220, 3, 0, 230, 1680, 160, 3)]
+    [InlineData(90, 0, 270, 2020, 810, 2, 0, 270, 1780, 810, 2)]
+    [InlineData(270, 220, 0, 2020, 810, 2, 460, 0, 1780, 810, 2)]
+    public void BuildOverlay_turns_the_widget_boxes_clockwise_onto_the_panel(
+        int rotation,
+        int vx, int vy, int vw, int vh, int va,
+        int lx, int ly, int lw, int lh, int la)
+    {
+        var widgets = Widgets(OneStat(rotation));
+
+        Assert.Equal(2, widgets.Count);
+        Assert.Equal((vx, vy, vw, vh, va), widgets[0]);
+        Assert.Equal((lx, ly, lw, lh, la), widgets[1]);
+    }
+
+    [Fact]
+    public void BuildOverlay_180_swaps_left_and_right_alignment_and_keeps_center()
+    {
+        Assert.Equal(3, Widgets(OneStat(180, "left"))[0].Align);
+        Assert.Equal(1, Widgets(OneStat(180, "right"))[0].Align);
+        Assert.Equal(2, Widgets(OneStat(180, "center"))[0].Align);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(90)]
+    [InlineData(180)]
+    [InlineData(270)]
+    public void BuildOverlay_keeps_every_box_on_the_panel_at_the_extreme_corners(int rotation)
+    {
+        foreach (var (x, y) in new[] { (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0) })
+        {
+            foreach (var align in new[] { "left", "center", "right" })
+            {
+                foreach (var w in Widgets(OneStat(rotation, align, x, y)))
+                {
+                    Assert.InRange(w.X, 0, TryxRkProtocol.OverlayPanelWidth);
+                    Assert.InRange(w.Y, 0, TryxRkProtocol.OverlayPanelHeight * 2);
+                    Assert.True(w.W >= 0 && w.H >= 0);
+                    Assert.True(w.X + w.W <= TryxRkProtocol.OverlayPanelWidth);
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(90, 90)]
+    [InlineData(450, 90)]
+    [InlineData(-90, 270)]
+    [InlineData(100, 90)]
+    public void NormalizeRotation_folds_to_a_quarter_turn(int input, int expected)
+        => Assert.Equal(expected, TryxRkProtocol.NormalizeRotation(input));
+
     [Fact]
     public void BuildOverlay_starts_with_a_valid_frame_header()
     {

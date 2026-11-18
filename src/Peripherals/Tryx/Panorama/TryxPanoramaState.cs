@@ -9,6 +9,8 @@ public sealed class TryxPanoramaState
     public int ProductId { get; set; }
     public bool ScreenEnabled { get; set; } = true;
     public int Brightness { get; set; } = 100;
+    /// <summary>Clockwise degrees (0, 90, 180, 270) Nexus turns the overlay and new uploads for a rotated mount.</summary>
+    public int Rotation { get; set; }
     /// <summary>Bare filename on the device under /sdcard/pcMedia/, or a preset id.</summary>
     public string CurrentMedia { get; set; } = "";
     public bool CurrentMediaIsCustom { get; set; }

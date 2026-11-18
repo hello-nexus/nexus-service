@@ -132,6 +132,11 @@ public sealed class TryxBrightnessRequest
     public int Value { get; set; }
 }
 
+public sealed class TryxRotationRequest
+{
+    public int Degrees { get; set; }
+}
+
 public sealed class TryxPresetRequest
 {
     public string Id { get; set; } = "";
@@ -239,6 +244,18 @@ public static class TryxRoutes
                     AppJsonContext.Default.TryxAckResponse);
             }
             var ok = hub.SetBrightness(body.Value);
+            return Results.Json(new TryxAckResponse { Ok = ok }, AppJsonContext.Default.TryxAckResponse);
+        });
+
+        app.MapPost("/tryx/rotation", (TryxRotationRequest body, TryxPanoramaHub hub) =>
+        {
+            if (!IsValidRotation(body.Degrees))
+            {
+                return Results.Json(
+                    new TryxAckResponse { Ok = false, Msg = "degrees must be 0, 90, 180 or 270" },
+                    AppJsonContext.Default.TryxAckResponse);
+            }
+            var ok = hub.SetRotation(body.Degrees);
             return Results.Json(new TryxAckResponse { Ok = ok }, AppJsonContext.Default.TryxAckResponse);
         });
 
@@ -555,6 +572,9 @@ public static class TryxRoutes
         }
         return items;
     }
+
+    /// <summary>Screen rotation is a quarter turn: 0, 90, 180 or 270 degrees.</summary>
+    public static bool IsValidRotation(int degrees) => degrees is 0 or 90 or 180 or 270;
 
     private static TryxVideoCrop? ParseCrop(string raw)
     {

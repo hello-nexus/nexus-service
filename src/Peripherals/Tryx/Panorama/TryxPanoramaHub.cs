@@ -66,6 +66,7 @@ public sealed class TryxPanoramaHub : IDisposable
         var saved = configStore.Load().Tryx;
         _overlay = new TryxOverlayConfig { Docked = saved.OverlayDocked };
         State.Brightness = saved.Brightness;
+        State.Rotation = TryxRkProtocol.NormalizeRotation(saved.ScreenRotation);
         LoadContent(saved, Array.Empty<string>());
         TryxUserClockFormat.Warm();
     }
@@ -117,7 +118,7 @@ public sealed class TryxPanoramaHub : IDisposable
             }
             SendReliable(TryxRkProtocol.BuildOverlay(
                 BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
-                _overlay.Font, _overlay.Size, _overlay.Align));
+                _overlay.Font, _overlay.Size, _overlay.Align, State.Rotation));
             _fps.SetDemand(FpsDemandSource, OverlayUsesFps());
         }
     }
@@ -918,7 +919,7 @@ public sealed class TryxPanoramaHub : IDisposable
             {
                 transport.Write(TryxRkProtocol.BuildOverlay(
                     BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
-                    _overlay.Font, _overlay.Size, _overlay.Align));
+                    _overlay.Font, _overlay.Size, _overlay.Align, State.Rotation));
             }
             _slideshow.Rearm(State.CurrentMedia, NowMs());
             if (State.CurrentMediaIsCustom) QueueDuration(State.CurrentMedia);
@@ -1003,7 +1004,7 @@ public sealed class TryxPanoramaHub : IDisposable
         }
         return SendOnly(TryxRkProtocol.BuildOverlay(
             BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
-            _overlay.Font, _overlay.Size, _overlay.Align));
+            _overlay.Font, _overlay.Size, _overlay.Align, State.Rotation));
     }
 
     public bool SetEnabled(bool enable)
@@ -1026,6 +1027,19 @@ public sealed class TryxPanoramaHub : IDisposable
             }
             return ok;
         }
+    }
+
+    /// <summary>Sets the screen rotation (any multiple of 90), persists it and re-sends the overlay in the
+    /// rotated frame. New uploads pick it up on their next transcode; clips already on the panel and
+    /// on-panel themes keep their orientation.</summary>
+    public bool SetRotation(int degrees)
+    {
+        var rotation = TryxRkProtocol.NormalizeRotation(degrees);
+        State.Rotation = rotation;
+        _configStore.Update(s => s.Tryx.ScreenRotation = rotation);
+        return _overlay.Items.Count == 0 || SendReliable(TryxRkProtocol.BuildOverlay(
+            BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(_overlay.Color),
+            _overlay.Font, _overlay.Size, _overlay.Align, rotation));
     }
 
     public bool SetBrightness(int brightness)
@@ -1092,7 +1106,7 @@ public sealed class TryxPanoramaHub : IDisposable
         });
         return SendReliable(TryxRkProtocol.BuildOverlay(
             BuildOverlayLines(), BuildOverlayPositions(), ParseHexColorRgb(overlay.Color),
-            overlay.Font, overlay.Size, overlay.Align));
+            overlay.Font, overlay.Size, overlay.Align, State.Rotation));
     }
 
     private static List<TryxOverlaySensorItem> ToRuntimeItems(List<TryxOverlaySensorItemSettings> saved)
@@ -1420,12 +1434,8 @@ public sealed class TryxPanoramaHub : IDisposable
     private async Task<bool> TranscodeToPanelMp4Async(
         string ffmpegPath, string input, TryxVideoCrop? crop, string outputMp4, CancellationToken ct)
     {
-        // MediaX's filter graph: lanczos scale to full range, yuv420p, fps.
-        var scale = $"scale={PanelWidth}:{PanelHeight}:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,format=yuv420p,fps={PanelFps}";
         var source = TryxKanaliEncode.ProbeSource(ffmpegPath, input);
-        var vf = crop is { } c
-            ? $"{CropRect.OrientationFilter(c.Rotate, c.Mirror)}crop=in_w*{F(c.W)}:in_h*{F(c.H)}:in_w*{F(c.X)}:in_h*{F(c.Y)},{scale}"
-            : scale;
+        var vf = BuildTranscodeFilter(crop, State.Rotation);
         var args = $"-nostdin -hide_banner -loglevel error -y -i \"{input}\" -an " +
                    $"-vf \"{vf}\" -c:v libx264 {TryxKanaliEncode.X264Options(source, PanelWidth, PanelHeight, PanelFps)} " +
                    $"-movflags +faststart \"{outputMp4}\"";
@@ -1459,6 +1469,28 @@ public sealed class TryxPanoramaHub : IDisposable
             ServiceLog.Error("[tryx] transcode cancelled or timed out");
             return false;
         }
+    }
+
+    /// <summary>The ffmpeg -vf chain for an upload. Rotation 0 is MediaX's graph unchanged (lanczos
+    /// scale to full range, yuv420p, fps). For 90/270 the crop is scaled to the portrait viewer
+    /// frame and then turned clockwise onto the landscape panel; 180 scales landscape and turns it.
+    /// The rotation stacks after the crop, so the cropper's own orientation (<see cref="TryxVideoCrop.Rotate"/>)
+    /// still applies to the source first.</summary>
+    internal static string BuildTranscodeFilter(TryxVideoCrop? crop, int rotation)
+    {
+        rotation = TryxRkProtocol.NormalizeRotation(rotation);
+        var (w, h) = rotation is 90 or 270 ? (PanelHeight, PanelWidth) : (PanelWidth, PanelHeight);
+        var turn = rotation switch
+        {
+            90 => ",transpose=1",
+            180 => ",hflip,vflip",
+            270 => ",transpose=2",
+            _ => "",
+        };
+        var scale = $"scale={w}:{h}:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc{turn},format=yuv420p,fps={PanelFps}";
+        return crop is { } c
+            ? $"{CropRect.OrientationFilter(c.Rotate, c.Mirror)}crop=in_w*{F(c.W)}:in_h*{F(c.H)}:in_w*{F(c.X)}:in_h*{F(c.Y)},{scale}"
+            : scale;
     }
 
     private static string F(double v) => v.ToString("0.#####", CultureInfo.InvariantCulture);

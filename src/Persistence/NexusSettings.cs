@@ -1554,6 +1554,8 @@ public sealed class TryxSettings
     public string CurrentMedia { get; set; } = "";
     public bool CurrentMediaIsCustom { get; set; }
     public int Brightness { get; set; } = 100;
+    /// <summary>Clockwise degrees (0, 90, 180, 270) the overlay layout and new uploads are turned for a screen mounted rotated.</summary>
+    public int ScreenRotation { get; set; }
     /// <summary>Cloud material ids installed on the panel; drives the catalog's installed
     /// badge (the panel's media-list push reports only built-in presets, not downloads).</summary>
     public List<int> InstalledCloudIds { get; set; } = new();

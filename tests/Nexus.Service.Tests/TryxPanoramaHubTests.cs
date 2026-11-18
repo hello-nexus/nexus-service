@@ -1027,6 +1027,75 @@ public class TryxPanoramaHubTests
     }
 
     [Fact]
+    public void SetRotation_persists_and_resends_the_overlay_in_the_rotated_frame()
+    {
+        var store = new InMemoryConfigStore();
+        var recording = new RecordingTransport();
+        var sensors = new StubSensors { CpuSensors = [MakeSensor("Package", "Temperature", 0f)] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, sensors: sensors, configStore: store);
+        hub.EnsureConnected();
+        hub.SetOverlay(new TryxOverlayConfig
+        {
+            Items = [new TryxOverlaySensorItem { SensorId = "test/Package", Device = "cpu", Label = "CPU Temp", X = 0.25, Y = 0.5 }],
+            Color = "#ffffff",
+        });
+        recording.Writes.Clear();
+
+        hub.SetRotation(90);
+
+        Assert.Equal(90, store.Load().Tryx.ScreenRotation);
+        Assert.Equal(90, hub.State.Rotation);
+        var expected = TryxRkProtocol.BuildOverlay(
+            new[] { new TryxOverlayLine("CPU Temp", "0.0°C") }, new[] { (0.25, 0.5) },
+            colorRgb: 0xFFFFFF, fontName: "roboto-regular", sizePercent: 100, align: "left", rotation: 90);
+        Assert.Equal(expected, Assert.Single(recording.Writes));
+    }
+
+    [Fact]
+    public void EnsureConnected_sends_the_overlay_in_the_persisted_rotation()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.Tryx.ScreenRotation = 270;
+            s.Tryx.OverlayItems = [new TryxOverlaySensorItemSettings { SensorId = "test/Package", Device = "cpu", Label = "CPU Temp", X = 0.25, Y = 0.5 }];
+        });
+        var recording = new RecordingTransport();
+        var sensors = new StubSensors { CpuSensors = [MakeSensor("Package", "Temperature", 0f)] };
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, sensors: sensors, configStore: store);
+
+        hub.EnsureConnected();
+
+        var expected = TryxRkProtocol.BuildOverlay(
+            new[] { new TryxOverlayLine("CPU Temp", "0.0°C") }, new[] { (0.25, 0.5) },
+            colorRgb: 0xFFFFFF, fontName: "roboto-regular", sizePercent: 100, align: "left", rotation: 270);
+        Assert.Contains(recording.Writes, w => w.AsSpan().SequenceEqual(expected));
+    }
+
+    [Fact]
+    public void Rotation_is_loaded_from_settings_and_normalized()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Tryx.ScreenRotation = 450);
+        var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => new RecordingTransport(), configStore: store);
+
+        Assert.Equal(90, hub.State.Rotation);
+    }
+
+    [Theory]
+    [InlineData(0, "scale=2240:1080:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,format=yuv420p,fps=60")]
+    [InlineData(90, "scale=1080:2240:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,transpose=1,format=yuv420p,fps=60")]
+    [InlineData(180, "scale=2240:1080:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,hflip,vflip,format=yuv420p,fps=60")]
+    [InlineData(270, "scale=1080:2240:flags=lanczos+accurate_rnd+full_chroma_inp:out_range=pc,transpose=2,format=yuv420p,fps=60")]
+    public void BuildTranscodeFilter_turns_the_scaled_frame_after_the_crop(int rotation, string expectedScale)
+    {
+        Assert.Equal(expectedScale, TryxPanoramaHub.BuildTranscodeFilter(null, rotation));
+        var cropped = TryxPanoramaHub.BuildTranscodeFilter(new TryxVideoCrop(0.1, 0.2, 0.5, 0.5), rotation);
+        Assert.EndsWith("," + expectedScale, cropped);
+        Assert.Contains("crop=in_w*0.5:in_h*0.5:in_w*0.1:in_h*0.2", cropped);
+    }
+
+    [Fact]
     public void SetBrightness_writes_rk_brightness_frame()
     {
         var store = new InMemoryConfigStore();

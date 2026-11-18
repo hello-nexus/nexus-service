@@ -132,6 +132,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxCloudInstallRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxEnableRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxBrightnessRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.TryxRotationRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxPresetRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxMediaSelectRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxMediaDeleteRequest))]

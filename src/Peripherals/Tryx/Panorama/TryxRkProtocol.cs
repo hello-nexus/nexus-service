@@ -182,9 +182,16 @@ public static class TryxRkProtocol
         int colorRgb,
         string fontName,
         int sizePercent,
-        string align)
+        string align,
+        int rotation = 0)
     {
         var scale = sizePercent / 100.0;
+        rotation = NormalizeRotation(rotation);
+        // The layout is authored in the viewer's upright frame: landscape for 0/180,
+        // portrait for 90/270. Each widget box is then turned clockwise onto the panel.
+        var (frameW, frameH) = rotation is 90 or 270
+            ? (OverlayPanelHeight, OverlayPanelWidth)
+            : (OverlayPanelWidth, OverlayPanelHeight);
 
         var f201Body = new List<byte>();
         for (var i = 0; i < lines.Count; i++)
@@ -197,21 +204,23 @@ public static class TryxRkProtocol
             var nx = Math.Clamp(rawX, 0.0, 1.0);
             var ny = Math.Clamp(rawY, 0.0, 1.0);
 
-            var anchorX = (int)Math.Round(nx * OverlayPanelWidth);
-            var (alignF6, x, w) = ResolveAlignBox(anchorX, align);
-            var valueY = (int)Math.Round(ny * OverlayPanelHeight);
-            var labelY = (int)Math.Round(ny * OverlayPanelHeight + OverlayValueLabelOffsetY * scale);
+            var anchorX = (int)Math.Round(nx * frameW);
+            var (alignF6, x, w) = ResolveAlignBox(anchorX, align, frameW);
+            var valueY = (int)Math.Round(ny * frameH);
+            var labelY = (int)Math.Round(ny * frameH + OverlayValueLabelOffsetY * scale);
             var valueFontSize = (int)Math.Round(OverlayValueFontSize * scale);
             var labelFontSize = (int)Math.Round(OverlayLabelFontSize * scale);
             var valueHeight = (int)Math.Round(OverlayValueWidgetHeight * scale);
             var labelHeight = (int)Math.Round(OverlayLabelWidgetHeight * scale);
 
             var widgetIdBase = i * 2;
+            var value = RotateBox(alignF6, x, valueY, w, valueHeight, frameW, frameH, rotation);
+            var label = RotateBox(alignF6, x, labelY, w, labelHeight, frameW, frameH, rotation);
             AppendOverlayWidget(
-                f201Body, widgetIdBase, x, valueY, w, valueHeight, alignF6,
+                f201Body, widgetIdBase, value.X, value.Y, value.W, value.H, value.AlignF6,
                 valueFontSize, colorRgb, fontName, lines[i].Value);
             AppendOverlayWidget(
-                f201Body, widgetIdBase + 1, x, labelY, w, labelHeight, alignF6,
+                f201Body, widgetIdBase + 1, label.X, label.Y, label.W, label.H, label.AlignF6,
                 labelFontSize, colorRgb, fontName, lines[i].Label);
         }
 
@@ -222,20 +231,82 @@ public static class TryxRkProtocol
         return WrapFrame(payload);
     }
 
+    /// <summary>Folds any integer degrees to 0, 90, 180 or 270 (rounded down to a multiple of 90).</summary>
+    public static int NormalizeRotation(int degrees)
+    {
+        var d = degrees / 90 * 90 % 360;
+        return d < 0 ? d + 360 : d;
+    }
+
+    /// <summary>Turns a widget box authored in the viewer frame (<paramref name="frameW"/> x
+    /// <paramref name="frameH"/>) clockwise by <paramref name="rotation"/> onto the 2240x1080 panel.
+    /// 0 returns the box untouched. 180 mirrors the box and swaps left/right alignment. 90 and 270
+    /// transpose it; the panel draws glyphs horizontally whatever the box does, so the box is
+    /// widened symmetrically about its center and centered, which keeps the line at its rotated
+    /// position while the text itself stays unrotated.</summary>
+    internal static (int AlignF6, int X, int Y, int W, int H) RotateBox(
+        int alignF6, int x, int y, int w, int h, int frameW, int frameH, int rotation)
+    {
+        switch (rotation)
+        {
+            case 180:
+            {
+                var mirrored = alignF6 switch
+                {
+                    OverlayAlignLeftF6 => OverlayAlignRightF6,
+                    OverlayAlignRightF6 => OverlayAlignLeftF6,
+                    _ => alignF6,
+                };
+                return ClampBox(mirrored, frameW - (x + w), frameH - (y + h), w, h);
+            }
+            case 90:
+                return TransposedBox(frameH - (y + h), x, h, w);
+            case 270:
+                return TransposedBox(y, frameW - (x + w), h, w);
+            default:
+                return (alignF6, x, y, w, h);
+        }
+    }
+
+    private static (int AlignF6, int X, int Y, int W, int H) TransposedBox(int x, int y, int w, int h)
+    {
+        var center = Math.Clamp(x + w / 2.0, 0, OverlayPanelWidth);
+        var half = (int)Math.Floor(Math.Min(center, OverlayPanelWidth - center));
+        var left = (int)Math.Round(center) - half;
+        return ClampBox(OverlayAlignCenterF6, left, y, 2 * half, h);
+    }
+
+    // A rotated box can start above or left of the panel; the varint writes are unsigned, so pull
+    // the origin to 0 and shrink the extent by what was cut.
+    private static (int AlignF6, int X, int Y, int W, int H) ClampBox(int alignF6, int x, int y, int w, int h)
+    {
+        if (x < 0)
+        {
+            w += x;
+            x = 0;
+        }
+        if (y < 0)
+        {
+            h += y;
+            y = 0;
+        }
+        return (alignF6, x, y, Math.Max(0, w), Math.Max(0, h));
+    }
+
     /// <summary>Resolves a widget's f6/x/width from its justification anchor.
     /// Left and right pin the anchor to the box's near edge and grow toward the
     /// opposite edge; center grows both directions, shrunk to the shorter side
     /// so the box never leaves the panel.</summary>
-    private static (int AlignF6, int X, int W) ResolveAlignBox(int anchorX, string align) => align switch
+    private static (int AlignF6, int X, int W) ResolveAlignBox(int anchorX, string align, int frameW) => align switch
     {
-        "center" => CenterBox(anchorX),
+        "center" => CenterBox(anchorX, frameW),
         "right" => (OverlayAlignRightF6, 0, anchorX),
-        _ => (OverlayAlignLeftF6, anchorX, OverlayPanelWidth - anchorX),
+        _ => (OverlayAlignLeftF6, anchorX, frameW - anchorX),
     };
 
-    private static (int AlignF6, int X, int W) CenterBox(int anchorX)
+    private static (int AlignF6, int X, int W) CenterBox(int anchorX, int frameW)
     {
-        var half = Math.Min(anchorX, OverlayPanelWidth - anchorX);
+        var half = Math.Min(anchorX, frameW - anchorX);
         return (OverlayAlignCenterF6, anchorX - half, 2 * half);
     }
 
