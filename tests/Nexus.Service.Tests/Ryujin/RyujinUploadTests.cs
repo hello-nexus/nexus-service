@@ -420,7 +420,7 @@ public class RyujinUploadTests
         // The begin gaps stay whole (contiguous commands); the paced group gap is sliced.
         Assert.DoesNotContain(link.Pauses, p => p == 2300);
         Assert.All(link.Pauses.Where(p => p is not (27 or 140 or 110 or 520 or 510)), p => Assert.InRange(p, 1, 250));
-        // Every begin gap is still taken: two attempts of 27 + 140 + 110 + 520 (the last gap is the erase wait on the fast one, a pause on the paced one).
+        // Every begin gap is still taken on both attempts (the last gap is the erase wait on the fast one, a pause on the paced one).
         Assert.True(link.Pauses.Where(p => p is 27 or 140 or 110 or 520 or 510).Sum() >= 2 * (27 + 140 + 110 + 520));
     }
 
