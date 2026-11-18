@@ -133,8 +133,19 @@
     <DefineConstants>$(DefineConstants);DEV_TOOLS</DefineConstants>
   </PropertyGroup>
 
+  <!-- LibreHardwareMonitorLib picks WINDOWS or LINUX from the build host OS, so a Windows binary
+       built on macOS or Linux would silently ship without any sensor backend. -->
+  <Target Name="LhmNeedsWindowsHost" BeforeTargets="ResolveProjectReferences"
+          Condition="$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <Error Text="Windows builds must run on a Windows host: the LibreHardwareMonitor submodule compiles its Windows sensor backend only there." />
+  </Target>
+
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre748" />
+    <!-- Built from source: external/LibreHardwareMonitor is the hello-nexus fork (branch nexus),
+         pinned to the exact upstream commit the previous package was built from plus our own patches.
+         The lib defines WINDOWS only when it is itself built on Windows (see LhmNeedsWindowsHost). -->
+    <ProjectReference Include="external/LibreHardwareMonitor/LibreHardwareMonitorLib/LibreHardwareMonitorLib.csproj"
+                      AdditionalProperties="GeneratePackageOnBuild=false" />
     <!-- The DiskInfoToolkit pulled in transitively by LHM predates the USB overlapped-I/O and timeout fixes, so it is pinned directly.
          The newer one needs BlackSharp.Core 1.2.5, which LHM's RAMSPDToolkit-NDD only supports from its pinned version on. -->
     <PackageReference Include="DiskInfoToolkit" Version="2.2.2" />
@@ -831,6 +842,11 @@
   <!-- Exclude test project from main build (SDK auto-includes all .cs) -->
   <ItemGroup>
     <Compile Remove="tests/**" />
+    <!-- external/ holds git submodules that are separate projects. -->
+    <Compile Remove="external/**" />
+    <Content Remove="external/**" />
+    <None Remove="external/**" />
+    <EmbeddedResource Remove="external/**" />
     <!-- installer/ is not part of this assembly: msix/NexusStoreLauncher is a
          separate project (build-msix.ps1 publishes it) whose Main and
          [assembly: SupportedOSPlatform("windows")] must not land here, and the

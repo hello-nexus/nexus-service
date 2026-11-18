@@ -46,6 +46,12 @@ are in [`docs/network-transport.md`](docs/network-transport.md).
 Prerequisites: .NET 10 SDK. Node.js 22 if you want the embedded dashboard;
 the build pulls it in from a sibling `nexus-web` checkout.
 
+Windows builds compile LibreHardwareMonitor from the `external/LibreHardwareMonitor`
+git submodule (the [`hello-nexus/LibreHardwareMonitor`](https://github.com/hello-nexus/LibreHardwareMonitor)
+fork). Clone with `--recurse-submodules` or run `git submodule update --init`.
+macOS and Linux builds do not need it. Windows binaries must be built on a
+Windows host: the library selects its Windows backend from the host OS.
+
 ```sh
 cd ../nexus-web && npm install && cd ../nexus-service   # once, for the web UI
 
