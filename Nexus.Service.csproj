@@ -4,7 +4,7 @@
     <!-- Windows builds target a Win10-versioned TFM so we can use C#/WinRT
          projections (Windows.Media.Control for GSMTC media sessions, etc).
          macOS/Linux stay on plain net10.0. The condition keys on RID first so
-         cross-compilation from Mac (`-r win-x64`) picks the Windows TFM. -->
+         a `-r win-x64` build picks the Windows TFM. -->
     <TargetFramework Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</TargetFramework>
     <TargetFramework Condition="!$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">net10.0</TargetFramework>
     <SupportedOSPlatformVersion Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">10.0.19041.0</SupportedOSPlatformVersion>
@@ -71,9 +71,11 @@
   </Target>
 
   <!-- Windows: define WINDOWS constant + include LibreHardwareMonitor.
-       Supports both native builds (IsOSPlatform) and cross-compilation (RID starts with 'win'). -->
+       Selected by host OS or by a RID starting with 'win'. -->
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">
     <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+    <!-- The LHM ProjectReference would otherwise publish its XML doc file into the install tree. -->
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
     <!-- The Web SDK auto-includes the entire Bundled/ tree as Content, which
          dragged macOS/Linux artifacts (Bundled/macos, Bundled/osx-arm64, …)
          into the Windows publish output and from there into Nexus-Setup.exe.
@@ -90,9 +92,8 @@
        references its own concrete providers, which lets the per-platform
        <Compile Remove> groups below drop the other platforms' files entirely
        (otherwise the cross-platform binary carries dead Linux+Mac native code).
-       RID-keyed first so cross-compiling from any host picks the right set. -->
-  <!-- RID wins when set (so cross-compiling win-x64 from a Mac host does NOT
-       also define MACOS); host OS is only the fallback for a RID-less dev/test
+       RID-keyed first so the RID, not the host, picks the set. -->
+  <!-- RID wins when set; host OS is only the fallback for a RID-less dev/test
        build. Exactly one of WINDOWS/MACOS/LINUX is ever defined. -->
   <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')))">
     <DefineConstants>$(DefineConstants);MACOS</DefineConstants>
@@ -142,7 +143,7 @@
 
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">
     <!-- Built from source: external/LibreHardwareMonitor is the hello-nexus fork (branch nexus),
-         pinned to the exact upstream commit the previous package was built from plus our own patches.
+         pinned by the submodule gitlink.
          The lib defines WINDOWS only when it is itself built on Windows (see LhmNeedsWindowsHost). -->
     <ProjectReference Include="external/LibreHardwareMonitor/LibreHardwareMonitorLib/LibreHardwareMonitorLib.csproj"
                       AdditionalProperties="GeneratePackageOnBuild=false" />
