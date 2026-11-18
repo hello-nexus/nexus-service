@@ -95,8 +95,11 @@ public class TryxPanoramaHubTests
         // drained its endpoint yet holds the write - and with it the hub's tx gate.
         public ManualResetEventSlim? WriteGate { get; set; }
         public ManualResetEventSlim WriteEntered { get; } = new(false);
+        // Every write throws, like a panel that was unplugged mid-session.
+        public bool FailWrites { get; set; }
         public void Write(ReadOnlySpan<byte> data)
         {
+            if (FailWrites) throw new System.IO.IOException("unplugged");
             Writes.Add(data.ToArray());
             if (WriteGate is { } gate)
             {
@@ -1060,7 +1063,7 @@ public class TryxPanoramaHubTests
         var sensors = new StubSensors { CpuSensors = [MakeSensor("Package", "Temperature", 0f)] };
         var hub = BuildHub(discovery: new StubDiscovery(), transportFactory: _ => recording, sensors: sensors, configStore: store);
         hub.EnsureConnected();
-        recording.IsOpen = false;
+        recording.FailWrites = true;
         recording.Writes.Clear();
 
         var ok = hub.SetRotation(180);
