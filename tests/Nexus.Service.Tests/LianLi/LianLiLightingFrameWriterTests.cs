@@ -22,7 +22,10 @@ public class LianLiLightingFrameWriterTests
 
     public LianLiLightingFrameWriterTests()
     {
-        _writer = new LianLiLightingFrameWriter(_engine, _hub, _store, new Np50IdentifyTracker());
+        _writer = new LianLiLightingFrameWriter(_engine, _hub, _store, new Np50IdentifyTracker())
+        {
+            SlV2SettleMs = 0,
+        };
     }
 
     private static LianLiFanProfile Profile(int pid)
@@ -960,6 +963,123 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
         _writer.Tick();
         Assert.Equal(afterAccepted, Calls.Count);
+    }
+
+    // ── SL V2 settle window: debounce, quiet after a latch, one repeat ──
+
+    private void UseSlV2Settling()
+    {
+        UseFakeClock();
+        _writer.SlV2SettleMs = 150;
+        _writer.SlV2RepeatMs = 500;
+    }
+
+    [Fact]
+    public void Sl_v2_holds_a_settings_change_until_it_has_been_still_for_the_settle_window()
+    {
+        UseSlV2Settling();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("tide");
+
+        _writer.Tick();
+        Assert.Empty(Calls);
+
+        Advance(149);
+        _writer.Tick();
+        Assert.Empty(Calls);
+
+        Advance(1);
+        _writer.Tick();
+        Assert.NotEmpty(Calls);
+    }
+
+    [Fact]
+    public void Sl_v2_restarts_the_hold_when_the_setting_changes_again_so_only_the_last_value_is_applied()
+    {
+        UseSlV2Settling();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("tide");
+        _writer.Tick();
+
+        Advance(100);
+        _store.Update(s => s.Devices.LianLiLighting.Brightness = 1);
+        _writer.Tick();
+        Advance(100);
+        _store.Update(s => s.Devices.LianLiLighting.Brightness = 4);
+        _writer.Tick();
+        Advance(149);
+        _writer.Tick();
+        Assert.Empty(Calls);
+
+        Advance(1);
+        _writer.Tick();
+
+        // brightness 4 is the full-brightness byte
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1A && c.Bytes[5] == 0x00);
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1A && c.Bytes[5] == 0x03);
+    }
+
+    [Fact]
+    public void Sl_v2_repeats_a_firmware_apply_once_after_the_repeat_delay()
+    {
+        UseSlV2Settling();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("tide");
+        _writer.Tick();
+        Advance(150);
+        _writer.Tick();
+        var firstApply = Calls.Count;
+        Assert.True(firstApply > 0);
+
+        Advance(499);
+        _writer.Tick();
+        Assert.Equal(firstApply, Calls.Count);
+
+        Advance(1);
+        _writer.Tick();
+        var afterRepeat = Calls.Count;
+        Assert.True(afterRepeat > firstApply);
+        // the commit sequence of the one port with fans goes out again, ending on the latch
+        Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
+
+        Advance(60_000);
+        _writer.Tick();
+        Assert.Equal(afterRepeat, Calls.Count);
+    }
+
+    [Fact]
+    public void Sl_v2_does_not_repeat_a_merged_commit()
+    {
+        UseSlV2Settling();
+        AttachMerged(0xA105, "runway");
+        _writer.Tick();
+        Advance(150);
+        _writer.Tick();
+        var first = Calls.Count;
+        Assert.True(first > 0);
+
+        Advance(60_000);
+        _writer.Tick();
+
+        Assert.Equal(first, Calls.Count);
+    }
+
+    [Fact]
+    public void Other_families_apply_at_once_and_are_not_repeated()
+    {
+        UseFakeClock();
+        _writer.SlV2SettleMs = 150;
+        Attach(0xA102, port: 0, fans: 3);
+        SetMode("rainbowWave");
+
+        _writer.Tick();
+        var first = Calls.Count;
+        Assert.True(first > 0);
+
+        Advance(60_000);
+        _writer.Tick();
+
+        Assert.Equal(first, Calls.Count);
     }
 
     [Fact]

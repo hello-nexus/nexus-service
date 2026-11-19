@@ -125,6 +125,17 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private long _argbReleasedAtMs;
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
+    // SL V2 only. The hub drops the first command after a latch, so an apply never starts inside the settle window of
+    // the previous one, a settings change must hold still for the same window before it is applied (a brightness drag
+    // becomes one apply), and each apply is repeated once after a longer pause to repair a port that still missed it.
+    internal int SlV2SettleMs { get; set; } = 150;
+    internal int SlV2RepeatMs { get; set; } = 500;
+    private int _debounceSig;
+    private long _debounceSinceMs = long.MinValue;
+    private long _quietUntilMs;
+    private long _repeatAtMs;
+    private bool _repeating;
+
     private bool _customMergeCleared;
     // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
     private bool _mergeMaybeActive;
@@ -335,6 +346,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             // and its backoff with it so a stale deadline cannot gate that switch.
             _lastFirmwareSig = null;
             _pendingFirmwareSig = null;
+            _repeatAtMs = 0;
             _commitRetry.Reset();
             // A merged firmware effect outlives per-channel custom commits too.
             if (!_customMergeCleared && profile.ExplicitMergeControl && _hub.SendStopMerge())
@@ -397,9 +409,29 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var merged = ls.Merge && mode.MergesOn(profile) && !(ls.InnerRing is not null && ls.OuterRing is not null)
             && !AnyDeviceExcluded(composed, settings);
         var sig = ComputeFirmwareSig(ls, merged, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
+        var settling = profile.Family == LianLiFanFamily.SlV2 && SlV2SettleMs > 0;
+        if (settling && _repeatAtMs != 0 && _lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value
+            && NowMs() >= _repeatAtMs && NowMs() >= _quietUntilMs)
+        {
+            _repeatAtMs = 0;
+            _repeating = true;
+            _lastFirmwareSig = null;
+        }
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value)
         {
             return;
+        }
+        if (settling && !_repeating)
+        {
+            if (_debounceSig != sig || _debounceSinceMs == long.MinValue)
+            {
+                _debounceSig = sig;
+                _debounceSinceMs = NowMs();
+            }
+            if (NowMs() - _debounceSinceMs < SlV2SettleMs || NowMs() < _quietUntilMs)
+            {
+                return;
+            }
         }
 
         if (_pendingFirmwareSig != sig)
@@ -425,11 +457,18 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
+            if (settling)
+            {
+                _quietUntilMs = NowMs() + SlV2SettleMs;
+                _repeatAtMs = _repeating || merged ? 0 : NowMs() + SlV2RepeatMs;
+                _debounceSinceMs = long.MinValue;
+            }
         }
         else
         {
             NoteFailure(_commitRetry, "firmware commit");
         }
+        _repeating = false;
     }
 
     // The hub loses commanded LED state on USB re-enumeration and across sleep,
@@ -438,6 +477,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // re-asserts for the same reason.
     private void ForgetHubState()
     {
+        _repeatAtMs = 0;
+        _repeating = false;
+        _quietUntilMs = 0;
+        _debounceSinceMs = long.MinValue;
         _lastFirmwareSig = null;
         _pendingFirmwareSig = null;
         _hubInitialised = false;
