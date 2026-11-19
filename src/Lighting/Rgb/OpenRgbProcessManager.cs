@@ -678,12 +678,16 @@ public sealed class OpenRgbProcessManager : IDisposable
             psi.ArgumentList.Add("--config");
             psi.ArgumentList.Add(configDir);
             psi.ArgumentList.Add("--loglevel");
-            psi.ArgumentList.Add("warning");
+            // DIAGNOSTIC BRANCH ONLY: debug for the daemon logfile and, unless the env var says otherwise, its relayed stdout.
+            psi.ArgumentList.Add("debug");
 
-            var verbosity = ResolveVerbosityFlag(Environment.GetEnvironmentVariable(VerbosityEnvVar));
+            var configuredVerbosity = Environment.GetEnvironmentVariable(VerbosityEnvVar);
+            var verbosity = ResolveVerbosityFlag(configuredVerbosity ?? "debug");
             if (verbosity is not null)
             {
-                ServiceLog.Info($"[openrgb-proc] {VerbosityEnvVar} set: relaying daemon output at '{verbosity}'");
+                ServiceLog.Info(configuredVerbosity is null
+                    ? $"[openrgb-proc] default (diag build): relaying daemon output at '{verbosity}'"
+                    : $"[openrgb-proc] {VerbosityEnvVar} set: relaying daemon output at '{verbosity}'");
                 psi.ArgumentList.Add(verbosity);
             }
 
