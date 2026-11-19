@@ -43,6 +43,14 @@ public class Slv3LightingRoutesTests
     public void Validate_accepts_a_fan_effect_on_a_fan_chain() =>
         Assert.Null(ValidateFans(new Slv3ChainLightingRequest { Mode = "rainbow" }));
 
+    [Theory]
+    [InlineData("all", null)]
+    [InlineData("top", null)]
+    [InlineData("bottom", null)]
+    [InlineData("both", "invalid scope")]
+    public void Validate_takes_only_known_scopes(string scope, string? expected) =>
+        Assert.Equal(expected, ValidateFans(new Slv3ChainLightingRequest { Mode = "rainbow", Scope = scope }));
+
     [Fact]
     public void Validate_rejects_a_malformed_color() =>
         Assert.Equal("invalid color", ValidateStrimer(new Slv3ChainLightingRequest { Colors = new[] { "#12345" } }));
