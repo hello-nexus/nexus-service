@@ -182,6 +182,124 @@ public class SmbiosParserTests
         Assert.Equal("04CD", modules.Single().ModuleManufacturerId);
     }
 
+    private static byte[] BuildType17Banked(string deviceLocator, string bankLabel, string manufacturer, byte idBank, byte idByte)
+    {
+        const byte length = 0x30;
+        // An empty bank label is modeled as string index 0 (absent); an empty string would emit a double null and end the set early.
+        var strings = new List<string> { deviceLocator, manufacturer, "CMH32GX5M2E6000C36" };
+        if (bankLabel.Length > 0) strings.Insert(1, bankLabel);
+        var bankIdx = (byte)(bankLabel.Length > 0 ? 2 : 0);
+        var mfrIdx = (byte)(bankLabel.Length > 0 ? 3 : 2);
+        var partIdx = (byte)(bankLabel.Length > 0 ? 4 : 3);
+        var b = new byte[length];
+        b[0] = MemoryDeviceType;
+        b[1] = length;
+        WriteU16(b, 0x0C, 16384);
+        b[0x10] = 1;
+        b[0x11] = bankIdx;
+        b[0x12] = MemoryTypeDdr5;
+        b[0x17] = mfrIdx;
+        b[0x1A] = partIdx;
+        b[0x2C] = idBank;
+        b[0x2D] = idByte;
+        return AppendStrings(b, strings);
+    }
+
+    [Fact]
+    public void CollidingDeviceLocators_AreQualifiedWithBankLabel()
+    {
+        var table = BuildTable(
+            BuildType17Banked("DIMM 1", "P0 CHANNEL A", "Corsair", 0x02, 0x9E),
+            BuildType17Banked("DIMM 1", "P0 CHANNEL B", "Corsair", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.Equal(new[] { "P0 CHANNEL A / DIMM 1", "P0 CHANNEL B / DIMM 1" }, modules.Select(m => m.Slot).ToArray());
+    }
+
+    [Fact]
+    public void UniqueDeviceLocators_StayUnchanged()
+    {
+        var table = BuildTable(
+            BuildType17Banked("DIMM_A1", "BANK 0", "Corsair", 0x02, 0x9E),
+            BuildType17Banked("DIMM_B1", "BANK 1", "Corsair", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.Equal(new[] { "DIMM_A1", "DIMM_B1" }, modules.Select(m => m.Slot).ToArray());
+    }
+
+    [Fact]
+    public void PlaceholderManufacturer_FallsBackToJedecId()
+    {
+        var table = BuildTable(BuildType17Banked("DIMM 1", "P0 CHANNEL A", "Unknown", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.Equal("Corsair", modules.Single().Manufacturer);
+    }
+
+    [Theory]
+    [InlineData("", "DIMM 1")]
+    [InlineData("DIMM 1", "DIMM 1")]
+    public void CollidingLocators_WithUnusableBankLabel_StayUnchanged(string bank, string locator)
+    {
+        var table = BuildTable(
+            BuildType17Banked(locator, bank, "Corsair", 0x02, 0x9E),
+            BuildType17Banked(locator, bank, "Corsair", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.Equal(2, modules.Count);
+        Assert.All(modules, m => Assert.Equal(locator, m.Slot));
+    }
+
+    [Fact]
+    public void EmptyCollidingLocators_GetNoBankPrefix()
+    {
+        var table = BuildTable(
+            BuildType17Banked("", "BANK 0", "Corsair", 0x02, 0x9E),
+            BuildType17Banked("", "BANK 1", "Corsair", 0x02, 0x9E));
+
+        var (modules, _) = SmbiosParser.Parse(table);
+
+        Assert.Equal(2, modules.Count);
+        Assert.All(modules, m => Assert.Equal("", m.Slot));
+    }
+
+    [Fact]
+    public void ShortStructBelowBankLabel_CollidingLocators_Unchanged()
+    {
+        const byte length = 0x11;
+        byte[] Short()
+        {
+            var b = new byte[length];
+            b[0] = MemoryDeviceType;
+            b[1] = length;
+            WriteU16(b, 0x0C, 16384);
+            b[0x10] = 1;
+            return AppendStrings(b, new List<string> { "DIMM 1" });
+        }
+
+        var (modules, _) = SmbiosParser.Parse(BuildTable(Short(), Short()));
+
+        Assert.Equal(2, modules.Count);
+        Assert.All(modules, m => Assert.Equal("DIMM 1", m.Slot));
+    }
+
+    [Fact]
+    public void ParseModules_ReturnsRawSlotAndManufacturer()
+    {
+        var table = BuildTable(
+            BuildType17Banked("DIMM 1", "P0 CHANNEL A", "Unknown", 0x02, 0x9E),
+            BuildType17Banked("DIMM 1", "P0 CHANNEL B", "Unknown", 0x02, 0x9E));
+
+        var modules = SmbiosParser.ParseModules(table);
+
+        Assert.All(modules, m => Assert.Equal("DIMM 1", m.Info.Slot));
+        Assert.All(modules, m => Assert.Equal("Unknown", m.Info.Manufacturer));
+    }
+
     private static byte[] BuildEmptySlotType17(ushort handle, string deviceLocator)
     {
         const byte length = 0x22;

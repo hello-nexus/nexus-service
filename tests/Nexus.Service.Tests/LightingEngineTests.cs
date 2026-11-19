@@ -119,6 +119,45 @@ public class LightingEngineTests
     }
 
     [Fact]
+    public async Task UpdateDevices_WhilePaused_PublishesOnlyTheNewFramesWithoutRendering()
+    {
+        using var engine = new LightingEngine();
+        var kept = MakeDevices();
+        engine.UpdateDevices(kept);
+        engine.FrameIntervalMs = 10;
+        var effect = new CountingEffect("held");
+        engine.SetEffect(effect);
+        var first = new TaskCompletionSource<bool>();
+        engine.FramePublished += () => first.TrySetResult(true);
+        await Task.WhenAny(first.Task, Task.Delay(2000));
+        engine.SetPaused(true);
+        // A tick in flight when the pause landed may still render and publish once; the second publish after
+        // that begins after the pause, so it is the paused branch's and the render count is stable from there.
+        var afterPause = new TaskCompletionSource<bool>();
+        var publishesAfterPause = 0;
+        engine.FramePublished += () =>
+        {
+            if (System.Threading.Interlocked.Increment(ref publishesAfterPause) >= 2)
+            {
+                afterPause.TrySetResult(true);
+            }
+        };
+        await Task.WhenAny(afterPause.Task, Task.Delay(2000));
+        Assert.True(afterPause.Task.IsCompletedSuccessfully);
+        var renders = effect.RenderCount;
+
+        var fresh = new DeviceFrame(9, "fresh", 4);
+        engine.UpdateDevices(new[] { kept[0], kept[1], fresh });
+        var published = new TaskCompletionSource<bool>();
+        engine.FramePublished += () => { if (fresh.HasPublished) published.TrySetResult(true); };
+        if (fresh.HasPublished) published.TrySetResult(true);
+        await Task.WhenAny(published.Task, Task.Delay(2000));
+
+        Assert.True(fresh.HasPublished);
+        Assert.Equal(renders, effect.RenderCount);
+    }
+
+    [Fact]
     public void SetEffect_ResetsPaused()
     {
         using var engine = new LightingEngine();

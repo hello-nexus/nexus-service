@@ -234,6 +234,20 @@ support-bundle ZIP export.
   fleet retries, FPS upload, OTA polling, cloud device reports). An opt-in
   extra puts every Nexus-rendered panel display to sleep. One mode is active
   at a time, by list order.
+- Calendar (`Calendar/`, `/api/calendar/*`, live on the `calendar` topic, a
+  revision ping with no event data): read-only subscriptions to ICS feed URLs.
+  Sources live in `<NexusRoot>/calendar/sources.json` (not `NexusSettings`, so
+  support bundles, settings exports and cloud backup never see them); the URL
+  is stored through `SecretProtector` and no route returns it, only its host.
+  `CalendarSyncWorker` ticks every 30 s and syncs what is due (service-wide
+  interval of 5, 15, 30 or 60 min; exponential backoff to 2 h on errors; manual
+  refresh throttled to 30 s). Parsed feeds are cached per source and read on
+  startup; recurrence is expanded at query time from the cached masters, so
+  any range works. Titles, locations, notes and URLs are never logged: a sync
+  logs only the source id, status code, byte count and error code. The hand
+  written parser (`Calendar/Ics/`) resolves TZIDs through the host database,
+  a Windows/IANA name map, then the feed's own VTIMEZONE, because invariant
+  globalization drops the ICU id conversion on Windows.
 - Volume mixer (`Audio/AudioMixerService.cs`, `/system/audio/mixer/*`, live on
   `audio/mixer`): per-application levels on the default output, one strip per
   process. Windows only: the Core Audio session walk runs in the user-session
