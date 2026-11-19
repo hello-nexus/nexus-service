@@ -862,16 +862,16 @@ public sealed class RgbBridge : IDisposable
     /// connection, the daemon refuses, or the previous pass never completed
     /// (a wedged pass makes every later rescan a no-op).
     /// </summary>
-    private void Redetect(string reason, bool detectorsChanged)
+    private bool Redetect(string reason, bool detectorsChanged)
     {
         if (RefuseRestartDuringShutdown(reason))
         {
-            return;
+            return false;
         }
         if (!IsActive)
         {
             ServiceLog.Info($"[rgb-bridge] re-detect skipped ({reason}): bridge not active");
-            return;
+            return false;
         }
         Task? pendingStart;
         lock (_lock)
@@ -879,13 +879,13 @@ public sealed class RgbBridge : IDisposable
         if (pendingStart is not null && !pendingStart.IsCompleted)
         {
             ServiceLog.Info($"[rgb-bridge] re-detect skipped ({reason}): deferred spawn still pending");
-            return;
+            return false;
         }
         var requested = Interlocked.Read(ref _redetectRequestedTicks);
         if (!_controller.IsConnected || (requested != 0 && DateTime.UtcNow.Ticks - requested > DetectionStallLimit.Ticks))
         {
             BounceSubprocess(reason);
-            return;
+            return true;
         }
         if (DetectionInProgress())
         {
@@ -897,7 +897,7 @@ public sealed class RgbBridge : IDisposable
                 _deferredDetectorsChanged |= detectorsChanged;
             }
             ServiceLog.Info($"[rgb-bridge] re-detect ({reason}) deferred until the running detection completes");
-            return;
+            return false;
         }
 
         lock (_lock)
@@ -937,6 +937,7 @@ public sealed class RgbBridge : IDisposable
                 BounceSubprocess(reason);
             }
         });
+        return true;
     }
 
     /// <summary>
@@ -1956,6 +1957,7 @@ public sealed class RgbBridge : IDisposable
             {
                 LogSettledDevices(finalList);
                 ReconcileDetectorExclusions(finalList, settingsSnapshot);
+                EvaluateMissingDram(finalList, settingsSnapshot);
             }
 
             // Sync engine's DeviceFrame array with the current hardware list. For a
@@ -2449,6 +2451,184 @@ public sealed class RgbBridge : IDisposable
         ServiceLog.Info($"[rgb-bridge] detector exclusions changed (+{delta.Add.Count}/-{delta.Remove.Count}), applying");
         Interlocked.Exchange(ref _lastBounceTicks, DateTime.UtcNow.Ticks);
         Redetect("detector-exclusions", detectorsChanged: true);
+    }
+
+    // Missing-DRAM re-detect state. _dramLock guards all of it.
+    private readonly object _dramLock = new();
+    private IOneShot? _dramTimer;
+    private int _dramAttempts;
+    private int _dramMissing;
+    private bool _dramArmed;
+    private bool _dramAttemptOutstanding;
+    private bool _dramSessionCounted;
+    private bool _dramClosed;
+    private static readonly TimeSpan DramBusyRetry = TimeSpan.FromSeconds(30);
+
+    private bool SmbusDramGateOn()
+        => _controlGate is null || _controlGate.IsEnabled(Nexus.Service.Devices.Handlers.SmbusDramHandler.HandlerId);
+
+    /// <summary>
+    /// Runs on each settled list. Known SMBus DRAM devices absent from it schedule bounded
+    /// re-detect passes; a list that holds them all ends the series.
+    /// </summary>
+    private void EvaluateMissingDram(IReadOnlyList<RgbDevice> settled, NexusSettings settings)
+    {
+        var gateOn = SmbusDramGateOn();
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        var dramSeen = new List<string>();
+        var otherSeen = new List<string>();
+        foreach (var d in settled)
+        {
+            var id = d.StableId;
+            present.Add(id);
+            if (!DramRedetectPlan.IsSmbusDeviceId(id))
+            {
+                continue;
+            }
+            (OpenRgbZoneSupport.OpenRgbTypeName(d.Type) == "dram" ? dramSeen : otherSeen).Add(id);
+        }
+
+        var known = KnownDramAfterSettle(settings, dramSeen, otherSeen);
+        var missing = gateOn
+            ? DramRedetectPlan.MissingKnown(known.Keys, present, settings.Devices.OpenRgbDetectorExclusions.Keys.ToHashSet(StringComparer.Ordinal))
+            : new List<string>();
+
+        var prune = false;
+        lock (_dramLock)
+        {
+            if (_dramClosed)
+            {
+                return;
+            }
+            _dramMissing = missing.Count;
+            if (_dramAttemptOutstanding)
+            {
+                _dramAttemptOutstanding = false;
+                var of = $"{_dramAttempts}/{DramRedetectPlan.Delays.Length}";
+                ServiceLog.Info(!gateOn
+                    ? $"[rgb-bridge] dram-missing re-detect {of} ended: Nexus Control for the memory device is off"
+                    : missing.Count == 0
+                        ? $"[rgb-bridge] dram-missing re-detect {of}: no known DRAM device is missing"
+                        : $"[rgb-bridge] dram-missing re-detect {of}: {missing.Count} known DRAM device(s) still missing");
+            }
+            if (missing.Count == 0)
+            {
+                _dramAttempts = 0;
+                _dramArmed = false;
+                _dramTimer?.Disarm();
+                return;
+            }
+            if (_dramArmed)
+            {
+                return;
+            }
+            var delay = DramRedetectPlan.NextDelay(_dramAttempts, missing.Count);
+            if (delay is null)
+            {
+                prune = !_dramSessionCounted;
+                _dramSessionCounted = true;
+            }
+            else
+            {
+                _dramArmed = true;
+                ServiceLog.Info($"[rgb-bridge] {missing.Count} known DRAM device(s) missing after settle, re-detect {_dramAttempts + 1}/{DramRedetectPlan.Delays.Length} in {delay.Value.TotalSeconds:0}s");
+                (_dramTimer ??= OneShotFactory(OnDramDeadline)).Arm(delay.Value);
+            }
+        }
+        if (prune)
+        {
+            var forgotten = new List<string>();
+            _store.Update(s =>
+            {
+                var before = s.Devices.OpenRgbKnownDram;
+                var after = DramRedetectPlan.RecordMissedSession(before, missing);
+                foreach (var id in before.Keys)
+                {
+                    if (!after.ContainsKey(id))
+                    {
+                        forgotten.Add(id);
+                    }
+                }
+                s.Devices.OpenRgbKnownDram = after;
+            });
+            ServiceLog.Info($"[rgb-bridge] DRAM re-detect series spent with {missing.Count} known device(s) still missing; forgot {forgotten.Count} that stayed missing for {DramRedetectPlan.MaxMissedSessions} sessions");
+        }
+    }
+
+    /// <summary>The known DRAM set after this settled list, persisted when it changed. The first run seeds it from the card ids an earlier build recorded.</summary>
+    private Dictionary<string, int> KnownDramAfterSettle(NexusSettings settings, List<string> dramSeen, List<string> otherSeen)
+    {
+        var current = settings.Devices.OpenRgbKnownDram;
+        var seed = !settings.Devices.OpenRgbKnownDramSeeded;
+        var baseline = current;
+        if (seed)
+        {
+            baseline = new Dictionary<string, int>(current, StringComparer.Ordinal);
+            foreach (var id in DramRedetectPlan.SeedFromCardIds(settings.Devices.MappingKnownDevices))
+            {
+                baseline.TryAdd(id, 0);
+            }
+        }
+        var next = DramRedetectPlan.Reconcile(baseline, dramSeen, otherSeen);
+        if (!seed && DramRedetectPlan.SameCounts(current, next))
+        {
+            return current;
+        }
+        _store.Update(s =>
+        {
+            s.Devices.OpenRgbKnownDram = next;
+            s.Devices.OpenRgbKnownDramSeeded = true;
+        });
+        return next;
+    }
+
+    private void OnDramDeadline()
+    {
+        lock (_dramLock)
+        {
+            if (_dramClosed || !_dramArmed)
+            {
+                return;
+            }
+            _dramArmed = false;
+        }
+        if (!IsActive || OsShuttingDown())
+        {
+            return;
+        }
+        if (!SmbusDramGateOn())
+        {
+            ServiceLog.Info("[rgb-bridge] dram-missing re-detect cancelled: Nexus Control for the memory device is off");
+            return;
+        }
+        int attempt;
+        lock (_dramLock)
+        {
+            if (_dramClosed || _dramArmed || _dramMissing == 0 || _dramAttempts >= DramRedetectPlan.Delays.Length)
+            {
+                return;
+            }
+            if (DetectionInProgress())
+            {
+                _dramArmed = true;
+                _dramTimer?.Arm(DramBusyRetry);
+                return;
+            }
+            attempt = ++_dramAttempts;
+            _dramAttemptOutstanding = true;
+        }
+        ServiceLog.Info($"[rgb-bridge] dram-missing re-detect {attempt}/{DramRedetectPlan.Delays.Length} starting");
+        if (Redetect("dram-missing", detectorsChanged: false))
+        {
+            return;
+        }
+        // Refused or deferred, so no pass ran: the attempt is not spent, and the next settled list schedules again.
+        lock (_dramLock)
+        {
+            _dramAttempts--;
+            _dramAttemptOutstanding = false;
+        }
+        ServiceLog.Info($"[rgb-bridge] dram-missing re-detect {attempt}/{DramRedetectPlan.Delays.Length} did not run; attempt not spent");
     }
 
     /// <summary>Drops the dedup baseline so the next frame always pushes, e.g. when a device re-enters control.</summary>
@@ -3418,6 +3598,12 @@ public sealed class RgbBridge : IDisposable
             _settleTimerClosed = true;
             _settleTimer?.Dispose();
             _settleTimer = null;
+        }
+        lock (_dramLock)
+        {
+            _dramClosed = true;
+            _dramTimer?.Dispose();
+            _dramTimer = null;
         }
         lock (_lock)
         {

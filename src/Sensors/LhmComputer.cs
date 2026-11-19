@@ -154,6 +154,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                     _computer.Open();
                     _opened = true;
                     Console.WriteLine($"[lhm] background open complete in {sw.ElapsedMilliseconds}ms");
+                    LogDimmCount("after open");
+                    Interlocked.Exchange(ref _dimmWatchUntilTicks, Environment.TickCount64 + (long)DimmWatchWindow.TotalMilliseconds);
                 }
             }
             catch (Exception ex)
@@ -175,6 +177,38 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     }
 
     public Computer Instance => _computer;
+
+    // MemoryGroup re-probes the DIMMs on its own retry schedule after Open and exposes no completion signal, so walks right after Open log the count whenever it changes.
+    private static readonly TimeSpan DimmWatchWindow = TimeSpan.FromMinutes(1);
+    private long _dimmWatchUntilTicks;
+    private int _lastDimmCount = -1;
+
+    private void WatchDimmCount()
+    {
+        var until = Interlocked.Read(ref _dimmWatchUntilTicks);
+        if (until == 0 || Environment.TickCount64 > until)
+        {
+            return;
+        }
+        LogDimmCount("on walk");
+    }
+
+    private void LogDimmCount(string when)
+    {
+        try
+        {
+            var addresses = new List<byte>();
+            CollectDimmAddresses(_computer.Hardware, addresses);
+            if (Interlocked.Exchange(ref _lastDimmCount, addresses.Count) != addresses.Count)
+            {
+                ServiceLog.Info($"[lhm] DIMMs detected {when}: {addresses.Count}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[lhm] DIMM count {when} failed: {ex.Message}");
+        }
+    }
 
     /// <summary>True while DIMM reads are paused; the sticks' sensors hold their last value, so callers must not publish them.</summary>
     internal bool DimmReadsPaused => _dimmBackoff.Paused;
@@ -504,6 +538,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                         ServiceLog.Info("[lhm] DIMM SPD reads fast again; RAM temperature reads resumed");
                         break;
                 }
+                WatchDimmCount();
                 if (!_testHost && _walkWatch.EndWalk())
                 {
                     ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");

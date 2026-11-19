@@ -1747,6 +1747,12 @@ public sealed class DevicesSettings
     /// <summary>"{device name}#{same-name ordinal}" -> the "openrgb-N" id a serial- and location-less OpenRGB device first had, kept for good so its settings stay put when the list reorders.</summary>
     public Dictionary<string, string> OpenRgbPinnedIds { get; set; } = new();
 
+    /// <summary>SMBus DRAM device ids a settled OpenRGB list has held, each with the count of consecutive sessions it stayed missing after the re-detect series; dropped at the cap so a removed stick stops costing rescans.</summary>
+    public Dictionary<string, int> OpenRgbKnownDram { get; set; } = new();
+
+    /// <summary>True once <see cref="OpenRgbKnownDram"/> was seeded from the ids an earlier build recorded in <see cref="MappingKnownDevices"/>.</summary>
+    public bool OpenRgbKnownDramSeeded { get; set; }
+
     /// <summary>Detector names from <see cref="Nexus.Service.Lighting.Rgb.OpenRgbGamepadDefaults"/> the user turned on; every other one stays disabled.</summary>
     public List<string> OpenRgbGamepadDetectorsAllowed { get; set; } = new();
 
