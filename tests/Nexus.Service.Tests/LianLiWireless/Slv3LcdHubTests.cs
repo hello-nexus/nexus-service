@@ -47,6 +47,20 @@ public class Slv3LcdHubTests
         Assert.Equal(new byte[] { 1, 2, 3 }, Assert.Single(transport.PushedImages));
     }
 
+    [Theory]
+    [InlineData(Slv3LcdProtocol.ProductIdTl, 60)]
+    [InlineData(Slv3LcdProtocol.ProductIdSl, 30)]
+    public void MaxFps_follows_the_opened_screens_model(int productId, int fps)
+    {
+        var (hub, _, discovery) = CreateHub();
+        discovery.Ports.Add(new Slv3LcdPortInfo { PortName = "path-1", Serial = "SER1", ProductId = productId });
+
+        // Not opened yet: the model is unknown, so the slower rate.
+        Assert.Equal(Slv3LcdHub.DefaultMaxFps, hub.MaxFps("SER1"));
+        hub.PushImageToSerial("SER1", new byte[] { 1, 2, 3 });
+        Assert.Equal(fps, hub.MaxFps("SER1"));
+    }
+
     [Fact]
     public void PushImageToSerial_hands_a_jpeg_without_a_jfif_header_to_the_wireless_screen_unchanged()
     {
