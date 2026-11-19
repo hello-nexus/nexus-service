@@ -125,9 +125,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private long _argbReleasedAtMs;
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
-    // SL V2 only. The hub drops the first command after a latch, so an apply never starts inside the settle window of
-    // the previous one, a settings change must hold still for the same window before it is applied (a brightness drag
-    // becomes one apply), and each apply is repeated once after a longer pause to repair a port that still missed it.
+    // SL V2 only, an unproven fix for ports that miss an apply after a latch: changes are held until still, applies keep apart, each is repeated once.
     internal int SlV2SettleMs { get; set; } = 150;
     internal int SlV2RepeatMs { get; set; } = 500;
     private int _debounceSig;
@@ -347,6 +345,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _lastFirmwareSig = null;
             _pendingFirmwareSig = null;
             _repeatAtMs = 0;
+            _debounceSinceMs = long.MinValue;
             _commitRetry.Reset();
             // A merged firmware effect outlives per-channel custom commits too.
             if (!_customMergeCleared && profile.ExplicitMergeControl && _hub.SendStopMerge())
@@ -419,6 +418,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value)
         {
+            _debounceSinceMs = long.MinValue;
             return;
         }
         if (settling && !_repeating)

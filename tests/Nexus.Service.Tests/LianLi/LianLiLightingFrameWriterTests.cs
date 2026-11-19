@@ -1005,7 +1005,7 @@ public class LianLiLightingFrameWriterTests
         _store.Update(s => s.Devices.LianLiLighting.Brightness = 1);
         _writer.Tick();
         Advance(100);
-        _store.Update(s => s.Devices.LianLiLighting.Brightness = 4);
+        _store.Update(s => s.Devices.LianLiLighting.Brightness = 2);
         _writer.Tick();
         Advance(149);
         _writer.Tick();
@@ -1014,9 +1014,40 @@ public class LianLiLightingFrameWriterTests
         Advance(1);
         _writer.Tick();
 
-        // brightness 4 is the full-brightness byte
-        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1A && c.Bytes[5] == 0x00);
-        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1A && c.Bytes[5] == 0x03);
+        // brightness step 2 is the mid byte; the first value (step 1) and the default never reach the hub
+        Assert.Contains(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1A && c.Bytes[5] == 0x02);
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x1A && c.Bytes[5] is 0x03 or 0x00);
+    }
+
+    [Fact]
+    public void Sl_v2_hold_is_not_skipped_when_a_value_returns_to_the_applied_one_and_then_changes_again()
+    {
+        UseSlV2Settling();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("tide");
+        _writer.Tick();
+        Advance(150);
+        _writer.Tick();
+        Advance(60_000);
+        _writer.Tick();
+        _writer.Tick();
+        var applied = Calls.Count;
+
+        _store.Update(s => s.Devices.LianLiLighting.Brightness = 1);
+        _writer.Tick();
+        Advance(60);
+        _store.Update(s => s.Devices.LianLiLighting.Brightness = 4);
+        _writer.Tick();
+        Advance(60_000);
+        _writer.Tick();
+        Assert.Equal(applied, Calls.Count);
+
+        _store.Update(s => s.Devices.LianLiLighting.Brightness = 1);
+        _writer.Tick();
+        Assert.Equal(applied, Calls.Count);
+        Advance(150);
+        _writer.Tick();
+        Assert.True(Calls.Count > applied);
     }
 
     [Fact]
