@@ -21,7 +21,7 @@ dashboard, the on-device panels, the phone companions, and
 | **Diagnostics** | SMART/NVMe health, Windows event-log incidents, GPU throttling, pump and fan stall detection, rolled up into per-component health verdicts with a support-bundle export. |
 | **Remote** | Pairing (local TLS, SPKI pinning, pair codes), a regional relay for the phone away from the LAN with a WebRTC direct upgrade, and phone-as-webcam. |
 | **Cloud** | Optional Nexus account: profile backup and sync, device reporting, fleet telemetry, OTA self-update. Disabled in unofficial builds (see Build). |
-| **AI** | In-process MCP (Model Context Protocol) server, off by default, exposing telemetry, diagnostics, history and control behind per-capability consent and an audit log. Dev-tools builds add a local Ollama-backed assistant. |
+| **AI** | In-process MCP (Model Context Protocol) server, off by default, exposing telemetry, diagnostics, history, control and panel screen editing behind per-capability consent and an audit log. Dev-tools builds add a local Ollama-backed assistant. |
 | **Lifecycle** | Windows service and tray, macOS launchd, Linux systemd daemon. Single instance, self-elevation, migration from Nexus 2 and FanControl. |
 
 Per-subsystem detail (routes, invariants, security notes) is in
