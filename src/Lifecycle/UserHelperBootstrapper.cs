@@ -399,7 +399,7 @@ internal static class UserHelperBootstrapper
     {
         var (userId, runAs) = UserSessionTaskXml.TaskPrincipal(
             username, Environment.MachineName, ConsoleSessionAccount.TryResolve,
-            ConsoleSessionAccount.ConsoleDomain());
+            ConsoleSessionAccount.ConsoleDomainFor(username));
         try
         {
             if (CreateFromXml(taskName, userId, command, elevated))

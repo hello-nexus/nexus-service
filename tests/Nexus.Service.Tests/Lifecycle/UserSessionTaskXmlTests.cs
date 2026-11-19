@@ -112,6 +112,34 @@ public class UserSessionTaskXmlTests
     }
 
     [Fact]
+    public void QualifiesALocalUserWithThePcDomainWhenNoSessionAccount()
+    {
+        var principal = UserSessionTaskXml.TaskPrincipal("nicol", "T1", () => null, "T1");
+
+        Assert.Equal(("T1\\nicol", "T1\\nicol"), principal);
+    }
+
+    [Fact]
+    public void UsesTheSessionSidForALocalUserWithADomain()
+    {
+        var principal = UserSessionTaskXml.TaskPrincipal(
+            "nicol", "T1", () => ("S-1-5-21-1-2-3-1001", "T1\\nicol", "nicol"), "T1");
+
+        Assert.Equal(("S-1-5-21-1-2-3-1001", "T1\\nicol"), principal);
+    }
+
+    // After a fast user switch the caller passes no domain for the stale user, so
+    // a local user is never qualified with another session's AzureAD domain.
+    [Fact]
+    public void IgnoresASessionAccountOfAnotherUserAndKeepsTheBareNameWithoutADomain()
+    {
+        var principal = UserSessionTaskXml.TaskPrincipal(
+            "nicol", "T1", () => ("S-1-12-1-1-2-3-4", "AzureAD\\jdoe", "jdoe"), string.Empty);
+
+        Assert.Equal(("nicol", "nicol"), principal);
+    }
+
+    [Fact]
     public void DoesNotDoubleQualifyAUserNameThatAlreadyHasADomain()
     {
         var principal = UserSessionTaskXml.TaskPrincipal("CORP\\USER", "USER", () => null, "CORP");

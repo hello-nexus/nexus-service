@@ -400,7 +400,7 @@ public sealed class Nexus2Detector : INexus2Detector
                 UserSessionTaskXml.Build(
                     UserSessionTaskXml.TaskPrincipal(
                         username, Environment.MachineName, ConsoleSessionAccount.TryResolve,
-                        ConsoleSessionAccount.ConsoleDomain()).UserId,
+                        ConsoleSessionAccount.ConsoleDomainFor(username)).UserId,
                     $"\"{exe}\" {arguments}", elevated: true));
             if (Schtasks("/Create", "/TN", taskName, "/XML", xmlPath, "/F") != 0)
             {

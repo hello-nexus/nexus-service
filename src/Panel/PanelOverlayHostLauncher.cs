@@ -477,7 +477,7 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     {
         var (userId, runAs) = Nexus.Service.Lifecycle.UserSessionTaskXml.TaskPrincipal(
             username, Environment.MachineName, Nexus.Service.Lifecycle.ConsoleSessionAccount.TryResolve,
-            Nexus.Service.Lifecycle.ConsoleSessionAccount.ConsoleDomain());
+            Nexus.Service.Lifecycle.ConsoleSessionAccount.ConsoleDomainFor(username));
         try
         {
             var xmlPath = Nexus.Service.Lifecycle.UserSessionTaskXml.WriteTempFile(
