@@ -16,7 +16,7 @@ public class OpenRgbGamepadDefaultsTests
     {
         var held = OpenRgbGamepadDefaults.HeldOffDetectors(new NexusSettings());
 
-        Assert.Equal(new[] { "Corsair Katar Pro", "Corsair Katar Pro V2", "Corsair Katar Pro XT", "Corsair M55 RGB PRO", "Corsair M65 RGB Ultra Wired", "Corsair Scimitar PRO RGB", "GameSir Nova 2 Lite", "HyperX Pulsefire Haste", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" }, held);
+        Assert.Equal(new[] { "Corsair Katar Pro", "Corsair Katar Pro V2", "Corsair Katar Pro XT", "Corsair M55 RGB PRO", "Corsair M65 RGB Ultra Wired", "Corsair Scimitar PRO RGB", "GameSir Nova 2 Lite", "HyperX Pulsefire Haste", "Red Magic Cyber Gamepad", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" }, held);
     }
 
     [Fact]

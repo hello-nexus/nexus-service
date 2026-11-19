@@ -379,7 +379,7 @@ public class JsonConfigStoreMigrationTests : IDisposable
         "Corsair M65 RGB Ultra Wired", "Corsair Scimitar PRO RGB", "HyperX Pulsefire Haste",
     };
 
-    private static readonly string[] Gamepads = { "GameSir Nova 2 Lite", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" };
+    private static readonly string[] Gamepads = { "GameSir Nova 2 Lite", "Red Magic Cyber Gamepad", "Sony DualSense", "Sony DualSense Edge", "Sony DualShock 4" };
 
     private SortedSet<string> HeldOffAfterLoad(string? json)
     {

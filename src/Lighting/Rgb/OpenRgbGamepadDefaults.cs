@@ -36,6 +36,9 @@ public static class OpenRgbGamepadDefaults
         new("Sony DualSense", "Sony", 0x054C, 0x0CE6),
         new("Sony DualSense Edge", "Sony", 0x054C, 0x0DF2),
         new("GameSir Nova 2 Lite", "GameSir", 0x3537, 0x100F),
+        // One detector name over the wired and 2.4G dongle PIDs, so the denylist covers both.
+        new("Red Magic Cyber Gamepad", "Red Magic", 0x3537, 0x101C),
+        new("Red Magic Cyber Gamepad", "Red Magic", 0x3537, 0x101F),
         // Mice: OpenRGB control mode breaks their buttons or DPI.
         new("Corsair Katar Pro", "Corsair", 0x1B1C, 0x1B93, MouseType),
         new("Corsair Katar Pro V2", "Corsair", 0x1B1C, 0x1BBA, MouseType),
