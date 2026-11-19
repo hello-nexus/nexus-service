@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
@@ -35,6 +36,34 @@ public sealed class LianLiHub : IDisposable
     private bool _present;
 
     public LianLiState State { get; } = new();
+
+    /// <summary>Minimum time between the starts of two hub writes, zero for none; the SL V2 drops a command that follows another too closely.</summary>
+    public int MinWriteGapMs
+    {
+        get => Volatile.Read(ref _minWriteGapMs);
+        set => Volatile.Write(ref _minWriteGapMs, value);
+    }
+    private int _minWriteGapMs;
+    private long _lastWriteTs;
+
+    // Caller holds _lock. Waits on a monotonic clock, since Thread.Sleep lasts as long as the process timer resolution allows.
+    private void Pace()
+    {
+        var gap = MinWriteGapMs;
+        if (gap <= 0)
+        {
+            return;
+        }
+        var until = _lastWriteTs + gap * Stopwatch.Frequency / 1000;
+        while (true)
+        {
+            var left = until - Stopwatch.GetTimestamp();
+            if (left <= 0) break;
+            if (left > 3 * Stopwatch.Frequency / 1000) Thread.Sleep(1);
+            else Thread.Yield();
+        }
+        _lastWriteTs = Stopwatch.GetTimestamp();
+    }
 
     public bool IsConnected => State.IsConnected;
 
@@ -76,6 +105,7 @@ public sealed class LianLiHub : IDisposable
             _modelName = "";
             State.FirmwareVersion = "";
             State.IsConnected = false;
+            MinWriteGapMs = 0;
         }
     }
 
@@ -84,6 +114,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return _device.SetFeature(LianLiProtocol.BuildSetQuantity(_profile, port, qty));
         }
     }
@@ -93,6 +124,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return _device.SetFeature(LianLiProtocol.BuildReleaseMode(port, _profile.ManualRegister));
         }
     }
@@ -102,6 +134,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             // Mode write then duty write: firmware drops the duty byte if it arrives
             // before the manual-mode transition settles (FanControl.LianLi / L-Connect 3).
             if (!_device.SetFeature(LianLiProtocol.BuildManualMode(port, _profile.ManualRegister))) return false;
@@ -125,6 +158,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             if (!_device.SetFeature(LianLiProtocol.BuildSetSpeed(port, duty, _profile.FlooredDuty))) return false;
             State.Duty[port] = duty;
             return true;
@@ -155,6 +189,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return _device.SetFeature(LianLiProtocol.BuildSetQuantity(_profile, port, fans));
         }
     }
@@ -164,6 +199,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             LianLiProtocol.WriteColorData(_colorReport, ch, leds);
             // SL-Infinity colours stay on the control pipe its lighting was
             // verified over; the SL v1 takes them on interrupt-OUT.
@@ -192,6 +228,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return WriteCommand(LianLiProtocol.BuildEffectCommit(ch, effect, speed, dir, brightness));
         }
     }
@@ -206,6 +243,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return _device.SetFeature(LianLiProtocol.BuildStopMerge());
         }
     }
@@ -215,6 +253,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return _device.SetFeature(LianLiProtocol.BuildMergeOrder(order));
         }
     }
@@ -230,6 +269,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             if (!_device.SetFeature(LianLiProtocol.BuildArgbSync(_profile, on))) return false;
             if (on) return true;
             var ok = true;
@@ -249,6 +289,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             return _device.SetFeature(LianLiProtocol.BuildFrameSync(_profile));
         }
     }
@@ -260,6 +301,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             if (!_device.SetFeature(LianLiProtocol.BuildFirmwarePrimer())) return false;
             Span<byte> buf = stackalloc byte[LianLiProtocol.InputReportSize];
             buf[0] = LianLiProtocol.ReportId;
@@ -275,6 +317,7 @@ public sealed class LianLiHub : IDisposable
         lock (_lock)
         {
             if (_device == null) return false;
+            Pace();
             if (!_device.SetFeature(LianLiProtocol.BuildRpmPrimer())) return false;
             Span<byte> buf = stackalloc byte[LianLiProtocol.InputReportSize];
             buf[0] = LianLiProtocol.ReportId;

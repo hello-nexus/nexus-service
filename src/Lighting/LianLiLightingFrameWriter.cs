@@ -60,25 +60,16 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    // The SL V2 hub ignores a command that follows the previous one too closely; OpenRGB's driver for it waits after every write.
-    // The firmware-mode apply therefore spaces its writes with a monotonic clock rather than Thread.Sleep, whose length follows the process timer resolution.
+    // The SL V2 ignores a command that follows the previous one too closely, so its hub spaces every write itself
+    // (fan control and the poll share the wire). Custom streaming is left unspaced to keep its frame rate.
     internal int FirmwareWriteGapMs { get; set; } = 5;
 
-    private void SettleFirmware(in LianLiFanProfile profile)
+    private void ApplyWriteGap(in LianLiFanProfile profile, bool custom)
     {
-        if (profile.Family != LianLiFanFamily.SlV2 || FirmwareWriteGapMs <= 0)
-        {
-            Settle();
-            return;
-        }
-        var until = Stopwatch.GetTimestamp() + FirmwareWriteGapMs * Stopwatch.Frequency / 1000;
-        while (true)
-        {
-            var left = until - Stopwatch.GetTimestamp();
-            if (left <= 0) return;
-            if (left > 3 * Stopwatch.Frequency / 1000) Thread.Sleep(1);
-            else Thread.Yield();
-        }
+        var gap = profile.Family == LianLiFanFamily.SlV2 && !custom ? FirmwareWriteGapMs : 0;
+        if (_hub.MinWriteGapMs == gap) return;
+        _hub.MinWriteGapMs = gap;
+        ServiceLog.Info($"[lianli-lighting-writer] hub write gap set to {gap} ms");
     }
 
     // Hub writes are synchronous HidD_SetFeature, each taking LianLiHub._lock that
@@ -255,6 +246,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var ls = LianLiHubSet.LightingOf(settings.Devices, _hub.DeviceId);
         var fans = LianLiHubSet.FansOf(settings.Devices, _hub.DeviceId);
         var profile = _hub.Profile;
+        ApplyWriteGap(profile, ls.Mode == "custom");
         var argbSync = profile.PlaysArgbInput(ls.ArgbSync);
         if (_argbSyncSent != argbSync && !_argbSyncRetry.BackingOff(NowMs()))
         {
@@ -656,7 +648,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         List<IReadOnlyList<ResolvedZone>> zonesByDevice,
         Dictionary<string, LightingDevicePreference> prefs)
     {
-        var startedAt = Stopwatch.GetTimestamp();
         // Per-channel commits do not exit a merged effect; only merge-off does (the identity merge order does not).
         if (profile.ExplicitMergeControl)
         {
@@ -703,12 +694,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     if (profile.StartActionPerFrame)
                     {
                         if (!_hub.SendStartAction(ch / profile.ChannelsPerPort, numFans)) return false;
-                        SettleFirmware(profile);
+                        Settle();
                     }
                     if (!_hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount))) return false;
-                    SettleFirmware(profile);
+                    Settle();
                     if (!_hub.SendModeCommit(ch, effectByte, speedByte, dirByte, brightnessByte)) return false;
-                    SettleFirmware(profile);
+                    Settle();
                 }
             }
         }
@@ -717,13 +708,9 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // previous speed/brightness; this latches them. Once for the whole
         // apply, after every port, exactly as L-Connect does.
         if (!_hub.SendFrameSync()) return false;
-        SettleFirmware(profile);
+        Settle();
         _mergeMaybeActive = false;
         _mergeExitRetry.Reset();
-        if (profile.Family == LianLiFanFamily.SlV2)
-        {
-            ServiceLog.Info($"[lianli-lighting-writer] firmware mode {mode.Key} applied in {Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:F0} ms");
-        }
         return true;
     }
 
@@ -736,13 +723,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             var ch = p * profile.ChannelsPerPort;
             Array.Clear(_channelBuf);
             if (!_hub.SendColorData(ch, _channelBuf.AsSpan(0, profile.MaxFans * profile.LedsPerFanForChannel(ch) * 3))) return false;
-            SettleFirmware(profile);
+            Settle();
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectStatic, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, LianLiLightingModes.BrightnessCodes[0])) return false;
-            SettleFirmware(profile);
+            Settle();
         }
         if (!latch) return true;
         if (!_hub.SendFrameSync()) return false;
-        SettleFirmware(profile);
+        Settle();
         return true;
     }
 

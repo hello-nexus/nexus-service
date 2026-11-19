@@ -22,10 +22,7 @@ public class LianLiLightingFrameWriterTests
 
     public LianLiLightingFrameWriterTests()
     {
-        _writer = new LianLiLightingFrameWriter(_engine, _hub, _store, new Np50IdentifyTracker())
-        {
-            FirmwareWriteGapMs = 0,
-        };
+        _writer = new LianLiLightingFrameWriter(_engine, _hub, _store, new Np50IdentifyTracker());
     }
 
     private static LianLiFanProfile Profile(int pid)
@@ -154,33 +151,65 @@ public class LianLiLightingFrameWriterTests
         Assert.Equal(new byte[] { 0x10, 0x11 }, commits);
     }
 
-    [Fact]
-    public void Sl_v2_firmware_apply_spaces_every_write_by_the_gap()
+    [Theory]
+    [InlineData(0xA103, "colorCycle", 5)]
+    [InlineData(0xA105, "tide", 5)]
+    [InlineData(0xA105, "custom", 0)]
+    [InlineData(0xA102, "rainbowWave", 0)]
+    [InlineData(0xA100, "rainbowWave", 0)]
+    public void Only_an_sl_v2_outside_custom_mode_gets_a_hub_write_gap(int pid, string mode, int expectedGapMs)
     {
-        _writer.FirmwareWriteGapMs = 5;
-        Attach(0xA105, port: 0, fans: 3);
-        SetMode("colorCycle");
+        Attach(pid, port: 0, fans: 3);
+        SetMode(mode);
 
-        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         _writer.Tick();
-        var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
 
-        // start, colour, commit and the latch, plus the exit park of the three ports without fans
-        Assert.True(Calls.Count >= 4);
-        Assert.True(elapsed.TotalMilliseconds >= (Calls.Count - 1) * 5 * 0.9, $"{Calls.Count} writes took {elapsed.TotalMilliseconds} ms");
+        Assert.Equal(expectedGapMs, _hub.MinWriteGapMs);
     }
 
     [Fact]
-    public void Sl_infinity_firmware_apply_is_not_slowed_by_the_gap()
+    public void Leaving_the_sl_v2_firmware_modes_for_custom_drops_the_gap_and_detach_clears_it()
     {
-        _writer.FirmwareWriteGapMs = 50;
-        Attach(0xA102, port: 0, fans: 3);
-        SetMode("rainbowWave");
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("tide");
+        _writer.Tick();
+        Assert.Equal(5, _hub.MinWriteGapMs);
+
+        SetMode("custom");
+        _writer.Tick();
+        Assert.Equal(0, _hub.MinWriteGapMs);
+
+        SetMode("tide");
+        _writer.Tick();
+        _hub.Detach();
+        Assert.Equal(0, _hub.MinWriteGapMs);
+    }
+
+    [Fact]
+    public void Hub_writes_keep_the_gap_whoever_sends_them()
+    {
+        Attach(0xA105, port: 0, fans: 3);
+        _hub.MinWriteGapMs = 5;
 
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
-        _writer.Tick();
+        for (var i = 0; i < 5; i++)
+        {
+            // the poll and fan control write through the same hub as the lighting writer
+            Assert.True(i % 2 == 0 ? _hub.SendFrameSync() : _hub.SetDuty(0, 40));
+        }
 
-        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds < 400);
+        // four gaps lie between five writes; load can only lengthen them
+        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds >= 4 * 5 * 0.9);
+    }
+
+    [Fact]
+    public void Hub_writes_are_not_delayed_without_a_gap()
+    {
+        Attach(0xA105, port: 0, fans: 3);
+
+        for (var i = 0; i < 50; i++) _hub.SendFrameSync();
+
+        Assert.Equal(50, Calls.Count);
     }
 
     [Fact]
