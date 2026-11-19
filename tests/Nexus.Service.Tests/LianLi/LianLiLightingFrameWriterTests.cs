@@ -394,7 +394,7 @@ public class LianLiLightingFrameWriterTests
             Assert.Equal(HubTransportSpy.CallKind.OutputReport, Calls[at - 1].Kind);
             Assert.Equal(0x30 | (commit.Bytes[1] & 0x0F), Calls[at - 1].Bytes[1]);
         }
-        Assert.Single(Calls, c => c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x04);
+        Assert.Equal(2, Calls.Count(c => c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x04));
         Assert.Equal(new byte[] { 0xE0, 0x60, 0x00, 0x04, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
     }
 
@@ -553,11 +553,11 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
         _spy.Calls.Clear();
         _store.Update(s => s.Devices.LianLiLighting.Merge = false);
-        _spy.RejectAfter = 2;
+        _spy.RejectAfter = 9;
 
         _writer.Tick();
-        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 0));
-        Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x04);
+        Assert.True(IsDarkParkOf(Calls[6], Calls[7], 3));
+        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x1C);
 
         _spy.RejectAfter = -1;
         _spy.Calls.Clear();

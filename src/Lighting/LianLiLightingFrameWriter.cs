@@ -643,14 +643,14 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         else if (_mergeMaybeActive)
         {
-            // A merge outlives a PC restart in the hub and its head port keeps playing it through a plain commit
-            // (the dark head port after a reboot), so every port that is not left to its own app goes dark first.
-            // The commits below then change each port's state instead of repeating it. An uncontrolled port is never written.
+            // A merge outlives a PC restart in the hub and its head port can keep playing it through a plain commit,
+            // so every port not left to its own app goes dark and latches first; each commit below then changes that
+            // port's state instead of repeating it. An uncontrolled port is never written.
             var park = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: true);
             var controlled = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: false);
             for (var p = 0; p < park.Length; p++) park[p] |= controlled[p];
-            ServiceLog.Info($"[lianli-lighting] leaving a possible merge: dark commits on ports {PortList(park)} before mode {mode.Key}");
-            if (!ExitMergeByPortCommits(profile, park, latch: false)) return false;
+            ServiceLog.Info($"[lianli-lighting-writer] leaving a possible merge: dark commits on ports {PortList(park)} before mode {mode.Key}");
+            if (!ExitMergeByPortCommits(profile, park, latch: true)) return false;
         }
 
         for (var i = 0; i < composed.Count; i++)
@@ -713,7 +713,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             if (!mask[p]) continue;
             if (sb.Length > 0) sb.Append(',');
-            sb.Append(p);
+            sb.Append(p + 1);
         }
         return sb.Length == 0 ? "none" : sb.ToString();
     }
