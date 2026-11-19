@@ -86,18 +86,37 @@ public class UserSessionTaskXmlTests
     [Theory]
     [InlineData("nicol", "T1")]
     [InlineData("Bruno", "BRUNO-PC")]
-    [InlineData("CORP\\USER", "USER")]
-    public void KeepsTheBareNameUnlessTheUserIsNamedLikeTheComputer(string username, string machine)
+    public void KeepsTheBareNameForALocalUserWithoutASessionAccount(string username, string machine)
     {
-        var looked = false;
-        var principal = UserSessionTaskXml.TaskPrincipal(username, machine, () =>
-        {
-            looked = true;
-            return ("S-1-5-21-1-2-3-1001", "X\\x", username);
-        });
+        var principal = UserSessionTaskXml.TaskPrincipal(username, machine, () => null);
 
         Assert.Equal((username, username), principal);
-        Assert.False(looked);
+    }
+
+    [Fact]
+    public void UsesTheSessionSidForAnEntraUser()
+    {
+        var principal = UserSessionTaskXml.TaskPrincipal(
+            "jdoe", "LAPTOP-1", () => ("S-1-12-1-3564427996-1263477795-192989575-2144979830", "AzureAD\\JaneDoe", "jdoe"),
+            "AzureAD");
+
+        Assert.Equal(("S-1-12-1-3564427996-1263477795-192989575-2144979830", "AzureAD\\JaneDoe"), principal);
+    }
+
+    [Fact]
+    public void QualifiesWithTheWtsDomainWhenTheSessionAccountIsUnavailable()
+    {
+        var principal = UserSessionTaskXml.TaskPrincipal("jdoe", "LAPTOP-1", () => null, "AzureAD");
+
+        Assert.Equal(("AzureAD\\jdoe", "AzureAD\\jdoe"), principal);
+    }
+
+    [Fact]
+    public void DoesNotDoubleQualifyAUserNameThatAlreadyHasADomain()
+    {
+        var principal = UserSessionTaskXml.TaskPrincipal("CORP\\USER", "USER", () => null, "CORP");
+
+        Assert.Equal(("CORP\\USER", "CORP\\USER"), principal);
     }
 
     [Theory]

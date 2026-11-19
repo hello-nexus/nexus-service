@@ -398,7 +398,8 @@ internal static class UserHelperBootstrapper
     private static bool CreateAndRun(string taskName, string username, string command, bool elevated = false)
     {
         var (userId, runAs) = UserSessionTaskXml.TaskPrincipal(
-            username, Environment.MachineName, ConsoleSessionAccount.TryResolve);
+            username, Environment.MachineName, ConsoleSessionAccount.TryResolve,
+            ConsoleSessionAccount.ConsoleDomain());
         try
         {
             if (CreateFromXml(taskName, userId, command, elevated))

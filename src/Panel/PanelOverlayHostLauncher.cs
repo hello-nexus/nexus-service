@@ -476,7 +476,8 @@ public sealed class PanelOverlayHostLauncher : IOverlayHost
     private static bool CreateTask(string taskName, string username, string exePath)
     {
         var (userId, runAs) = Nexus.Service.Lifecycle.UserSessionTaskXml.TaskPrincipal(
-            username, Environment.MachineName, Nexus.Service.Lifecycle.ConsoleSessionAccount.TryResolve);
+            username, Environment.MachineName, Nexus.Service.Lifecycle.ConsoleSessionAccount.TryResolve,
+            Nexus.Service.Lifecycle.ConsoleSessionAccount.ConsoleDomain());
         try
         {
             var xmlPath = Nexus.Service.Lifecycle.UserSessionTaskXml.WriteTempFile(
