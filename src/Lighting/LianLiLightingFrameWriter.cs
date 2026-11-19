@@ -11,6 +11,7 @@ using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.LianLi;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Lighting;
@@ -111,12 +112,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private static readonly long[] ArgbReleaseRecommitMs = { 600, 1500, 3000 };
     private long _argbReleasedAtMs;
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
-
-    // A hub still booting accepts a write call yet drops the command, so the first commit after attach can leave a port dark with no error.
-    // The mode is re-asserted at each mark after the attach-time init; no retry window covers it because the write reported success.
-    private static readonly long[] AttachRecommitMs = { 2000, 6000, 12_000, 24_000 };
-    private long _hubInitAtMs;
-    private int _attachRecommitsDone = AttachRecommitMs.Length;
 
     private bool _customMergeCleared;
     // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
@@ -300,8 +295,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
-                _hubInitAtMs = NowMs();
-                _attachRecommitsDone = 0;
             }
             else
             {
@@ -312,7 +305,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             _retryPending = true;
         }
-        ReassertAfterAttach(profile, ls.Mode);
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
 
@@ -427,23 +419,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
-    /// <summary>SL V2 only: makes the next tick re-send the firmware mode once per mark after the hub was initialised.</summary>
-    private void ReassertAfterAttach(in LianLiFanProfile profile, string mode)
-    {
-        if (profile.Family != LianLiFanFamily.SlV2) return;
-        if (!_hubInitialised || _attachRecommitsDone >= AttachRecommitMs.Length) return;
-        var since = NowMs() - _hubInitAtMs;
-        if (since < AttachRecommitMs[_attachRecommitsDone]) return;
-        while (_attachRecommitsDone < AttachRecommitMs.Length && since >= AttachRecommitMs[_attachRecommitsDone])
-        {
-            _attachRecommitsDone++;
-        }
-        // Custom mode streams every frame, so a dropped commit repairs itself and a merge exit would blink the ports.
-        if (mode == "custom") return;
-        _lastFirmwareSig = null;
-        _mergeMaybeActive = true;
-    }
-
     // The hub loses commanded LED state on USB re-enumeration and across sleep,
     // so forget what it was sent: the next tick re-initialises it and re-commits
     // the firmware mode even when settings are unchanged. The cooling path
@@ -455,7 +430,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         _hubInitialised = false;
         _argbSyncSent = false;
         _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
-        _attachRecommitsDone = AttachRecommitMs.Length;
         _argbSyncRetry.Reset();
         _customMergeCleared = false;
         _mergeMaybeActive = false;
@@ -669,8 +643,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         else if (_mergeMaybeActive)
         {
-            // The commits below end the merge on every port they reach; park ports with no fan group. An uncontrolled port is never written.
+            // A merge outlives a PC restart in the hub and its head port keeps playing it through a plain commit
+            // (the dark head port after a reboot), so every port that is not left to its own app goes dark first.
+            // The commits below then change each port's state instead of repeating it. An uncontrolled port is never written.
             var park = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: true);
+            var controlled = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: false);
+            for (var p = 0; p < park.Length; p++) park[p] |= controlled[p];
+            ServiceLog.Info($"[lianli-lighting] leaving a possible merge: dark commits on ports {PortList(park)} before mode {mode.Key}");
             if (!ExitMergeByPortCommits(profile, park, latch: false)) return false;
         }
 
@@ -725,6 +704,18 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         _mergeMaybeActive = false;
         _mergeExitRetry.Reset();
         return true;
+    }
+
+    private static string PortList(bool[] mask)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var p = 0; p < mask.Length; p++)
+        {
+            if (!mask[p]) continue;
+            if (sb.Length > 0) sb.Append(',');
+            sb.Append(p);
+        }
+        return sb.Length == 0 ? "none" : sb.ToString();
     }
 
     /// <summary>Darkens ports with a zeroed color buffer and a Static commit, the only way off a merged effect on a hub without a merge-off command; Static ignores the brightness byte.</summary>

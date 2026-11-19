@@ -371,7 +371,7 @@ public class LianLiLightingFrameWriterTests
         && commit.Bytes.AsSpan().SequenceEqual(new byte[] { 0xE0, (byte)(0x10 | port), 0x01, 0x00, 0x00, 0x08, 0x00 });
 
     [Fact]
-    public void Sl_v2_turning_merge_off_parks_only_the_port_without_fans_then_recommits_the_rest()
+    public void Sl_v2_turning_merge_off_parks_every_port_dark_then_recommits_the_controlled_ones()
     {
         AttachMerged(0xA103, "runway");
         _writer.Tick();
@@ -381,9 +381,12 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
 
         Assert.DoesNotContain(Calls, c => c.Bytes[2] is 0x34 or 0x63);
-        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 3));
-        Assert.Equal(new byte[] { 0x10, 0x11, 0x12 }, Calls.Skip(2).Where(c => c.IsSetFeature && c.Bytes[2] == 0x1C).Select(c => c.Bytes[1]).ToArray());
-        var commits = Calls.Skip(2).Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x1C).ToArray();
+        for (var p = 0; p < 4; p++)
+        {
+            Assert.True(IsDarkParkOf(Calls[2 * p], Calls[2 * p + 1], p));
+        }
+        Assert.Equal(new byte[] { 0x10, 0x11, 0x12 }, Calls.Skip(8).Where(c => c.IsSetFeature && c.Bytes[2] == 0x1C).Select(c => c.Bytes[1]).ToArray());
+        var commits = Calls.Skip(8).Where(c => c.IsSetFeature && (c.Bytes[1] & 0xF0) == 0x10 && c.Bytes[2] == 0x1C).ToArray();
         Assert.Equal(3, commits.Length);
         foreach (var commit in commits)
         {
@@ -396,7 +399,20 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
-    public void Sl_v2_startup_with_every_port_controlled_sends_no_exit_commits()
+    public void Sl_v2_head_port_goes_dark_before_its_first_commit_after_attach()
+    {
+        Attach(0xA105, port: 0, fans: 1);
+        SetMode("colorCycle");
+
+        _writer.Tick();
+
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 0));
+        var real = Calls.FindIndex(c => c.IsSetFeature && c.Bytes[1] == 0x10 && c.Bytes[2] == 0x23);
+        Assert.True(real > 1, "the mode commit must follow the dark park of port 0");
+    }
+
+    [Fact]
+    public void Sl_v2_startup_with_every_port_controlled_still_parks_each_port_dark_before_its_commit()
     {
         Attach(0xA103, port: 0, fans: 3);
         _store.Update(s =>
@@ -408,8 +424,10 @@ public class LianLiLightingFrameWriterTests
 
         _writer.Tick();
 
-        Assert.DoesNotContain(Calls, c => c.IsSetFeature && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x08);
-        Assert.DoesNotContain(Calls, c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[2..].All(b => b == 0));
+        for (var p = 0; p < 4; p++)
+        {
+            Assert.True(IsDarkParkOf(Calls[2 * p], Calls[2 * p + 1], p));
+        }
     }
 
     [Fact]
@@ -508,7 +526,7 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
-    public void Sl_v2_resume_in_a_firmware_mode_parks_the_ports_without_fans_only()
+    public void Sl_v2_resume_in_a_firmware_mode_parks_every_port_dark_first()
     {
         Attach(0xA103, port: 0, fans: 3);
         SetMode("tide");
@@ -519,7 +537,7 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
 
         var parks = Calls.Select((c, i) => (c, i)).Where(x => x.c.Kind == HubTransportSpy.CallKind.OutputReport && x.c.Bytes[2..].All(b => b == 0)).ToArray();
-        Assert.Equal(new[] { 0x31, 0x32, 0x33 }, parks.Select(x => (int)x.c.Bytes[1]).ToArray());
+        Assert.Equal(new[] { 0x30, 0x31, 0x32, 0x33 }, parks.Select(x => (int)x.c.Bytes[1]).ToArray());
         foreach (var (color, at) in parks)
         {
             Assert.True(IsDarkParkOf(color, Calls[at + 1], color.Bytes[1] & 0x0F));
@@ -538,7 +556,7 @@ public class LianLiLightingFrameWriterTests
         _spy.RejectAfter = 2;
 
         _writer.Tick();
-        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 3));
+        Assert.True(IsDarkParkOf(Calls[0], Calls[1], 0));
         Assert.DoesNotContain(Calls, c => c.Bytes[1] == 0x60 && c.Bytes[2] == 0x00 && c.Bytes[3] == 0x04);
 
         _spy.RejectAfter = -1;
@@ -624,7 +642,7 @@ public class LianLiLightingFrameWriterTests
 
         _writer.Tick();
 
-        var color = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x30).Bytes;
+        var color = Calls.First(c => c.Kind == HubTransportSpy.CallKind.OutputReport && c.Bytes[1] == 0x30 && c.Bytes[2..].Any(b => b != 0)).Bytes;
         Assert.Equal(new byte[] { 0x7F, 0x20, 0x40 }, color[2..5]);
         Assert.Contains(Calls, c => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x01 && c.Bytes[5] == 0x02);
     }
@@ -899,101 +917,6 @@ public class LianLiLightingFrameWriterTests
         _writer.Tick();
         _writer.Tick();
         Assert.Equal(afterAccepted, Calls.Count);
-    }
-
-    // ── Post-attach re-assert (a hub still booting drops a commit its write call accepted) ──
-
-    [Theory]
-    [InlineData(0xA103)]
-    [InlineData(0xA105)]
-    public void Sl_v2_firmware_commit_is_repeated_at_each_post_attach_mark_then_stops(int pid)
-    {
-        UseFakeClock();
-        Attach(pid, port: 0, fans: 3);
-        SetMode("rainbowWave");
-
-        _writer.Tick();
-        var first = Calls.Count;
-        Assert.True(first > 0);
-
-        Advance(1999);
-        _writer.Tick();
-        Assert.Equal(first, Calls.Count);
-
-        foreach (var at in new long[] { 2000, 6000, 12_000, 24_000 })
-        {
-            Advance(at - _now);
-            var before = Calls.Count;
-            _writer.Tick();
-            Assert.True(Calls.Count > before, $"no re-assert at {at} ms");
-            var after = Calls.Count;
-            _writer.Tick();
-            Assert.Equal(after, Calls.Count);
-        }
-
-        Advance(120_000);
-        var settled = Calls.Count;
-        _writer.Tick();
-        Assert.Equal(settled, Calls.Count);
-    }
-
-    [Fact]
-    public void Sl_v2_merged_effect_is_repeated_after_attach()
-    {
-        UseFakeClock();
-        AttachMerged(0xA105, "runway");
-
-        _writer.Tick();
-        var first = Calls.Count;
-        Advance(2000);
-        _writer.Tick();
-
-        Assert.Equal(first * 2, Calls.Count);
-        Assert.Equal(new byte[] { 0xE0, 0x10, 0x2B, 0x00, 0x00, 0x00, 0x00 }, Calls[^1].Bytes);
-    }
-
-    [Fact]
-    public void Re_assert_leaves_custom_mode_and_other_families_alone()
-    {
-        UseFakeClock();
-        Attach(0xA105, port: 0, fans: 3);
-        SetMode("custom");
-        _writer.Tick();
-        var afterFirst = Calls.Count;
-        _writer.Tick();
-        var steady = Calls.Count - afterFirst;
-        Advance(30_000);
-        var before = Calls.Count;
-        _writer.Tick();
-        Assert.Equal(steady, Calls.Count - before);
-
-        var other = new LianLiLightingFrameWriterTests();
-        other.UseFakeClock();
-        other.Attach(0xA102, port: 0, fans: 3);
-        other.SetMode("rainbowWave");
-        other._writer.Tick();
-        var first = other.Calls.Count;
-        other.Advance(30_000);
-        other._writer.Tick();
-        Assert.Equal(first, other.Calls.Count);
-    }
-
-    [Fact]
-    public void Re_assert_does_not_cut_a_commit_retry_backoff_short()
-    {
-        UseFakeClock();
-        Attach(0xA105, port: 0, fans: 3);
-        SetMode("rainbowWave");
-        _spy.RejectWrites = true;
-
-        _writer.Tick();
-        Advance(1000);
-        _writer.Tick();
-        // Past the first mark but still inside the widened retry window.
-        Advance(1000);
-        var before = Calls.Count;
-        _writer.Tick();
-        Assert.Equal(before, Calls.Count);
     }
 
     [Fact]
