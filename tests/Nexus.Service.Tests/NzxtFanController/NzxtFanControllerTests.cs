@@ -444,7 +444,38 @@ public class NzxtFanControllerTests
     [Fact]
     public void Poll_LossComesAfterTheSingleResendWithRoomToAnswerIt()
     {
-        Assert.True(NzxtFanControllerHub.MaxMissedPolls - NzxtFanControllerHub.SilenceResendAfterMisses >= 4);
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        for (int i = 0; i < NzxtFanControllerHub.SilenceResendAfterMisses; i++)
+        {
+            Assert.False(hub.Poll());
+        }
+        hid.Writes.Clear();
+
+        for (int i = NzxtFanControllerHub.SilenceResendAfterMisses; i < NzxtFanControllerHub.MaxMissedPolls - 1; i++)
+        {
+            Assert.False(hub.Poll());
+            Assert.False(hub.Lost);
+        }
+        Assert.Empty(hid.Writes);
+
+        Assert.False(hub.Poll());
+        Assert.True(hub.Lost);
+    }
+
+    [Fact]
+    public void Poll_ReplyAfterTheResendBeforeTheThresholdKeepsTheDeviceConnected()
+    {
+        var (hub, hid) = Connected();
+        hub.StatusTimeoutMs = 20;
+        for (int i = 0; i < NzxtFanControllerHub.SilenceResendAfterMisses + 2; i++)
+        {
+            hub.Poll();
+        }
+        hid.Incoming.Enqueue(Status(ThreeFans));
+
+        Assert.True(hub.Poll());
+        Assert.False(hub.Lost);
     }
 
     [Fact]

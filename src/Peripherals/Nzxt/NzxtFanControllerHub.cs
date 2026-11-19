@@ -18,9 +18,8 @@ public sealed class NzxtFanControllerHub
     public const string ProductName = "NZXT RGB & Fan Controller";
 
     // Missed status windows (each StatusTimeoutMs long) before the one silence resend of the
-    // init and start-reporting commands. Every resend restarts the controller's own silent
-    // spell after init, so a resend per miss keeps the stream quiet; one is sent, then the
-    // controller is given time to answer it.
+    // init and start-reporting commands. Resending on every miss kept the stream silent in
+    // steady state, so one is sent, then the controller is given time to answer it.
     public const int SilenceResendAfterMisses = 7;
 
     // Consecutive missed status windows before the device is treated as gone. It sits after
@@ -106,6 +105,8 @@ public sealed class NzxtFanControllerHub
     /// </summary>
     public bool Connect(CancellationToken ct = default, Func<bool>? isEnabled = null)
     {
+        // Resending every window is safe here, unlike in Poll: before the first status the
+        // controller is still settling and field logs show the resends do not delay it.
         for (int window = 0; ; window++)
         {
             if (ct.IsCancellationRequested || (isEnabled != null && !isEnabled()))
