@@ -60,6 +60,27 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
     }
 
+    // The SL V2 hub ignores a command that follows the previous one too closely; OpenRGB's driver for it waits after every write.
+    // The firmware-mode apply therefore spaces its writes with a monotonic clock rather than Thread.Sleep, whose length follows the process timer resolution.
+    internal int FirmwareWriteGapMs { get; set; } = 5;
+
+    private void SettleFirmware(in LianLiFanProfile profile)
+    {
+        if (profile.Family != LianLiFanFamily.SlV2 || FirmwareWriteGapMs <= 0)
+        {
+            Settle();
+            return;
+        }
+        var until = Stopwatch.GetTimestamp() + FirmwareWriteGapMs * Stopwatch.Frequency / 1000;
+        while (true)
+        {
+            var left = until - Stopwatch.GetTimestamp();
+            if (left <= 0) return;
+            if (left > 3 * Stopwatch.Frequency / 1000) Thread.Sleep(1);
+            else Thread.Yield();
+        }
+    }
+
     // Hub writes are synchronous HidD_SetFeature, each taking LianLiHub._lock that
     // fan control also takes, so a rejected commit backs off rather than
     // re-acquiring it once per channel write every tick against a silent hub.
@@ -635,6 +656,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         List<IReadOnlyList<ResolvedZone>> zonesByDevice,
         Dictionary<string, LightingDevicePreference> prefs)
     {
+        var startedAt = Stopwatch.GetTimestamp();
         // Per-channel commits do not exit a merged effect; only merge-off does (the identity merge order does not).
         if (profile.ExplicitMergeControl)
         {
@@ -643,14 +665,9 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         }
         else if (_mergeMaybeActive)
         {
-            // A merge outlives a PC restart in the hub and its head port can keep playing it through a plain commit,
-            // so every port not left to its own app goes dark and latches first; each commit below then changes that
-            // port's state instead of repeating it. An uncontrolled port is never written.
+            // The commits below end the merge on every port they reach; park ports with no fan group. An uncontrolled port is never written.
             var park = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: true);
-            var controlled = ParkMask(composed, zonesByDevice, uncontrolled, profile, groupless: false);
-            for (var p = 0; p < park.Length; p++) park[p] |= controlled[p];
-            ServiceLog.Info($"[lianli-lighting-writer] leaving a possible merge: dark commits on ports {PortList(park)} before mode {mode.Key}");
-            if (!ExitMergeByPortCommits(profile, park, latch: true)) return false;
+            if (!ExitMergeByPortCommits(profile, park, latch: false)) return false;
         }
 
         for (var i = 0; i < composed.Count; i++)
@@ -686,12 +703,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
                     if (profile.StartActionPerFrame)
                     {
                         if (!_hub.SendStartAction(ch / profile.ChannelsPerPort, numFans)) return false;
-                        Settle();
+                        SettleFirmware(profile);
                     }
                     if (!_hub.SendColorData(ch, _channelBuf.AsSpan(0, byteCount))) return false;
-                    Settle();
+                    SettleFirmware(profile);
                     if (!_hub.SendModeCommit(ch, effectByte, speedByte, dirByte, brightnessByte)) return false;
-                    Settle();
+                    SettleFirmware(profile);
                 }
             }
         }
@@ -700,22 +717,14 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         // previous speed/brightness; this latches them. Once for the whole
         // apply, after every port, exactly as L-Connect does.
         if (!_hub.SendFrameSync()) return false;
-        Settle();
+        SettleFirmware(profile);
         _mergeMaybeActive = false;
         _mergeExitRetry.Reset();
-        return true;
-    }
-
-    private static string PortList(bool[] mask)
-    {
-        var sb = new System.Text.StringBuilder();
-        for (var p = 0; p < mask.Length; p++)
+        if (profile.Family == LianLiFanFamily.SlV2)
         {
-            if (!mask[p]) continue;
-            if (sb.Length > 0) sb.Append(',');
-            sb.Append(p + 1);
+            ServiceLog.Info($"[lianli-lighting-writer] firmware mode {mode.Key} applied in {Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds:F0} ms");
         }
-        return sb.Length == 0 ? "none" : sb.ToString();
+        return true;
     }
 
     /// <summary>Darkens ports with a zeroed color buffer and a Static commit, the only way off a merged effect on a hub without a merge-off command; Static ignores the brightness byte.</summary>
@@ -727,13 +736,13 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             var ch = p * profile.ChannelsPerPort;
             Array.Clear(_channelBuf);
             if (!_hub.SendColorData(ch, _channelBuf.AsSpan(0, profile.MaxFans * profile.LedsPerFanForChannel(ch) * 3))) return false;
-            Settle();
+            SettleFirmware(profile);
             if (!_hub.SendModeCommit(ch, LianLiProtocol.EffectStatic, LianLiProtocol.SpeedDefault, LianLiProtocol.DirectionDefault, LianLiLightingModes.BrightnessCodes[0])) return false;
-            Settle();
+            SettleFirmware(profile);
         }
         if (!latch) return true;
         if (!_hub.SendFrameSync()) return false;
-        Settle();
+        SettleFirmware(profile);
         return true;
     }
 
