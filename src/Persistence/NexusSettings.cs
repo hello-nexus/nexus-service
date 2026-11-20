@@ -2462,6 +2462,24 @@ public sealed class RyujinDisplaySettings
 
     /// <summary>Sensor ids, one per screen slot; only the first <see cref="SensorCount"/> are shown.</summary>
     public List<string> Slots { get; set; } = new(Nexus.Service.Peripherals.Ryujin.RyujinMonitorSensors.DefaultSlots);
+
+    /// <summary>"monitor" for the built-in hardware-monitor layout, "image" for the stored picture or GIF.</summary>
+    public string ScreenMode { get; set; } = "monitor";
+
+    /// <summary>Original file name of the picked picture or GIF, for display.</summary>
+    public string MediaName { get; set; } = "";
+
+    /// <summary>SHA-256 of the encoded AVI kept in the device store; empty when none is picked.</summary>
+    public string MediaSha { get; set; } = "";
+
+    /// <summary>SHA-256 of the AVI the last successful upload left on the cooler; flash is only written when it differs from <see cref="MediaSha"/>.</summary>
+    public string UploadedSha { get; set; } = "";
+
+    /// <summary>SHA-256 of the AVI whose last upload failed; it is not sent again until a new file is picked.</summary>
+    public string UploadFailedSha { get; set; } = "";
+
+    /// <summary>Override of the slot the select plays; unset plays the slot Nexus uploads to. The upload slot is not affected.</summary>
+    public int? StoredSlot { get; set; }
 }
 
 /// <summary>A picture or GIF uploaded to the Mystique screen from this PC.</summary>

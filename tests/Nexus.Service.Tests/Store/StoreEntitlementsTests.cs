@@ -83,10 +83,12 @@ public sealed class StoreEntitlementsTests : IDisposable
     {
         var (ent, api, _) = Make(signedIn: true);
         var sha = new string('a', 64);
+        var clientVersion = StoreCatalogProxy.ClientVersion(null);
+        var expectedVersionQuery = clientVersion.Length > 0 ? $"&nexusVersion={Uri.EscapeDataString(clientVersion)}" : "";
         api.OnSendRaw = (method, path, _, token) =>
         {
             Assert.Equal(HttpMethod.Get, method);
-            Assert.Equal("/store/apps/com.hellonexus.aquarium/download?version=1.0.2", path);
+            Assert.Equal($"/store/apps/com.hellonexus.aquarium/download?version=1.0.2{expectedVersionQuery}", path);
             Assert.Equal("access-1", token);
             return CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse
             {

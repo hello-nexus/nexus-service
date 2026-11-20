@@ -97,7 +97,12 @@ public partial class SensorAlertEngineTests
     private sealed class StubFans : Nexus.Service.Cooling.IFanControlProvider
     {
         public List<Nexus.Service.Models.Cooling.FanChannel> Channels { get; } = new();
-        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => Channels.ToList();
+        public int Reads { get; private set; }
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels()
+        {
+            Reads++;
+            return Channels.ToList();
+        }
         public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
         public float? ReadTemperature(string sensorId) => null;
         public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;

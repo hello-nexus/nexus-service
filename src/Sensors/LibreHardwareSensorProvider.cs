@@ -519,7 +519,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.EmbeddedControllers.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Memory:
-                    if (LhmComponentIdentifiers.IsDimmModule(hw.Identifier.ToString()))
+                    if (!_lhm.DimmReadsPaused && LhmComponentIdentifiers.IsDimmModule(hw.Identifier.ToString()))
                         extras.MemoryModules.Add(BuildComponent(hw));
                     break;
             }

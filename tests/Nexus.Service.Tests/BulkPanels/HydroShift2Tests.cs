@@ -454,6 +454,85 @@ public class HydroShift2Tests
         Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
     }
 
+    private static (HydroShift2Aio Aio, FirmwarePipe Pipe) AttachedWith(Func<long> mark, Func<long, bool> settledSince)
+    {
+        var driver = new HydroShift2LcdDriver();
+        var hub = new BulkPanelHub(driver);
+        var pipe = new FirmwarePipe();
+        Assert.True(hub.Attach(pipe, null));
+        return (new HydroShift2Aio(hub, driver, _ => false, ownershipMark: mark, ownershipSettledSince: settledSince), pipe);
+    }
+
+    [Fact]
+    public void No_ring_goes_out_before_the_dongle_has_reported_but_the_pump_is_never_held()
+    {
+        var (aio, pipe) = AttachedWith(() => 0, _ => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.SetPumpDuty(60);
+
+        aio.Tick(10_000);
+        aio.Tick(12_000);
+        aio.Tick(10_000 + HydroShift2Aio.OwnershipWaitMaxMs - 1);
+
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushRgb, pipe.Commands);
+        Assert.Contains(HydroShift2Protocol.CommandSyncPumpFan, pipe.Commands);
+    }
+
+    [Fact]
+    public void A_wired_unit_gets_its_ring_once_ownership_is_settled()
+    {
+        var settled = false;
+        var (aio, pipe) = AttachedWith(() => 0, _ => settled);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(10_000);
+        settled = true;
+
+        aio.Tick(10_250);
+
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void A_dongle_that_never_settles_cannot_hold_a_wired_ring_back_for_good()
+    {
+        var (aio, pipe) = AttachedWith(() => 0, _ => false);
+        aio.SetRing(Solid(255, 0, 0));
+        aio.Tick(10_000);
+
+        aio.Tick(10_000 + HydroShift2Aio.OwnershipWaitMaxMs);
+
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void A_unit_that_attaches_late_waits_for_a_confirm_window_after_its_own_attach()
+    {
+        long polls = 100;
+        var (aio, pipe) = AttachedWith(() => polls, mark => polls - mark >= 10);
+        aio.SetRing(Solid(255, 0, 0));
+
+        aio.Tick(10_000);
+        polls = 109;
+        aio.Tick(10_250);
+        Assert.DoesNotContain(HydroShift2Protocol.CommandPushRgb, pipe.Commands);
+
+        polls = 110;
+        aio.Tick(10_500);
+        Assert.Equal(1, pipe.Commands.Count(c => c == HydroShift2Protocol.CommandPushRgb));
+    }
+
+    [Fact]
+    public void A_driven_pump_keeps_being_resent_while_ownership_is_unsettled()
+    {
+        var (aio, pipe) = AttachedWith(() => 0, _ => false);
+        aio.SetPumpDuty(60);
+        aio.Tick(10_000);
+        aio.Tick(10_000 + 4_000);
+        aio.Tick(10_000 + 8_000);
+
+        Assert.Equal(3, pipe.SyncPumpFans.Count);
+    }
+
     [Fact]
     public void The_ring_is_reuploaded_once_the_firmware_has_left_the_wireless_link()
     {

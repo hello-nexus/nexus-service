@@ -460,6 +460,7 @@ public sealed class TryxPanoramaHub : IDisposable
     {
         _slideshow.Configure(config, State.CurrentMedia, ListCustomMedia(), NowMs());
         var applied = _slideshow.Config;
+        if (applied.Enabled && State.CurrentMediaIsCustom) QueueDuration(State.CurrentMedia);
         _configStore.Update(s =>
         {
             s.Tryx.SlideshowEnabled = applied.Enabled;
@@ -629,7 +630,7 @@ public sealed class TryxPanoramaHub : IDisposable
     // A 64 KiB pull chunk measured ~40 ms on the bench unit.
     private const int FilePullTimeoutMs = 1000;
 
-    // Link failures a file may hit before it is left without a thumbnail until restart.
+    // Link failures a file may hit before it is left without a thumbnail or duration until restart.
     private const int MaxThumbnailTransientFailures = 3;
 
     private readonly object _thumbLock = new();
@@ -639,6 +640,7 @@ public sealed class TryxPanoramaHub : IDisposable
     private readonly HashSet<string> _thumbAttempted = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _thumbTransientFailures = new(StringComparer.Ordinal);
     private bool _thumbWorkerRunning;
+    private readonly HashSet<string> _durAttempted = new(StringComparer.Ordinal);
 
     /// <summary>Queues a thumbnail for a panel-stored file that has none, decoded from its first
     /// frame pulled off the panel. Runs in the background; the next media read returns it.</summary>
@@ -654,6 +656,102 @@ public sealed class TryxPanoramaHub : IDisposable
             _thumbWorkerRunning = true;
         }
         _ = Task.Run(DrainThumbnailQueue);
+    }
+
+    /// <summary>Fills the missing duration of a panel-stored clip (one Kanali uploaded has no
+    /// sidecar) from its container header pulled off the panel, then lets the slideshow
+    /// stretch the current hold. Runs in the background on the thumbnail worker, once per
+    /// file and size; a link failure is retried a few times.</summary>
+    public void QueueDuration(string deviceFileName)
+    {
+        if (!TryEnqueueDuration(deviceFileName, out _)) return;
+        lock (_thumbLock)
+        {
+            if (_thumbWorkerRunning) return;
+            _thumbWorkerRunning = true;
+        }
+        _ = Task.Run(DrainThumbnailQueue);
+    }
+
+    internal bool TryEnqueueDuration(string deviceFileName, out string key)
+    {
+        key = "";
+        if (!TryxThumbnailCache.IsSafeDeviceName(deviceFileName)
+            || _transport is not { SupportsFilePull: true }
+            || TryxThumbnailCache.ReadDuration(deviceFileName) > 0)
+        {
+            return false;
+        }
+        lock (_thumbLock)
+        {
+            key = "dur|" + ThumbKey(deviceFileName);
+            if (!_durAttempted.Add(key)) return false;
+            _thumbQueue.Enqueue((deviceFileName, key));
+            return true;
+        }
+    }
+
+    // Seams for the Kanali-original fallback: the original upload for a panel name, and the
+    // probed duration of a file (0 when unknown).
+    internal Func<string, string?> KanaliOriginalPath { get; set; } = TryxKanaliData.VideoPath;
+    internal Func<string, double> ProbeOriginalDuration { get; set; } = path
+        => FfmpegResolver.Path is { } ffmpeg ? TryxThumbnailCache.ProbeDuration(ffmpeg, path) : 0;
+
+    internal void FillDuration(string deviceFileName, string key)
+    {
+        if (_disposed || TryxThumbnailCache.ReadDuration(deviceFileName) > 0) return;
+        var headHex = "";
+        var found = PullHeader(
+            deviceFileName,
+            (buf, len) =>
+            {
+                var d = TryxMediaHead.ParseDuration(buf.AsSpan(0, len));
+                if (d is not null) headHex = Convert.ToHexString(buf.AsSpan(0, Math.Min(16, len)));
+                return d is { } v ? (object)v : null;
+            },
+            out var boxed,
+            out var transient);
+        if (!found)
+        {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: {(transient ? "transient pull failure" : "head unreadable")}");
+            if (!transient) return;
+            lock (_thumbLock)
+            {
+                _thumbTransientFailures.TryGetValue(key, out var failures);
+                _thumbTransientFailures[key] = ++failures;
+                if (failures < MaxThumbnailTransientFailures) _durAttempted.Remove(key);
+            }
+            return;
+        }
+        var seconds = (double)boxed!;
+        if (seconds > 0)
+        {
+            RecordDuration(deviceFileName, seconds);
+            return;
+        }
+        ServiceLog.Info($"[tryx] duration {deviceFileName}: none in the panel head, head bytes {headHex}");
+        var original = KanaliOriginalPath(deviceFileName);
+        if (original is null)
+        {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: no Kanali original to probe");
+            return;
+        }
+        double probed;
+        try { probed = ProbeOriginalDuration(original); }
+        catch (Exception ex)
+        {
+            ServiceLog.Info($"[tryx] duration {deviceFileName}: probing the Kanali original failed: {ex.GetType().Name}");
+            return;
+        }
+        RecordDuration(deviceFileName, probed);
+    }
+
+    private void RecordDuration(string deviceFileName, double durationSec)
+    {
+        if (durationSec <= 0 || TryxThumbnailCache.ReadDuration(deviceFileName) > 0) return;
+        TryxThumbnailCache.WriteDuration(deviceFileName, durationSec);
+        ServiceLog.Info($"[tryx] duration {deviceFileName}: recorded {durationSec:0.###}s");
+        _slideshow.DurationLearned(deviceFileName, NowMs());
     }
 
     private string ThumbKey(string deviceFileName)
@@ -674,8 +772,12 @@ public sealed class TryxPanoramaHub : IDisposable
                     return;
                 }
             }
-            try { GeneratePanelThumbnail(item.Name, item.Key); }
-            catch (Exception ex) { ServiceLog.Warn($"[tryx] thumbnail for {item.Name} failed: {ex.GetType().Name}: {ex.Message}"); }
+            try
+            {
+                if (item.Key.StartsWith("dur|", StringComparison.Ordinal)) FillDuration(item.Name, item.Key);
+                else GeneratePanelThumbnail(item.Name, item.Key);
+            }
+            catch (Exception ex) { ServiceLog.Warn($"[tryx] thumbnail or duration for {item.Name} failed: {ex.GetType().Name}: {ex.Message}"); }
         }
     }
 
@@ -704,10 +806,7 @@ public sealed class TryxPanoramaHub : IDisposable
         {
             File.WriteAllBytes(mkv, TryxMediaHead.BuildMatroska(head.Keyframe, head.Width, head.Height));
             TryxThumbnailCache.Write(ffmpeg, mkv, deviceFileName);
-            if (head.DurationSec > 0 && TryxThumbnailCache.ReadDuration(deviceFileName) <= 0)
-            {
-                TryxThumbnailCache.WriteDuration(deviceFileName, head.DurationSec);
-            }
+            RecordDuration(deviceFileName, head.DurationSec);
         }
         finally
         {
@@ -721,6 +820,16 @@ public sealed class TryxPanoramaHub : IDisposable
     /// gate per chunk so the heartbeat keeps running between chunks.</summary>
     internal TryxMediaHead.Head? PullMediaHead(string deviceFileName, out bool transient)
     {
+        PullHeader(deviceFileName, (buf, len) => TryxMediaHead.Parse(buf.AsSpan(0, len)), out var head, out transient);
+        return head;
+    }
+
+    /// <summary>Pulls the head of a file until <paramref name="parse"/> returns a result for the
+    /// bytes so far, so a caller needing only the container header stops after the first chunk.</summary>
+    private bool PullHeader<T>(string deviceFileName, Func<byte[], int, T?> parse, out T? result, out bool transient)
+        where T : class
+    {
+        result = null;
         transient = true;
         var head = new MemoryStream();
         while (head.Length < MaxThumbnailHeadBytes)
@@ -728,19 +837,19 @@ public sealed class TryxPanoramaHub : IDisposable
             var chunk = PullChunk(deviceFileName, head.Length);
             // One retry: a late error reply to an unrelated frame also ends a pending pull.
             if (chunk is not { Ok: true }) chunk = PullChunk(deviceFileName, head.Length);
-            if (chunk is null) return null;
+            if (chunk is null) return false;
             transient = false;
             var c = chunk.Value;
-            if (!c.Ok || c.Data.Length == 0 || c.Offset != head.Length) return null;
+            if (!c.Ok || c.Data.Length == 0 || c.Offset != head.Length) return false;
             TryxRkProtocol.UnmaskPulledData(c.Data, c.Offset);
             head.Write(c.Data);
-            var parsed = TryxMediaHead.Parse(head.GetBuffer().AsSpan(0, (int)head.Length));
-            if (parsed is not null) return parsed;
-            if (head.Length >= c.FileSize) return null;
+            result = parse(head.GetBuffer(), (int)head.Length);
+            if (result is not null) return true;
+            if (head.Length >= c.FileSize) return false;
             transient = true;
         }
         transient = false;
-        return null;
+        return false;
     }
 
     private TryxMediaList.FilePullChunk? PullChunk(string deviceFileName, long offset)
@@ -846,6 +955,7 @@ public sealed class TryxPanoramaHub : IDisposable
                     _overlay.Font, _overlay.Size, _overlay.Align));
             }
             _slideshow.Rearm(State.CurrentMedia, NowMs());
+            if (State.CurrentMediaIsCustom) QueueDuration(State.CurrentMedia);
             return true;
         }
         catch (Exception ex)
@@ -1475,6 +1585,7 @@ public sealed class TryxPanoramaHub : IDisposable
             _configStore.Update(s => { s.Tryx.CurrentMedia = deviceFileName; s.Tryx.CurrentMediaIsCustom = true; });
             _slideshow.Rearm(deviceFileName, NowMs());
         }
+        QueueDuration(deviceFileName);
         return true;
     }
 

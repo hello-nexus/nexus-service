@@ -1,0 +1,4 @@
+[submodule "external/LibreHardwareMonitor"]
+	path = external/LibreHardwareMonitor
+	url = https://github.com/hello-nexus/LibreHardwareMonitor.git
+	branch = nexus

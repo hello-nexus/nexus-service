@@ -178,7 +178,7 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
         }
     }
 
-    private static SmartDriveInfo BuildDrive(DiskInfoToolkit.Devices.StorageDevice dit, string hardwareId)
+    private SmartDriveInfo BuildDrive(DiskInfoToolkit.Devices.StorageDevice dit, string hardwareId)
     {
         var serial = dit.SerialNumber ?? "";
         var id = !string.IsNullOrWhiteSpace(serial) ? $"storage:{serial}" : $"storage:{hardwareId}";
@@ -187,6 +187,15 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
 
         if (!dit.SupportsSmart)
         {
+            if (_warnedDrives.Add("trace:" + hardwareId))
+            {
+                // Some probe paths echo the drive serial into the trace; never log those lines.
+                var trace = dit.ProbeTrace is { } t
+                    ? string.Join(" | ", t.Where(e => e is not null && !e.Contains("serial=", StringComparison.OrdinalIgnoreCase)))
+                    : "";
+                ServiceLog.Info($"[smart] no SMART for {hardwareId} (bus {bus}); probes: {trace}");
+            }
+
             return new SmartDriveInfo
             {
                 Id = id,
