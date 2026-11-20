@@ -525,9 +525,6 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
-    /// <summary>OpenRGB device type for a motherboard.</summary>
-    internal const uint MotherboardDeviceType = 0;
-
     internal static readonly TimeSpan LinuxQuiesceBudget = TimeSpan.FromSeconds(1.5);
     // Covers the stop task's other steps: waiting for a deferred spawn, the process kill and the socket close.
     private static readonly TimeSpan LinuxStopTaskSlack = TimeSpan.FromSeconds(4);
@@ -720,14 +717,15 @@ public sealed class RgbBridge : IDisposable
         var fullyUncontrolled = new Dictionary<int, bool>();
         ComputeFullyUncontrolledPhysicals(
             _engine.Devices, _bridgeFrameIds, _store.Load().Devices.UncontrolledLightingDevices, fullyUncontrolled);
-        // Motherboard controllers first: slow I2C DRAM and GPU writes must not
-        // delay the header that drives the case fans.
+        // The daemon applies each frame on the device's own thread, so order only
+        // matters when the budget check below cuts the loop short: motherboards go
+        // first so a cut drops slow I2C DRAM or GPU frames, not the fan headers.
         var deviceTypes = new Dictionary<int, uint>();
         foreach (var d in Devices)
         {
             deviceTypes[d.Address] = d.Type;
         }
-        var ordered = _physBuffers.OrderBy(kv => deviceTypes.TryGetValue(kv.Key, out var t) && t == MotherboardDeviceType ? 0 : 1);
+        var ordered = _physBuffers.OrderBy(kv => deviceTypes.TryGetValue(kv.Key, out var t) && t == OpenRgbZoneSupport.MotherboardDeviceType ? 0 : 1);
         foreach (var kv in ordered)
         {
             // PushFrameAsync swallows its own failures (cancellation included)

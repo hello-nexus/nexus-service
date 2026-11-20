@@ -19,9 +19,12 @@ namespace Nexus.Service.Lighting.Rgb;
 /// </summary>
 public static class OpenRgbZoneSupport
 {
+    /// <summary>OpenRGB's DEVICE_TYPE_MOTHERBOARD.</summary>
+    internal const uint MotherboardDeviceType = 0;
+
     /// <summary>A multi-header motherboard, or a <see cref="IsPortController"/> device, which needs the same one-device-per-header model.</summary>
     public static bool IsSplitMotherboard(RgbDevice d)
-        => d.Type == 0 ? d.Zones.Count > 1 : IsPortController(d);
+        => d.Type == MotherboardDeviceType ? d.Zones.Count > 1 : IsPortController(d);
 
     /// <summary>
     /// A non-motherboard controller whose every zone is user-sized (Thermaltake Riing,
@@ -42,7 +45,7 @@ public static class OpenRgbZoneSupport
     /// <summary>Caps a port controller's count at leds_max, which its driver never checks: the Riing packs every LED into one fixed-size HID report and overruns it.</summary>
     public static int ClampPortLedCount(RgbDevice d, int zoneIndex, int count)
     {
-        if (d.Type == 0 || zoneIndex < 0 || zoneIndex >= d.Zones.Count)
+        if (d.Type == MotherboardDeviceType || zoneIndex < 0 || zoneIndex >= d.Zones.Count)
             return count;
         var max = d.Zones[zoneIndex].LedsMax;
         return max > 0 && count > max ? (int)max : count;

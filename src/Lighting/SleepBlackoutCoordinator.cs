@@ -523,6 +523,9 @@ public sealed class SleepBlackoutCoordinator
     /// Returns what was written out of what is known, for the log line - the
     /// caller has no recovery to perform either way.
     /// </summary>
+    /// <summary>Latest the rescan wait may run: the pushes and the drain still need their time before <paramref name="deadline"/>.</summary>
+    internal static DateTime ShutdownSettleDeadline(DateTime deadline) => deadline - PushReserve - ShutdownDrainBudget;
+
     private string PushBridgeBlackout(DateTime deadline, bool settleFirst = false)
     {
         if (_bridge is null)
@@ -539,7 +542,7 @@ public sealed class SleepBlackoutCoordinator
         {
             // Blocking on purpose: the machine stops when this returns, so
             // there is no later to continue on.
-            DateTime? settleUntil = settleFirst ? deadline - PushReserve : null;
+            DateTime? settleUntil = settleFirst ? ShutdownSettleDeadline(deadline) : null;
             return _bridge.BlackoutSettledAsync(settleUntil, cts.Token, settleFirst ? ShutdownDrainBudget : null).GetAwaiter().GetResult().ToString();
         }
         catch (OperationCanceledException)

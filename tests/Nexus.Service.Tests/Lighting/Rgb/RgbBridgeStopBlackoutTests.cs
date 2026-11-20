@@ -53,6 +53,9 @@ public class RgbBridgeStopBlackoutTests : IDisposable
         /// <summary>When set, QuiesceAsync parks this long (it never completes on its own budget), as a wedged daemon would.</summary>
         public TimeSpan? QuiesceHang { get; set; }
 
+        /// <summary>Set once a QuiesceAsync call ran to its end.</summary>
+        public bool QuiesceFinished { get; private set; }
+
         public async Task QuiesceAsync(TimeSpan budget)
         {
             Record("quiesce");
@@ -60,6 +63,7 @@ public class RgbBridgeStopBlackoutTests : IDisposable
             {
                 await Task.Delay(hang);
             }
+            QuiesceFinished = true;
         }
 
         public Task<bool> TryConnectAsync(CancellationToken ct = default) => Task.FromResult(true);
@@ -151,7 +155,7 @@ public class RgbBridgeStopBlackoutTests : IDisposable
         {
             new RgbDevice { Index = 0, Address = 0, Name = "DRAM", Type = 1, LedCount = 4 },
             new RgbDevice { Index = 1, Address = 1, Name = "GPU", Type = 2, LedCount = 4 },
-            new RgbDevice { Index = 2, Address = 2, Name = "Board", Type = RgbBridge.MotherboardDeviceType, LedCount = 4 },
+            new RgbDevice { Index = 2, Address = 2, Name = "Board", Type = OpenRgbZoneSupport.MotherboardDeviceType, LedCount = 4 },
         };
     }
 
@@ -170,6 +174,28 @@ public class RgbBridgeStopBlackoutTests : IDisposable
         Assert.Equal(2, pushes[0].Address);
         Assert.Equal("quiesce", ops[^1].Kind);
         Assert.Equal(3, report.Pushed);
+    }
+
+    [Fact]
+    public async Task Shutdown_settle_deadline_leaves_room_for_the_pushes_and_the_drain()
+    {
+        var deadline = DateTime.UtcNow + SleepBlackoutCoordinator.ShutdownBudget;
+        var settle = SleepBlackoutCoordinator.ShutdownSettleDeadline(deadline);
+
+        Assert.True(deadline - settle >= SleepBlackoutCoordinator.ShutdownDrainBudget + TimeSpan.FromMilliseconds(500));
+        Assert.True(settle > DateTime.UtcNow);
+
+        // A rescan still running at the settle deadline: the drain must still get its full time.
+        UseMotherboardLast();
+        await ActivateAndWaitForBuffersAsync();
+        _controller.QuiesceHang = TimeSpan.FromMilliseconds(600);
+        var shortDeadline = DateTime.UtcNow + SleepBlackoutCoordinator.ShutdownDrainBudget + TimeSpan.FromMilliseconds(1000);
+        using var cts = new CancellationTokenSource(shortDeadline - DateTime.UtcNow);
+
+        await _bridge.BlackoutSettledAsync(
+            SleepBlackoutCoordinator.ShutdownSettleDeadline(shortDeadline), cts.Token, SleepBlackoutCoordinator.ShutdownDrainBudget);
+
+        Assert.True(_controller.QuiesceFinished, "the drain was cut before it finished");
     }
 
     [Fact]
