@@ -1534,6 +1534,10 @@ internal static class SensorAlertText
             var shown = fahrenheit ? value * 9 / 5 + 32 : value;
             return shown.ToString("0.#", CultureInfo.InvariantCulture) + (fahrenheit ? " °F" : " °C");
         }
+        if (string.Equals(type, "Throughput", StringComparison.OrdinalIgnoreCase))
+        {
+            return (value / (1024.0 * 1024.0)).ToString("0.0", CultureInfo.InvariantCulture) + " MB/s";
+        }
         var number = value.ToString("0.##", CultureInfo.InvariantCulture);
         if (units.Length == 0)
         {
