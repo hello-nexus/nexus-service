@@ -55,6 +55,9 @@ public sealed class SleepBlackoutCoordinator
     /// <summary>Left for the push itself when the shutdown wait for a rescan uses up its share.</summary>
     private static readonly TimeSpan PushReserve = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>Host shutdown only: how long to wait for OpenRGB to apply the black frames before the daemon is killed.</summary>
+    internal static readonly TimeSpan ShutdownDrainBudget = TimeSpan.FromMilliseconds(800);
+
     /// <summary>
     /// Wall clock the ramp runs over. Short because it races the host tearing
     /// down USB: devices behind it stop receiving frames partway with no error,
@@ -537,7 +540,7 @@ public sealed class SleepBlackoutCoordinator
             // Blocking on purpose: the machine stops when this returns, so
             // there is no later to continue on.
             DateTime? settleUntil = settleFirst ? deadline - PushReserve : null;
-            return _bridge.BlackoutSettledAsync(settleUntil, cts.Token).GetAwaiter().GetResult().ToString();
+            return _bridge.BlackoutSettledAsync(settleUntil, cts.Token, settleFirst ? ShutdownDrainBudget : null).GetAwaiter().GetResult().ToString();
         }
         catch (OperationCanceledException)
         {

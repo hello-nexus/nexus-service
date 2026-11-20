@@ -16,7 +16,7 @@ namespace Nexus.Service.Tests.Lighting.Rgb;
 /// </summary>
 public class RgbBridgeStopBlackoutTests : IDisposable
 {
-    private sealed record Op(string Kind, RgbColor[]? Colors);
+    private sealed record Op(string Kind, RgbColor[]? Colors, int Address = -1);
 
     private sealed class RecordingController : IRgbController
     {
@@ -45,9 +45,21 @@ public class RgbBridgeStopBlackoutTests : IDisposable
             lock (_gate) { _ops.Clear(); }
         }
 
-        private void Record(string kind, RgbColor[]? colors = null)
+        private void Record(string kind, RgbColor[]? colors = null, int address = -1)
         {
-            lock (_gate) { _ops.Add(new Op(kind, colors)); }
+            lock (_gate) { _ops.Add(new Op(kind, colors, address)); }
+        }
+
+        /// <summary>When set, QuiesceAsync parks this long (it never completes on its own budget), as a wedged daemon would.</summary>
+        public TimeSpan? QuiesceHang { get; set; }
+
+        public async Task QuiesceAsync(TimeSpan budget)
+        {
+            Record("quiesce");
+            if (QuiesceHang is { } hang)
+            {
+                await Task.Delay(hang);
+            }
         }
 
         public Task<bool> TryConnectAsync(CancellationToken ct = default) => Task.FromResult(true);
@@ -63,7 +75,7 @@ public class RgbBridgeStopBlackoutTests : IDisposable
 
         public Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default)
         {
-            Record("push", colors.ToArray());
+            Record("push", colors.ToArray(), address);
             return Task.CompletedTask;
         }
 
@@ -131,6 +143,60 @@ public class RgbBridgeStopBlackoutTests : IDisposable
         Assert.NotEmpty(pushes);
         Assert.Equal(count, pushes.Length);
         Assert.All(pushes, p => Assert.All(p.Colors!, c => Assert.Equal(default, c)));
+    }
+
+    private void UseMotherboardLast()
+    {
+        _controller.Devices = new[]
+        {
+            new RgbDevice { Index = 0, Address = 0, Name = "DRAM", Type = 1, LedCount = 4 },
+            new RgbDevice { Index = 1, Address = 1, Name = "GPU", Type = 2, LedCount = 4 },
+            new RgbDevice { Index = 2, Address = 2, Name = "Board", Type = RgbBridge.MotherboardDeviceType, LedCount = 4 },
+        };
+    }
+
+    [Fact]
+    public async Task Shutdown_blackout_pushes_the_motherboard_first_then_drains_the_daemon()
+    {
+        UseMotherboardLast();
+        await ActivateAndWaitForBuffersAsync();
+        _controller.ResetOps();
+
+        var report = await _bridge.BlackoutSettledAsync(null, default, TimeSpan.FromMilliseconds(300));
+
+        var ops = _controller.Ops;
+        var pushes = ops.Where(o => o.Kind == "push").ToArray();
+        Assert.Equal(3, pushes.Length);
+        Assert.Equal(2, pushes[0].Address);
+        Assert.Equal("quiesce", ops[^1].Kind);
+        Assert.Equal(3, report.Pushed);
+    }
+
+    [Fact]
+    public async Task Blackout_without_a_drain_budget_never_drains()
+    {
+        UseMotherboardLast();
+        await ActivateAndWaitForBuffersAsync();
+        _controller.ResetOps();
+
+        await _bridge.BlackoutSettledAsync(null);
+
+        Assert.DoesNotContain(_controller.Ops, o => o.Kind == "quiesce");
+    }
+
+    [Fact]
+    public async Task A_wedged_drain_is_cut_off_by_the_blackout_budget()
+    {
+        UseMotherboardLast();
+        await ActivateAndWaitForBuffersAsync();
+        _controller.QuiesceHang = TimeSpan.FromSeconds(30);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var report = await _bridge.BlackoutSettledAsync(null, cts.Token, TimeSpan.FromSeconds(5));
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"drain was not bounded: {sw.Elapsed}");
+        Assert.Equal(3, report.Pushed);
     }
 
     [Fact]

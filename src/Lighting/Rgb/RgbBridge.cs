@@ -525,6 +525,9 @@ public sealed class RgbBridge : IDisposable
         }
     }
 
+    /// <summary>OpenRGB device type for a motherboard.</summary>
+    internal const uint MotherboardDeviceType = 0;
+
     internal static readonly TimeSpan LinuxQuiesceBudget = TimeSpan.FromSeconds(1.5);
     // Covers the stop task's other steps: waiting for a deferred spawn, the process kill and the socket close.
     private static readonly TimeSpan LinuxStopTaskSlack = TimeSpan.FromSeconds(4);
@@ -657,9 +660,11 @@ public sealed class RgbBridge : IDisposable
     /// refresh to commit, so the black frame reaches the full device list instead
     /// of the partial one a rescan leaves, and reports what it wrote. A wait that
     /// runs out, or a null deadline, still pushes to the devices known by then.
+    /// A non-null <paramref name="drainBudget"/> (host shutdown only) then waits for
+    /// the daemon to apply what was pushed, since the caller kills it right after.
     /// </summary>
-    internal Task<BlackoutReport> BlackoutSettledAsync(DateTime? settleUntilUtc, CancellationToken ct = default)
-        => BlackoutCoreAsync(settleUntilUtc, ct);
+    internal Task<BlackoutReport> BlackoutSettledAsync(DateTime? settleUntilUtc, CancellationToken ct = default, TimeSpan? drainBudget = null)
+        => BlackoutCoreAsync(settleUntilUtc, ct, drainBudget);
 
     /// <summary>True while a detection pass or the refresh that commits its device list is outstanding; a rescan with no COMPLETE past the stall limit no longer counts.</summary>
     private bool DeviceListSettling()
@@ -672,7 +677,7 @@ public sealed class RgbBridge : IDisposable
             || _refreshSemaphore.CurrentCount == 0;
     }
 
-    private async Task<BlackoutReport> BlackoutCoreAsync(DateTime? settleUntilUtc, CancellationToken ct)
+    private async Task<BlackoutReport> BlackoutCoreAsync(DateTime? settleUntilUtc, CancellationToken ct, TimeSpan? drainBudget = null)
     {
         if (!IsActive)
         {
@@ -715,7 +720,15 @@ public sealed class RgbBridge : IDisposable
         var fullyUncontrolled = new Dictionary<int, bool>();
         ComputeFullyUncontrolledPhysicals(
             _engine.Devices, _bridgeFrameIds, _store.Load().Devices.UncontrolledLightingDevices, fullyUncontrolled);
-        foreach (var kv in _physBuffers)
+        // Motherboard controllers first: slow I2C DRAM and GPU writes must not
+        // delay the header that drives the case fans.
+        var deviceTypes = new Dictionary<int, uint>();
+        foreach (var d in Devices)
+        {
+            deviceTypes[d.Address] = d.Type;
+        }
+        var ordered = _physBuffers.OrderBy(kv => deviceTypes.TryGetValue(kv.Key, out var t) && t == MotherboardDeviceType ? 0 : 1);
+        foreach (var kv in ordered)
         {
             // PushFrameAsync swallows its own failures (cancellation included)
             // and drops the socket, so this is the only place the budget is
@@ -734,6 +747,19 @@ public sealed class RgbBridge : IDisposable
             Array.Clear(buffer, 0, buffer.Length);
             await _controller.PushFrameAsync(kv.Key, buffer, ct).ConfigureAwait(false);
             pushed++;
+        }
+
+        // The write above completes when the socket takes the bytes. The daemon
+        // acks a frame once its per-controller queue accepts it and applies it
+        // later on the device's own thread, so an in-order round trip would not
+        // cover that; QuiesceAsync waits for the acks plus the device threads.
+        // The caller kills the daemon right after, so without this the last
+        // devices pushed may never apply their black frame.
+        if (drainBudget is { } drain && pushed > 0)
+        {
+            try
+            { await _controller.QuiesceAsync(drain).WaitAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
         }
 
         // This path wrote black outside OnFrame's bookkeeping; drop the
