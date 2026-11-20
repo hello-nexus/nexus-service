@@ -369,7 +369,14 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             {
                 var component = BuildComponent(hw, hideLiveStorage: hideLive);
                 var id = LhmComponentIdentifiers.BuildSmartStorageId(hw.Identifier.ToString());
-                DriveWriteHistory.Append(_driveWrites, hw.Identifier.ToString(), component.Name, component.Sensors, DateTimeOffset.UtcNow);
+                try
+                {
+                    DriveWriteHistory.Append(_driveWrites, hw.Identifier.ToString(), component.Name, component.Sensors, DateTimeOffset.UtcNow);
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[drive-writes] derived sensors skipped for {hw.Identifier}: {ex.GetType().Name}: {ex.Message}");
+                }
                 result[id] = new StorageComponent
                 {
                     Id = id,
@@ -377,6 +384,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     Sensors = component.Sensors,
                 };
             }
+            _driveWrites.Flush();
         }
     }
 

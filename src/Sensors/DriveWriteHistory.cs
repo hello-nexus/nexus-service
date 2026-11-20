@@ -20,6 +20,8 @@ public sealed class DriveWriteSeries
 {
     /// <summary>"counter" (the drive's own cumulative sensor) or "rate" (write throughput integrated here).</summary>
     public string Source { get; set; } = "";
+    /// <summary>What the drive was when the series began; a different value under the same hardware id means another drive.</summary>
+    public string Identity { get; set; } = "";
     /// <summary>Running total of the integrated rate, in GiB. Unused for "counter".</summary>
     public double Integrated { get; set; }
     public long LastT { get; set; }
@@ -45,8 +47,8 @@ internal sealed class DriveWriteHistory
     internal const int SnapshotSeconds = 300;
     internal const int HourSeconds = 3600;
     internal const int DaySeconds = 86400;
-    // Longest span one rate reading is assumed to hold; a longer gap (sleep, restart) counts as no writes, a lower bound.
-    internal const int MaxIntegrateSeconds = 10;
+    // Longest span one rate reading is assumed to hold. It must exceed the slowest caller cadence; a longer gap (sleep, restart) counts as no writes, a lower bound.
+    internal const int MaxIntegrateSeconds = 300;
     private const int MaxSamples = 400;
     private const double BytesPerGb = 1024.0 * 1024.0 * 1024.0;
 
@@ -65,28 +67,37 @@ internal sealed class DriveWriteHistory
         Path.Combine(Nexus.Service.Media.MediaLibrary.NexusDataDir(), "sensors", "drive-writes.json");
 
     /// <summary>Null when the drive has neither a usable counter nor a usable write rate.</summary>
-    public DriveWrittenWindows? Observe(string driveId, double? counterGb, double? bytesPerSecond, DateTimeOffset now)
+    public DriveWrittenWindows? Observe(string driveId, string identity, double? counterGb, double? bytesPerSecond, DateTimeOffset now)
     {
         var nowT = now.ToUnixTimeSeconds();
         lock (_lock)
         {
-            string source;
-            if (counterGb is { } c && double.IsFinite(c) && c > 0)
+            _series.TryGetValue(driveId, out var series);
+            if (series is not null && series.Identity != identity)
             {
-                source = CounterSource;
+                series = null;
             }
-            else if (bytesPerSecond is { } r && double.IsFinite(r) && r >= 0)
+            var hasCounter = counterGb is { } c && double.IsFinite(c) && c > 0;
+            var hasRate = bytesPerSecond is { } r && double.IsFinite(r) && r >= 0;
+            if (series is { Source: CounterSource } && !hasCounter)
             {
-                source = RateSource;
+                // A counter-based series never falls back to rate: one missing poll must not wipe its history.
+                if (series.Samples.Count == 0)
+                {
+                    return null;
+                }
+                var held = series.Samples[^1].Gb;
+                return new DriveWrittenWindows(Delta(series.Samples, held, nowT - HourSeconds), Delta(series.Samples, held, nowT - DaySeconds));
             }
-            else
+            var source = hasCounter ? CounterSource : hasRate ? RateSource : null;
+            if (source is null)
             {
                 return null;
             }
 
-            if (!_series.TryGetValue(driveId, out var series) || series.Source != source)
+            if (series is null || series.Source != source)
             {
-                series = new DriveWriteSeries { Source = source, LastT = nowT };
+                series = new DriveWriteSeries { Source = source, Identity = identity, LastT = nowT };
                 _series[driveId] = series;
                 _dirty = true;
             }
@@ -105,6 +116,11 @@ internal sealed class DriveWriteHistory
             series.LastT = nowT;
 
             var samples = series.Samples;
+            // A clock correction can leave snapshots stamped in the future; they would block new ones.
+            if (samples.RemoveAll(x => x.T > nowT) > 0)
+            {
+                _dirty = true;
+            }
             if (samples.Count > 0 && cumulative < samples[^1].Gb)
             {
                 samples.Clear();
@@ -114,7 +130,6 @@ internal sealed class DriveWriteHistory
                 samples.Add(new DriveWriteSample { T = nowT, Gb = cumulative });
                 _dirty = true;
                 Prune(samples, nowT);
-                Save();
             }
 
             return new DriveWrittenWindows(Delta(samples, cumulative, nowT - HourSeconds), Delta(samples, cumulative, nowT - DaySeconds));
@@ -152,10 +167,23 @@ internal sealed class DriveWriteHistory
         }
     }
 
-    // Caller holds _lock. Only runs when a snapshot is added, so a writer thread is never hot.
+    /// <summary>Writes pending snapshots; call once per poll, after every drive was observed.</summary>
+    public void Flush()
+    {
+        lock (_lock)
+        {
+            if (_path is null || !_dirty)
+            {
+                return;
+            }
+            Save();
+        }
+    }
+
+    // Caller holds _lock.
     private void Save()
     {
-        if (_path is null || !_dirty)
+        if (_path is null)
         {
             return;
         }
@@ -185,7 +213,18 @@ internal sealed class DriveWriteHistory
                 var file = JsonSerializer.Deserialize(File.ReadAllText(path), PersistenceJsonContext.Default.DriveWriteHistoryFile);
                 if (file?.Drives is { } drives)
                 {
-                    return new Dictionary<string, DriveWriteSeries>(drives, StringComparer.Ordinal);
+                    var clean = new Dictionary<string, DriveWriteSeries>(StringComparer.Ordinal);
+                    foreach (var (id, series) in drives)
+                    {
+                        if (series is null || series.Source is not (CounterSource or RateSource))
+                        {
+                            continue;
+                        }
+                        series.Identity ??= "";
+                        series.Samples = series.Samples?.FindAll(x => x is not null) ?? new List<DriveWriteSample>();
+                        clean[id] = series;
+                    }
+                    return clean;
                 }
             }
         }
@@ -221,7 +260,7 @@ internal sealed class DriveWriteHistory
                 rate = s.Value;
             }
         }
-        if (history.Observe(hwId, counter, rate, now) is not { } w)
+        if (history.Observe(hwId, hwName, counter, rate, now) is not { } w)
         {
             return;
         }
