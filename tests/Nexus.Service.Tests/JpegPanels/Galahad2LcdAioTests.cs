@@ -7,6 +7,7 @@ using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.JpegPanels;
@@ -366,6 +367,40 @@ public class Galahad2LcdAioTests
         writer.Tick();
         var write = Assert.Single(device.Writes);
         Assert.Equal(new byte[] { 0, 0, 0 }, write[10..13]);
+    }
+
+    [Fact]
+    public void A_saved_ring_effect_is_replayed_once_when_the_ring_is_uncontrolled()
+    {
+        var (writer, _, device, store) = RingWriter();
+        store.Update(s =>
+        {
+            s.Devices.UncontrolledLightingDevices.Add(Galahad2LcdLightingProvider.RingZoneId);
+            s.Devices.Galahad2LcdRingEffect = new Galahad2LcdRingEffectSettings
+            {
+                Effect = "runway", Speed = 3, Brightness = 4, Colors = new() { "#ff0000", "#0000ff" },
+            };
+        });
+
+        writer.Tick();
+        writer.Tick();
+
+        var write = Assert.Single(device.Writes);
+        Assert.Equal(new byte[] { 0x01, 0x83, 0, 0, 0, 0x13, 2, 0x05, 4, 3, 0xff, 0, 0, 0, 0, 0xff }, write[..16]);
+    }
+
+    [Fact]
+    public void A_saved_ring_effect_is_never_replayed_while_nexus_drives_the_ring()
+    {
+        var (writer, _, device, store) = RingWriter();
+        store.Update(s => s.Devices.Galahad2LcdRingEffect = new Galahad2LcdRingEffectSettings
+        {
+            Effect = "meteor", Colors = new() { "#ff0000", "#00ff00", "#0000ff", "#ffffff" },
+        });
+
+        writer.Tick();
+
+        Assert.DoesNotContain(device.Writes, w => w[7] == 0x06);
     }
 
     private static (Galahad2LcdLightingFrameWriter Writer, DeviceFrame Frame, QueuedHidDevice Device, InMemoryConfigStore Store) RingWriter()

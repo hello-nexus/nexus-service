@@ -47,6 +47,10 @@ public static partial class DevicesRoutes
             {
                 return Results.Conflict(ApiResponse.Fail("galahad ii lcd not connected"));
             }
+            if (!store.Load().Devices.UncontrolledLightingDevices.Contains(Galahad2LcdLightingProvider.RingZoneId))
+            {
+                return Results.Conflict(ApiResponse.Fail("turn off Nexus control of the ring first, or Nexus overwrites the effect"));
+            }
             var effect = Galahad2LcdRingEffects.Find(body.Effect);
             if (effect is null)
             {
@@ -56,21 +60,14 @@ public static partial class DevicesRoutes
             if (hex.Length != effect.Colors)
             {
                 return Results.BadRequest(ApiResponse.Fail(
-                    $"effect '{effect.Id}' takes {effect.Colors} colours, got {hex.Length}"));
+                    $"effect '{effect.Id}' takes {effect.Colors} colors, got {hex.Length}"));
             }
-            var rgb = new byte[hex.Length * 3];
-            for (var i = 0; i < hex.Length; i++)
+            if (!Galahad2LcdRingEffects.TryPackColors(hex, out var rgb))
             {
-                if (!TryParseHexColor(hex[i], out var r, out var g, out var b))
-                {
-                    return Results.BadRequest(ApiResponse.Fail($"colour '{hex[i]}' is not #rrggbb"));
-                }
-                rgb[i * 3] = r;
-                rgb[i * 3 + 1] = g;
-                rgb[i * 3 + 2] = b;
+                return Results.BadRequest(ApiResponse.Fail("every color must be #rrggbb"));
             }
-            var speed = Math.Clamp(body.Speed, 0, 4);
-            var brightness = Math.Clamp(body.Brightness, 0, 4);
+            var speed = Math.Clamp(body.Speed, 0, Galahad2LcdRingEffects.MaxLevel);
+            var brightness = Math.Clamp(body.Brightness, 0, Galahad2LcdRingEffects.MaxLevel);
             if (!aio.SetRingEffect(effect.WireByte, (byte)brightness, (byte)speed, rgb))
             {
                 return Results.Problem("Failed to write the animation to the pump ring.");
@@ -111,7 +108,7 @@ public sealed class Galahad2LcdRingEffectResponse
 public sealed class Galahad2LcdRingEffectRequest
 {
     public string Effect { get; set; } = "";
-    public int Speed { get; set; } = 2;
-    public int Brightness { get; set; } = 4;
+    public int Speed { get; set; } = Galahad2LcdRingEffects.DefaultSpeed;
+    public int Brightness { get; set; } = Galahad2LcdRingEffects.MaxLevel;
     public string[]? Colors { get; set; }
 }

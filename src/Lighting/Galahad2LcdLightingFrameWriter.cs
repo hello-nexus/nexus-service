@@ -21,6 +21,7 @@ public sealed class Galahad2LcdLightingFrameWriter : BackgroundService
     private readonly Np50IdentifyTracker _identify;
     private readonly FeatureGates _gates;
     private int _last = -1;
+    private bool _effectApplied;
 
     public Galahad2LcdLightingFrameWriter(
         LightingEngine engine, Galahad2LcdAio aio, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
@@ -60,12 +61,23 @@ public sealed class Galahad2LcdLightingFrameWriter : BackgroundService
     {
         var id = Galahad2LcdLightingProvider.RingZoneId;
         var settings = _store.Load();
+        var uncontrolled = settings.Devices.UncontrolledLightingDevices.Contains(id);
         // Uncontrolled: stop writing so the ring keeps whatever it last showed.
-        if (!_gates.Lighting || !_aio.IsConnected || settings.Devices.UncontrolledLightingDevices.Contains(id))
+        if (!_gates.Lighting || !_aio.IsConnected || uncontrolled)
         {
             _last = -1;
+            // The ring forgets a firmware animation across a reconnect or restart, so play the saved one once per connection.
+            if (!_aio.IsConnected)
+            {
+                _effectApplied = false;
+            }
+            else if (_gates.Lighting && uncontrolled && !_effectApplied)
+            {
+                _effectApplied = Galahad2LcdRingEffects.Apply(_aio, settings.Devices.Galahad2LcdRingEffect);
+            }
             return;
         }
+        _effectApplied = false;
         DeviceFrame? frame = null;
         foreach (var candidate in _engine.Devices)
         {

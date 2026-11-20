@@ -1582,10 +1582,8 @@ public sealed class KrakenFirmwareLighting
 public sealed class Galahad2LcdRingEffectSettings
 {
     public string Effect { get; set; } = "";
-    /// <summary>0 slowest to 4 fastest.</summary>
-    public int Speed { get; set; } = 2;
-    /// <summary>0 dimmest to 4 brightest.</summary>
-    public int Brightness { get; set; } = 4;
+    public int Speed { get; set; } = Nexus.Service.Lighting.Galahad2LcdRingEffects.DefaultSpeed;
+    public int Brightness { get; set; } = Nexus.Service.Lighting.Galahad2LcdRingEffects.MaxLevel;
     public List<string> Colors { get; set; } = new();
 }
 

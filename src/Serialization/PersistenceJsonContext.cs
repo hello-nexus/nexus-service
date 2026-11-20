@@ -159,6 +159,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(NollieStandaloneSettings))]
 [JsonSerializable(typeof(Dictionary<string, NollieStandaloneSettings>))]
 [JsonSerializable(typeof(Galahad2LightingSettings))]
+[JsonSerializable(typeof(Galahad2LcdRingEffectSettings))]
 [JsonSerializable(typeof(GlacialLcdSettings))]
 [JsonSerializable(typeof(GlacialLcdSlot))]
 [JsonSerializable(typeof(List<GlacialLcdSlot>))]
