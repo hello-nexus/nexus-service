@@ -1,0 +1,166 @@
+using Nexus.Service.Models.Sensors;
+using Nexus.Service.Sensors;
+
+namespace Nexus.Service.Tests.Sensors;
+
+public class DriveWriteHistoryTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 11, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private static DateTimeOffset At(int seconds) => T0.AddSeconds(seconds);
+
+    [Fact]
+    public void FullWindow_ReportsDeltaOverEachWindow()
+    {
+        var h = new DriveWriteHistory(null);
+        // 1 GB every 5 minutes for 25 hours.
+        DriveWrittenWindows? last = null;
+        for (var t = 0; t <= 25 * 3600; t += 300)
+        {
+            last = h.Observe("/nvme/0", 1000 + t / 300.0, null, At(t));
+        }
+        Assert.Equal(12, last!.Value.LastHourGb, 3);
+        Assert.Equal(288, last.Value.LastDayGb, 3);
+    }
+
+    [Fact]
+    public void PartialWindow_ReportsLowerBoundFromOldestSnapshot()
+    {
+        var h = new DriveWriteHistory(null);
+        h.Observe("/nvme/0", 500, null, At(0));
+        h.Observe("/nvme/0", 505, null, At(300));
+        var w = h.Observe("/nvme/0", 510, null, At(600))!.Value;
+        Assert.Equal(10, w.LastHourGb, 3);
+        Assert.Equal(10, w.LastDayGb, 3);
+    }
+
+    [Fact]
+    public void CounterReset_RestartsTheSeries()
+    {
+        var h = new DriveWriteHistory(null);
+        h.Observe("/nvme/0", 900, null, At(0));
+        h.Observe("/nvme/0", 910, null, At(300));
+        var w = h.Observe("/nvme/0", 3, null, At(600))!.Value;
+        Assert.Equal(0, w.LastHourGb, 3);
+        var next = h.Observe("/nvme/0", 7, null, At(900))!.Value;
+        Assert.Equal(4, next.LastHourGb, 3);
+    }
+
+    [Fact]
+    public void Persistence_RoundTripsSnapshotsAcrossRestart()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "nexus-drive-writes-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var a = new DriveWriteHistory(path);
+            a.Observe("/nvme/0", 100, null, At(0));
+            a.Observe("/nvme/0", 104, null, At(300));
+            var b = new DriveWriteHistory(path);
+            var w = b.Observe("/nvme/0", 110, null, At(600))!.Value;
+            Assert.Equal(10, w.LastDayGb, 3);
+            Assert.Equal(10, w.LastHourGb, 3);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Persistence_CorruptFileStartsEmpty()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "nexus-drive-writes-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(path, "{ not json");
+            var h = new DriveWriteHistory(path);
+            Assert.Equal(0, h.Observe("/nvme/0", 50, null, At(0))!.Value.LastDayGb, 3);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void RateFallback_IntegratesThroughputIntoGb()
+    {
+        var h = new DriveWriteHistory(null);
+        const double bytesPerGb = 1024.0 * 1024.0 * 1024.0;
+        h.Observe("/hdd/0", null, bytesPerGb, At(0));
+        DriveWrittenWindows? w = null;
+        for (var t = 1; t <= 600; t++)
+        {
+            w = h.Observe("/hdd/0", null, bytesPerGb, At(t));
+        }
+        Assert.Equal(600, w!.Value.LastHourGb, 3);
+    }
+
+    [Fact]
+    public void RateFallback_LongGapCountsAsNoWrites()
+    {
+        var h = new DriveWriteHistory(null);
+        const double bytesPerGb = 1024.0 * 1024.0 * 1024.0;
+        h.Observe("/hdd/0", null, bytesPerGb, At(0));
+        var w = h.Observe("/hdd/0", null, bytesPerGb, At(3000))!.Value;
+        Assert.Equal(DriveWriteHistory.MaxIntegrateSeconds, w.LastHourGb, 3);
+    }
+
+    [Fact]
+    public void NeitherSource_ReturnsNull()
+    {
+        var h = new DriveWriteHistory(null);
+        Assert.Null(h.Observe("/nvme/0", null, null, At(0)));
+        Assert.Null(h.Observe("/nvme/0", 0, double.NaN, At(1)));
+    }
+
+    [Fact]
+    public void SamplesStayBounded()
+    {
+        var h = new DriveWriteHistory(null);
+        for (var t = 0; t <= 3 * 86400; t += 300)
+        {
+            h.Observe("/nvme/0", 1 + t, null, At(t));
+        }
+        var w = h.Observe("/nvme/0", 1 + 3 * 86400 + 300, null, At(3 * 86400 + 300))!.Value;
+        Assert.Equal(86400 + 0, w.LastDayGb, 0);
+    }
+
+    [Fact]
+    public void Append_PublishesStableIdsAndUsesCounterOverRate()
+    {
+        var h = new DriveWriteHistory(null);
+        List<HardwareSensor> Sensors(float written) => new()
+        {
+            new HardwareSensor { Id = "/nvme/0/data/2", Name = "Data Written", Type = "Data", Value = written, Units = "GB" },
+            new HardwareSensor { Id = "/nvme/0/throughput/1", Name = "Write Rate", Type = "Throughput", Value = 1e9f, Units = "B/s" },
+        };
+        DriveWriteHistory.Append(h, "/nvme/0", "Samsung 990 PRO", Sensors(100), At(0));
+        var sensors = Sensors(103);
+        DriveWriteHistory.Append(h, "/nvme/0", "Samsung 990 PRO", sensors, At(60));
+
+        var h1 = sensors.Single(s => s.Id == "/nvme/0/derived/written-1h");
+        var h24 = sensors.Single(s => s.Id == "/nvme/0/derived/written-24h");
+        Assert.Equal("Data Written (1 h)", h1.Name);
+        Assert.Equal("Data Written (24 h)", h24.Name);
+        Assert.All(new[] { h1, h24 }, s =>
+        {
+            Assert.Equal("Data", s.Type);
+            Assert.Equal("GB", s.Units);
+            Assert.Equal("/nvme/0", s.Parent.Id);
+        });
+        Assert.Equal(3f, h1.Value, 3);
+    }
+
+    [Fact]
+    public void Append_AddsNothingWithoutASource()
+    {
+        var sensors = new List<HardwareSensor>
+        {
+            new() { Id = "/nvme/0/temperature/0", Name = "Composite Temperature", Type = "Temperature", Value = 40 },
+            new() { Id = "/nvme/0/data/2", Name = "Data Written", Type = "Data", Value = 100, Stale = true },
+        };
+        DriveWriteHistory.Append(new DriveWriteHistory(null), "/nvme/0", "x", sensors, At(0));
+        Assert.Equal(2, sensors.Count);
+    }
+}

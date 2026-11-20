@@ -34,6 +34,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
+    private readonly DriveWriteHistory _driveWrites = new(DriveWriteHistory.DefaultPath());
 
     public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
@@ -368,6 +369,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             {
                 var component = BuildComponent(hw, hideLiveStorage: hideLive);
                 var id = LhmComponentIdentifiers.BuildSmartStorageId(hw.Identifier.ToString());
+                DriveWriteHistory.Append(_driveWrites, hw.Identifier.ToString(), component.Name, component.Sensors, DateTimeOffset.UtcNow);
                 result[id] = new StorageComponent
                 {
                     Id = id,
