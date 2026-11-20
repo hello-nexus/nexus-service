@@ -28,8 +28,10 @@ public sealed class StrimerConnectionWorker : BackgroundService
     // Windows reports identical controllers as one USB entry, so only a change in the count (not its size) can mean a replug.
     private int _lastUsbCount = -1;
     private int _zeroUsbPolls;
-    // A controller that misses one rescan is kept: a transient enumeration failure must not restart a healthy unit.
+    private const int MissedScansToDetach = 2;
+    // Keeps a transient enumeration failure from restarting a healthy unit.
     private readonly int[] _missedScans = new int[StrimerUnits.MaxUnits];
+    private HashSet<string> _prevPresent = new(StringComparer.Ordinal);
     private readonly HashSet<string> _ignoredPaths = new(StringComparer.Ordinal);
     private readonly HidDeviceInfo?[] _attachedInfo = new HidDeviceInfo?[StrimerUnits.MaxUnits];
     // Slot remembered per controller for this process, so one unplugging never renumbers the other.
@@ -133,8 +135,9 @@ public sealed class StrimerConnectionWorker : BackgroundService
             else _ignoredPaths.Add(info.Path);
         }
 
-        // A path that is gone belongs to an unplugged controller. It must stay gone for two scans, unless a new
-        // controller path showed up meanwhile (macOS paths change on replug), which frees the slot at once.
+        // A missing path is forgiven once. It frees its slot at once only when a new path of the same controller
+        // replaces it (macOS paths change on replug): no more paths than attached units, none of them seen before.
+        var attachedBefore = _units.Connected().Count;
         foreach (var hub in _units.All)
         {
             if (!hub.IsConnected) continue;
@@ -144,11 +147,16 @@ public sealed class StrimerConnectionWorker : BackgroundService
                 _missedScans[hub.Unit] = 0;
                 continue;
             }
-            if (++_missedScans[hub.Unit] >= 2 || fresh.Count > 0)
+            var serial = _attachedInfo[hub.Unit]?.Serial;
+            var replaced = present.Count <= attachedBefore && fresh.Exists(f =>
+                !_prevPresent.Contains(f.Path)
+                && (string.IsNullOrEmpty(serial) || string.IsNullOrEmpty(f.Serial) || serial == f.Serial));
+            if (++_missedScans[hub.Unit] >= MissedScansToDetach || replaced)
             {
                 DetachUnit(hub);
             }
         }
+        _prevPresent = present;
 
         var attached = new HashSet<string>(StringComparer.Ordinal);
         var taken = new bool[_units.All.Count];

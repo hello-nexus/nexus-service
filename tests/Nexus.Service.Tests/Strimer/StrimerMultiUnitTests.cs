@@ -63,7 +63,7 @@ public class StrimerMultiUnitTests
         {
             KnownSeen.Add(new HashSet<string>(knownPaths));
             var paths = Present.Where(i => Flaky is null || !Flaky(i.Path)).Select(i => i.Path).ToList();
-            var fresh = Present.Where(i => !knownPaths.Contains(i.Path)).ToList();
+            var fresh = Present.Where(i => !knownPaths.Contains(i.Path) && (Flaky is null || !Flaky(i.Path))).ToList();
             return (paths, fresh);
         }
 
@@ -396,5 +396,49 @@ public class StrimerMultiUnitTests
         _worker.Poll(1, 220_000);
 
         Assert.True(_units.All[0].IsConnected);
+    }
+
+    [Fact]
+    public void An_unattachable_busy_path_does_not_turn_off_the_missed_scan_grace()
+    {
+        _hid.Plug("path-a", "A");
+        _hid.Plug("path-busy", "BUSY");
+        _hid.Busy.Add("path-busy");
+        _worker.Poll(2, 100_000);
+        Assert.True(_units.All[0].IsConnected);
+
+        _hid.Flaky = p => p == "path-a";
+        _worker.Poll(2, 140_000);
+
+        Assert.True(_units.All[0].IsConnected);
+    }
+
+    [Fact]
+    public void Plugging_a_second_controller_while_the_first_is_transiently_missing_keeps_the_first()
+    {
+        _hid.Plug("path-a", "A");
+        _worker.Poll(1, 100_000);
+
+        _hid.Flaky = p => p == "path-a";
+        _hid.Plug("path-b", "B");
+        _worker.Poll(2, 140_000);
+
+        Assert.True(_units.All[0].IsConnected);
+        Assert.Equal("path-a", _units.All[0].AttachedPath);
+        Assert.Equal("path-b", _units.All[1].AttachedPath);
+    }
+
+    [Fact]
+    public void A_lone_replug_with_a_new_path_detaches_at_once_and_reclaims_slot_one()
+    {
+        _hid.Plug("iokit:1", "A");
+        _worker.Poll(1, 100_000);
+        _hid.Unplug("iokit:1");
+        _hid.Plug("iokit:2", "A");
+
+        _worker.Poll(1, 140_000);
+
+        Assert.Equal("iokit:2", _units.All[0].AttachedPath);
+        Assert.False(_units.All[1].IsConnected);
     }
 }
