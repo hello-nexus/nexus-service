@@ -1578,6 +1578,17 @@ public sealed class KrakenFirmwareLighting
     public List<string> Colors { get; set; } = new();
 }
 
+/// <summary>The firmware animation last written to the Galahad II LCD pump ring. An empty <see cref="Effect"/> means none was set from the device page.</summary>
+public sealed class Galahad2LcdRingEffectSettings
+{
+    public string Effect { get; set; } = "";
+    /// <summary>0 slowest to 4 fastest.</summary>
+    public int Speed { get; set; } = 2;
+    /// <summary>0 dimmest to 4 brightest.</summary>
+    public int Brightness { get; set; } = 4;
+    public List<string> Colors { get; set; } = new();
+}
+
 public sealed class DevicesSettings
 {
     /// <summary>
@@ -1697,6 +1708,7 @@ public sealed class DevicesSettings
     public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
+    public Galahad2LcdRingEffectSettings Galahad2LcdRingEffect { get; set; } = new();
     /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart; only what differs from the panel's own state is sent, and a monitor the user chose is resumed on connect.</summary>
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
