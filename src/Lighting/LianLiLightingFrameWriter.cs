@@ -134,6 +134,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private long _repeatAtMs;
     private bool _repeating;
 
+    // SL V2 only. A hub just powered on takes seconds to answer, and a commit sent before that is lost without any error,
+    // so an apply made before the hub's first answer is repeated once it has answered, or when it never does.
+    private const long ReadyGiveUpMs = 30_000;
+    private long _hubInitAtMs;
+    private bool _appliedBeforeReady;
+
     private bool _customMergeCleared;
     // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
     private bool _mergeMaybeActive;
@@ -317,6 +323,11 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
+                _hubInitAtMs = NowMs();
+                if (profile.Family == LianLiFanFamily.SlV2)
+                {
+                    ServiceLog.Info($"[lianli-lighting-writer] attach state: mode={ls.Mode} merge={ls.Merge} argbSyncSetting={ls.ArgbSync} argbSyncSentToHub={_argbSyncSent} (the hub's own sync state is never read) fans={fans.Port0Fans},{fans.Port1Fans},{fans.Port2Fans},{fans.Port3Fans}");
+                }
             }
             else
             {
@@ -327,6 +338,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             _retryPending = true;
         }
+        ReapplyWhenHubAnswers(profile);
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
 
@@ -450,6 +462,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             _mergeMaybeActive = true;
         }
+        if (profile.Family == LianLiFanFamily.SlV2)
+        {
+            _hub.Trace.BeginApply($"mode={mode.Key} merged={merged} repeat={_repeating} mergeMaybeActive={_mergeMaybeActive}");
+        }
         var committed = merged
             ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans, settings.Devices.LightingDevicePrefs)
             : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
@@ -457,6 +473,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
+            if (profile.Family == LianLiFanFamily.SlV2 && !_hub.State.FirmwareAnswered)
+            {
+                _appliedBeforeReady = true;
+            }
             if (settling)
             {
                 _quietUntilMs = NowMs() + SlV2SettleMs;
@@ -471,12 +491,32 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         _repeating = false;
     }
 
+    private void ReapplyWhenHubAnswers(in LianLiFanProfile profile)
+    {
+        if (!_appliedBeforeReady || profile.Family != LianLiFanFamily.SlV2)
+        {
+            return;
+        }
+        var answered = _hub.State.FirmwareAnswered;
+        if (!answered && NowMs() - _hubInitAtMs < ReadyGiveUpMs)
+        {
+            return;
+        }
+        _appliedBeforeReady = false;
+        _lastFirmwareSig = null;
+        _customMergeCleared = false;
+        _mergeMaybeActive = profile.SupportsMerge && !profile.ExplicitMergeControl;
+        _mergeExitRetry.Reset();
+        ServiceLog.Info($"[lianli-lighting-writer] re-applying: the last apply was made before the hub answered (answered now: {answered})");
+    }
+
     // The hub loses commanded LED state on USB re-enumeration and across sleep,
     // so forget what it was sent: the next tick re-initialises it and re-commits
     // the firmware mode even when settings are unchanged. The cooling path
     // re-asserts for the same reason.
     private void ForgetHubState()
     {
+        _appliedBeforeReady = false;
         _repeatAtMs = 0;
         _repeating = false;
         _quietUntilMs = 0;

@@ -37,6 +37,7 @@ public class LianLiLightingFrameWriterTests
     private void Attach(int pid, int port, int fans)
     {
         _hub.Attach(_spy, Profile(pid));
+        _hub.State.FirmwareVersion = "0.7";
         _store.Update(s =>
         {
             for (var p = 0; p < LianLiProtocol.PortCount; p++) s.Devices.LianLi.SetFans(p, p == port ? fans : 0);
@@ -309,6 +310,7 @@ public class LianLiLightingFrameWriterTests
     private void AttachMerged(int pid, string mode)
     {
         _hub.Attach(_spy, Profile(pid));
+        _hub.State.FirmwareVersion = "0.7";
         _store.Update(s =>
         {
             s.Devices.LianLi.SetFans(0, 3);
@@ -1048,6 +1050,106 @@ public class LianLiLightingFrameWriterTests
         Advance(150);
         _writer.Tick();
         Assert.True(Calls.Count > applied);
+    }
+
+    // ── SL V2 applied before the hub had answered ──
+
+    [Fact]
+    public void Sl_v2_reapplies_once_the_hub_answers_after_an_apply_it_could_not_have_taken()
+    {
+        UseFakeClock();
+        Attach(0xA105, port: 0, fans: 3);
+        _hub.State.FirmwareVersion = "";
+        SetMode("tide");
+
+        _writer.Tick();
+        var first = Calls.Count;
+        Assert.True(first > 0);
+
+        Advance(5000);
+        _writer.Tick();
+        Assert.Equal(first, Calls.Count);
+
+        _hub.State.FirmwareVersion = "0.7";
+        _writer.Tick();
+        Assert.True(Calls.Count > first);
+        var second = Calls.Count;
+
+        Advance(120_000);
+        _writer.Tick();
+        _writer.Tick();
+        Assert.Equal(second, Calls.Count);
+    }
+
+    [Fact]
+    public void Sl_v2_treats_the_all_ones_version_as_no_answer()
+    {
+        UseFakeClock();
+        Attach(0xA105, port: 0, fans: 3);
+        _hub.State.FirmwareVersion = "0xFF";
+        SetMode("tide");
+        _writer.Tick();
+        var first = Calls.Count;
+
+        _hub.State.FirmwareVersion = "0.7";
+        _writer.Tick();
+
+        Assert.True(Calls.Count > first);
+    }
+
+    [Fact]
+    public void Sl_v2_reapplies_once_after_the_give_up_time_when_the_hub_never_answers()
+    {
+        UseFakeClock();
+        Attach(0xA105, port: 0, fans: 3);
+        _hub.State.FirmwareVersion = "";
+        SetMode("tide");
+        _writer.Tick();
+        var first = Calls.Count;
+
+        Advance(29_999);
+        _writer.Tick();
+        Assert.Equal(first, Calls.Count);
+
+        Advance(1);
+        _writer.Tick();
+        Assert.True(Calls.Count > first);
+        var second = Calls.Count;
+
+        Advance(120_000);
+        _writer.Tick();
+        Assert.Equal(second, Calls.Count);
+    }
+
+    [Fact]
+    public void An_answered_hub_is_not_reapplied()
+    {
+        UseFakeClock();
+        Attach(0xA105, port: 0, fans: 3);
+        SetMode("tide");
+        _writer.Tick();
+        var first = Calls.Count;
+
+        Advance(120_000);
+        _writer.Tick();
+
+        Assert.Equal(first, Calls.Count);
+    }
+
+    [Fact]
+    public void Other_families_are_not_reapplied_for_a_missing_answer()
+    {
+        UseFakeClock();
+        Attach(0xA102, port: 0, fans: 3);
+        _hub.State.FirmwareVersion = "";
+        SetMode("rainbowWave");
+        _writer.Tick();
+        var first = Calls.Count;
+
+        Advance(120_000);
+        _writer.Tick();
+
+        Assert.Equal(first, Calls.Count);
     }
 
     [Fact]

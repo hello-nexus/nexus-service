@@ -29,6 +29,8 @@ public sealed class LianLiConnectionWorker : BackgroundService
     private const int MaxConsecutiveFailures = 3;
     // A hub that never answers the version query stops being asked; each ask holds the hub lock the frame writer needs.
     private const int MaxFirmwareReads = 5;
+    // An SL V2 can take much longer to answer after power-on, and the lighting writer re-applies once it has.
+    private const int MaxSlV2FirmwareReads = 15;
 
     private readonly IHidEnumerator _hid;
     private readonly LianLiHubSet _hubs;
@@ -162,10 +164,17 @@ public sealed class LianLiConnectionWorker : BackgroundService
     {
         var hub = _hubs.Hubs[slot];
         // The hub can answer the version query empty for a while after attach.
-        if (string.IsNullOrEmpty(hub.State.FirmwareVersion) && _firmwareReads[slot]++ < MaxFirmwareReads
-            && hub.ReadFirmwareVersion(out var familyId))
+        var maxReads = hub.Profile.Family == LianLiFanFamily.SlV2 ? MaxSlV2FirmwareReads : MaxFirmwareReads;
+        if (!hub.State.FirmwareAnswered && _firmwareReads[slot]++ < maxReads)
         {
-            ServiceLog.Info($"[lianli] {hub.DeviceId} firmware {hub.State.FirmwareVersion} (family 0x{familyId:X2})");
+            if (hub.ReadFirmwareVersion(out var familyId))
+            {
+                ServiceLog.Info($"[lianli] {hub.DeviceId} firmware {hub.State.FirmwareVersion} (family 0x{familyId:X2}) on read {_firmwareReads[slot]}");
+            }
+            else
+            {
+                ServiceLog.Info($"[lianli] {hub.DeviceId} firmware read {_firmwareReads[slot]} got no answer");
+            }
         }
         if (hub.ReadRpm())
         {

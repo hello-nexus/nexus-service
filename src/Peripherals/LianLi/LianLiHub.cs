@@ -19,7 +19,11 @@ public sealed class LianLiHub : IDisposable
     public LianLiHub(string deviceId = LianLiHubSet.PrimaryId)
     {
         DeviceId = deviceId;
+        Trace = new LianLiWireTrace(deviceId);
     }
+
+    /// <summary>Service-log trace of the writes an SL V2 hub receives; idle for other families.</summary>
+    public LianLiWireTrace Trace { get; }
 
     /// <summary>Hub id: the device id prefix of its zones and cooling channels.</summary>
     public string DeviceId { get; }
@@ -86,11 +90,16 @@ public sealed class LianLiHub : IDisposable
     {
         lock (_lock)
         {
-            _device = device;
+            var traced = profile.Family == LianLiFanFamily.SlV2;
+            _device = traced ? new TracingHidDevice(device, Trace) : device;
             _profile = profile;
             AttachedPath = path ?? device.Path;
             _modelName = profile.ModelName ?? "";
             State.IsConnected = true;
+            if (traced)
+            {
+                Trace.BeginAttachWindow();
+            }
         }
     }
 
@@ -106,6 +115,7 @@ public sealed class LianLiHub : IDisposable
             State.FirmwareVersion = "";
             State.IsConnected = false;
             MinWriteGapMs = 0;
+            Trace.Reset();
         }
     }
 
