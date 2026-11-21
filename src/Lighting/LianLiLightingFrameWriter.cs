@@ -139,6 +139,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private const long ReadyGiveUpMs = 30_000;
     private long _hubInitAtMs;
     private bool _appliedBeforeReady;
+    private bool _reappliedForReady;
 
     private bool _customMergeCleared;
     // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
@@ -473,7 +474,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
-            if (profile.Family == LianLiFanFamily.SlV2 && !_hub.State.FirmwareAnswered)
+            if (profile.Family == LianLiFanFamily.SlV2 && !_reappliedForReady && !_hub.State.FirmwareAnswered)
             {
                 _appliedBeforeReady = true;
             }
@@ -503,6 +504,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             return;
         }
         _appliedBeforeReady = false;
+        _reappliedForReady = true;
         _lastFirmwareSig = null;
         _customMergeCleared = false;
         _mergeMaybeActive = profile.SupportsMerge && !profile.ExplicitMergeControl;
@@ -517,6 +519,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private void ForgetHubState()
     {
         _appliedBeforeReady = false;
+        _reappliedForReady = false;
         _repeatAtMs = 0;
         _repeating = false;
         _quietUntilMs = 0;
