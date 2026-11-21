@@ -1122,6 +1122,23 @@ public class LianLiLightingFrameWriterTests
     }
 
     [Fact]
+    public void Sl_v2_give_up_time_counts_from_the_apply_not_from_boot()
+    {
+        UseFakeClock();
+        Advance(10_000_000);
+        Attach(0xA105, port: 0, fans: 3);
+        _hub.State.FirmwareVersion = "";
+        SetMode("tide");
+        _writer.Tick();
+        var first = Calls.Count;
+
+        Advance(1000);
+        _writer.Tick();
+
+        Assert.Equal(first, Calls.Count);
+    }
+
+    [Fact]
     public void An_answered_hub_is_not_reapplied()
     {
         UseFakeClock();

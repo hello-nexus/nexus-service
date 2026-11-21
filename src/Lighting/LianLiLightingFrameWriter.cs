@@ -137,7 +137,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // SL V2 only. A hub just powered on takes seconds to answer, and a commit sent before that is lost without any error,
     // so an apply made before the hub's first answer is repeated once it has answered, or when it never does.
     private const long ReadyGiveUpMs = 30_000;
-    private long _hubInitAtMs;
+    private long _readyWaitSinceMs;
     private bool _appliedBeforeReady;
     private bool _reappliedForReady;
 
@@ -324,7 +324,6 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
-                _hubInitAtMs = NowMs();
                 if (profile.Family == LianLiFanFamily.SlV2)
                 {
                     ServiceLog.Info($"[lianli-lighting-writer] attach state: mode={ls.Mode} merge={ls.Merge} argbSyncSetting={ls.ArgbSync} argbSyncSentToHub={_argbSyncSent} (the hub's own sync state is never read) fans={fans.Port0Fans},{fans.Port1Fans},{fans.Port2Fans},{fans.Port3Fans}");
@@ -476,6 +475,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             _lastFirmwareSig = sig;
             if (profile.Family == LianLiFanFamily.SlV2 && !_reappliedForReady && !_hub.State.FirmwareAnswered)
             {
+                if (!_appliedBeforeReady)
+                {
+                    _readyWaitSinceMs = NowMs();
+                }
                 _appliedBeforeReady = true;
             }
             if (settling)
@@ -499,7 +502,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             return;
         }
         var answered = _hub.State.FirmwareAnswered;
-        if (!answered && NowMs() - _hubInitAtMs < ReadyGiveUpMs)
+        if (!answered && NowMs() - _readyWaitSinceMs < ReadyGiveUpMs)
         {
             return;
         }

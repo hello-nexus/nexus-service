@@ -165,7 +165,8 @@ public sealed class LianLiConnectionWorker : BackgroundService
         var hub = _hubs.Hubs[slot];
         // The hub can answer the version query empty for a while after attach.
         var maxReads = hub.Profile.Family == LianLiFanFamily.SlV2 ? MaxSlV2FirmwareReads : MaxFirmwareReads;
-        if (!hub.State.FirmwareAnswered && _firmwareReads[slot]++ < maxReads)
+        var asked = hub.Profile.Family == LianLiFanFamily.SlV2 ? hub.State.FirmwareAnswered : !string.IsNullOrEmpty(hub.State.FirmwareVersion);
+        if (!asked && _firmwareReads[slot]++ < maxReads)
         {
             if (hub.ReadFirmwareVersion(out var familyId))
             {

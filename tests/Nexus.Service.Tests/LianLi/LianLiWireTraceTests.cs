@@ -79,6 +79,23 @@ public class LianLiWireTraceTests
     }
 
     [Fact]
+    public void Only_the_first_attaches_are_traced_so_a_flapping_hub_cannot_grow_the_log()
+    {
+        Assert.True(LianLiFanProfiles.TryGet(0xA105, out var profile));
+        _hub.Trace.Sink = _lines.Add;
+
+        for (var i = 0; i < 20; i++)
+        {
+            _hub.Attach(_spy, profile);
+            _hub.SendFrameSync();
+            _hub.Detach();
+        }
+
+        Assert.Equal(5, _lines.Count(l => l.Contains("tracing every write")));
+        Assert.True(_lines.Count <= 5 * 2);
+    }
+
+    [Fact]
     public void Detach_stops_the_trace()
     {
         Attach(0xA105);

@@ -18,6 +18,9 @@ public sealed class LianLiWireTrace
     private const int ApplyLines = 90;
     private const int MaxTracedApplies = 12;
     private const int ShownBytes = 8;
+    private const int ApplyWindowMs = 3000;
+    private const int MaxTracedAttaches = 5;
+    private const int MaxLifetimeLines = 3000;
 
     private readonly string _hubId;
 
@@ -25,8 +28,11 @@ public sealed class LianLiWireTrace
     internal Action<string> Sink { get; set; } = ServiceLog.Info;
     private long _attachedTs;
     private long _windowUntilTs;
+    private long _applyUntilTs;
     private int _lines;
     private int _applies;
+    private int _attaches;
+    private int _lifetimeLines;
 
     public LianLiWireTrace(string hubId)
     {
@@ -36,12 +42,17 @@ public sealed class LianLiWireTrace
     public void Reset()
     {
         Volatile.Write(ref _windowUntilTs, 0);
+        Volatile.Write(ref _applyUntilTs, 0);
         Volatile.Write(ref _lines, 0);
         Volatile.Write(ref _applies, 0);
     }
 
     public void BeginAttachWindow()
     {
+        if (Interlocked.Increment(ref _attaches) > MaxTracedAttaches)
+        {
+            return;
+        }
         _attachedTs = Stopwatch.GetTimestamp();
         Volatile.Write(ref _applies, 0);
         Volatile.Write(ref _lines, AttachLines);
@@ -57,6 +68,7 @@ public sealed class LianLiWireTrace
             return;
         }
         Volatile.Write(ref _lines, Math.Max(Volatile.Read(ref _lines), ApplyLines));
+        Volatile.Write(ref _applyUntilTs, Stopwatch.GetTimestamp() + ApplyWindowMs * Stopwatch.Frequency / 1000);
         Sink($"[lianli-wire] {_hubId} apply {what}");
     }
 
@@ -67,8 +79,8 @@ public sealed class LianLiWireTrace
             return;
         }
         var now = Stopwatch.GetTimestamp();
-        var inWindow = now < Volatile.Read(ref _windowUntilTs);
-        if (!inWindow && Volatile.Read(ref _applies) > MaxTracedApplies)
+        var inWindow = now < Volatile.Read(ref _windowUntilTs) || now < Volatile.Read(ref _applyUntilTs);
+        if (!inWindow || Volatile.Read(ref _lifetimeLines) >= MaxLifetimeLines)
         {
             return;
         }
@@ -76,6 +88,7 @@ public sealed class LianLiWireTrace
         {
             return;
         }
+        Interlocked.Increment(ref _lifetimeLines);
         var sb = new StringBuilder(64);
         sb.Append("[lianli-wire] ").Append(_hubId).Append(" +")
           .Append((long)Stopwatch.GetElapsedTime(_attachedTs, now).TotalMilliseconds).Append(" ms ")
