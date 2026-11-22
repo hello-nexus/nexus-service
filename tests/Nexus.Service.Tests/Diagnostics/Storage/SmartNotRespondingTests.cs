@@ -22,12 +22,13 @@ public class SmartNotRespondingTests
     [Fact]
     public void A_good_last_entry_is_raised_to_caution_and_keeps_its_data()
     {
-        var previous = new SmartDriveInfo { Id = "storage:S1", Name = "D", Status = "good", PowerOnHours = 1200 };
+        var previous = new SmartDriveInfo { Id = "storage:S1", Name = "D", Status = "good", PowerOnHours = 1200, TemperatureC = 41 };
 
         var annotated = SmartNotResponding.Annotate(previous);
 
         Assert.Equal("caution", annotated.Status);
         Assert.Equal(1200UL, annotated.PowerOnHours);
+        Assert.Null(annotated.TemperatureC);
         Assert.Contains("storage.notResponding", annotated.StatusReasons);
         Assert.Contains(annotated.DetailedReasons, r => r.Code == "storage.notResponding");
     }

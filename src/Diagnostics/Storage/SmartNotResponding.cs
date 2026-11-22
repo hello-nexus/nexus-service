@@ -43,6 +43,8 @@ internal static class SmartNotResponding
         }
         return previous with
         {
+            // The last temperature is not current; alerts and tools must not treat it as a live reading.
+            TemperatureC = null,
             Status = previous.Status is "good" or "unknown" ? "caution" : previous.Status,
             StatusReasons = previous.StatusReasons.Append(Code).ToList(),
             DetailedReasons = previous.DetailedReasons.Append(Reason(previous.Name)).ToList(),
