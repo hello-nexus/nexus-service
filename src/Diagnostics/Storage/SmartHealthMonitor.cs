@@ -93,7 +93,10 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
     // loop cannot make this re-poll LhmComputer continuously.
     private static readonly TimeSpan ForceRefreshFloor = TimeSpan.FromSeconds(5);
 
+    private static readonly TimeSpan InFlightWait = TimeSpan.FromSeconds(2);
     private readonly LhmComputer _lhm;
+    // Guarded by _lock, like Refresh.
+    private readonly Dictionary<string, SmartDriveInfo> _lastDriveByHardware = new(StringComparer.Ordinal);
     private readonly object _lock = new();
     private readonly Stopwatch _sinceRefresh = Stopwatch.StartNew();
     private readonly HashSet<string> _warnedDrives = new();
@@ -152,11 +155,22 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
                 if (hw is not LibreHardwareMonitor.Hardware.Storage.StorageDevice lhmDrive) continue;
 
                 var hardwareId = hw.Identifier.ToString() ?? "";
+                // A drive whose update is still running (stuck, or past the forced-refresh wait) is mid-refresh in LHM; keep its last entry rather than read it torn.
+                if (_lhm.IsStorageUpdateInFlight(hardwareId) && !_lhm.WaitStorageIdle(hardwareId, InFlightWait))
+                {
+                    if (_lastDriveByHardware.TryGetValue(hardwareId, out var previous))
+                    {
+                        drives.Add(previous);
+                    }
+                    continue;
+                }
                 try
                 {
                     var dit = lhmDrive.Storage;
                     if (dit is null) continue;
-                    drives.Add(BuildDrive(dit, hardwareId));
+                    var built = BuildDrive(dit, hardwareId);
+                    _lastDriveByHardware[hardwareId] = built;
+                    drives.Add(built);
                 }
                 catch (Exception ex)
                 {

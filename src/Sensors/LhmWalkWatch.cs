@@ -52,11 +52,15 @@ internal sealed class LhmWalkWatch
     internal bool IsFresh => !IsStale && (CurrentWalkAge ?? TimeSpan.Zero) < FreshLimit;
 
     /// <summary>Takes <paramref name="gate"/>. A reader that must never wait gets false at once when a walk holds it.</summary>
-    internal static bool Acquire(object gate, bool neverWait)
+    internal static bool Acquire(object gate, bool neverWait, TimeSpan? maxWait = null)
     {
         if (neverWait)
         {
             return Monitor.TryEnter(gate);
+        }
+        if (maxWait is { } bound)
+        {
+            return Monitor.TryEnter(gate, bound);
         }
         Monitor.Enter(gate);
         return true;
@@ -227,4 +231,40 @@ internal sealed class LhmWalkWatch
 
     /// <summary>The reading to publish: null while stale. Consumers that cannot carry a null (HardwareSensor.Value) fall to zero once the hold window lapses.</summary>
     internal float? Read(float? raw) => IsStale ? null : raw;
+
+    // Copy-on-write: read on every sensor read, changed only when a drive goes overdue or recovers.
+    private string[] _staleHardware = Array.Empty<string>();
+    private readonly object _staleHardwareGate = new();
+
+    /// <summary>Marks a hardware item whose update is stuck, so its sensors read as missing until <see cref="MarkHardwareStale"/> clears it.</summary>
+    internal void MarkHardwareStale(string hardwareId, bool stale)
+    {
+        lock (_staleHardwareGate)
+        {
+            var list = new System.Collections.Generic.List<string>(_staleHardware);
+            list.Remove(hardwareId);
+            if (stale)
+            {
+                list.Add(hardwareId);
+            }
+            Volatile.Write(ref _staleHardware, list.ToArray());
+        }
+    }
+
+    /// <summary>Like <see cref="Read(float?)"/>, and null too when the sensor belongs to a hardware item marked stale. A sensor id is its hardware id plus a path.</summary>
+    internal float? Read(float? raw, string sensorId)
+    {
+        if (IsStale)
+        {
+            return null;
+        }
+        foreach (var hw in Volatile.Read(ref _staleHardware))
+        {
+            if (sensorId.StartsWith(hw, StringComparison.Ordinal) && (sensorId.Length == hw.Length || sensorId[hw.Length] == '/'))
+            {
+                return null;
+            }
+        }
+        return raw;
+    }
 }
