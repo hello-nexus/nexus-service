@@ -59,6 +59,8 @@ internal sealed class LhmStorageUpdater : IDisposable
 
     private readonly object _gate = new();
     private readonly Dictionary<object, Worker> _workers = new(ReferenceEqualityComparer.Instance);
+    // Workers dropped by Retain while a job was still running: Shutdown still waits on them before the hardware closes.
+    private readonly List<Worker> _retired = new();
     private readonly SemaphoreSlim _start = new(1, 1);
     private readonly TimeSpan _startGrace;
     private readonly TimeSpan _overdueAfter;
@@ -150,6 +152,10 @@ internal sealed class LhmStorageUpdater : IDisposable
                 var worker = _workers[key];
                 _workers.Remove(key);
                 worker.Removed = true;
+                if (worker.Running)
+                {
+                    _retired.Add(worker);
+                }
                 while (worker.Queue.Count > 0)
                 {
                     worker.Queue.Dequeue().Job.Complete();
@@ -228,6 +234,10 @@ internal sealed class LhmStorageUpdater : IDisposable
                 else
                 {
                     worker.UpdateActive = false;
+                }
+                if (worker.Removed)
+                {
+                    _retired.Remove(worker);
                 }
                 Monitor.PulseAll(_gate);
             }
@@ -311,6 +321,10 @@ internal sealed class LhmStorageUpdater : IDisposable
             {
                 var anyRunning = false;
                 foreach (var w in _workers.Values)
+                {
+                    anyRunning |= w.Running;
+                }
+                foreach (var w in _retired)
                 {
                     anyRunning |= w.Running;
                 }

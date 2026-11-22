@@ -46,8 +46,8 @@ public class LhmStorageUpdaterTests
         object first = new(), second = new();
         var ran = 0;
 
-        var a = updater.Request(first, "id_error", "a", Nothing, () => Interlocked.Increment(ref ran));
-        var b = updater.Request(second, "id_error", "b", Nothing, () => Interlocked.Increment(ref ran));
+        var a = updater.Request(first, "/ata/id_error", "a", Nothing, () => Interlocked.Increment(ref ran));
+        var b = updater.Request(second, "/nvme/id_error", "b", Nothing, () => Interlocked.Increment(ref ran));
 
         Assert.NotNull(a);
         Assert.NotNull(b);
@@ -266,5 +266,21 @@ public class LhmStorageUpdaterTests
         Assert.True(updater.WaitIdle(drive, Wait));
 
         Assert.True(updater.Shutdown(TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void Shutdown_still_waits_for_a_stuck_update_whose_drive_was_retired()
+    {
+        var updater = New();
+        using var release = new ManualResetEventSlim();
+        using var started = new ManualResetEventSlim();
+        updater.Request(new object(), "/hdd/0", "d", Nothing, () => { started.Set(); release.Wait(Wait); });
+        Assert.True(started.Wait(Wait));
+
+        updater.Retain(new List<object>());
+
+        Assert.False(updater.Shutdown(TimeSpan.FromMilliseconds(80)));
+        release.Set();
+        Assert.True(updater.Shutdown(Wait));
     }
 }

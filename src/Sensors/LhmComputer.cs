@@ -60,7 +60,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         StorageOverdue,
         (id, name, limit) =>
         {
-            if (id != UnusableIdentifier)
+            if (!LhmWalkWatch.IsUnidentifiable(id))
             {
                 LhmWalkWatch.Shared.MarkHardwareStale(id, true);
             }
@@ -68,14 +68,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         },
         (id, name) =>
         {
-            if (id != UnusableIdentifier)
+            if (!LhmWalkWatch.IsUnidentifiable(id))
             {
                 LhmWalkWatch.Shared.MarkHardwareStale(id, false);
             }
             ServiceLog.Info($"[lhm] storage update for {name} ({id}) returned; its readings resumed");
         });
-    // LHM hands this literal to every drive it cannot identify, so it cannot name one drive's sensors.
-    private const string UnusableIdentifier = "id_error";
     private static readonly TimeSpan StorageStartGrace = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan StorageOverdue = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StorageShutdownWait = TimeSpan.FromSeconds(2);

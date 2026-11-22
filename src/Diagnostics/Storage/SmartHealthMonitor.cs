@@ -95,7 +95,9 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
 
     // One shared deadline for every drive's read, so a stuck drive costs this refresh the bound once, not once per drive.
     private static readonly TimeSpan DriveReadBudget = TimeSpan.FromSeconds(3);
-    internal const string NotRespondingReason = "drive-not-responding";
+    // A drive shown as not responding may only be slow, so such a snapshot is re-read soon rather than after the full interval.
+    private static readonly TimeSpan NotRespondingRefreshInterval = TimeSpan.FromSeconds(30);
+    private TimeSpan _refreshInterval = RefreshInterval;
     private readonly LhmComputer _lhm;
     // Guarded by _lock, like Refresh.
     private readonly Dictionary<object, SmartDriveInfo> _lastDriveByHardware = new(ReferenceEqualityComparer.Instance);
@@ -114,7 +116,7 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
     {
         lock (_lock)
         {
-            if (!_hasSnapshot || _sinceRefresh.Elapsed >= RefreshInterval)
+            if (!_hasSnapshot || _sinceRefresh.Elapsed >= _refreshInterval)
                 Refresh(explicitRefresh: false);
             return _cached;
         }
@@ -177,6 +179,7 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
                 reads.Add(read);
             }
 
+            var anyNotResponding = false;
             var deadline = Stopwatch.StartNew();
             foreach (var read in reads)
             {
@@ -201,8 +204,16 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
                 {
                     ServiceLog.Warn($"[smart] drive {read.HardwareId} not responding; keeping its last known state");
                 }
-                drives.Add(_lastDriveByHardware.TryGetValue(read.Hardware, out var previous) ? previous : NotRespondingPlaceholder(read));
+                anyNotResponding = true;
+                drives.Add(_lastDriveByHardware.TryGetValue(read.Hardware, out var previous) ? SmartNotResponding.Annotate(previous) : NotRespondingPlaceholder(read));
             }
+            // Forget drives that left the machine.
+            var present = new HashSet<object>(reads.Select(r => r.Hardware), ReferenceEqualityComparer.Instance);
+            foreach (var gone in _lastDriveByHardware.Keys.Where(k => !present.Contains(k)).ToList())
+            {
+                _lastDriveByHardware.Remove(gone);
+            }
+            _refreshInterval = anyNotResponding ? NotRespondingRefreshInterval : RefreshInterval;
             _cached = new SmartSnapshot { Supported = true, Drives = drives };
         }
         catch (Exception ex)
@@ -250,16 +261,7 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
         {
             name = read.Hardware.Name;
         }
-        return new SmartDriveInfo
-        {
-            Id = serial.Length > 0 ? $"storage:{serial}" : $"storage:{read.HardwareId}",
-            Name = name,
-            Serial = serial,
-            Bus = bus,
-            SizeBytes = size,
-            Status = "unknown",
-            StatusReasons = new List<string> { NotRespondingReason },
-        };
+        return SmartNotResponding.Placeholder(serial.Length > 0 ? $"storage:{serial}" : $"storage:{read.HardwareId}", name, serial, bus, size);
     }
 
     // BuildDrive runs on several drive workers at once.

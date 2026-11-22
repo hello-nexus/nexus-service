@@ -236,6 +236,9 @@ internal sealed class LhmWalkWatch
     private string[] _staleHardware = Array.Empty<string>();
     private readonly object _staleHardwareGate = new();
 
+    /// <summary>True for the identifier LHM gives a drive it cannot identify ("/ata/id_error", "/nvme/id_error"), which several drives can share.</summary>
+    internal static bool IsUnidentifiable(string hardwareId) => hardwareId.EndsWith("/id_error", StringComparison.Ordinal);
+
     /// <summary>Marks a hardware item whose update is stuck, so its sensors read as missing until <see cref="MarkHardwareStale"/> clears it.</summary>
     internal void MarkHardwareStale(string hardwareId, bool stale)
     {

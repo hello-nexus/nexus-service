@@ -487,4 +487,14 @@ public class LhmWalkWatchTests
         Assert.True(LhmWalkWatch.Acquire(gate, neverWait: false, maxWait: TimeSpan.FromMilliseconds(100)));
         Monitor.Exit(gate);
     }
+
+    [Theory]
+    [InlineData("/ata/id_error", true)]
+    [InlineData("/nvme/id_error", true)]
+    [InlineData("/nvme/0", false)]
+    [InlineData("/ata/0", false)]
+    public void Only_the_shared_error_identifier_is_unidentifiable(string id, bool expected)
+    {
+        Assert.Equal(expected, LhmWalkWatch.IsUnidentifiable(id));
+    }
 }
