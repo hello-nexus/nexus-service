@@ -404,4 +404,43 @@ public class LhmWalkWatchTests
 
         Assert.True(await waiter);
     }
+
+    [Fact]
+    public void TryRunNow_skips_without_waiting_while_another_reader_holds_the_gate()
+    {
+        var gate = new object();
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            lock (gate)
+            {
+                held.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            }
+        }) { IsBackground = true };
+        holder.Start();
+        Assert.True(held.Wait(TimeSpan.FromSeconds(10)));
+
+        var ran = false;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var result = LhmWalkWatch.TryRunNow(gate, () => { ran = true; return true; });
+
+        Assert.False(result);
+        Assert.False(ran);
+        Assert.True(clock.ElapsedMilliseconds < 1_000);
+        release.Set();
+        holder.Join();
+    }
+
+    [Fact]
+    public void TryRunNow_runs_and_returns_the_action_result_when_free()
+    {
+        var gate = new object();
+
+        Assert.True(LhmWalkWatch.TryRunNow(gate, () => true));
+        Assert.False(LhmWalkWatch.TryRunNow(gate, () => false));
+        Assert.True(Monitor.TryEnter(gate));
+        Monitor.Exit(gate);
+    }
 }

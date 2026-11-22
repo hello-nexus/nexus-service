@@ -52,6 +52,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private long _lastUpdateTicks;
     private readonly LhmSlowWalkReport _slowWalk = new(() => Environment.TickCount64);
     private readonly LhmDimmBackoff _dimmBackoff = new(() => Environment.TickCount64);
+    private readonly LhmSlowItemLog _slowItems = new(() => Environment.TickCount64);
+    // Drive updates run here, never on the walk the curve engine drives, so one stuck drive cannot hold that walk.
+    private readonly LhmStorageUpdater _storage = new();
+    // A forced walk waits this long, total, for the drive updates it queued, so an explicit refresh still reads fresh values from healthy drives.
+    private static readonly TimeSpan StorageForceWait = TimeSpan.FromSeconds(3);
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
     private readonly IConfigStore _config;
@@ -406,14 +411,17 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// finished yet - callers see an empty <see cref="Computer.Hardware"/>
     /// collection and degrade to "no sensors" until warmup completes.
     /// </summary>
-    public void Update(SensorRefresh refresh = SensorRefresh.Normal)
+    public void Update(SensorRefresh refresh = SensorRefresh.Normal) => UpdateCore(refresh, waitForWalk: true);
+
+    /// <summary>False when a running walk was not waited for or the open has not finished, so nothing was refreshed.</summary>
+    private bool UpdateCore(SensorRefresh refresh, bool waitForWalk)
     {
-        if (!_openTask.IsCompletedSuccessfully) return;
+        if (!_openTask.IsCompletedSuccessfully) return false;
 
         var floorMs = refresh == SensorRefresh.Fast ? FastFloorMs : NormalFloorMs;
         if (refresh != SensorRefresh.Force && Environment.TickCount64 - Interlocked.Read(ref _lastUpdateTicks) < floorMs)
         {
-            return;
+            return true;
         }
         // Outside _updateLock: an IConfigStore.Update mutator can hold the store lock while waiting for it.
         var settings = _config.Load();
@@ -426,16 +434,16 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         var held = false;
         try
         {
-            held = LhmWalkWatch.Acquire(_updateLock, refresh == SensorRefresh.Normal || _walkWatch.IsStale);
+            held = LhmWalkWatch.Acquire(_updateLock, refresh == SensorRefresh.Normal || !waitForWalk || _walkWatch.IsStale);
             if (!held)
             {
-                return;
+                return refresh == SensorRefresh.Normal;
             }
 
             var now = Environment.TickCount64;
             if (refresh != SensorRefresh.Force && now - _lastUpdateTicks < floorMs)
             {
-                return;
+                return true;
             }
 
             Interlocked.Exchange(ref _lastUpdateTicks, now);
@@ -456,6 +464,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 using (WindowsTimerResolution.Elevate())
                 {
+                    var storageQueued = false;
                     foreach (var hw in _computer.Hardware)
                     {
                         // StorageDevice keeps its skip counter per instance and reads the static
@@ -483,9 +492,20 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                             }
                         }
 
+                        if (hw.HardwareType == HardwareType.Storage)
+                        {
+                            var storageCycles = StorageDevice.SmartUpdateCycleCount;
+                            storageQueued |= _storage.Request(hw.Identifier.ToString(), () => UpdateStorage(hw, storageCycles));
+                            continue;
+                        }
+
                         TryUpdate(hw);
                         foreach (var sub in hw.SubHardware)
                             TryUpdate(sub);
+                    }
+                    if (storageQueued && (refresh == SensorRefresh.Force || _explicitStorageRefresh))
+                    {
+                        _storage.WaitIdle(StorageForceWait);
                     }
                 }
             }
@@ -517,11 +537,23 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 Monitor.Exit(_updateLock);
             }
         }
+        return held;
+    }
+
+    // Runs on the storage worker: the cycle static is set per job there, since the walk thread has moved on.
+    private void UpdateStorage(IHardware hw, uint cycles)
+    {
+        StorageDevice.SmartUpdateCycleCount = cycles;
+        TryUpdate(hw, onWalk: false);
+        foreach (var sub in hw.SubHardware)
+        {
+            TryUpdate(sub, onWalk: false);
+        }
     }
 
     // One unplugged or busy HID cooler (KrakenV2/V3 throw from Update) must not
     // fail the walk for every other device or the routes that triggered it.
-    private void TryUpdate(IHardware hw)
+    private void TryUpdate(IHardware hw, bool onWalk = true)
     {
         // A Kraken the hub drives is not polled here. Everything that reads its entries
         // takes the hub's values instead, because LHM's stay at their last reading.
@@ -538,7 +570,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 _walkWatch.SetItem(null);
                 return;
             }
-            _walkWatch.SetItem(item);
+            // The walk's item marker and slow-walk report belong to the walk thread; the storage worker has neither.
+            if (onWalk)
+            {
+                _walkWatch.SetItem(item);
+            }
             var itemStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
@@ -558,7 +594,14 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             finally
             {
                 var ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(itemStart).TotalMilliseconds;
-                _slowWalk.Record(item, ms);
+                if (onWalk)
+                {
+                    _slowWalk.Record(item, ms);
+                }
+                if (_slowItems.Record(item, hw.Name, ms) is { } slowLine)
+                {
+                    ServiceLog.Warn(slowLine);
+                }
                 if (isDimm)
                 {
                     _dimmBackoff.RecordStick(ms);
@@ -569,10 +612,13 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         {
             var key = hw.Identifier.ToString();
             var now = Environment.TickCount64;
-            if (_updateErrorLoggedAt.TryGetValue(key, out var last) && now - last < UpdateErrorLogIntervalMs)
-                return;
+            lock (_updateErrorLoggedAt)
+            {
+                if (_updateErrorLoggedAt.TryGetValue(key, out var last) && now - last < UpdateErrorLogIntervalMs)
+                    return;
 
-            _updateErrorLoggedAt[key] = now;
+                _updateErrorLoggedAt[key] = now;
+            }
             ServiceLog.Warn($"[lhm] update failed for {hw.Name}: {ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -606,17 +652,20 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// <summary>Called by a SMART reader before it reads drive values; walks first when drive reads had stopped.</summary>
     public void BeforeSmartRead()
     {
-        // Serialized so a second reader waits for the first reader's walk; never taken while holding _updateLock.
-        lock (_readerLock)
+        // A reader never waits: not for another reader, and not for a walk that is running. It serves the cached readings,
+        // and a skipped walk reopens the reader window so the next reader asks again. Never taken while holding _updateLock.
+        LhmWalkWatch.TryRunNow(_readerLock, () =>
         {
             var wasClosed = SmartLiveConsumers.NoteRead();
-            if (!wasClosed || !_openTask.IsCompletedSuccessfully) return;
+            if (!wasClosed || !_openTask.IsCompletedSuccessfully) return false;
             var demand = SmartPollDemand.Capture(_gates, _config.Load(), SmartLiveConsumers.Subscribed(_hub));
-            if (SmartPollDemand.ReaderMustWalk(wasClosed, demand, StorageIdentifiers()))
+            if (SmartPollDemand.ReaderMustWalk(wasClosed, demand, StorageIdentifiers()) && !UpdateCore(SensorRefresh.Force, waitForWalk: false))
             {
-                Update(SensorRefresh.Force);
+                SmartLiveConsumers.Forget();
+                return false;
             }
-        }
+            return true;
+        });
     }
 
     /// <summary>A forced walk for an explicit health refresh; opens the reader window so every drive reads, serialized with the other SMART readers.</summary>
@@ -685,6 +734,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         _gate.Changed -= OnControlGateChanged;
         _config.OnChanged -= OnConfigChanged;
         _walkWatch.Stalled -= OnWalkStalled;
+        _storage.Dispose();
         // Wait for the background open to finish before Close(): LHM's
         // Computer.Close() isn't documented thread-safe against an in-flight
         // Open(), and Dispose() is only called at service shutdown so the

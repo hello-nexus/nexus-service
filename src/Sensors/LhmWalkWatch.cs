@@ -62,6 +62,23 @@ internal sealed class LhmWalkWatch
         return true;
     }
 
+    /// <summary>Runs <paramref name="action"/> under <paramref name="gate"/> unless another thread holds it; false means the caller serves cached readings instead of waiting.</summary>
+    internal static bool TryRunNow(object gate, Func<bool> action)
+    {
+        if (!Monitor.TryEnter(gate))
+        {
+            return false;
+        }
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            Monitor.Exit(gate);
+        }
+    }
+
     /// <summary>Runs <paramref name="action"/> under <paramref name="gate"/> only if no walk releases it within <paramref name="wait"/>; false means it was skipped.</summary>
     internal static bool TryRunWhenIdle(object gate, TimeSpan wait, Action action)
     {
