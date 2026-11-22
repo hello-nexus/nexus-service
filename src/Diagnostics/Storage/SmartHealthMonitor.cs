@@ -93,10 +93,12 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
     // loop cannot make this re-poll LhmComputer continuously.
     private static readonly TimeSpan ForceRefreshFloor = TimeSpan.FromSeconds(5);
 
-    private static readonly TimeSpan InFlightWait = TimeSpan.FromSeconds(2);
+    // One shared deadline for every drive's read, so a stuck drive costs this refresh the bound once, not once per drive.
+    private static readonly TimeSpan DriveReadBudget = TimeSpan.FromSeconds(3);
+    internal const string NotRespondingReason = "drive-not-responding";
     private readonly LhmComputer _lhm;
     // Guarded by _lock, like Refresh.
-    private readonly Dictionary<string, SmartDriveInfo> _lastDriveByHardware = new(StringComparer.Ordinal);
+    private readonly Dictionary<object, SmartDriveInfo> _lastDriveByHardware = new(ReferenceEqualityComparer.Instance);
     private readonly object _lock = new();
     private readonly Stopwatch _sinceRefresh = Stopwatch.StartNew();
     private readonly HashSet<string> _warnedDrives = new();
@@ -149,34 +151,57 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
             if (explicitRefresh) _lhm.WalkForSmartRefresh();
             else _lhm.Update(SensorRefresh.Force);
             var drives = new List<SmartDriveInfo>();
+            var reads = new List<DriveRead>();
             foreach (var hw in _lhm.Instance.Hardware)
             {
                 if (hw.HardwareType != HardwareType.Storage) continue;
                 if (hw is not LibreHardwareMonitor.Hardware.Storage.StorageDevice lhmDrive) continue;
 
                 var hardwareId = hw.Identifier.ToString() ?? "";
-                // A drive whose update is still running (stuck, or past the forced-refresh wait) is mid-refresh in LHM; keep its last entry rather than read it torn.
-                if (_lhm.IsStorageUpdateInFlight(hardwareId) && !_lhm.WaitStorageIdle(hardwareId, InFlightWait))
+                // The read runs on the drive's own worker, behind its updates, so it cannot see a half-refreshed drive.
+                var read = new DriveRead(hw, hardwareId, lhmDrive);
+                read.Job = _lhm.RequestStorageRead(hw, () =>
                 {
-                    if (_lastDriveByHardware.TryGetValue(hardwareId, out var previous))
+                    try
                     {
-                        drives.Add(previous);
+                        if (lhmDrive.Storage is { } dit)
+                        {
+                            read.Info = BuildDrive(dit, hardwareId);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        read.Error = ex;
+                    }
+                });
+                reads.Add(read);
+            }
+
+            var deadline = Stopwatch.StartNew();
+            foreach (var read in reads)
+            {
+                var finished = read.Job is { } job && job.Wait(DriveReadBudget > deadline.Elapsed ? DriveReadBudget - deadline.Elapsed : TimeSpan.Zero);
+                if (finished)
+                {
+                    if (read.Error is { } error)
+                    {
+                        if (WarnOnce(read.HardwareId))
+                            ServiceLog.Warn($"[smart] failed reading drive {read.HardwareId}: {error.Message}");
+                    }
+                    else if (read.Info is { } info)
+                    {
+                        _lastDriveByHardware[read.Hardware] = info;
+                        drives.Add(info);
                     }
                     continue;
                 }
-                try
+
+                // Stuck drive: its last full entry, else what it is called, so the failing drive is listed instead of missing.
+                if (WarnOnce("stuck:" + read.HardwareId))
                 {
-                    var dit = lhmDrive.Storage;
-                    if (dit is null) continue;
-                    var built = BuildDrive(dit, hardwareId);
-                    _lastDriveByHardware[hardwareId] = built;
-                    drives.Add(built);
+                    ServiceLog.Warn($"[smart] drive {read.HardwareId} not responding; keeping its last known state");
                 }
-                catch (Exception ex)
-                {
-                    if (_warnedDrives.Add(hardwareId))
-                        ServiceLog.Warn($"[smart] failed reading drive {hardwareId}: {ex.Message}");
-                }
+                drives.Add(_lastDriveByHardware.TryGetValue(read.Hardware, out var previous) ? previous : NotRespondingPlaceholder(read));
             }
             _cached = new SmartSnapshot { Supported = true, Drives = drives };
         }
@@ -192,6 +217,60 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
         }
     }
 
+    private sealed class DriveRead(IHardware hardware, string hardwareId, LibreHardwareMonitor.Hardware.Storage.StorageDevice drive)
+    {
+        public IHardware Hardware { get; } = hardware;
+        public string HardwareId { get; } = hardwareId;
+        public LibreHardwareMonitor.Hardware.Storage.StorageDevice Drive { get; } = drive;
+        public LhmStorageUpdater.Job? Job { get; set; }
+        public SmartDriveInfo? Info { get; set; }
+        public Exception? Error { get; set; }
+    }
+
+    // Name, serial, bus and size do not change in a refresh, so they are safe to read while the drive's worker is stuck inside one.
+    private static SmartDriveInfo NotRespondingPlaceholder(DriveRead read)
+    {
+        string serial = "", name = "", bus = "other";
+        ulong? size = null;
+        try
+        {
+            if (read.Drive.Storage is { } dit)
+            {
+                serial = dit.SerialNumber ?? "";
+                name = !string.IsNullOrWhiteSpace(dit.DisplayName) ? dit.DisplayName : dit.ProductName ?? "";
+                bus = MapBus(dit.BusType);
+                size = dit.DiskSizeBytes;
+            }
+        }
+        catch
+        {
+            // Identity unreadable too: fall back to the hardware name below.
+        }
+        if (name.Length == 0)
+        {
+            name = read.Hardware.Name;
+        }
+        return new SmartDriveInfo
+        {
+            Id = serial.Length > 0 ? $"storage:{serial}" : $"storage:{read.HardwareId}",
+            Name = name,
+            Serial = serial,
+            Bus = bus,
+            SizeBytes = size,
+            Status = "unknown",
+            StatusReasons = new List<string> { NotRespondingReason },
+        };
+    }
+
+    // BuildDrive runs on several drive workers at once.
+    private bool WarnOnce(string key)
+    {
+        lock (_warnedDrives)
+        {
+            return _warnedDrives.Add(key);
+        }
+    }
+
     private SmartDriveInfo BuildDrive(DiskInfoToolkit.Devices.StorageDevice dit, string hardwareId)
     {
         var serial = dit.SerialNumber ?? "";
@@ -201,7 +280,7 @@ public sealed class SmartHealthMonitor : ISmartHealthSource
 
         if (!dit.SupportsSmart)
         {
-            if (_warnedDrives.Add("trace:" + hardwareId))
+            if (WarnOnce("trace:" + hardwareId))
             {
                 // Some probe paths echo the drive serial into the trace; never log those lines.
                 var trace = dit.ProbeTrace is { } t

@@ -60,14 +60,22 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         StorageOverdue,
         (id, name, limit) =>
         {
-            LhmWalkWatch.Shared.MarkHardwareStale(id, true);
+            if (id != UnusableIdentifier)
+            {
+                LhmWalkWatch.Shared.MarkHardwareStale(id, true);
+            }
             ServiceLog.Warn($"[lhm] storage update for {name} ({id}) running > {limit.TotalSeconds:F0}s; its readings are paused until it returns");
         },
         (id, name) =>
         {
-            LhmWalkWatch.Shared.MarkHardwareStale(id, false);
+            if (id != UnusableIdentifier)
+            {
+                LhmWalkWatch.Shared.MarkHardwareStale(id, false);
+            }
             ServiceLog.Info($"[lhm] storage update for {name} ({id}) returned; its readings resumed");
         });
+    // LHM hands this literal to every drive it cannot identify, so it cannot name one drive's sensors.
+    private const string UnusableIdentifier = "id_error";
     private static readonly TimeSpan StorageStartGrace = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan StorageOverdue = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StorageShutdownWait = TimeSpan.FromSeconds(2);
@@ -485,6 +493,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 using (WindowsTimerResolution.Elevate())
                 {
+                    var presentStorage = new List<object>();
                     foreach (var hw in _computer.Hardware)
                     {
                         // StorageDevice keeps its skip counter per instance and reads the cycle static
@@ -493,6 +502,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                         // separate paths and still refresh every walk.
                         if (hw.HardwareType == HardwareType.Storage)
                         {
+                            presentStorage.Add(hw);
                             var forceStorage = SmartPollDemand.StorageForce(
                                 monitoring.LiveDriveActivity, refresh == SensorRefresh.Force, _explicitStorageRefresh);
                             var cycles = SmartCyclesFor(hw, monitoring, smartDemand, forceStorage);
@@ -513,6 +523,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
                             var storageCycles = cycles;
                             if (_storage.Request(
+                                hw,
                                 hw.Identifier.ToString(),
                                 hw.Name,
                                 () => StorageDevice.SmartUpdateCycleCount = storageCycles,
@@ -527,6 +538,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                         foreach (var sub in hw.SubHardware)
                             TryUpdate(sub);
                     }
+                    _storage.Retain(presentStorage);
                 }
             }
             finally
@@ -569,11 +581,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         return held;
     }
 
-    /// <summary>True while a drive's update is queued or running, so its LHM objects may be mid-refresh and must not be read.</summary>
-    public bool IsStorageUpdateInFlight(string hardwareId) => _storage.IsBusy(hardwareId);
-
-    /// <summary>Waits for a drive's running update; false means it is still going (stuck) after <paramref name="timeout"/>.</summary>
-    public bool WaitStorageIdle(string hardwareId, TimeSpan timeout) => _storage.WaitIdle(hardwareId, timeout);
+    /// <summary>
+    /// Runs <paramref name="read"/> on the drive's own worker, behind its updates, so it never overlaps one.
+    /// Null means a read for that drive is already queued or running, or the service is shutting down.
+    /// </summary>
+    internal LhmStorageUpdater.Job? RequestStorageRead(IHardware drive, Action read) => _storage.RequestRead(drive, read);
 
     private void UpdateStorage(IHardware hw)
     {
