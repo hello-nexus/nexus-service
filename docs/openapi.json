@@ -15643,6 +15643,9 @@
           },
           "history": {
             "type": "boolean"
+          },
+          "panels": {
+            "type": "boolean"
           }
         }
       },
@@ -15674,6 +15677,12 @@
             ]
           },
           "history": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "panels": {
             "type": [
               "null",
               "boolean"

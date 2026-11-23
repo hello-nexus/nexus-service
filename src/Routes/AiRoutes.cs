@@ -45,6 +45,7 @@ public static class AiRoutes
                     if (caps.Lighting.HasValue) s.AiIntegration.AllowLighting = caps.Lighting.Value;
                     if (caps.Profiles.HasValue) s.AiIntegration.AllowProfiles = caps.Profiles.Value;
                     if (caps.History.HasValue) s.AiIntegration.AllowHistory = caps.History.Value;
+                    if (caps.Panels.HasValue) s.AiIntegration.AllowPanels = caps.Panels.Value;
                 }
             });
             var after = store.Load().AiIntegration;
@@ -117,6 +118,7 @@ public static class AiRoutes
                 Lighting = settings.AllowLighting,
                 Profiles = settings.AllowProfiles,
                 History = settings.AllowHistory,
+                Panels = settings.AllowPanels,
             },
         };
     }
