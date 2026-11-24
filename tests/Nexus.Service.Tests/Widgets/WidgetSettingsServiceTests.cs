@@ -148,7 +148,8 @@ public class WidgetSettingsServiceTests : IDisposable
         var frame = Assert.Single(captured);
         Assert.Equal("app-settings/" + InstanceId, frame.Topic);
         var json = System.Text.Encoding.UTF8.GetString(frame.Payload);
-        Assert.Contains("\"settings\":{", json);
+        Assert.Contains("\"values\":{", json);
+        Assert.Contains("\"revision\":", json);
         Assert.Contains("\"color\":\"#111111\"", json);
         Assert.Contains("\"scale\":1", json);
     }
@@ -161,6 +162,64 @@ public class WidgetSettingsServiceTests : IDisposable
         svc.SettingsChanged += (_, _) => raised++;
 
         Set(svc, "no-such-instance", "#111111");
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void Revision_increases_per_write_and_get_never_reports_less()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var seen = new List<long>();
+        svc.SettingsChanged += (_, d) => seen.Add(d.Revision);
+
+        Set(svc, InstanceId, "#111111");
+        Set(svc, InstanceId, "#222222");
+
+        Assert.Equal(2, seen.Count);
+        Assert.True(seen[1] > seen[0]);
+        Assert.True(svc.Get(InstanceId).Revision >= seen[1]);
+    }
+
+    [Fact]
+    public void Placement_removed_before_the_patch_applies_yields_no_frame()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Clear());
+        raised = 0;
+
+        Set(svc, InstanceId, "#111111");
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void A_layout_write_that_changes_an_instances_config_broadcasts_it()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        using var v = JsonDocument.Parse("\"#abcdef\"");
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Config =
+            new Dictionary<string, JsonElement> { ["color"] = v.RootElement.Clone() });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal(InstanceId, frame.AppId);
+        Assert.Equal("#abcdef", frame.Values["color"].GetString());
+        Assert.True(frame.Revision > 0);
+    }
+
+    [Fact]
+    public void An_unrelated_store_write_broadcasts_nothing()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Size = "4x4");
 
         Assert.Equal(0, raised);
     }

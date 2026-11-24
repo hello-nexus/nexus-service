@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using Nexus.Service.Models.Panel;
 using Nexus.Service.Panel;
 using Nexus.Service.Models.Widgets;
@@ -34,6 +36,8 @@ public sealed class WidgetSettingsService
     {
         _store = store;
         _registry = registry;
+        _store.Read(st => Reconcile(st, new List<WidgetSettingsDocument>()));
+        _store.OnChanged += OnStoreChanged;
     }
 
     /// <summary>
@@ -46,37 +50,32 @@ public sealed class WidgetSettingsService
     public WidgetSettingsDocument Get(string instanceId)
     {
         var doc = new WidgetSettingsDocument { AppId = instanceId };
-        if (!TryResolve(_store.Load(), instanceId, out var widget, out var manifest))
+        _store.Read(s =>
         {
-            return doc;
-        }
-        foreach (var entry in manifest!.Settings)
-        {
-            doc.Values[entry.Key] = Clone(entry.Default);
-        }
-        if (widget!.Config is { } overrides)
-        {
-            foreach (var kv in overrides)
+            if (TryBuild(s, instanceId, out var built))
             {
-                doc.Values[kv.Key] = kv.Value.Clone();
+                doc = built;
             }
-        }
+            doc.Revision = Interlocked.Read(ref _revision);
+        });
         return doc;
     }
 
     /// <summary>
     /// Apply a partial patch to a placement's per-instance config and return
     /// the new effective document. Unknown keys (not declared in the
-    /// manifest) are dropped silently.
+    /// manifest) are dropped silently. The document that is broadcast is built
+    /// inside the store lock, so it is exactly this write's state.
     /// </summary>
     public WidgetSettingsDocument Apply(string instanceId, WidgetSettingsPatch patch)
     {
-        var resolved = false;
+        var pending = new List<WidgetSettingsDocument>();
+        WidgetSettingsDocument? written = null;
         _store.Update(s =>
         {
-            resolved = false;
+            pending.Clear();
+            written = null;
             if (!TryResolve(s, instanceId, out var widget, out var manifest)) return;
-            resolved = true;
             widget!.Config ??= new Dictionary<string, JsonElement>();
             if (patch.Set is not null)
             {
@@ -95,17 +94,111 @@ public sealed class WidgetSettingsService
             }
             if (widget.Config.Count == 0) widget.Config = null;
             StoreStandInConfig(s, instanceId, widget.Config);
+            if (TryBuild(s, instanceId, out var doc))
+            {
+                doc.Revision = Interlocked.Increment(ref _revision);
+                _fingerprints[instanceId] = Fingerprint(doc);
+                written = doc;
+                pending.Add(doc);
+            }
+            Reconcile(s, pending);
         });
-        var updated = Get(instanceId);
-        if (resolved)
+        foreach (var doc in pending)
         {
-            SettingsChanged?.Invoke(instanceId, updated);
+            SettingsChanged?.Invoke(doc.AppId, doc);
         }
-        return updated;
+        return written ?? Get(instanceId);
     }
 
-    /// <summary>Raised after a placement's settings were written, with the full effective document. Not raised when the instance did not resolve to an app widget.</summary>
+    /// <summary>
+    /// Raised with the instance id and the full effective document (carrying its revision) whenever an app
+    /// placement's effective settings changed: through <see cref="Apply"/>, or any other write to the layouts
+    /// (layout PUT, preset or profile apply, import).
+    /// </summary>
     public event System.Action<string, WidgetSettingsDocument>? SettingsChanged;
+
+    // Process-wide and seeded from the clock so revisions keep increasing across service restarts.
+    private static long _revision = System.DateTime.UtcNow.Ticks;
+    private readonly ConcurrentDictionary<string, string> _fingerprints = new(System.StringComparer.Ordinal);
+
+    private void OnStoreChanged()
+    {
+        var pending = new List<WidgetSettingsDocument>();
+        _store.Read(s => Reconcile(s, pending));
+        foreach (var doc in pending)
+        {
+            SettingsChanged?.Invoke(doc.AppId, doc);
+        }
+    }
+
+    /// <summary>
+    /// Compares every app placement's effective settings with the last seen state. A placement seen for the
+    /// first time only records a baseline; a changed one gets a fresh revision and is added to <paramref name="changed"/>.
+    /// </summary>
+    private void Reconcile(NexusSettings s, List<WidgetSettingsDocument> changed)
+    {
+        foreach (var id in AppInstanceIds(s))
+        {
+            if (!TryBuild(s, id, out var doc)) continue;
+            var fp = Fingerprint(doc);
+            if (_fingerprints.TryGetValue(id, out var last) && last == fp) continue;
+            var seen = last is not null;
+            _fingerprints[id] = fp;
+            if (!seen) continue;
+            doc.Revision = Interlocked.Increment(ref _revision);
+            changed.Add(doc);
+        }
+    }
+
+    private static IEnumerable<string> AppInstanceIds(NexusSettings s)
+    {
+        var ids = new HashSet<string>(System.StringComparer.Ordinal);
+        void Collect(PanelLayoutDto? layout)
+        {
+            if (layout is null) return;
+            foreach (var page in layout.Pages)
+            {
+                foreach (var w in page.Widgets)
+                {
+                    if (MarketplaceIdFromType(w.Type) is not null) ids.Add(w.Id);
+                }
+            }
+        }
+        Collect(s.Panel.DashboardLayout);
+        foreach (var device in s.PanelDevices.Values)
+        {
+            foreach (var layout in PanelLayoutSlots.All(device)) Collect(layout);
+        }
+        return ids;
+    }
+
+    private static string Fingerprint(WidgetSettingsDocument doc)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var kv in doc.Values.OrderBy(k => k.Key, System.StringComparer.Ordinal))
+        {
+            sb.Append(kv.Key).Append('=').Append(kv.Value.GetRawText()).Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    private bool TryBuild(NexusSettings s, string instanceId, out WidgetSettingsDocument doc)
+    {
+        doc = new WidgetSettingsDocument { AppId = instanceId };
+        if (!TryResolve(s, instanceId, out var widget, out var manifest)) return false;
+        foreach (var entry in manifest!.Settings)
+        {
+            doc.Values[entry.Key] = Clone(entry.Default);
+        }
+        if (widget!.Config is { } overrides)
+        {
+            foreach (var kv in overrides)
+            {
+                doc.Values[kv.Key] = kv.Value.Clone();
+            }
+        }
+        return true;
+    }
 
     /// <summary>The app and version behind an app widget instance, false for any other id.</summary>
     public bool TryGetApp(string instanceId, out string appId, out string appVersion)

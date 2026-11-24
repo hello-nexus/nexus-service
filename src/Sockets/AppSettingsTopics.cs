@@ -15,7 +15,7 @@ public static class AppSettingsTopics
         {
             return;
         }
-        var env = WsEnvelope.Build(topic, new AppSettingsFrame { Settings = doc.Values }, AppJsonContext.Default.AppSettingsFrame);
+        var env = WsEnvelope.Build(topic, new AppSettingsFrame { Values = doc.Values, Revision = doc.Revision }, AppJsonContext.Default.AppSettingsFrame);
         _ = hub.BroadcastTopicAsync(topic, env);
     }
 }

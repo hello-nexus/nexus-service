@@ -13,6 +13,8 @@ public sealed class WidgetSettingsDocument
 {
     public string AppId { get; set; } = "";
     public Dictionary<string, JsonElement> Values { get; set; } = new();
+    /// <summary>Monotonic across writes and service restarts; a client drops a frame older than the last it applied.</summary>
+    public long Revision { get; set; }
 }
 
 /// <summary>
@@ -31,5 +33,6 @@ public sealed class WidgetSettingsPatch
 /// <summary>Frame pushed on the <c>app-settings/{instanceId}</c> topic: the full settings object after a write.</summary>
 public sealed class AppSettingsFrame
 {
-    public Dictionary<string, JsonElement> Settings { get; set; } = new();
+    public Dictionary<string, JsonElement> Values { get; set; } = new();
+    public long Revision { get; set; }
 }
