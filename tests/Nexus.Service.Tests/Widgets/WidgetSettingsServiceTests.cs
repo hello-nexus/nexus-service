@@ -133,6 +133,38 @@ public class WidgetSettingsServiceTests : IDisposable
         Assert.Equal("#222222", strip.Layout.Pages.Single().Widgets.Single().Config!["color"].GetString());
     }
 
+    [Fact]
+    public void Patch_broadcasts_the_full_settings_on_the_instance_topic()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""), ("scale", "1"));
+        var hub = new Nexus.Service.Sockets.MultiplexHub();
+        WidgetSettingsServiceWiring.Wire(svc, hub);
+        var captured = new List<(string Topic, byte[] Payload)>();
+        hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+        using var sub = hub.AddTestSubscription("app-settings/" + InstanceId);
+
+        Set(svc, InstanceId, "#111111");
+
+        var frame = Assert.Single(captured);
+        Assert.Equal("app-settings/" + InstanceId, frame.Topic);
+        var json = System.Text.Encoding.UTF8.GetString(frame.Payload);
+        Assert.Contains("\"settings\":{", json);
+        Assert.Contains("\"color\":\"#111111\"", json);
+        Assert.Contains("\"scale\":1", json);
+    }
+
+    [Fact]
+    public void Patch_for_an_unknown_instance_does_not_broadcast()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+
+        Set(svc, "no-such-instance", "#111111");
+
+        Assert.Equal(0, raised);
+    }
+
     private static void Set(WidgetSettingsService svc, string instanceId, string color)
     {
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(color));

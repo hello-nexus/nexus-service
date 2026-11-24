@@ -71,9 +71,12 @@ public sealed class WidgetSettingsService
     /// </summary>
     public WidgetSettingsDocument Apply(string instanceId, WidgetSettingsPatch patch)
     {
+        var resolved = false;
         _store.Update(s =>
         {
+            resolved = false;
             if (!TryResolve(s, instanceId, out var widget, out var manifest)) return;
+            resolved = true;
             widget!.Config ??= new Dictionary<string, JsonElement>();
             if (patch.Set is not null)
             {
@@ -93,8 +96,16 @@ public sealed class WidgetSettingsService
             if (widget.Config.Count == 0) widget.Config = null;
             StoreStandInConfig(s, instanceId, widget.Config);
         });
-        return Get(instanceId);
+        var updated = Get(instanceId);
+        if (resolved)
+        {
+            SettingsChanged?.Invoke(instanceId, updated);
+        }
+        return updated;
     }
+
+    /// <summary>Raised after a placement's settings were written, with the full effective document. Not raised when the instance did not resolve to an app widget.</summary>
+    public event System.Action<string, WidgetSettingsDocument>? SettingsChanged;
 
     /// <summary>The app and version behind an app widget instance, false for any other id.</summary>
     public bool TryGetApp(string instanceId, out string appId, out string appVersion)

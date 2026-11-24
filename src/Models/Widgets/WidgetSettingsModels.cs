@@ -27,3 +27,9 @@ public sealed class WidgetSettingsPatch
     public Dictionary<string, JsonElement>? Set { get; set; }
     public List<string>? Reset { get; set; }
 }
+
+/// <summary>Frame pushed on the <c>app-settings/{instanceId}</c> topic: the full settings object after a write.</summary>
+public sealed class AppSettingsFrame
+{
+    public Dictionary<string, JsonElement> Settings { get; set; } = new();
+}

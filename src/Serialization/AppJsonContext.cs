@@ -1175,6 +1175,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OpenUrlRequest))]
 // Widgets - settings
 [JsonSerializable(typeof(WidgetSettingsDocument))]
+[JsonSerializable(typeof(AppSettingsFrame))]
 [JsonSerializable(typeof(WidgetSettingsPatch))]
 [JsonSerializable(typeof(Dictionary<string, System.Text.Json.JsonElement>))]
 // Widgets - proxy
