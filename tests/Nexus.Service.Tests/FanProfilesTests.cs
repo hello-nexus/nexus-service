@@ -355,6 +355,100 @@ public class FanProfilesTests : IDisposable
         Assert.Equal(defaults.MaxSpeed, preset.Linear.MaxSpeed);
     }
 
+    [Theory]
+    [InlineData("silent", 5.0)]
+    [InlineData("balanced", 3.0)]
+    [InlineData("turbo", 0.5)]
+    public void PresetCurve_SeedsShippedResponseTime(string preset, double seconds)
+    {
+        Assert.Equal(seconds, FanProfiles.PresetDefaults.For(preset).ResponseTime);
+        var curve = FanProfiles.BuildPresetCurve(preset, null);
+        Assert.Equal(seconds, curve.Graph!.ResponseTime);
+        Assert.Equal(seconds, curve.Linear!.ResponseTime);
+    }
+
+    private static CurveDocument PriorTemplate(string preset, double priorSeconds)
+    {
+        var curve = FanProfiles.BuildPresetCurve(preset, null);
+        curve.Graph!.ResponseTime = priorSeconds;
+        curve.Linear!.ResponseTime = priorSeconds;
+        return curve;
+    }
+
+    [Theory]
+    [InlineData("silent", 3.0, 5.0)]
+    [InlineData("balanced", 1.5, 3.0)]
+    public void UntouchedPriorPresetCurve_MovesToTheNewResponseTime(string preset, double prior, double current)
+    {
+        _store.Update(s => { s.Cooling.CurvesSeeded = true; s.Cooling.Curves.Add(PriorTemplate(preset, prior)); });
+        Assert.False(FanProfiles.IsPresetCurveAtDefaults(_store.Load().Cooling.Curves[0]));
+
+        FanProfiles.SeedDefaultPresetCurves(_fans, _store);
+
+        var curve = Assert.Single(_store.Load().Cooling.Curves);
+        Assert.Equal(current, curve.Graph!.ResponseTime);
+        Assert.Equal(current, curve.Linear!.ResponseTime);
+        Assert.True(FanProfiles.IsPresetCurveAtDefaults(curve));
+    }
+
+    [Fact]
+    public void EditedPriorPresetCurves_AreLeftAsTheyAre()
+    {
+        var moved = PriorTemplate("balanced", 1.5);
+        moved.Graph!.Points[2].Speed += 5;
+        var slower = PriorTemplate("silent", 3.0);
+        slower.Graph!.ResponseTime = 2.0;
+        _store.Update(s => { s.Cooling.CurvesSeeded = true; s.Cooling.Curves.Add(moved); s.Cooling.Curves.Add(slower); });
+
+        Assert.False(FanProfiles.MigratePriorPresetResponseTimes(_store));
+
+        var curves = _store.Load().Cooling.Curves;
+        Assert.Equal(1.5, curves.Single(c => c.Preset == "balanced").Graph!.ResponseTime);
+        Assert.Equal(2.0, curves.Single(c => c.Preset == "silent").Graph!.ResponseTime);
+    }
+
+    [Fact]
+    public void PriorPresetMigration_IsIdempotent()
+    {
+        _store.Update(s => { s.Cooling.CurvesSeeded = true; s.Cooling.Curves.Add(PriorTemplate("silent", 3.0)); });
+
+        Assert.True(FanProfiles.MigratePriorPresetResponseTimes(_store));
+        Assert.False(FanProfiles.MigratePriorPresetResponseTimes(_store));
+        Assert.Equal(5.0, _store.Load().Cooling.Curves[0].Graph!.ResponseTime);
+    }
+
+    [Fact]
+    public void UpgradedInstall_KeepsPresetsDefault_AndStaysUntouchedForNexus2Import()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(_tempDir, "upgrade")).FullName;
+        foreach (var file in Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Fixtures", "upgrade", "v32-main-t1"), "*.json"))
+        {
+            File.Copy(file, Path.Combine(dir, Path.GetFileName(file)));
+        }
+        var store = new JsonConfigStore(Path.Combine(dir, "settings.json"));
+        var pm = new ProfileManager(store);
+        try
+        {
+            pm.Initialize();
+            var before = store.Load().Cooling.Curves;
+            Assert.Equal(3.0, before.Single(c => c.Preset == "silent").Graph!.ResponseTime);
+            Assert.Equal(1.5, before.Single(c => c.Preset == "balanced").Graph!.ResponseTime);
+
+            FanProfiles.SeedDefaultPresetCurves(_fans, store);
+
+            var cooling = store.Load().Cooling;
+            Assert.Equal(5.0, cooling.Curves.Single(c => c.Preset == "silent").Graph!.ResponseTime);
+            Assert.Equal(3.0, cooling.Curves.Single(c => c.Preset == "balanced").Graph!.ResponseTime);
+            Assert.All(cooling.Curves, c => Assert.True(FanProfiles.IsPresetCurveAtDefaults(c), c.Preset));
+            Assert.True(Nexus.Service.Migration.Nexus2RecommendedPreset.IsUntouched(cooling, cooling.ActivePreset!));
+        }
+        finally
+        {
+            pm.Dispose();
+            store.Dispose();
+        }
+    }
+
     [Fact]
     public void DerivePresetFromCurves_ReturnsActivePresetWhenCovering()
     {
