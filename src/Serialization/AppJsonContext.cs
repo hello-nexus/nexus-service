@@ -1365,6 +1365,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaUploadResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaDeleteRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LightingRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LcdRingEffectResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LcdRingEffectRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto[]))]
 // Asiahorse Umbra V2.

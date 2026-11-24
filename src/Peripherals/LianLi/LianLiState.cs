@@ -12,4 +12,7 @@ public sealed class LianLiState
 
     /// <summary>Hub firmware version read on attach, as major.minor (raw hex when the encoding is unknown); empty until read.</summary>
     public string FirmwareVersion { get; set; } = "";
+
+    /// <summary>The hub has given a real version: empty and the all-ones byte a hub reports while it still starts up do not count.</summary>
+    public bool FirmwareAnswered => !string.IsNullOrEmpty(FirmwareVersion) && FirmwareVersion != "0xFF";
 }
