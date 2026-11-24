@@ -146,10 +146,12 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     }
 
     /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
+    private volatile bool _gameModeScreenOff;
+
     public void ReapplyBrightness()
     {
         var y70 = _store.Load().Y70;
-        if (y70.ScreenOff)
+        if (y70.ScreenOff || _gameModeScreenOff)
         {
             return;
         }
@@ -175,6 +177,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// <summary>Drives screen power without persisting; screenOff=false restores the stored preference, so a panel the user switched off by hand stays off.</summary>
     public void SetGameModeScreenOff(bool screenOff)
     {
+        _gameModeScreenOff = screenOff;
         DriveScreenPower(!screenOff && !_store.Load().Y70.ScreenOff);
     }
 

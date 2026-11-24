@@ -307,6 +307,37 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void ReapplyBrightness_on_serial_variant_leaves_a_game_mode_off_screen_dark_then_restores_it()
+    {
+        var (provider, serial, _, store) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
+        store.Load().Y70.Brightness = 40;
+        provider.SetGameModeScreenOff(true);
+        var before = serial.Writes.Count;
+
+        provider.ReapplyBrightness();
+
+        Assert.Equal(before, serial.Writes.Count);
+
+        provider.SetGameModeScreenOff(false);
+        provider.ReapplyBrightness();
+
+        Assert.Equal(Y70DisplayProtocol.BuildSetBrightnessPower(true, 40), serial.Writes[^1]);
+    }
+
+    [Fact]
+    public void ReapplyBrightness_on_serial_variant_leaves_a_switched_off_screen_dark()
+    {
+        var (provider, serial, _, store) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
+        store.Load().Y70.Brightness = 40;
+        store.Load().Y70.ScreenOff = true;
+        var before = serial.Writes.Count;
+
+        provider.ReapplyBrightness();
+
+        Assert.Equal(before, serial.Writes.Count);
+    }
+
+    [Fact]
     public void ReapplyBrightness_leaves_a_switched_off_screen_dark()
     {
         var (provider, serial, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTouch);

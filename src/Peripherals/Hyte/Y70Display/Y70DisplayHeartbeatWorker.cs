@@ -28,8 +28,12 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private bool _caseHandled;
     private int _caseAbsentTicks;
 
+    private volatile bool _detected;
+    // Serializes the detect-edge applies with OnHelperConnected, which runs on a pool thread.
+    private readonly object _applyLock = new();
+
     /// <summary>A HYTE panel is attached; drives the overlay supervisor.</summary>
-    public bool Detected { get; private set; }
+    public bool Detected { get => _detected; private set => _detected = value; }
     // A ChangeDisplaySettingsEx rotation drops the Y70 from display enumeration
     // mid-mode-change, so IsConnected() flaps false for a tick right after we
     // apply orientation. Requiring several consecutive absent ticks before
@@ -63,9 +67,9 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     }
 
     /// <summary>
-    /// The helper (which performs the display rotation and DDC writes) just connected. At boot it
-    /// usually connects after the first detect, so the applies from that edge were lost; send them
-    /// again. A no-op while no Y70 is detected: the detect edge covers that case.
+    /// The helper (which performs the display rotation and DDC writes) just connected. It usually
+    /// connects after the first detect, when its rotation and DDC applies cannot land, so they are
+    /// sent again here. A no-op while no Y70 is detected: the detect edge covers that case.
     /// </summary>
     public void OnHelperConnected()
     {
@@ -75,8 +79,11 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         }
         try
         {
-            _y70.ApplyEffectiveOrientation();
-            _y70.ReapplyBrightness();
+            lock (_applyLock)
+            {
+                _y70.ApplyEffectiveOrientation();
+                _y70.ReapplyBrightness();
+            }
         }
         catch (Exception ex)
         {
@@ -139,8 +146,11 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
             if (!_wasDetected)
             {
                 _wasDetected = true;
-                _y70.ApplyEffectiveOrientation();
-                _y70.ReapplyBrightness();
+                lock (_applyLock)
+                {
+                    _y70.ApplyEffectiveOrientation();
+                    _y70.ReapplyBrightness();
+                }
                 ServiceLog.Info("[y70-display-heartbeat] newly detected; orientation and brightness re-applied");
             }
         }

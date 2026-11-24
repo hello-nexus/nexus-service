@@ -5,6 +5,7 @@ using Nexus.Service.Cloud;
 using Nexus.Service.Tests.Cloud;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
@@ -238,6 +239,27 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
 
         Assert.Equal(2, y70.BrightnessCount);
         Assert.Equal(2, y70.ApplyCount);
+    }
+
+    [Fact]
+    public void Helper_connect_with_control_gate_disabled_applies_nothing()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var gate = new DeviceControlGate(new InMemoryConfigStore());
+        var hub = new Y70DisplayHub(
+            new StubY70DisplayPortDiscovery(),
+            _ => throw new InvalidOperationException("Y70 transport is not expected in these tests"));
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), gate, y70);
+        worker.Tick();
+        var orientationBefore = y70.ApplyCount;
+        var brightnessBefore = y70.BrightnessCount;
+        gate.SetEnabled(Y70Handler.HandlerId, false);
+
+        worker.OnHelperConnected();
+
+        Assert.Equal(orientationBefore, y70.ApplyCount);
+        Assert.Equal(brightnessBefore, y70.BrightnessCount);
     }
 
     [Fact]
