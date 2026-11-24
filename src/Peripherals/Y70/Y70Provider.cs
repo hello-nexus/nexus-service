@@ -145,24 +145,31 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         _store.Update(s => s.Y70.Brightness = pct);
     }
 
-    /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
+    // Game-mode (focus) screen-off. _powerLock makes the flag check in ReapplyBrightness and the flag set plus
+    // power write in SetGameModeScreenOff atomic against each other; it is always taken before _ddcRpcLock and
+    // _ddcStateLock, and nothing takes it while holding those.
     private volatile bool _gameModeScreenOff;
+    private readonly object _powerLock = new();
 
+    /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
     public void ReapplyBrightness()
     {
-        var y70 = _store.Load().Y70;
-        if (y70.ScreenOff || _gameModeScreenOff)
+        lock (_powerLock)
         {
-            return;
-        }
-        var shown = Shown(y70.Brightness);
-        if (SerialTransportSelected)
-        {
-            ApplySerial(true, shown);
-        }
-        else
-        {
-            DdcSetBrightnessCoalesced(shown);
+            var y70 = _store.Load().Y70;
+            if (y70.ScreenOff || _gameModeScreenOff)
+            {
+                return;
+            }
+            var shown = Shown(y70.Brightness);
+            if (SerialTransportSelected)
+            {
+                ApplySerial(true, shown);
+            }
+            else
+            {
+                DdcSetBrightnessCoalesced(shown);
+            }
         }
     }
 
@@ -177,8 +184,17 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// <summary>Drives screen power without persisting; screenOff=false restores the stored preference, so a panel the user switched off by hand stays off.</summary>
     public void SetGameModeScreenOff(bool screenOff)
     {
-        _gameModeScreenOff = screenOff;
-        DriveScreenPower(!screenOff && !_store.Load().Y70.ScreenOff);
+        lock (_powerLock)
+        {
+            _gameModeScreenOff = screenOff;
+            DriveScreenPower(!screenOff && !_store.Load().Y70.ScreenOff);
+            // DDC power-on sends no brightness, and a schedule cap change during the off period was skipped.
+            // Serial and Touch power-on already send the current shown value.
+            if (!screenOff && !SerialTransportSelected && !TouchVariantKnown)
+            {
+                ReapplyBrightness();
+            }
+        }
     }
 
     private void DriveScreenPower(bool screenOn)

@@ -325,6 +325,21 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void GameMode_end_on_truly_rewrites_brightness_after_power_on()
+    {
+        var (provider, _, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTruly);
+        store.Load().Y70.Brightness = 40;
+        provider.SetGameModeScreenOff(true);
+        var before = ddc.VcpWrites.Count;
+
+        provider.SetGameModeScreenOff(false);
+
+        var after = ddc.VcpWrites.Skip(before).ToList();
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpPower, Y70DisplayProtocol.VcpPowerOn), after);
+        Assert.Equal((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), after[^1]);
+    }
+
+    [Fact]
     public void ReapplyBrightness_on_serial_variant_leaves_a_switched_off_screen_dark()
     {
         var (provider, serial, _, store) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
