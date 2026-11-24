@@ -48,7 +48,7 @@ public class Slv3LcdMediaLibraryTests
         var frames = fixture.Library.LoadFrames(result.Item.Id);
         Assert.NotNull(frames);
         Assert.Equal(result.Item.Frames, frames.Frames.Length);
-        // One delay per frame, the GIF's own 10 fps.
+        // One delay per frame, the GIF's own delay.
         Assert.Equal(result.Item.Frames, result.Item.Delays.Length);
         Assert.All(result.Item.Delays, d => Assert.Equal(100, d));
     }
@@ -67,7 +67,7 @@ public class Slv3LcdMediaLibraryTests
         Assert.Equal("video", result.Item!.Kind);
         Assert.True(result.Item.Frames > 1, $"expected >1 frame, got {result.Item.Frames}");
         Assert.Equal(result.Item.Frames, result.Item.Delays.Length);
-        // The source's own 10 fps, so a fall back to the default rate fails here.
+        // The source's own rate, so a fall back to the fallback rate fails here.
         Assert.All(result.Item.Delays, d => Assert.Equal(100, d));
     }
 

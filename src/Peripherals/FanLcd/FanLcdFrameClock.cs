@@ -19,6 +19,9 @@ internal sealed partial class FanLcdFrameClock : IDisposable
     private const uint CreateWaitableTimerHighResolution = 0x2;
     private const uint TimerAllAccess = 0x1F0003;
 
+    /// <summary>How long past its due time a wait may run before it is ended without the timer's signal.</summary>
+    private const long TimeoutMarginMs = 50;
+
     private readonly TimerHandle? _timer;
 
     public FanLcdFrameClock()
@@ -55,8 +58,10 @@ internal sealed partial class FanLcdFrameClock : IDisposable
         }
 
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Bounded, so a registration that missed the timer's auto-reset signal still ends the wait.
+        var timeoutMs = (long)(-due / 10_000) + TimeoutMarginMs;
         var registration = ThreadPool.RegisterWaitForSingleObject(
-            _timer, static (state, _) => ((TaskCompletionSource)state!).TrySetResult(), done, Timeout.Infinite, executeOnlyOnce: true);
+            _timer, static (state, _) => ((TaskCompletionSource)state!).TrySetResult(), done, timeoutMs, executeOnlyOnce: true);
         try
         {
             using (ct.Register(static state => ((TaskCompletionSource)state!).TrySetCanceled(), done))
