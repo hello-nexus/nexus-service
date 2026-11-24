@@ -16,7 +16,7 @@ public static class Slv3LcdAnimationRenderer
     public const int Width = Slv3LcdProtocol.PanelWidth;
     public const int Height = Slv3LcdProtocol.PanelHeight;
 
-    /// <summary>~15 fps, matching the fixed rate video import already resamples GIF/video content to.</summary>
+    /// <summary>~15 fps: every frame of these is drawn and JPEG-encoded live, unlike a GIF or video clip.</summary>
     public const int FrameIntervalMs = 66;
 
     private static readonly SKColor DefaultColorA = new(0x00, 0xd1, 0xff);

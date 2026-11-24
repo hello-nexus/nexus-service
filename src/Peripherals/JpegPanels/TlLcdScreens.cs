@@ -100,6 +100,8 @@ public sealed class TlLcdScreens : IFanLcdScreens, IDisposable
 
     public int PanelFps => JpegPanelModel.TlLcd.Fps;
 
+    public int MaxFps(string serial) => FanLcdClipTiming.DefaultMaxFps;
+
     public string PanelName(string serial) =>
         _panels.ByKey(serial) is { } screen
             ? TlLcdPanels.DisplayNameFor(screen.Handshake.Identity)

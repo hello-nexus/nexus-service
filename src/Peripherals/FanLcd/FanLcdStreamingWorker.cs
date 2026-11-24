@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -320,17 +321,41 @@ public sealed class FanLcdStreamingWorker : BackgroundService
         }
     }
 
-    /// <summary>Plays one loop of the clip, stopping at the next frame once the screen's settings change.</summary>
+    /// <summary>
+    /// Plays one loop of the clip on its own clock (see <see cref="FanLcdClipTiming"/>), no faster
+    /// than the screen's frame cap, stopping at the next frame once the screen's settings change.
+    /// </summary>
     private async Task StreamAnimatedAsync(string serial, Slv3LcdImageData image, ScreenPick pick, CancellationToken ct)
     {
-        foreach (var frame in image.Frames)
+        // Task.Delay waits in whole ~15.6 ms system ticks unless the timer resolution is raised,
+        // which holds a clip near 30 fps; the scope lasts one loop of the clip.
+        using var timerResolution = OperatingSystem.IsWindows() ? WindowsTimerResolution.Elevate() : default;
+
+        var delays = new int[image.Frames.Length];
+        for (var i = 0; i < delays.Length; i++)
+        {
+            delays[i] = image.Frames[i].DelayMs;
+        }
+        var starts = FanLcdClipTiming.Starts(delays);
+        var clipStart = Stopwatch.GetTimestamp();
+        var frame = 0;
+        while (frame < image.Frames.Length)
         {
             if (ct.IsCancellationRequested || !StillShowing(serial, pick))
             {
                 break;
             }
-            _screens.PushImage(serial, frame.JpegBytes);
-            await Task.Delay(Math.Max(10, frame.DelayMs), ct).ConfigureAwait(false);
+            var pushedAtMs = Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds;
+            _screens.PushImage(serial, image.Frames[frame].JpegBytes);
+            // Asked after the push: a screen's model is known once it has been opened.
+            var minGapMs = 1000.0 / Math.Max(1, _screens.MaxFps(serial));
+            var (next, dueMs) = FanLcdClipTiming.Next(starts, frame, pushedAtMs + minGapMs);
+            var waitMs = dueMs - Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds;
+            if (waitMs > 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(waitMs), ct).ConfigureAwait(false);
+            }
+            frame = next;
         }
     }
 }

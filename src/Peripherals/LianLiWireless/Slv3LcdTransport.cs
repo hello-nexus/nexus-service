@@ -38,6 +38,15 @@ public interface ISlv3LcdTransport : IDisposable
     bool TryGetPosition(out byte groupIndex);
 }
 
+/// <summary>How long the IN-pipe drain waits after a read that failed outright, before the next one.</summary>
+internal static class Slv3LcdDrainBackoff
+{
+    public const int FirstMs = 10;
+    public const int MaxMs = 1000;
+
+    public static int Next(int previousMs) => previousMs <= 0 ? FirstMs : Math.Min(MaxMs, previousMs * 2);
+}
+
 #if WINDOWS
 /// <summary>
 /// WinUSB-backed transport for one SL-LCD Wireless screen. Reuses
@@ -171,21 +180,66 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
 
     private void DrainLoop()
     {
+        // The handle is opened FILE_FLAG_OVERLAPPED and the OUT pipe refuses a NULL-overlapped
+        // transfer, so the IN read goes through a real OVERLAPPED and waits on it (the pipe's
+        // PIPE_TRANSFER_TIMEOUT bounds the wait), as the writes do.
         var buf = new byte[10240];
-        while (_draining && !_disposed)
+        var pin = GCHandle.Alloc(buf, GCHandleType.Pinned);
+        var ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<System.Threading.NativeOverlapped>());
+        var readEvent = Slv3WinUsbInterop.CreateEventW(IntPtr.Zero, manualReset: true, initialState: false, IntPtr.Zero);
+        if (readEvent == IntPtr.Zero)
         {
-            // Different pipe (0x81) than writes (0x01) - WinUSB serializes per
-            // pipe, so this reads concurrently with a push without _ioLock.
-            if (Slv3WinUsbInterop.WinUsb_ReadPipe(
-                    _winUsbHandle, Slv3LcdProtocol.ReadPipeId, buf, (uint)buf.Length, out var n, IntPtr.Zero)
-                && n > 0)
+            Nexus.Service.Platform.ServiceLog.Warn(
+                $"[lianli-wireless-lcd] CreateEventW failed for the IN pipe of {PortName}: {Marshal.GetLastWin32Error()}; acks will not be read");
+        }
+        var retryMs = 0;
+        try
+        {
+            while (_draining && !_disposed && readEvent != IntPtr.Zero)
             {
-                var frame = buf[..(int)n];
-                while (!_rxQueue.TryAdd(frame) && _rxQueue.TryTake(out _))
+                Marshal.StructureToPtr(new System.Threading.NativeOverlapped { EventHandle = readEvent }, ovPtr, false);
+                Slv3WinUsbInterop.ResetEvent(readEvent);
+                // Different pipe (0x81) than writes (0x01) - WinUSB serializes per
+                // pipe, so this reads concurrently with a push without _ioLock.
+                var ok = Slv3WinUsbInterop.WinUsb_ReadPipe(
+                    _winUsbHandle, Slv3LcdProtocol.ReadPipeId, pin.AddrOfPinnedObject(), (uint)buf.Length, out var n, ovPtr);
+                var error = ok ? 0 : Marshal.GetLastWin32Error();
+                if (!ok && error == (int)Slv3WinUsbInterop.ERROR_IO_PENDING)
                 {
-                    // Drop the oldest ack to make room for the newest.
+                    ok = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out n, wait: true);
+                    error = ok ? 0 : Marshal.GetLastWin32Error();
+                }
+
+                if (ok && n > 0)
+                {
+                    retryMs = 0;
+                    var frame = buf[..(int)n];
+                    while (!_rxQueue.TryAdd(frame) && _rxQueue.TryTake(out _))
+                    {
+                        // Drop the oldest ack to make room for the newest.
+                    }
+                }
+                else if (ok || (error != Slv3WinUsbInterop.ERROR_SEM_TIMEOUT && error != Slv3WinUsbInterop.ERROR_OPERATION_ABORTED))
+                {
+                    // A timeout has already waited and an abort means Dispose; an empty read or any
+                    // other error returns at once, so back off instead of retrying in a tight loop.
+                    retryMs = Slv3LcdDrainBackoff.Next(retryMs);
+                    // In slices, so Dispose's join is not held for the whole backoff.
+                    for (var waited = 0; waited < retryMs && _draining; waited += 50)
+                    {
+                        System.Threading.Thread.Sleep(Math.Min(50, retryMs - waited));
+                    }
                 }
             }
+        }
+        finally
+        {
+            if (readEvent != IntPtr.Zero)
+            {
+                Slv3WinUsbInterop.CloseHandle(readEvent);
+            }
+            Marshal.FreeHGlobal(ovPtr);
+            pin.Free();
         }
     }
 

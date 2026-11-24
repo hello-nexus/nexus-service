@@ -42,6 +42,7 @@ public class FanLcdPanelRotationTests
         public bool PushPanelFrame(string serial, byte[] jpeg) => _ownership.Push(serial, () => PushImage(serial, jpeg));
         public string PanelFamily => "fake-lcd";
         public int PanelFps => 12;
+        public int MaxFps(string serial) => 30;
         public string PanelName(string serial) => serial;
         public byte[] Rotations { get { lock (_gate) { return _rotations.ToArray(); } } }
         public byte[][] Frames { get { lock (_gate) { return _frames.ToArray(); } } }

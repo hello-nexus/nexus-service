@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -24,12 +25,13 @@ public sealed class Slv3LcdMediaLibrary
     private static readonly string[] StillExtensions = { ".jpg", ".jpeg", ".png", ".bmp", ".webp" };
     private static readonly string[] VideoExtensions = { ".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi" };
 
-    // ffprobe is not bundled, so the true source fps is not read; video frames
-    // are resampled to this fixed output rate instead (same simplification as
-    // MediaImporter.ImportAsync's animated path). The frame cap bounds a
-    // JPEG-per-frame import to a short clip relative to that rate.
-    private const int VideoFps = 15;
-    private const int VideoMaxFrames = 150;
+    // A video keeps its own frame rate up to the fastest screen (the TL-LCD shows 60 fps); a
+    // slower screen skips frames when it plays. ffprobe is not bundled, so the rate is read from
+    // the stream line ffmpeg prints, and a source that names none gets the fallback. The length
+    // cap bounds a JPEG-per-frame import.
+    private const int VideoMaxFps = 60;
+    private const int VideoFallbackFps = 30;
+    private const int VideoMaxSeconds = 10;
 
     private readonly string _rootDir;
 
@@ -180,6 +182,7 @@ public sealed class Slv3LcdMediaLibrary
             var cropPadFilter = crop is { IsIdentity: false } cr ? $"{cr.ToFfmpegFilter()},{padFilter}" : padFilter;
 
             var delays = Array.Empty<int>();
+            var videoFps = 0;
             if (isStill)
             {
                 var sourceBytes = await File.ReadAllBytesAsync(sourcePath).ConfigureAwait(false);
@@ -208,11 +211,15 @@ public sealed class Slv3LcdMediaLibrary
             }
             else
             {
+                // A one-frame pass to a null output, only for the stream info ffmpeg prints.
+                var info = await MediaImporter.RunFfmpeg(
+                    "-hide_banner", "-i", sourcePath, "-frames:v", "1", "-f", "null", "-").ConfigureAwait(false);
+                videoFps = Math.Min(VideoMaxFps, SourceFps(info) ?? VideoFallbackFps);
                 await MediaImporter.RunFfmpeg(
                     "-y", "-i", sourcePath,
                     "-vf", cropPadFilter,
-                    "-r", VideoFps.ToString(),
-                    "-frames:v", VideoMaxFrames.ToString(),
+                    "-r", videoFps.ToString(CultureInfo.InvariantCulture),
+                    "-frames:v", (videoFps * VideoMaxSeconds).ToString(CultureInfo.InvariantCulture),
                     "-start_number", "0",
                     "-q:v", "5",
                     Path.Combine(dir, "frame-%04d.jpg")).ConfigureAwait(false);
@@ -227,9 +234,7 @@ public sealed class Slv3LcdMediaLibrary
 
             if (isVideo)
             {
-                var uniformDelay = 1000 / VideoFps;
-                delays = new int[frameCount];
-                Array.Fill(delays, uniformDelay);
+                delays = UniformDelays(frameCount, videoFps);
             }
 
             var item = new Slv3LcdMediaItem
@@ -260,6 +265,43 @@ public sealed class Slv3LcdMediaLibrary
             count++;
         }
         return count;
+    }
+
+    /// <summary>
+    /// The video stream's frame rate from ffmpeg's stream line ("Stream #0:0: Video: ..., 29.97 fps, ..."),
+    /// rounded and at least 1; null when no video stream line names one.
+    /// </summary>
+    internal static int? SourceFps(string ffmpegStderr)
+    {
+        foreach (var line in ffmpegStderr.Split('\n'))
+        {
+            if (!line.Contains("Video:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var marker = line.IndexOf(" fps", StringComparison.Ordinal);
+            if (marker < 0)
+            {
+                continue;
+            }
+            var start = line.LastIndexOf(' ', marker - 1) + 1;
+            if (double.TryParse(line.AsSpan(start, marker - start), NumberStyles.Float, CultureInfo.InvariantCulture, out var fps) && fps > 0)
+            {
+                return Math.Max(1, (int)Math.Round(fps));
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Per-frame delays for a constant rate, alternating 16 and 17 ms at 60 fps so the clip keeps its length.</summary>
+    internal static int[] UniformDelays(int frames, int fps)
+    {
+        var delays = new int[frames];
+        for (var i = 0; i < frames; i++)
+        {
+            delays[i] = (int)Math.Round((i + 1) * 1000.0 / fps) - (int)Math.Round(i * 1000.0 / fps);
+        }
+        return delays;
     }
 
     internal void SaveMeta(Slv3LcdMediaItem item)
