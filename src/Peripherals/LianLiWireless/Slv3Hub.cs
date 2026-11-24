@@ -636,6 +636,7 @@ public sealed partial class Slv3Hub : IDisposable
             Diag.Event("disconnected");
         }
         Diag.OnLinkDown(_nowMs());
+        StallOnLinkDownLocked(_nowMs());
         try { _tx?.Dispose(); } catch { /* best effort */ }
         try { _rx?.Dispose(); } catch { /* best effort */ }
         _tx = null;
@@ -2383,6 +2384,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return HandleGetDevFailureLocked();
         }
+        StallOnGoodReplyLocked(_nowMs());
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
         _rxRecoveries = 0;
@@ -2457,6 +2459,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
         _pollRecords = pollRecords;
         UpdateReportOrderLocked(pollRecords);
+        _stallHeardChain |= _knownChains.Count > 0 || pollRecords.Count > 0;
 
         Diag.EndPoll(nowMs, gotList: true);
         ExpireChainsLocked(nowMs);
@@ -2633,6 +2636,7 @@ public sealed partial class Slv3Hub : IDisposable
     private bool HandleRxBusyLocked(byte[] reply)
     {
         AgeChainsLocked(_nowMs());
+        StallOnNoDataLocked(_nowMs());
         if (++_rxBusyStreak == 1)
         {
             _firstBusyReply = reply;
@@ -3400,6 +3404,11 @@ public sealed partial class Slv3Hub : IDisposable
     private async Task<WindowUploadResult> SendRgbWindowCoreAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, UploadOutcome outcome)
     {
+        if (StallUploadsPaused())
+        {
+            // Neutral to the writer (live frames carry the chain), so a paused window never counts as a link failure.
+            return WindowUploadResult.TooLarge;
+        }
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
         if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _, out var tooLarge))
         {

@@ -2404,6 +2404,27 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_long_busy_stall_gets_one_0x15_reset_via_tx_and_no_repeat_inside_the_rate_limit()
+    {
+        var clock = new ManualClock();
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var hub = new Slv3Hub(new FakeDiscovery(), port => port.Role == Slv3DongleRole.Tx ? tx : rx, clock.NowMs) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        for (var round = 0; round < 10; round++)
+        {
+            clock.AdvanceMs(10_000);
+            for (var i = 0; i < 20; i++) Assert.True(hub.PollTick());
+        }
+        Assert.Single(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+    }
+
+    [Fact]
     public void A_busy_rx_that_a_reopen_does_not_clear_keeps_reopening_without_a_reset()
     {
         var clock = new ManualClock();
@@ -2416,7 +2437,7 @@ public partial class Slv3HubTests
             if (port.Role == Slv3DongleRole.Tx) return tx;
             rxOpens++;
             return rx;
-        }, clock.NowMs) { ConfirmNewChains = false };
+        }, clock.NowMs) { ConfirmNewChains = false, StallConfigSource = () => Slv3StallConfig.Parse("off") };
         Assert.True(hub.EnsureConnected());
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
         Assert.True(hub.DriveTick());
