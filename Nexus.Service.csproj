@@ -4,7 +4,7 @@
     <!-- Windows builds target a Win10-versioned TFM so we can use C#/WinRT
          projections (Windows.Media.Control for GSMTC media sessions, etc).
          macOS/Linux stay on plain net10.0. The condition keys on RID first so
-         cross-compilation from Mac (`-r win-x64`) picks the Windows TFM. -->
+         a `-r win-x64` build picks the Windows TFM. -->
     <TargetFramework Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows10.0.19041.0</TargetFramework>
     <TargetFramework Condition="!$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">net10.0</TargetFramework>
     <SupportedOSPlatformVersion Condition="$(RuntimeIdentifier.StartsWith('win')) OR $([MSBuild]::IsOSPlatform('Windows'))">10.0.19041.0</SupportedOSPlatformVersion>
@@ -71,9 +71,11 @@
   </Target>
 
   <!-- Windows: define WINDOWS constant + include LibreHardwareMonitor.
-       Supports both native builds (IsOSPlatform) and cross-compilation (RID starts with 'win'). -->
+       Selected by host OS or by a RID starting with 'win'. -->
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">
     <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+    <!-- The LHM ProjectReference would otherwise publish its XML doc file into the install tree. -->
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
     <!-- The Web SDK auto-includes the entire Bundled/ tree as Content, which
          dragged macOS/Linux artifacts (Bundled/macos, Bundled/osx-arm64, …)
          into the Windows publish output and from there into Nexus-Setup.exe.
@@ -90,9 +92,8 @@
        references its own concrete providers, which lets the per-platform
        <Compile Remove> groups below drop the other platforms' files entirely
        (otherwise the cross-platform binary carries dead Linux+Mac native code).
-       RID-keyed first so cross-compiling from any host picks the right set. -->
-  <!-- RID wins when set (so cross-compiling win-x64 from a Mac host does NOT
-       also define MACOS); host OS is only the fallback for a RID-less dev/test
+       RID-keyed first so the RID, not the host, picks the set. -->
+  <!-- RID wins when set; host OS is only the fallback for a RID-less dev/test
        build. Exactly one of WINDOWS/MACOS/LINUX is ever defined. -->
   <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('osx')) OR ('$(RuntimeIdentifier)' == '' AND $([MSBuild]::IsOSPlatform('OSX')))">
     <DefineConstants>$(DefineConstants);MACOS</DefineConstants>
@@ -133,8 +134,19 @@
     <DefineConstants>$(DefineConstants);DEV_TOOLS</DefineConstants>
   </PropertyGroup>
 
+  <!-- LibreHardwareMonitorLib picks WINDOWS or LINUX from the build host OS, so a Windows binary
+       built on macOS or Linux would silently ship without any sensor backend. -->
+  <Target Name="LhmNeedsWindowsHost" BeforeTargets="ResolveProjectReferences"
+          Condition="$(RuntimeIdentifier.StartsWith('win')) AND !$([MSBuild]::IsOSPlatform('Windows'))">
+    <Error Text="Windows builds must run on a Windows host: the LibreHardwareMonitor submodule compiles its Windows sensor backend only there." />
+  </Target>
+
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows')) OR $(RuntimeIdentifier.StartsWith('win'))">
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.7-pre748" />
+    <!-- Built from source: external/LibreHardwareMonitor is the hello-nexus fork (branch nexus),
+         pinned by the submodule gitlink.
+         The lib defines WINDOWS only when it is itself built on Windows (see LhmNeedsWindowsHost). -->
+    <ProjectReference Include="external/LibreHardwareMonitor/LibreHardwareMonitorLib/LibreHardwareMonitorLib.csproj"
+                      AdditionalProperties="GeneratePackageOnBuild=false" />
     <!-- The DiskInfoToolkit pulled in transitively by LHM predates the USB overlapped-I/O and timeout fixes, so it is pinned directly.
          The newer one needs BlackSharp.Core 1.2.5, which LHM's RAMSPDToolkit-NDD only supports from its pinned version on. -->
     <PackageReference Include="DiskInfoToolkit" Version="2.2.2" />
@@ -831,6 +843,11 @@
   <!-- Exclude test project from main build (SDK auto-includes all .cs) -->
   <ItemGroup>
     <Compile Remove="tests/**" />
+    <!-- external/ holds git submodules that are separate projects. -->
+    <Compile Remove="external/**" />
+    <Content Remove="external/**" />
+    <None Remove="external/**" />
+    <EmbeddedResource Remove="external/**" />
     <!-- installer/ is not part of this assembly: msix/NexusStoreLauncher is a
          separate project (build-msix.ps1 publishes it) whose Main and
          [assembly: SupportedOSPlatform("windows")] must not land here, and the
