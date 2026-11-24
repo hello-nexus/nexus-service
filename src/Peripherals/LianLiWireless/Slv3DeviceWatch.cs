@@ -17,6 +17,13 @@ internal sealed class Slv3DeviceWatch
     private const long EpisodeWindowMs = 60_000;
     private const int EpisodesPerWindow = 3;
 
+    /// <summary>Unconfirmed this long opens a gap line, well below the stuck threshold.</summary>
+    internal const long GapAfterMs = 1_000;
+
+    private const long LineWindowMs = 60_000;
+    private const int GapLinesPerWindow = 20;
+    private const int EchoLinesPerWindow = 240;
+
     internal readonly record struct Summary(
         int Sent, int Confirmed, int Unconfirmed, long LatencyAvgMs, long LatencyMaxMs,
         int Reports, int IdxChanges, string LastReportedIdx, long SinceConfirmMs, long PendingMs, int StuckEvents, int Suppressed, int SendFailed);
@@ -36,6 +43,13 @@ internal sealed class Slv3DeviceWatch
         public long StuckSinceMs;
         public int Sent, Confirmed, Unconfirmed, Reports, IdxChanges, StuckEvents;
         public long LatencySum, LatencyMax;
+        public string OldestIdx = "";
+        public bool GapOpen;
+        public long GapStartMs;
+        public string GapStartIdx = "";
+        public int GapSent, GapReports, GapFails;
+        public long LineWindowStartMs;
+        public int GapLines, GapSuppressed, EchoLines, EchoSuppressed;
     }
 
     private readonly Dictionary<string, Chain> _chains = new(StringComparer.OrdinalIgnoreCase);
@@ -53,15 +67,25 @@ internal sealed class Slv3DeviceWatch
     }
 
     /// <summary>An upload carrying <paramref name="idxHex"/> was fully written to the TX.</summary>
-    internal void NoteSent(string mac, string idxHex, long nowMs)
+    internal void NoteSent(string mac, string idxHex, long nowMs, Action<string>? log = null)
     {
         lock (_gate)
         {
             var c = For(mac);
             c.Sent++;
+            if (c.GapOpen)
+            {
+                c.GapSent++;
+            }
             if (c.UnconfirmedSinceMs == 0)
             {
                 c.UnconfirmedSinceMs = nowMs;
+                c.OldestIdx = idxHex;
+            }
+            if (log is not null && c.Ring[c.RingNext].Length > 0)
+            {
+                // The slot is reused, so this upload was never echoed.
+                LogEcho(c, mac, "never", c.Ring[c.RingNext], c.RingMs[c.RingNext], nowMs, log);
             }
             c.Ring[c.RingNext] = idxHex;
             c.RingMs[c.RingNext] = nowMs;
@@ -77,14 +101,25 @@ internal sealed class Slv3DeviceWatch
             var c = For(mac);
             c.SendFailed++;
             c.FailSinceConfirm++;
+            if (c.GapOpen)
+            {
+                c.GapFails++;
+            }
         }
     }
 
     /// <summary>Forgets every chain, for a link that went down.</summary>
-    internal void Clear()
+    internal void Clear(long nowMs = 0, Action<string>? log = null)
     {
         lock (_gate)
         {
+            if (log is not null)
+            {
+                foreach (var (mac, c) in _chains)
+                {
+                    EndGap(c, mac, nowMs, "link", "", log);
+                }
+            }
             _chains.Clear();
         }
     }
@@ -96,6 +131,10 @@ internal sealed class Slv3DeviceWatch
         {
             var c = For(mac);
             c.Reports++;
+            if (c.GapOpen)
+            {
+                c.GapReports++;
+            }
             if (string.Equals(c.Reported, idxHex, StringComparison.OrdinalIgnoreCase))
             {
                 return;
@@ -116,6 +155,7 @@ internal sealed class Slv3DeviceWatch
                 return;
             }
             var latency = nowMs - c.RingMs[slot];
+            LogEcho(c, mac, "ok", c.Ring[slot], c.RingMs[slot], nowMs, log, latency);
             c.Confirmed++;
             c.LatencySum += latency;
             c.LatencyMax = Math.Max(c.LatencyMax, latency);
@@ -127,20 +167,25 @@ internal sealed class Slv3DeviceWatch
                     if (i != slot)
                     {
                         c.Unconfirmed++;
+                        LogEcho(c, mac, "superseded", c.Ring[i], c.RingMs[i], nowMs, log);
                     }
                     c.Ring[i] = "";
                 }
             }
             c.LastConfirmMs = nowMs;
             var oldest = 0L;
+            var oldestIdx = "";
             for (var i = 0; i < SentRingSize; i++)
             {
                 if (c.Ring[i].Length > 0 && (oldest == 0 || c.RingMs[i] < oldest))
                 {
                     oldest = c.RingMs[i];
+                    oldestIdx = c.Ring[i];
                 }
             }
+            EndGap(c, mac, nowMs, "echo", idxHex, log);
             c.UnconfirmedSinceMs = oldest;
+            c.OldestIdx = oldestIdx;
             c.FailSinceConfirm = 0;
             if (c.Stuck)
             {
@@ -161,6 +206,13 @@ internal sealed class Slv3DeviceWatch
         {
             foreach (var (mac, c) in _chains)
             {
+                if (!c.GapOpen && c.UnconfirmedSinceMs != 0 && nowMs - c.UnconfirmedSinceMs >= GapAfterMs && isBound(mac))
+                {
+                    c.GapOpen = true;
+                    c.GapStartMs = c.UnconfirmedSinceMs;
+                    c.GapStartIdx = c.OldestIdx;
+                    c.GapSent = c.GapReports = c.GapFails = 0;
+                }
                 if (c.Stuck || c.UnconfirmedSinceMs == 0 || nowMs - c.UnconfirmedSinceMs < StuckAfterMs || !isBound(mac))
                 {
                     continue;
@@ -189,6 +241,10 @@ internal sealed class Slv3DeviceWatch
     {
         lock (_gate)
         {
+            if (_chains.TryGetValue(mac, out var gapChain))
+            {
+                EndGap(gapChain, mac, nowMs, "drop", "", log);
+            }
             if (_chains.Remove(mac, out var c) && c.Stuck && !c.StuckSilent)
             {
                 log($"[lianli-wireless] chain {mac} STUCK ended at {Stamp()}: chain dropped after {nowMs - c.StuckSinceMs} ms stuck");
@@ -217,6 +273,56 @@ internal sealed class Slv3DeviceWatch
             return s;
         }
     }
+
+    // Caller holds _gate. Opens a fresh budget window once the previous one has elapsed.
+    private static void RollLineWindow(Chain c, long nowMs)
+    {
+        if (nowMs - c.LineWindowStartMs > LineWindowMs)
+        {
+            c.LineWindowStartMs = nowMs;
+            c.GapLines = c.EchoLines = 0;
+        }
+    }
+
+    // Caller holds _gate. One line per window upload: when it was sent, and when
+    // (or whether) its echo landed.
+    private static void LogEcho(Chain c, string mac, string result, string idx, long sentMs, long nowMs, Action<string> log, long latencyMs = -1)
+    {
+        RollLineWindow(c, nowMs);
+        if (++c.EchoLines > EchoLinesPerWindow)
+        {
+            c.EchoSuppressed++;
+            return;
+        }
+        var skipped = c.EchoSuppressed;
+        c.EchoSuppressed = 0;
+        var lat = latencyMs >= 0 ? $" latMs={latencyMs}" : $" ageMs={nowMs - sentMs}";
+        log($"[slv3-echo] chain {mac} {result} idx={idx} sent={WallStamp(sentMs, nowMs)} now={WallStamp(nowMs, nowMs)}{lat}{(skipped > 0 ? $" suppressedBefore={skipped}" : "")}");
+    }
+
+    // Caller holds _gate. Closes an open gap with one line carrying both ends.
+    private static void EndGap(Chain c, string mac, long nowMs, string endedBy, string confirmedIdx, Action<string> log)
+    {
+        if (!c.GapOpen)
+        {
+            return;
+        }
+        c.GapOpen = false;
+        RollLineWindow(c, nowMs);
+        if (++c.GapLines > GapLinesPerWindow)
+        {
+            c.GapSuppressed++;
+            return;
+        }
+        var skipped = c.GapSuppressed;
+        c.GapSuppressed = 0;
+        var beforeMs = c.LastConfirmMs == 0 ? "never" : $"{c.GapStartMs - c.LastConfirmMs}";
+        log($"[slv3-gap] chain {mac} start={WallStamp(c.GapStartMs, nowMs)} end={WallStamp(nowMs, nowMs)} durMs={nowMs - c.GapStartMs} sentIdx={c.GapStartIdx} confirmedIdx={(confirmedIdx.Length > 0 ? confirmedIdx : "none")} endedBy={endedBy} sentInGap={c.GapSent} reportsInGap={c.GapReports} sendFailInGap={c.GapFails} lastConfirmBeforeMs={beforeMs}{(skipped > 0 ? $" suppressedBefore={skipped}" : "")}");
+    }
+
+    // Wall clock with milliseconds for a hub tick time, anchored on the current tick.
+    private static string WallStamp(long tickMs, long nowTickMs) =>
+        DateTime.UtcNow.AddMilliseconds(tickMs - nowTickMs).ToString("HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     private static string Stamp() => DateTime.UtcNow.ToString("HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 }

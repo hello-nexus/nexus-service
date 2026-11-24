@@ -587,7 +587,7 @@ public sealed partial class Slv3Hub : IDisposable
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _anyAioBound = false;
         _knownChains.Clear();
-        DeviceWatch.Clear();
+        DeviceWatch.Clear(_nowMs(), ServiceLog.Info);
         _unconfirmedChains.Clear();
         _bindingLogs.Clear();
         _intents.Clear();
@@ -3305,7 +3305,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
                 NoteConfigChangedLocked();
                 firstPassesWritten = true;
-                DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs());
+                DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs(), ServiceLog.Info);
             }
             // The late passes' cost is booked at decision time so a concurrent
             // upload's check already sees it; the passes themselves are not re-counted.
@@ -3498,7 +3498,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
             }
             NoteConfigChangedLocked();
-            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs());
+            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs(), ServiceLog.Info);
         }
 
         effectIndexHex = Convert.ToHexString(effectIndex);

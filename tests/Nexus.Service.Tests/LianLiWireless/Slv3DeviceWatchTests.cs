@@ -18,7 +18,7 @@ public class Slv3DeviceWatchTests
         watch.NoteSent(Mac, "01020304", 1_000);
         watch.NoteReported(Mac, "01020304", 1_400, log.Add);
         watch.Check(9_000, Bound, log.Add);
-        Assert.Empty(log);
+        Assert.DoesNotContain(log, l => l.Contains("STUCK") || l.StartsWith("[slv3-gap]"));
         var s = watch.Take(Mac, 9_000)!.Value;
         Assert.Equal(1, s.Sent);
         Assert.Equal(1, s.Confirmed);
@@ -60,9 +60,10 @@ public class Slv3DeviceWatchTests
         watch.NoteSent(Mac, "01020302", 2_000);
         watch.Check(4_500, Bound, log.Add);
         watch.NoteReported(Mac, "01020302", 6_000, log.Add);
-        Assert.Equal(2, log.Count);
-        Assert.Contains("RECOVERED", log[1]);
-        Assert.Contains("5000 ms", log[1]);
+        var events = log.FindAll(l => l.Contains("STUCK") || l.Contains("RECOVERED"));
+        Assert.Equal(2, events.Count);
+        Assert.Contains("RECOVERED", events[1]);
+        Assert.Contains("5000 ms", events[1]);
         var s = watch.Take(Mac, 6_000)!.Value;
         Assert.Equal(1, s.Confirmed);
         Assert.Equal(1, s.Unconfirmed);
@@ -127,7 +128,7 @@ public class Slv3DeviceWatchTests
             watch.Check(t + 3_100, Bound, log.Add);
             watch.NoteReported(Mac, $"0102030{i}", t + 3_500, log.Add);
         }
-        Assert.Equal(6, log.Count);
+        Assert.Equal(6, log.FindAll(l => l.Contains("STUCK") || l.Contains("RECOVERED")).Count);
         Assert.Equal(3, log.FindAll(l => l.Contains("STUCK at")).Count);
         Assert.Equal(3, log.FindAll(l => l.Contains("RECOVERED")).Count);
         Assert.Equal(3, watch.Take(Mac, 60_000)!.Value.Suppressed);
@@ -174,5 +175,80 @@ public class Slv3DeviceWatchTests
         var s = watch.Take(Mac, 60_000)!.Value;
         Assert.Equal(1, s.SendFailed);
         Assert.Equal(0, s.Sent);
+    }
+
+    [Fact]
+    public void Gap_of_one_second_logs_start_end_duration_and_both_indexes()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "0A0B0C0D", 10_000);
+        watch.Check(10_999, Bound, log.Add);
+        watch.Check(11_000, Bound, log.Add);
+        Assert.Empty(log);
+        watch.NoteSent(Mac, "0A0B0C0E", 11_100);
+        watch.NoteReported(Mac, "0A0B0C0E", 11_400, log.Add);
+        var gap = Assert.Single(log, l => l.StartsWith("[slv3-gap]"));
+        Assert.Contains("durMs=1400", gap);
+        Assert.Contains("sentIdx=0A0B0C0D", gap);
+        Assert.Contains("confirmedIdx=0A0B0C0E", gap);
+        Assert.Contains("endedBy=echo", gap);
+        Assert.Contains("sentInGap=1", gap);
+        Assert.DoesNotContain(log, l => l.Contains("STUCK"));
+    }
+
+    [Fact]
+    public void Echo_line_pairs_send_time_with_landing_time()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "01020304", 1_000);
+        watch.NoteReported(Mac, "01020304", 1_250, log.Add);
+        var echo = Assert.Single(log);
+        Assert.StartsWith("[slv3-echo]", echo);
+        Assert.Contains("ok idx=01020304", echo);
+        Assert.Contains("latMs=250", echo);
+    }
+
+    [Fact]
+    public void Overtaken_upload_is_logged_as_superseded()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "01020301", 1_000);
+        watch.NoteSent(Mac, "01020302", 1_500);
+        watch.NoteReported(Mac, "01020302", 1_800, log.Add);
+        Assert.Contains(log, l => l.Contains("superseded idx=01020301"));
+        Assert.Contains(log, l => l.Contains("ok idx=01020302"));
+    }
+
+    [Fact]
+    public void Gap_lines_are_rate_limited_per_chain()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        long t = 1_000;
+        for (var i = 0; i < 40; i++)
+        {
+            var idx = $"0000{i:X4}";
+            watch.NoteSent(Mac, idx, t);
+            t += 1_000;
+            watch.Check(t, Bound, log.Add);
+            t += 100;
+            watch.NoteReported(Mac, idx, t, log.Add);
+        }
+        var gaps = log.FindAll(l => l.StartsWith("[slv3-gap]"));
+        Assert.Equal(20, gaps.Count);
+    }
+
+    [Fact]
+    public void Open_gap_closes_when_the_chain_drops()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "01020304", 1_000);
+        watch.Check(2_500, Bound, log.Add);
+        watch.Remove(Mac, 3_000, log.Add);
+        Assert.Contains(log, l => l.StartsWith("[slv3-gap]") && l.Contains("endedBy=drop") && l.Contains("durMs=2000"));
     }
 }
