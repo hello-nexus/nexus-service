@@ -98,7 +98,8 @@ public sealed class Slv3LcdHub : IDisposable
     public IReadOnlyList<Slv3LcdPortInfo> Discover() => _discovery.Discover();
 
     /// <summary>
-    /// Clip frame-rate cap: the TL-LCD shows 60 fps, an SL-LCD or a screen not opened yet gets the default.
+    /// Clip frame-rate cap: <see cref="FanLcdClipTiming.TlWirelessMaxFps"/> for a TL-LCD, else
+    /// <see cref="FanLcdClipTiming.DefaultMaxFps"/>, which a screen not opened yet also gets.
     /// </summary>
     public int MaxFps(string serial)
     {

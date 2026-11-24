@@ -11,7 +11,7 @@ namespace Nexus.Service.Peripherals.FanLcd;
 /// </summary>
 internal static class FanLcdClipTiming
 {
-    /// <summary>The TL-LCD Wireless shows 60 fps.</summary>
+    /// <summary>The frame-rate cap of the TL-LCD Wireless.</summary>
     public const int TlWirelessMaxFps = 60;
 
     /// <summary>Every other fan screen.</summary>

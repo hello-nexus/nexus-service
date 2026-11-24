@@ -327,9 +327,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
     /// </summary>
     private async Task StreamAnimatedAsync(string serial, Slv3LcdImageData image, ScreenPick pick, CancellationToken ct)
     {
-        // Task.Delay waits in whole ~15.6 ms system ticks unless the timer resolution is raised,
-        // which holds a clip near 30 fps; the scope lasts one loop of the clip.
-        using var timerResolution = OperatingSystem.IsWindows() ? WindowsTimerResolution.Elevate() : default;
+        using var clock = new FanLcdFrameClock();
 
         var delays = new int[image.Frames.Length];
         for (var i = 0; i < delays.Length; i++)
@@ -349,12 +347,10 @@ public sealed class FanLcdStreamingWorker : BackgroundService
             _screens.PushImage(serial, image.Frames[frame].JpegBytes);
             // Asked after the push: a screen's model is known once it has been opened.
             var minGapMs = 1000.0 / Math.Max(1, _screens.MaxFps(serial));
-            var (next, dueMs) = FanLcdClipTiming.Next(starts, frame, pushedAtMs + minGapMs);
-            var waitMs = dueMs - Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds;
-            if (waitMs > 0)
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(waitMs), ct).ConfigureAwait(false);
-            }
+            // A push that ran long leaves the frame due now, not one counted from the push's start.
+            var earliestMs = Math.Max(pushedAtMs + minGapMs, Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds);
+            var (next, dueMs) = FanLcdClipTiming.Next(starts, frame, earliestMs);
+            await clock.WaitUntilAsync(clipStart + (long)(dueMs * Stopwatch.Frequency / 1000), ct).ConfigureAwait(false);
             frame = next;
         }
     }

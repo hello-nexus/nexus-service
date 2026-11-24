@@ -25,7 +25,7 @@ public sealed class Slv3LcdMediaLibrary
     private static readonly string[] StillExtensions = { ".jpg", ".jpeg", ".png", ".bmp", ".webp" };
     private static readonly string[] VideoExtensions = { ".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi" };
 
-    // A video keeps its own frame rate up to the fastest screen (the TL-LCD shows 60 fps); a
+    // A video keeps its own frame rate up to the fastest screen (VideoMaxFps); a
     // slower screen skips frames when it plays. ffprobe is not bundled, so the rate is read from
     // the stream line ffmpeg prints, and a source that names none gets the fallback. The length
     // cap bounds a JPEG-per-frame import.
@@ -293,7 +293,7 @@ public sealed class Slv3LcdMediaLibrary
         return null;
     }
 
-    /// <summary>Per-frame delays for a constant rate, alternating 16 and 17 ms at 60 fps so the clip keeps its length.</summary>
+    /// <summary>Per-frame delays for a constant rate, rounded so the delays add up to the clip length.</summary>
     internal static int[] UniformDelays(int frames, int fps)
     {
         var delays = new int[frames];

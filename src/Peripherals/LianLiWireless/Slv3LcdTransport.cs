@@ -173,6 +173,7 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
     }
 
     private volatile bool _draining;
+    private readonly System.Threading.ManualResetEvent _stopEvent = new(false);
     private readonly System.Threading.Thread? _drainThread;
     // Sole reader of the IN pipe: TryGetPosition consumes acks from here rather
     // than issuing its own read, which would race the drain for the same frame.
@@ -182,7 +183,8 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
     {
         // The handle is opened FILE_FLAG_OVERLAPPED and the OUT pipe refuses a NULL-overlapped
         // transfer, so the IN read goes through a real OVERLAPPED and waits on it (the pipe's
-        // PIPE_TRANSFER_TIMEOUT bounds the wait), as the writes do.
+        // PIPE_TRANSFER_TIMEOUT bounds the wait), as the writes do. Dispose sets the stop event,
+        // which ends a read or a backoff wait without depending on the pipe abort landing in time.
         var buf = new byte[10240];
         var pin = GCHandle.Alloc(buf, GCHandleType.Pinned);
         var ovPtr = Marshal.AllocHGlobal(Marshal.SizeOf<System.Threading.NativeOverlapped>());
@@ -192,6 +194,7 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
             Nexus.Service.Platform.ServiceLog.Warn(
                 $"[lianli-wireless-lcd] CreateEventW failed for the IN pipe of {PortName}: {Marshal.GetLastWin32Error()}; acks will not be read");
         }
+        var waits = new[] { readEvent, _stopEvent.SafeWaitHandle.DangerousGetHandle() };
         var retryMs = 0;
         try
         {
@@ -206,6 +209,11 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
                 var error = ok ? 0 : Marshal.GetLastWin32Error();
                 if (!ok && error == (int)Slv3WinUsbInterop.ERROR_IO_PENDING)
                 {
+                    if (Slv3WinUsbInterop.WaitForMultipleObjects(2, waits, false, Slv3WinUsbInterop.Infinite) != WaitObject0)
+                    {
+                        // Stopped: cancel and retire the read before the buffer and event are freed.
+                        Slv3WinUsbInterop.CancelIoEx(_fileHandle.DangerousGetHandle(), ovPtr);
+                    }
                     ok = Slv3WinUsbInterop.WinUsb_GetOverlappedResult(_winUsbHandle, ovPtr, out n, wait: true);
                     error = ok ? 0 : Marshal.GetLastWin32Error();
                 }
@@ -224,10 +232,9 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
                     // A timeout has already waited and an abort means Dispose; an empty read or any
                     // other error returns at once, so back off instead of retrying in a tight loop.
                     retryMs = Slv3LcdDrainBackoff.Next(retryMs);
-                    // In slices, so Dispose's join is not held for the whole backoff.
-                    for (var waited = 0; waited < retryMs && _draining; waited += 50)
+                    if (_stopEvent.WaitOne(retryMs))
                     {
-                        System.Threading.Thread.Sleep(Math.Min(50, retryMs - waited));
+                        break;
                     }
                 }
             }
@@ -335,8 +342,10 @@ public sealed class Slv3LcdTransport : ISlv3LcdTransport
         // the IN pipe so a blocked ReadPipe returns even if its timeout policy
         // never took, then join before WinUsb_Free (no read in flight = no UAF).
         _draining = false;
+        _stopEvent.Set();
         Slv3WinUsbInterop.WinUsb_AbortPipe(_winUsbHandle, Slv3LcdProtocol.ReadPipeId);
         _drainThread?.Join();
+        _stopEvent.Dispose();
         lock (_ioLock)
         {
             _rxQueue.Dispose();
