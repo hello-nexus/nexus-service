@@ -262,16 +262,80 @@ public partial class Slv3HubTests
         Assert.Empty(AllBindFrames(tx));
     }
 
+    [Theory]
+    [InlineData(245, 245, "00BA07F5F5F5")]
+    [InlineData(228, 8, "E1E1E1E1E1E1")]
+    [InlineData(5, 252, "03BA07F50000")]
+    public void A_one_poll_garbage_record_of_a_bound_chain_sends_no_bind(int rx, int channel, string master)
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 3);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        tx.SentFrames.Clear();
+
+        fan.RxType = (byte)rx;
+        fan.Channel = (byte)channel;
+        fan.MasterMac = Convert.FromHexString(master);
+        Ticks(hub, 1);
+        fan.RxType = 1;
+        fan.Channel = Slv3Protocol.DefaultChannel;
+        fan.MasterMac = Ours;
+        Ticks(hub, 5);
+
+        Assert.Empty(AllBindFrames(tx));
+        Assert.True(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_mismatch_of_a_bound_chain_gets_its_first_bind_on_the_third_consecutive_poll()
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 7;
+        for (var poll = 1; poll < Slv3Hub.BindMismatchPollsBeforeSend; poll++)
+        {
+            Ticks(hub, 1);
+            Assert.Empty(AllBindFrames(tx));
+        }
+        Ticks(hub, 1);
+
+        Assert.Single(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_record_the_chain_never_corrects_gets_a_short_burst_then_a_few_frames_per_minute()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Convert.FromHexString("00BA07F5F5F5"), 245, 245);
+        fan.IgnoresBind = true;
+
+        Ticks(hub, 500);
+        Assert.Equal(Slv3Hub.BindBurstSends, AllBindFrames(tx).Count);
+
+        tx.SentFrames.Clear();
+        for (var second = 0; second < 60; second++)
+        {
+            clock.AdvanceMs(1_000);
+            Ticks(hub, 10);
+        }
+
+        Assert.InRange(AllBindFrames(tx).Count, 1, 8);
+        Assert.True(hub.IsConnected);
+    }
+
     [Fact]
     public void The_reconcile_never_gives_up_on_a_chain_that_ignores_binds_and_converges_once_it_listens()
     {
-        var (hub, _, tx, fan, _, _) = Stranded(new byte[6], 0, Slv3Protocol.DefaultChannel);
+        var (hub, _, tx, fan, _, clock) = Stranded(new byte[6], 0, Slv3Protocol.DefaultChannel);
         fan.IgnoresBind = true;
 
         Ticks(hub, 400);
 
-        Assert.Equal(400, AllBindFrames(tx).Count);
+        Assert.Equal(Slv3Hub.BindBurstSends, AllBindFrames(tx).Count);
         fan.IgnoresBind = false;
+        clock.AdvanceMs(15_000);
         Ticks(hub, 2);
         Assert.True(hub.State.Fans[0].BoundToUs);
         tx.SentFrames.Clear();
@@ -616,7 +680,7 @@ public partial class Slv3HubTests
     {
         var (hub, tx, _) = StuckOnGarbledPipe(4, garbledMaster: null, (byte)channel, (byte)rx);
 
-        Ticks(hub, 3);
+        Ticks(hub, 5);
 
         Assert.NotEmpty(BindFramesAt(tx, (byte)channel, (byte)rx));
         Assert.All(AllBindFrames(tx), f => { Assert.Equal(channel, f[2]); Assert.Equal(rx, f[3]); });
@@ -631,7 +695,7 @@ public partial class Slv3HubTests
         var garbled = new byte[] { 0xAA, 0xBB, 0xCC, 0x65, 0xE1, 0xFC };
         var (hub, tx, _) = StuckOnGarbledPipe(3, garbled, channel: 46, rx: 11);
 
-        Ticks(hub, 3);
+        Ticks(hub, 5);
 
         Assert.NotEmpty(BindFramesAt(tx, 46, 11));
         Assert.All(AllBindFrames(tx), f => { Assert.Equal(46, f[2]); Assert.Equal(11, f[3]); });
@@ -662,7 +726,7 @@ public partial class Slv3HubTests
 
         for (var round = 0; round < 5; round++)
         {
-            Ticks(hub, 3);
+            Ticks(hub, 5);
             Assert.True(hub.State.Fans[0].BoundToUs);
             fan.MasterMac = Convert.FromHexString("A27CD726C6D3");
             fan.RxType = 3;
@@ -671,7 +735,7 @@ public partial class Slv3HubTests
         fan.IgnoresBind = true;
         Ticks(hub, 600);
 
-        Assert.Equal(600, AllBindFrames(tx).Count);
+        Assert.Equal(Slv3Hub.BindBurstSends, AllBindFrames(tx).Count);
     }
 
     [Fact]
@@ -776,7 +840,7 @@ public partial class Slv3HubTests
         fan.RxType = 5;
         tx.SentFrames.Clear();
 
-        Ticks(hub, 1);
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend);
 
         Assert.NotEmpty(AllBindFrames(tx));
     }
@@ -1001,6 +1065,7 @@ public partial class Slv3HubTests
         var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
         Ticks(hub, 2);
         fan.RxType = 7;
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend - 1);
         var during = -1;
         tx.OnSend = f =>
         {

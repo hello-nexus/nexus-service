@@ -2404,7 +2404,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_busy_rx_that_a_reopen_does_not_clear_keeps_reopening_without_a_reset()
+    public void A_busy_rx_that_two_reopens_do_not_clear_is_reset_through_the_tx_and_keeps_the_list()
     {
         var clock = new ManualClock();
         var net = new FakeSlv3Network();
@@ -2422,25 +2422,38 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
 
         rx.BusyReads = true;
-        for (var i = 0; i < 4 * 60; i++)
-        {
-            Assert.True(hub.PollTick());
-        }
+        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
         Assert.Equal(2, rxOpens);
+        clock.AdvanceMs(60_000);
+        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
+        Assert.Equal(3, rxOpens);
         Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
 
-        for (var round = 0; round < 3; round++)
-        {
-            clock.AdvanceMs(60_000);
-            for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
-        }
-        Assert.Equal(5, rxOpens);
-        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        clock.AdvanceMs(60_000);
+        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
+        Assert.Contains(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
         Assert.Single(hub.State.Fans);
+        Assert.True(hub.IsConnected);
 
         rx.BusyReads = false;
-        Assert.True(hub.PollTick());
+        clock.AdvanceMs(60_000);
+        for (var i = 0; i < 5; i++) Assert.True(hub.PollTick());
         Assert.False(Assert.Single(hub.State.Fans).Stale);
+    }
+
+    [Fact]
+    public void A_busy_spell_cleared_after_one_reopen_never_resets_the_tx()
+    {
+        var (hub, net, tx, rx, _) = CreateConnectedHubCountingRxOpens();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
+        rx.BusyReads = false;
+        for (var i = 0; i < 5; i++) Assert.True(hub.PollTick());
+
+        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
     }
 
     [Fact]
@@ -2778,7 +2791,7 @@ public partial class Slv3HubTests
     [Fact]
     public void The_bind_save_waits_for_every_owned_chain_to_reach_its_target()
     {
-        var (hub, net, tx, _, _) = CreateRebindHub();
+        var (hub, net, tx, clock, _) = CreateRebindHub();
         var second = new SimulatedFan { Mac = SecondFanMac, IgnoresBind = true };
         net.Fans.Add(second);
         hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [Convert.ToHexString(FanMac)] = 4, [Convert.ToHexString(SecondFanMac)] = 5 };
@@ -2787,6 +2800,7 @@ public partial class Slv3HubTests
         Assert.Empty(SaveCfgFrames(tx));
 
         second.IgnoresBind = false;
+        clock.AdvanceMs(15_000);
         Ticks(hub, BindSaveTicks * 2);
         Assert.Single(SaveCfgFrames(tx));
     }
