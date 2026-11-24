@@ -45,4 +45,20 @@ public class LhmSlowItemLogTests
         Assert.NotNull(log.Record("/hdd/0", "a", 3_000));
         Assert.NotNull(log.Record("/hdd/1", "b", 3_000));
     }
+
+    [Fact]
+    public void The_next_line_reports_how_many_were_suppressed()
+    {
+        var log = NewLog();
+        Assert.DoesNotContain("suppressed", log.Record("/hdd/0", "d", 3_000));
+        Assert.Null(log.Record("/hdd/0", "d", 3_000));
+        Assert.Null(log.Record("/hdd/0", "d", 3_000));
+
+        _now += LhmSlowItemLog.LogIntervalMs;
+        var line = log.Record("/hdd/0", "d", 3_000);
+        Assert.Contains("(2 similar suppressed)", line);
+
+        _now += LhmSlowItemLog.LogIntervalMs;
+        Assert.DoesNotContain("suppressed", log.Record("/hdd/0", "d", 3_000));
+    }
 }
