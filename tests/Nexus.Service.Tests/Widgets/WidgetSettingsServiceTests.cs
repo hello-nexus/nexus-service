@@ -365,6 +365,23 @@ public class WidgetSettingsServiceTests : IDisposable
         Assert.Equal("#ff8800", frame.Values["color"].GetString());
     }
 
+    [Fact]
+    public void A_stand_in_is_pruned_without_a_frame_when_its_device_is_removed()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: true);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(s => s.PanelDevices.Remove("q60dev"));
+        Assert.Empty(frames);
+
+        SeedStandInDevice(withConfig: true);
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+    }
+
     private static void Set(WidgetSettingsService svc, string instanceId, string color)
     {
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(color));

@@ -145,8 +145,11 @@ public sealed class WidgetSettingsService
         _registry.TryGet(string.Empty, out _);
         _store.Read(s =>
         {
-            lock (_stateLock) { _primed = true; }
-            Reconcile(s, pending);
+            lock (_stateLock)
+            {
+                _primed = true;
+                Reconcile(s, pending);
+            }
         });
         foreach (var doc in pending)
         {
