@@ -15,6 +15,7 @@ internal sealed class LhmSlowItemLog
 
     private readonly Func<long> _nowMs;
     private readonly Dictionary<string, long> _lastLoggedMs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _suppressed = new(StringComparer.Ordinal);
     private readonly object _gate = new();
 
     internal LhmSlowItemLog(Func<long> nowMs) => _nowMs = nowMs;
@@ -28,14 +29,19 @@ internal sealed class LhmSlowItemLog
         }
 
         var now = _nowMs();
+        var skipped = 0;
         lock (_gate)
         {
             if (_lastLoggedMs.TryGetValue(item, out var last) && now - last < LogIntervalMs)
             {
+                _suppressed[item] = _suppressed.GetValueOrDefault(item) + 1;
                 return null;
             }
             _lastLoggedMs[item] = now;
+            skipped = _suppressed.GetValueOrDefault(item);
+            _suppressed.Remove(item);
         }
-        return string.Create(CultureInfo.InvariantCulture, $"[lhm] slow update: {name} ({item}) took {ms / 1000.0:F1}s");
+        var line = string.Create(CultureInfo.InvariantCulture, $"[lhm] slow update: {name} ({item}) took {ms / 1000.0:F1}s");
+        return skipped > 0 ? string.Create(CultureInfo.InvariantCulture, $"{line} ({skipped} similar suppressed)") : line;
     }
 }
