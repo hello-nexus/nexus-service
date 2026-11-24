@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 
@@ -7,7 +8,8 @@ namespace Nexus.Service.Peripherals.LianLiWireless;
 // Long RX "nodata" stalls end on their own after minutes. This probe applies ONE recovery
 // action per stall once it reaches the threshold, alternating across stalls, and writes the
 // outcome to the link log so a support bundle shows which action ends long stalls.
-// Config file (optional, overrides the defaults): "<thresholdMs> <letters>", or "off".
+// Config file (optional, overrides the defaults): "<thresholdMs> <letters>" plus an optional
+// "reappear=off" token, or "off" for everything.
 // Letters: a = 0x15 via TX, b = pause window uploads until a good GetDev, c = reopen TX and RX,
 // n = observe only.
 public sealed partial class Slv3Hub
@@ -18,6 +20,9 @@ public sealed partial class Slv3Hub
     private long _pauseUploadsUntilMs;
     private bool _stallHeardChain;
     private long _stallConfigReadMs = long.MinValue / 2;
+    private readonly Slv3ReappearAb _reappear = new();
+    private long _reappearStallsSeen;
+    private readonly HashSet<string> _stallEverSeen = new(StringComparer.Ordinal);
 
     internal Func<Slv3StallConfig> StallConfigSource { get; set; } = ReadStallConfig;
 
@@ -43,16 +48,53 @@ public sealed partial class Slv3Hub
 
     private bool StallUploadsPaused() => _nowMs() < Interlocked.Read(ref _pauseUploadsUntilMs);
 
+    // Reappear mode L: this chain's window upload waits so the writer streams live frames instead.
+    private bool ReappearHoldsWindow(string macHex) => _reappear.IsHeld(macHex, _nowMs());
+
     private void StallLog(string text) => Diag.Event("stall-probe " + text);
 
-    // Caller holds _lock; called on every nodata poll.
-    private void StallOnNoDataLocked(long nowMs)
+    private void RefreshStallConfigLocked(long nowMs)
     {
         if (!_stallPolicy.Active && nowMs - _stallConfigReadMs >= 60_000)
         {
             _stallConfigReadMs = nowMs;
             _stallPolicy.Config = StallConfigSource();
+            _reappear.Enabled = _stallPolicy.Config.Enabled && _stallPolicy.Config.ReappearAb;
         }
+    }
+
+    // Caller holds _lock; a chain that was known before is back in a device list.
+    private void StallOnChainReappearedLocked(string key, long nowMs)
+    {
+        RefreshStallConfigLocked(nowMs);
+        _reappear.OnReappear(key, nowMs);
+    }
+
+    private void StallOnChainDroppedLocked(string key) => _reappear.OnDropped(key);
+
+    // Resolves pending reappear events against the diag's stall starts; the diag owns the stall definition.
+    private void ReappearResolveLocked(long nowMs)
+    {
+        var stalls = Diag.StallStartCount;
+        if (stalls != _reappearStallsSeen)
+        {
+            _reappearStallsSeen = stalls;
+            foreach (var r in _reappear.OnStall(Diag.LastStallStartMs))
+            {
+                StallLog(r.Describe());
+            }
+        }
+        foreach (var r in _reappear.Expire(nowMs))
+        {
+            StallLog(r.Describe());
+        }
+    }
+
+    // Caller holds _lock; called on every nodata poll.
+    private void StallOnNoDataLocked(long nowMs)
+    {
+        RefreshStallConfigLocked(nowMs);
+        ReappearResolveLocked(nowMs);
         var action = _stallPolicy.OnNoData(nowMs, _stallHeardChain, out _, out var suppressed);
         if (suppressed)
         {
@@ -89,6 +131,7 @@ public sealed partial class Slv3Hub
     private void StallOnGoodReplyLocked(long nowMs)
     {
         Interlocked.Exchange(ref _pauseUploadsUntilMs, 0);
+        ReappearResolveLocked(nowMs);
         if (_stallPolicy.OnGood(nowMs) is { } end && end.StallMs >= _stallPolicy.Config.ThresholdMs)
         {
             StallLog($"#{end.Seq} ended: stall={end.StallMs}ms action={end.ActionName} sinceAction={end.SinceActionText}");
@@ -124,7 +167,7 @@ public sealed partial class Slv3Hub
     }
 }
 
-internal sealed record Slv3StallConfig(bool Enabled, long ThresholdMs, string Actions)
+internal sealed record Slv3StallConfig(bool Enabled, long ThresholdMs, string Actions, bool ReappearAb = true)
 {
     public static readonly Slv3StallConfig Default = new(true, 30_000, "ab");
 
@@ -135,17 +178,23 @@ internal sealed record Slv3StallConfig(bool Enabled, long ThresholdMs, string Ac
         {
             return Default;
         }
-        var parts = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var tokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var reappear = !Array.Exists(tokens, t => t.Equals("reappear=off", StringComparison.OrdinalIgnoreCase));
+        var parts = Array.FindAll(tokens, t => !t.StartsWith("reappear=", StringComparison.OrdinalIgnoreCase));
+        if (parts.Length == 0)
+        {
+            return Default with { ReappearAb = reappear };
+        }
         if (parts.Length == 1 && parts[0].Equals("off", StringComparison.OrdinalIgnoreCase))
         {
-            return new Slv3StallConfig(false, Default.ThresholdMs, "");
+            return new Slv3StallConfig(false, Default.ThresholdMs, "", reappear);
         }
         if (parts.Length < 2 || !long.TryParse(parts[0], out var threshold) || threshold < 0)
         {
-            return parts.Length == 1 && long.TryParse(parts[0], out _) ? new Slv3StallConfig(false, Default.ThresholdMs, "") : Default;
+            return parts.Length == 1 && long.TryParse(parts[0], out _) ? new Slv3StallConfig(false, Default.ThresholdMs, "", reappear) : Default with { ReappearAb = reappear };
         }
         var letters = string.Concat(Array.FindAll(parts[1].ToLowerInvariant().ToCharArray(), c => c is 'a' or 'b' or 'c' or 'n'));
-        return letters.Length == 0 ? new Slv3StallConfig(false, threshold, "") : new Slv3StallConfig(true, threshold, letters);
+        return letters.Length == 0 ? new Slv3StallConfig(false, threshold, "", reappear) : new Slv3StallConfig(true, threshold, letters, reappear);
     }
 }
 
@@ -219,5 +268,114 @@ internal sealed class Slv3StallPolicy
         var name = _action == NoAction ? "none" : _action.ToString();
         var since = good && _action != NoAction ? $"{nowMs - _actionMs}ms" : "none";
         return new StallEnd(Seq, nowMs - StartMs, name, since);
+    }
+}
+
+// A/B on a chain reappearing: alternate between W (fresh window upload, current behavior) and
+// L (hold that chain's window upload so it streams live frames) and record whether a whole-dongle
+// stall started shortly after. Pure bookkeeping with its own lock.
+internal sealed class Slv3ReappearAb
+{
+    public const long HoldMs = 30_000;
+    public const long ResolveWithinMs = 15_000;
+    private const int MaxPending = 32;
+
+    internal sealed record Result(string Key, char Mode, long? StallAfterMs)
+    {
+        public string Describe() => StallAfterMs is { } age
+            ? $"reappear chain={Key} mode={Mode} stallWithin15s=yes stallAge={age}ms"
+            : $"reappear chain={Key} mode={Mode} stallWithin15s=no";
+    }
+
+    private sealed record Pending(string Key, char Mode, long AtMs);
+
+    private readonly object _gate = new();
+    private readonly Dictionary<string, long> _holdUntil = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Pending> _pending = new();
+    private int _count;
+
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Starts a reappear event and returns its mode; W when disabled.</summary>
+    public char OnReappear(string key, long nowMs)
+    {
+        lock (_gate)
+        {
+            if (!Enabled)
+            {
+                return 'W';
+            }
+            var mode = _count++ % 2 == 0 ? 'W' : 'L';
+            if (mode == 'L')
+            {
+                _holdUntil[key] = nowMs + HoldMs;
+            }
+            else
+            {
+                _holdUntil.Remove(key);
+            }
+            if (_pending.Count >= MaxPending)
+            {
+                _pending.RemoveAt(0);
+            }
+            _pending.Add(new Pending(key, mode, nowMs));
+            return mode;
+        }
+    }
+
+    /// <summary>A drop ends continuous hearing, so any hold on the chain ends with it.</summary>
+    public void OnDropped(string key)
+    {
+        lock (_gate)
+        {
+            _holdUntil.Remove(key);
+        }
+    }
+
+    public bool IsHeld(string key, long nowMs)
+    {
+        lock (_gate)
+        {
+            return _holdUntil.TryGetValue(key, out var until) && nowMs < until;
+        }
+    }
+
+    /// <summary>A whole-dongle stall started: resolves the events from the last window before it.</summary>
+    public List<Result> OnStall(long stallStartMs)
+    {
+        lock (_gate)
+        {
+            var done = new List<Result>();
+            _pending.RemoveAll(p =>
+            {
+                var age = stallStartMs - p.AtMs;
+                if (age < 0 || age > ResolveWithinMs)
+                {
+                    return false;
+                }
+                done.Add(new Result(p.Key, p.Mode, age));
+                return true;
+            });
+            return done;
+        }
+    }
+
+    /// <summary>Resolves events whose window passed with no stall.</summary>
+    public List<Result> Expire(long nowMs)
+    {
+        lock (_gate)
+        {
+            var done = new List<Result>();
+            _pending.RemoveAll(p =>
+            {
+                if (nowMs - p.AtMs <= ResolveWithinMs)
+                {
+                    return false;
+                }
+                done.Add(new Result(p.Key, p.Mode, null));
+                return true;
+            });
+            return done;
+        }
     }
 }

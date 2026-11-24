@@ -406,8 +406,18 @@ internal sealed class Slv3LinkDiag : IDisposable
         c.ResetWindow();
     }
 
+    private long _stallStartCount;
+    private long _lastStallStartMs;
+
+    /// <summary>Whole-dongle stalls started so far and when the latest began; read lock-free by the hub.</summary>
+    public long StallStartCount => Interlocked.Read(ref _stallStartCount);
+
+    public long LastStallStartMs => Interlocked.Read(ref _lastStallStartMs);
+
     private void StartStallLocked(long nowMs)
     {
+        Interlocked.Exchange(ref _lastStallStartMs, nowMs);
+        Interlocked.Increment(ref _stallStartCount);
         var id = ++_dumpId;
         // A chain already in its own episode has its dump; it is left out here and keeps that episode.
         var live = _chains.Values.Where(x => !x.Dropped && !x.InEpisode).ToList();

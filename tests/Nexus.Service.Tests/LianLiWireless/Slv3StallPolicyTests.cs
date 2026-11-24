@@ -104,3 +104,91 @@ public class Slv3StallPolicyTests
         Assert.Equal(new Slv3StallPolicy.StallEnd(3, 50, "none", "none"), p.OnGood(2050));
     }
 }
+
+public class Slv3ReappearAbTests
+{
+    [Theory]
+    [InlineData("reappear=off", true, false)]
+    [InlineData("45000 b reappear=off", true, false)]
+    [InlineData("reappear=off 1000 abc", true, false)]
+    [InlineData("45000 b", true, true)]
+    [InlineData("off", false, true)]
+    [InlineData("off reappear=off", false, false)]
+    public void Config_reappear_token(string text, bool enabled, bool reappear)
+    {
+        var c = Slv3StallConfig.Parse(text);
+        Assert.Equal(enabled, c.Enabled);
+        Assert.Equal(reappear, c.ReappearAb);
+    }
+
+    [Fact]
+    public void Reappear_config_token_keeps_the_other_settings()
+    {
+        var c = Slv3StallConfig.Parse("45000 b reappear=off");
+        Assert.Equal(45000L, c.ThresholdMs);
+        Assert.Equal("b", c.Actions);
+    }
+
+    [Fact]
+    public void Modes_alternate_and_only_L_holds_the_window_for_30_s()
+    {
+        var ab = new Slv3ReappearAb();
+        Assert.Equal('W', ab.OnReappear("AA", 1000));
+        Assert.False(ab.IsHeld("AA", 1001));
+        Assert.Equal('L', ab.OnReappear("AA", 2000));
+        Assert.True(ab.IsHeld("AA", 2000 + Slv3ReappearAb.HoldMs - 1));
+        Assert.False(ab.IsHeld("AA", 2000 + Slv3ReappearAb.HoldMs));
+        Assert.False(ab.IsHeld("BB", 2001));
+        Assert.Equal('W', ab.OnReappear("BB", 3000));
+    }
+
+    [Fact]
+    public void A_drop_ends_the_hold_and_a_W_event_clears_a_stale_one()
+    {
+        var ab = new Slv3ReappearAb();
+        ab.OnReappear("AA", 0);
+        ab.OnReappear("AA", 1000);
+        Assert.True(ab.IsHeld("AA", 2000));
+        ab.OnDropped("AA");
+        Assert.False(ab.IsHeld("AA", 2000));
+        ab.OnReappear("AA", 3000);
+        ab.OnReappear("AA", 4000);
+        ab.OnReappear("AA", 5000);
+        Assert.False(ab.IsHeld("AA", 5001));
+    }
+
+    [Fact]
+    public void Disabled_never_holds_or_records()
+    {
+        var ab = new Slv3ReappearAb { Enabled = false };
+        Assert.Equal('W', ab.OnReappear("AA", 0));
+        Assert.Equal('W', ab.OnReappear("AA", 1000));
+        Assert.False(ab.IsHeld("AA", 1001));
+        Assert.Empty(ab.Expire(100_000));
+    }
+
+    [Fact]
+    public void A_stall_within_15_s_is_attributed_with_its_age_and_later_events_expire_as_no()
+    {
+        var ab = new Slv3ReappearAb();
+        ab.OnReappear("AA", 1000);
+        ab.OnReappear("BB", 2000);
+        ab.OnReappear("CC", 50_000);
+        var hit = ab.OnStall(4500);
+        Assert.Equal(2, hit.Count);
+        Assert.Equal("reappear chain=AA mode=W stallWithin15s=yes stallAge=3500ms", hit[0].Describe());
+        Assert.Equal("reappear chain=BB mode=L stallWithin15s=yes stallAge=2500ms", hit[1].Describe());
+        Assert.Empty(ab.Expire(60_000));
+        var none = Assert.Single(ab.Expire(70_000));
+        Assert.Equal("reappear chain=CC mode=W stallWithin15s=no", none.Describe());
+    }
+
+    [Fact]
+    public void A_stall_more_than_15_s_after_is_not_attributed()
+    {
+        var ab = new Slv3ReappearAb();
+        ab.OnReappear("AA", 0);
+        Assert.Empty(ab.OnStall(20_000));
+        Assert.Single(ab.Expire(20_000));
+    }
+}

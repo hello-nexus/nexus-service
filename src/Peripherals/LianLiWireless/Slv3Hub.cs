@@ -2453,7 +2453,12 @@ public sealed partial class Slv3Hub : IDisposable
                         ServiceLog.Info(line);
                     }
                 }
+                var wasKnown = _knownChains.ContainsKey(key);
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
+                if (!wasKnown && !_stallEverSeen.Add(key))
+                {
+                    StallOnChainReappearedLocked(key, nowMs);
+                }
                 Diag.OnSeen(key, nowMs, reply.AsSpan(offset, Slv3Protocol.RecordLength), record.RxType, record.Channel);
             }
         }
@@ -2547,6 +2552,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 ServiceLog.Info($"[lianli-wireless] chain {key} dropped ({ChainExpiryMs / 1000}s unseen)");
                 Diag.OnDropped(key, nowMs);
+                StallOnChainDroppedLocked(key);
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 _knownChains.Remove(key);
@@ -3404,7 +3410,7 @@ public sealed partial class Slv3Hub : IDisposable
     private async Task<WindowUploadResult> SendRgbWindowCoreAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, UploadOutcome outcome)
     {
-        if (StallUploadsPaused())
+        if (StallUploadsPaused() || ReappearHoldsWindow(macHex))
         {
             // Neutral to the writer (live frames carry the chain), so a paused window never counts as a link failure.
             return WindowUploadResult.TooLarge;
