@@ -62,6 +62,28 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         _hub.Disconnect();
     }
 
+    /// <summary>
+    /// The helper (which performs the display rotation and DDC writes) just connected. At boot it
+    /// usually connects after the first detect, so the applies from that edge were lost; send them
+    /// again. A no-op while no Y70 is detected: the detect edge covers that case.
+    /// </summary>
+    public void OnHelperConnected()
+    {
+        if (!Detected || !_gate.IsEnabled(Y70Handler.HandlerId))
+        {
+            return;
+        }
+        try
+        {
+            _y70.ApplyEffectiveOrientation();
+            _y70.ReapplyBrightness();
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Error($"[y70-display-heartbeat] helper-connect reapply failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     // Once per detection event, independent of the control gate: assigning the case is not device control.
     private void AssignCaseOnDetection()
     {
@@ -118,7 +140,8 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
             {
                 _wasDetected = true;
                 _y70.ApplyEffectiveOrientation();
-                ServiceLog.Info("[y70-display-heartbeat] newly detected; orientation re-applied");
+                _y70.ReapplyBrightness();
+                ServiceLog.Info("[y70-display-heartbeat] newly detected; orientation and brightness re-applied");
             }
         }
         else if (_wasDetected && ++_absentTicks >= DetectDropTicks)
@@ -154,3 +177,34 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         }
     }
 }
+
+#if WINDOWS
+/// <summary>Re-sends the stored Y70 orientation and brightness whenever a helper connects.</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
+public sealed class Y70HelperConnectHook : IHostedService
+{
+    private readonly Nexus.Service.Helper.HelperRegistry _helpers;
+    private readonly Y70DisplayHeartbeatWorker _worker;
+
+    public Y70HelperConnectHook(Nexus.Service.Helper.HelperRegistry helpers, Y70DisplayHeartbeatWorker worker)
+    {
+        _helpers = helpers;
+        _worker = worker;
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _helpers.Connected += OnConnected;
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _helpers.Connected -= OnConnected;
+        return Task.CompletedTask;
+    }
+
+    // Off the pipe thread: the applies are helper RPCs and must not block the handshake that raised this.
+    private void OnConnected(Nexus.Service.Helper.HelperConnection _) => Task.Run(_worker.OnHelperConnected);
+}
+#endif

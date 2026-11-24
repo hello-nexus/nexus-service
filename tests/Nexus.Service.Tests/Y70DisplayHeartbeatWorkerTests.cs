@@ -201,6 +201,59 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     }
 
     [Fact]
+    public void First_detect_reapplies_stored_brightness_once()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public void Redetect_after_sustained_disconnect_reapplies_brightness()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+
+        worker.Tick();
+        y70.Connected = false;
+        for (var i = 0; i < 5; i++) worker.Tick();
+        y70.Connected = true;
+        worker.Tick();
+
+        Assert.Equal(2, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public void Helper_connect_after_detect_reapplies_brightness_and_orientation()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+        worker.Tick();
+
+        worker.OnHelperConnected();
+
+        Assert.Equal(2, y70.BrightnessCount);
+        Assert.Equal(2, y70.ApplyCount);
+    }
+
+    [Fact]
+    public void Helper_connect_before_detect_applies_nothing()
+    {
+        var y70 = new FakeY70Provider { Connected = false };
+        var worker = Build(y70);
+        worker.Tick();
+
+        worker.OnHelperConnected();
+
+        Assert.Equal(0, y70.BrightnessCount);
+        Assert.Equal(0, y70.ApplyCount);
+    }
+
+    [Fact]
     public void Sustained_disconnect_then_reconnect_reapplies_orientation()
     {
         var y70 = new FakeY70Provider { Connected = true };
@@ -344,6 +397,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     {
         public bool Connected;
         public int ApplyCount;
+        public int BrightnessCount;
 
         public bool IsConnected() => Connected;
         public string GetOrientation() => "PortraitFlipped";
@@ -353,6 +407,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         public void ApplyEffectiveOrientation() => ApplyCount++;
         public int GetBrightness() => 0;
         public void SetBrightness(int brightness) { }
+        public void ReapplyBrightness() => BrightnessCount++;
         public bool GetToggle() => false;
         public void SetToggle(bool toggle) { }
         public void SetGameModeScreenOff(bool screenOff) { }

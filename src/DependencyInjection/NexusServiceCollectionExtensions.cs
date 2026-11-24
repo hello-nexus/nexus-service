@@ -2090,6 +2090,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>();
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>());
+#if WINDOWS
+        services.AddHostedService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70HelperConnectHook>();
+#endif
 
         // Tryx Panorama AIO: current firmware enumerates as a Windows usbprint
         // device (VID 0x391A, "RK PANO"); Linux/other platforms still see the

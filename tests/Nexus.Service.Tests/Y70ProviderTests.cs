@@ -294,6 +294,33 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void ReapplyBrightness_on_touch_pushes_stored_value_without_changing_it()
+    {
+        var (provider, _, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+
+        var gain = Y70DisplayProtocol.TouchRgbGainForPercent(40);
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
+        Assert.Equal(40, store.Load().Y70.Brightness);
+    }
+
+    [Fact]
+    public void ReapplyBrightness_leaves_a_switched_off_screen_dark()
+    {
+        var (provider, serial, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        store.Load().Y70.Brightness = 40;
+        store.Load().Y70.ScreenOff = true;
+        var serialBefore = serial.Writes.Count;
+
+        provider.ReapplyBrightness();
+
+        Assert.Empty(ddc.VcpWrites);
+        Assert.Equal(serialBefore, serial.Writes.Count);
+    }
+
+    [Fact]
     public void SetBrightness_on_serial_variant_writes_serial_frame_only()
     {
         var (provider, serial, ddc, _) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
