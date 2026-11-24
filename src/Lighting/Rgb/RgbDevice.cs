@@ -152,6 +152,14 @@ public sealed class RgbZone
     public bool NeedsSize => IsConfigurableSize && (Flags & FlagConfiguredSize) == 0;
     /// <summary>True when the count is the user's to set and is still unset or came from a resize, never from the hardware (NZXT Hue+ reads its own).</summary>
     public bool IsUserSized => (Flags & FlagConfigurableSize) != 0 && (LedCount == 0 || (Flags & FlagConfiguredSize) != 0);
+    /// <summary>
+    /// LEDs this zone holds in the device's color buffer, which is what every
+    /// frame offset has to count. It is <see cref="LedCount"/> except on an
+    /// effects-only zone: its size is only for the controller's own effects,
+    /// so OpenRGB keeps it at one LED for per-LED writes whatever size it
+    /// reports (RGBController::LEDsInZone).
+    /// </summary>
+    public int BufferLedCount => (Flags & FlagConfigurableSizeEffectsOnly) != 0 && LedCount > 1 ? 1 : LedCount;
     /// <summary>Matrix width in columns, or 0 when the zone is a linear strip.</summary>
     public int MatrixWidth { get; set; }
     /// <summary>Matrix height in rows, or 0 when the zone is a linear strip.</summary>
