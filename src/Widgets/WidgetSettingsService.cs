@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -96,11 +95,13 @@ public sealed class WidgetSettingsService
             if (TryBuild(s, instanceId, out var doc))
             {
                 doc.Revision = Interlocked.Increment(ref _revision);
-                _fingerprints[instanceId] = Fingerprint(doc);
+                lock (_stateLock) { _fingerprints[instanceId] = Fingerprint(doc); }
                 written = doc;
                 pending.Add(doc);
             }
-            if (_primed) Reconcile(s, pending, emitUnseen: false);
+            bool primed;
+            lock (_stateLock) { primed = _primed; }
+            if (primed) Reconcile(s, pending);
         });
         foreach (var doc in pending)
         {
@@ -118,20 +119,25 @@ public sealed class WidgetSettingsService
 
     // Process-wide and seeded from the clock (milliseconds, so it stays inside the integer range a JS number holds exactly) so revisions keep increasing across service restarts.
     private static long _revision = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    private readonly ConcurrentDictionary<string, string> _fingerprints = new(System.StringComparer.Ordinal);
+    // Guards _fingerprints and _primed. Taken inside the store lock by scans and on its own by the reset, never the other way round.
+    private readonly object _stateLock = new();
+    private readonly Dictionary<string, string> _fingerprints = new(System.StringComparer.Ordinal);
 
     /// <summary>Whether any client listens for settings frames. Null means always (no hub attached). Gates the per-write scan.</summary>
     public System.Func<bool>? HasListeners { get; set; }
 
-    private volatile bool _primed;
+    private bool _primed;
 
     private void OnStoreChanged()
     {
         if (HasListeners is { } has && !has())
         {
             // Nobody to tell: drop state so the next listener's first scan starts clean.
-            _primed = false;
-            _fingerprints.Clear();
+            lock (_stateLock)
+            {
+                _primed = false;
+                _fingerprints.Clear();
+            }
             return;
         }
         var pending = new List<WidgetSettingsDocument>();
@@ -139,10 +145,8 @@ public sealed class WidgetSettingsService
         _registry.TryGet(string.Empty, out _);
         _store.Read(s =>
         {
-            // The first scan after a listener appears reports every placement (current values, fresh revision); later scans only changes.
-            var first = !_primed;
-            _primed = true;
-            Reconcile(s, pending, emitUnseen: first);
+            lock (_stateLock) { _primed = true; }
+            Reconcile(s, pending);
         });
         foreach (var doc in pending)
         {
@@ -151,32 +155,43 @@ public sealed class WidgetSettingsService
     }
 
     /// <summary>
-    /// Compares every app placement's effective settings with the last seen state; a changed one gets a fresh
-    /// revision and is added to <paramref name="changed"/>. A placement seen for the first time is reported only
-    /// when <paramref name="emitUnseen"/>. Entries for placements that no longer exist are pruned.
+    /// Compares every app placement's effective settings with the last seen state; a new or changed one gets a
+    /// fresh revision and is added to <paramref name="changed"/> (the first scan after a listener appears therefore
+    /// reports everything, with current values). A playlist stand-in whose remembered config vanished is still
+    /// reported, with its default values, as long as its device and slot exist. Other entries that no longer exist are pruned.
     /// </summary>
-    private void Reconcile(NexusSettings s, List<WidgetSettingsDocument> changed, bool emitUnseen)
+    private void Reconcile(NexusSettings s, List<WidgetSettingsDocument> changed)
     {
-        var live = new HashSet<string>(System.StringComparer.Ordinal);
-        foreach (var id in AppInstanceIds(s))
+        lock (_stateLock)
         {
-            live.Add(id);
-            if (!TryBuild(s, id, out var doc)) continue;
-            var fp = Fingerprint(doc);
-            if (_fingerprints.TryGetValue(id, out var last) && last == fp) continue;
-            var seen = last is not null;
-            _fingerprints[id] = fp;
-            if (!seen && !emitUnseen) continue;
-            doc.Revision = Interlocked.Increment(ref _revision);
-            changed.Add(doc);
-        }
-        foreach (var key in _fingerprints.Keys)
-        {
-            if (!live.Contains(key)) _fingerprints.TryRemove(key, out _);
+            var ids = AppInstanceIds(s);
+            foreach (var known in _fingerprints.Keys)
+            {
+                if (known.StartsWith(PlaylistStandInPrefix, System.StringComparison.Ordinal)) ids.Add(known);
+            }
+            var stale = new List<string>();
+            foreach (var key in _fingerprints.Keys)
+            {
+                if (!ids.Contains(key)) stale.Add(key);
+            }
+            foreach (var key in stale) _fingerprints.Remove(key);
+            foreach (var id in ids)
+            {
+                if (!TryBuild(s, id, out var doc))
+                {
+                    _fingerprints.Remove(id);
+                    continue;
+                }
+                var fp = Fingerprint(doc);
+                if (_fingerprints.TryGetValue(id, out var last) && last == fp) continue;
+                _fingerprints[id] = fp;
+                doc.Revision = Interlocked.Increment(ref _revision);
+                changed.Add(doc);
+            }
         }
     }
 
-    private static IEnumerable<string> AppInstanceIds(NexusSettings s)
+    private static HashSet<string> AppInstanceIds(NexusSettings s)
     {
         var ids = new HashSet<string>(System.StringComparer.Ordinal);
         void Collect(PanelLayoutDto? layout)

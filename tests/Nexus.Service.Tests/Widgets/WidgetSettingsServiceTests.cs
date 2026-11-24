@@ -215,7 +215,7 @@ public class WidgetSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public void An_unrelated_store_write_broadcasts_nothing()
+    public void After_priming_an_unrelated_store_write_broadcasts_nothing()
     {
         var svc = SetupWidget(("color", "\"#ff8800\""));
         _store.Update(_ => { });
@@ -279,6 +279,90 @@ public class WidgetSettingsServiceTests : IDisposable
         var frame = Assert.Single(frames);
         Assert.Equal(standIn, frame.AppId);
         Assert.Equal("#654321", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void The_first_scan_after_a_listener_appears_emits_current_values()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(_ => { });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal(InstanceId, frame.AppId);
+        Assert.Equal("#ff8800", frame.Values["color"].GetString());
+    }
+
+    private void SeedStandInDevice(bool withConfig)
+    {
+        _store.Update(s =>
+        {
+            var device = new PanelDeviceRecord
+            {
+                Id = "q60dev",
+                Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480, SupportsPortrait = true },
+                Layout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg" } } },
+                PortraitLayout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg2" } } },
+            };
+            if (withConfig)
+            {
+                using var v = JsonDocument.Parse("\"#123456\"");
+                device.Layout.SingleWidgetConfigs = new Dictionary<string, Dictionary<string, JsonElement>> { [MarketplaceType] = new() { ["color"] = v.RootElement.Clone() } };
+            }
+            s.PanelDevices["q60dev"] = device;
+        });
+    }
+
+    [Fact]
+    public void A_stand_in_that_gains_a_remembered_config_after_priming_broadcasts()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: false);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        using var v = JsonDocument.Parse("\"#abcdef\"");
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs =
+            new Dictionary<string, Dictionary<string, JsonElement>> { [MarketplaceType] = new() { ["color"] = v.RootElement.Clone() } });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+        Assert.Equal("#abcdef", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void A_stand_in_whose_remembered_config_is_removed_broadcasts_its_defaults()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: true);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs = null);
+
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+        Assert.Equal("#ff8800", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void Switching_the_active_slot_broadcasts_the_stand_ins_new_effective_values()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: true);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(s => s.PanelDevices["q60dev"].Rotation = 90);
+
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+        Assert.Equal("#ff8800", frame.Values["color"].GetString());
     }
 
     private static void Set(WidgetSettingsService svc, string instanceId, string color)
