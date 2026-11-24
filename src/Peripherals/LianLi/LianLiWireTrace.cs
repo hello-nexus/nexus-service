@@ -63,7 +63,8 @@ public sealed class LianLiWireTrace
     /// <summary>Grants the next apply's writes a line budget; only the first few applies after attach are traced.</summary>
     public void BeginApply(string what)
     {
-        if (Interlocked.Increment(ref _applies) > MaxTracedApplies)
+        if (Interlocked.Increment(ref _applies) > MaxTracedApplies
+            || Interlocked.Increment(ref _lifetimeLines) > MaxLifetimeLines)
         {
             return;
         }

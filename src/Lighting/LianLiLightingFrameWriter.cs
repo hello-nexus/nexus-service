@@ -61,7 +61,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     }
 
     // The SL V2 ignores a command that follows the previous one too closely, so its hub spaces every write itself
-    // (fan control and the poll share the wire). Custom streaming is left unspaced to keep its frame rate.
+    // (fan control and the poll share the wire). 5 ms is the spacing a customer hub stopped dropping commits at.
+    // Custom streaming is left unspaced to keep its frame rate.
     internal int FirmwareWriteGapMs { get; set; } = 5;
 
     private void ApplyWriteGap(in LianLiFanProfile profile, bool custom)
@@ -125,7 +126,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private long _argbReleasedAtMs;
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
 
-    // SL V2 only, an unproven fix for ports that miss an apply after a latch: changes are held until still, applies keep apart, each is repeated once.
+    // SL V2 only: a port misses an apply that lands right after a latch, so changes are held until still, applies keep apart, each is repeated once.
     internal int SlV2SettleMs { get; set; } = 150;
     internal int SlV2RepeatMs { get; set; } = 500;
     private int _debounceSig;
