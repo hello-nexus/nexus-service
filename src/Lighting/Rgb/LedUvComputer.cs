@@ -38,7 +38,7 @@ public static class LedUvComputer
         int zoneOffset = 0;
         foreach (var z in device.Zones)
         {
-            if (z.LedCount <= 0)
+            if (z.BufferLedCount <= 0)
             {
                 continue;
             }
@@ -67,7 +67,8 @@ public static class LedUvComputer
                     }
                 }
             }
-            zoneOffset += z.LedCount;
+            // Buffer position, so an effects-only zone (one LED whatever its size) does not shift a later matrix
+            zoneOffset += z.BufferLedCount;
         }
 
         if (hasLinear && hasMatrix)
