@@ -142,6 +142,8 @@ public sealed partial class Slv3Hub
     private void StallOnLinkDownLocked(long nowMs)
     {
         Interlocked.Exchange(ref _pauseUploadsUntilMs, 0);
+        // After a relink every chain is a first sighting again, not a reappear, so a bounce cannot skew the A/B.
+        _stallEverSeen.Clear();
         if (_stallPolicy.OnLinkDown(nowMs) is { } end && end.StallMs >= _stallPolicy.Config.ThresholdMs)
         {
             StallLog($"#{end.Seq} ended without a good GetDev (link down): stall={end.StallMs}ms action={end.ActionName} sinceAction=none");

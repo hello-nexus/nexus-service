@@ -3394,7 +3394,11 @@ public sealed partial class Slv3Hub : IDisposable
         finally
         {
             var ok = result == WindowUploadResult.Sent;
-            Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
+            // A held or paused window never reached the radio, so it stays out of the upload ring.
+            if (ok || result != WindowUploadResult.TooLarge || !(ReappearHoldsWindow(macHex) || StallUploadsPaused()))
+            {
+                Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
+            }
         }
     }
 
