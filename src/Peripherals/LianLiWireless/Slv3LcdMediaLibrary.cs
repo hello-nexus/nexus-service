@@ -211,10 +211,9 @@ public sealed class Slv3LcdMediaLibrary
             }
             else
             {
-                // A one-frame pass to a null output, only for the stream info ffmpeg prints.
-                var info = await MediaImporter.RunFfmpeg(
-                    "-hide_banner", "-i", sourcePath, "-frames:v", "1", "-f", "null", "-").ConfigureAwait(false);
-                videoFps = Math.Min(VideoMaxFps, SourceFps(info) ?? VideoFallbackFps);
+                var probedFps = await ProbeSourceFpsAsync(() => MediaImporter.RunFfmpeg(
+                    "-hide_banner", "-i", sourcePath, "-frames:v", "1", "-c", "copy", "-f", "null", "-")).ConfigureAwait(false);
+                videoFps = Math.Min(VideoMaxFps, probedFps ?? VideoFallbackFps);
                 await MediaImporter.RunFfmpeg(
                     "-y", "-i", sourcePath,
                     "-vf", cropPadFilter,
@@ -265,6 +264,28 @@ public sealed class Slv3LcdMediaLibrary
             count++;
         }
         return count;
+    }
+
+    /// <summary>
+    /// The source's frame rate from a one-frame pass to a null output, run only for the stream info
+    /// ffmpeg prints. The bundled ffmpeg has no encoder for a null output unless the stream is
+    /// copied, so a failed run still counts if it printed the stream line; a probe that fails any
+    /// other way gives null, and never fails the import.
+    /// </summary>
+    internal static async Task<int?> ProbeSourceFpsAsync(Func<Task<string>> probe)
+    {
+        try
+        {
+            return SourceFps(await probe().ConfigureAwait(false));
+        }
+        catch (FfmpegExitException ex)
+        {
+            return SourceFps(ex.Stderr);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

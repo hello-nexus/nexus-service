@@ -158,6 +158,8 @@ public sealed class FanLcdStreamingWorker : BackgroundService
         // Animation phase resets on every (re)connect and content-type switch;
         // continuity across a reconnect is not required.
         var animationStartUtc = DateTime.UtcNow;
+        using var animationClock = new FanLcdFrameClock();
+        var nextAnimationFrame = 0L;
 
         try
         {
@@ -248,7 +250,14 @@ public sealed class FanLcdStreamingWorker : BackgroundService
                             var elapsed = (DateTime.UtcNow - animationStartUtc).TotalSeconds;
                             var jpeg = Slv3LcdAnimationRenderer.Render(settings.AnimationId, elapsed, settings.ColorA, settings.ColorB);
                             _screens.PushImage(serial, jpeg);
-                            await Task.Delay(Slv3LcdAnimationRenderer.FrameIntervalMs, ct).ConfigureAwait(false);
+                            // On a fixed grid from the first frame, so a slow render or push does not slow the rest;
+                            // a frame that is late restarts the grid instead of bursting to catch up.
+                            var interval = Stopwatch.Frequency * Slv3LcdAnimationRenderer.FrameIntervalMs / 1000;
+                            var now = Stopwatch.GetTimestamp();
+                            nextAnimationFrame = nextAnimationFrame == 0 || now - nextAnimationFrame > interval
+                                ? now + interval
+                                : nextAnimationFrame + interval;
+                            await animationClock.WaitUntilAsync(nextAnimationFrame, ct).ConfigureAwait(false);
                             break;
                         }
 

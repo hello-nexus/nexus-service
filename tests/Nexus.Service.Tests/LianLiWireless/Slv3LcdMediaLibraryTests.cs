@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Nexus.Service.Media;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Platform;
 
@@ -97,6 +98,33 @@ public class Slv3LcdMediaLibraryTests
     public void SourceFps_reads_the_video_streams_rate(string line, int? fps)
     {
         Assert.Equal(fps, Slv3LcdMediaLibrary.SourceFps("Input #0, mov,mp4\n" + line + "\n"));
+    }
+
+    private const string VideoLine = "  Stream #0:0: Video: h264 (High), yuv420p, 320x240, 24 fps, 24 tbr, 12288 tbn";
+
+    [Fact]
+    public async Task The_fps_probe_reads_the_rate_of_a_run_that_exited_non_zero_after_printing_the_stream_line()
+    {
+        // The bundled ffmpeg has no encoder for a null output without a stream copy and exits non-zero.
+        var fps = await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() =>
+            throw new FfmpegExitException("ffmpeg exit 1: Encoder not found", "Input #0, mov\n" + VideoLine + "\nAutomatic encoder selection failed\n"));
+
+        Assert.Equal(24, fps);
+    }
+
+    [Fact]
+    public async Task The_fps_probe_gives_null_when_the_output_names_no_rate_or_the_run_fails_otherwise()
+    {
+        Assert.Null(await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() => Task.FromResult("  Stream #0:0: Video: gif, bgra, 200x200, 25 tbr\n")));
+        Assert.Null(await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() =>
+            throw new FfmpegExitException("ffmpeg exit 1: Invalid data", "Invalid data found\n")));
+        Assert.Null(await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() => throw new InvalidOperationException("ffmpeg not found")));
+    }
+
+    [Fact]
+    public async Task The_fps_probe_reads_the_rate_of_a_run_that_succeeded()
+    {
+        Assert.Equal(24, await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() => Task.FromResult(VideoLine + "\n")));
     }
 
     [Fact]
