@@ -105,7 +105,7 @@ public static class SmartClassifier
             }
         }
 
-        // The NVMe spare attribute is synthesized with Current == Threshold; the health-log block judges spare.
+        // NVMe attributes are synthesized from the health log (spare is Current, its threshold Threshold), so the health-log block judges them instead.
         if (input.Bus != StorageBusKind.Nvme)
         {
             foreach (var att in input.Attributes)
