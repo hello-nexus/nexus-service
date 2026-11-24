@@ -50,7 +50,6 @@ public class FanLcdStaticRotationTests : IDisposable
         public bool PushPanelFrame(string serial, byte[] jpeg) => false;
         public string PanelFamily => "fake-lcd";
         public int PanelFps => 12;
-        public int MaxFps(string serial) => 30;
         public string PanelName(string serial) => serial;
         public int PushCount { get { lock (Gate) { return Pushes.Count; } } }
     }

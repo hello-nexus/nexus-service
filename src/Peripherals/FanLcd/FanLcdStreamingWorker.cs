@@ -295,12 +295,12 @@ public sealed class FanLcdStreamingWorker : BackgroundService
     internal readonly record struct ScreenPick(
         string Mode, string? MediaId, byte Brightness, bool SleepWhenLocked, byte Rotation,
         string? SensorSource, string? SensorStyle, string? ClockFace, string? AnimationId,
-        string? ColorA, string? ColorB, string? TempUnit);
+        string? ColorA, string? ColorB, string? TempUnit, int? FpsCap);
 
     internal static ScreenPick PickOf(LianLiWirelessScreenSettings screen) => new(
         FanLcdContent.ModeOf(screen), screen.MediaId, screen.Brightness, screen.SleepWhenLocked, screen.Rotation,
         screen.SensorSource, screen.SensorStyle, screen.ClockFace, screen.AnimationId,
-        screen.ColorA, screen.ColorB, screen.TempUnit);
+        screen.ColorA, screen.ColorB, screen.TempUnit, screen.FpsCap);
 
     /// <summary>A screen with no stored settings reads as the defaults the pass used.</summary>
     private bool StillShowing(string serial, ScreenPick pick) =>
@@ -323,7 +323,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
 
     /// <summary>
     /// Plays one loop of the clip on its own clock (see <see cref="FanLcdClipTiming"/>), no faster
-    /// than the screen's frame cap, stopping at the next frame once the screen's settings change.
+    /// than the screen's frame rate cap, stopping at the next frame once the screen's settings change.
     /// </summary>
     private async Task StreamAnimatedAsync(string serial, Slv3LcdImageData image, ScreenPick pick, CancellationToken ct)
     {
@@ -345,8 +345,7 @@ public sealed class FanLcdStreamingWorker : BackgroundService
             }
             var pushedAtMs = Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds;
             _screens.PushImage(serial, image.Frames[frame].JpegBytes);
-            // Asked after the push: a screen's model is known once it has been opened.
-            var minGapMs = 1000.0 / Math.Max(1, _screens.MaxFps(serial));
+            var minGapMs = FanLcdClipTiming.MinGapMs(FanLcdClipTiming.CapOf(pick.FpsCap));
             // A push that ran long leaves the frame due now, not one counted from the push's start.
             var earliestMs = Math.Max(pushedAtMs + minGapMs, Stopwatch.GetElapsedTime(clipStart).TotalMilliseconds);
             var (next, dueMs) = FanLcdClipTiming.Next(starts, frame, earliestMs);

@@ -2210,6 +2210,8 @@ public sealed class LianLiWirelessScreenSettings
     public string? TempUnit { get; set; }
     /// <summary>User-chosen list position (0-based) so the numbered tiles match the physical fans; -1 = not set.</summary>
     public int Order { get; set; } = -1;
+    /// <summary>Clip frame-rate cap in fps. Null = the default, 0 = Off (the clip plays at its own rate).</summary>
+    public int? FpsCap { get; set; }
 }
 
 public sealed class LianLiLightingSettings

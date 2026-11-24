@@ -489,7 +489,6 @@ public class PanelRotationMigrationEquivalenceTests : IDisposable
         public bool PushPanelFrame(string serial, byte[] jpeg) => _ownership.Push(serial, () => PushImage(serial, jpeg));
         public string PanelFamily { get; }
         public int PanelFps => 12;
-        public int MaxFps(string serial) => 30;
         public string PanelName(string serial) => serial;
     }
 

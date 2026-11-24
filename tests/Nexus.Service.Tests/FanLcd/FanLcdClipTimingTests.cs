@@ -82,9 +82,32 @@ public class FanLcdClipTimingTests
     }
 
     [Fact]
-    public void Only_the_TL_LCD_wireless_cap_is_above_the_default()
+    public void An_unset_cap_is_the_default_zero_is_off_and_a_value_is_itself()
     {
-        Assert.Equal(60, FanLcdClipTiming.TlWirelessMaxFps);
-        Assert.Equal(30, FanLcdClipTiming.DefaultMaxFps);
+        Assert.Equal(FanLcdClipTiming.DefaultFps, FanLcdClipTiming.CapOf(null));
+        Assert.Equal(0, FanLcdClipTiming.CapOf(0));
+        Assert.Equal(60, FanLcdClipTiming.CapOf(60));
+    }
+
+    [Fact]
+    public void A_requested_cap_is_clamped_like_a_panels_and_off_stays_zero()
+    {
+        Assert.Equal(0, FanLcdClipTiming.ToStored(0));
+        Assert.Equal(60, FanLcdClipTiming.ToStored(60));
+        Assert.Equal(Nexus.Service.Panel.PanelDeviceRegistry.MaxFpsCap, FanLcdClipTiming.ToStored(5000));
+    }
+
+    [Fact]
+    public void Off_leaves_no_gap_between_pushes_and_a_cap_leaves_its_period()
+    {
+        Assert.Equal(0, FanLcdClipTiming.MinGapMs(0));
+        Assert.Equal(1000.0 / 60, FanLcdClipTiming.MinGapMs(60));
+    }
+
+    [Fact]
+    public void Off_plays_a_60_fps_clip_at_its_own_rate()
+    {
+        var starts = FanLcdClipTiming.Starts(new[] { 17, 16, 17, 17 });
+        Assert.Equal((1, 17.0), FanLcdClipTiming.Next(starts, 0, FanLcdClipTiming.MinGapMs(0)));
     }
 }

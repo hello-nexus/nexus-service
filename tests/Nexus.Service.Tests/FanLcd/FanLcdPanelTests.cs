@@ -33,7 +33,6 @@ public class FanLcdPanelTests
         public bool PushPanelFrame(string serial, byte[] jpeg) => _ownership.Push(serial, () => PushImage(serial, jpeg));
         public string PanelFamily => "fake-lcd";
         public int PanelFps => 12;
-        public int MaxFps(string serial) => 30;
         public string PanelName(string serial) => $"Fake {serial}";
     }
 
@@ -123,6 +122,7 @@ public class FanLcdPanelTests
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "clock", Brightness = 80 }));
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "video", MediaId = "clip-a", Brightness = 30 }));
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "video", MediaId = "clip-a", Brightness = 80, Rotation = 2 }));
+        Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "video", MediaId = "clip-a", Brightness = 80, FpsCap = 60 }));
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { NexusPanel = true, ContentType = "video", MediaId = "clip-a", Brightness = 80 }));
     }
 

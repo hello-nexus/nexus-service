@@ -80,8 +80,6 @@ public sealed class Slv3LcdScreens : IFanLcdScreens
     /// </summary>
     public int PanelFps => 25;
 
-    public int MaxFps(string serial) => _hub.MaxFps(serial);
-
     /// <summary>"#n" from the Screens tab's list order, the same number its tiles show.</summary>
     public string PanelName(string serial)
     {

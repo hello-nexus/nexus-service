@@ -11,14 +11,23 @@ namespace Nexus.Service.Peripherals.FanLcd;
 /// </summary>
 internal static class FanLcdClipTiming
 {
-    /// <summary>The frame-rate cap of the TL-LCD Wireless.</summary>
-    public const int TlWirelessMaxFps = 60;
-
-    /// <summary>Every other fan screen.</summary>
-    public const int DefaultMaxFps = 30;
+    /// <summary>The frame-rate cap of a screen the user has not set one for.</summary>
+    public const int DefaultFps = 30;
 
     /// <summary>A frame with no usable delay shows for at least this long.</summary>
     public const int MinDelayMs = 10;
+
+    /// <summary>
+    /// The cap a screen's stored value means, in fps: unset is <see cref="DefaultFps"/>, and 0 is
+    /// Off, no cap, so the clip plays at its own rate.
+    /// </summary>
+    public static int CapOf(int? stored) => stored ?? DefaultFps;
+
+    /// <summary>The value to store for a requested cap: 0 stays Off, anything else is clamped like a panel's cap.</summary>
+    public static int ToStored(int requested) => Math.Min(requested, Nexus.Service.Panel.PanelDeviceRegistry.MaxFpsCap);
+
+    /// <summary>The least ms between two pushes under a cap; none when the cap is Off.</summary>
+    public static double MinGapMs(int capFps) => capFps <= 0 ? 0 : 1000.0 / capFps;
 
     /// <summary>Each frame's start in ms from the clip's start, then the clip's length as the last entry.</summary>
     public static double[] Starts(IReadOnlyList<int> delaysMs)
