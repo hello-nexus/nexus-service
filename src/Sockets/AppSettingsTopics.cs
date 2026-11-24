@@ -6,7 +6,9 @@ namespace Nexus.Service.Sockets;
 /// <summary>Fan-out for SDK app tile settings changes, one topic per widget instance so a running tile on any surface refreshes without reloading.</summary>
 public static class AppSettingsTopics
 {
-    public static string TopicFor(string instanceId) => $"app-settings/{instanceId}";
+    public const string TopicPrefix = "app-settings/";
+
+    public static string TopicFor(string instanceId) => TopicPrefix + instanceId;
 
     public static void Broadcast(MultiplexHub hub, string instanceId, WidgetSettingsDocument doc)
     {

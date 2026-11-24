@@ -158,6 +158,7 @@ public class WidgetSettingsServiceTests : IDisposable
     public void Patch_for_an_unknown_instance_does_not_broadcast()
     {
         var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(_ => { });
         var raised = 0;
         svc.SettingsChanged += (_, _) => raised++;
 
@@ -199,6 +200,7 @@ public class WidgetSettingsServiceTests : IDisposable
     public void A_layout_write_that_changes_an_instances_config_broadcasts_it()
     {
         var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(_ => { });
         var frames = new List<WidgetSettingsDocument>();
         svc.SettingsChanged += (_, d) => frames.Add(d);
 
@@ -216,12 +218,67 @@ public class WidgetSettingsServiceTests : IDisposable
     public void An_unrelated_store_write_broadcasts_nothing()
     {
         var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(_ => { });
         var raised = 0;
         svc.SettingsChanged += (_, _) => raised++;
 
         _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Size = "4x4");
 
         Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void Revision_stays_within_the_range_a_js_number_holds_exactly()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+
+        Set(svc, InstanceId, "#111111");
+
+        Assert.InRange(svc.Get(InstanceId).Revision, 1L, 9007199254740991L);
+    }
+
+    [Fact]
+    public void Writes_are_not_scanned_while_nobody_listens()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        svc.HasListeners = () => false;
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+
+        using var v = JsonDocument.Parse("\"#abcdef\"");
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Config =
+            new Dictionary<string, JsonElement> { ["color"] = v.RootElement.Clone() });
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void A_write_to_a_playlist_stand_ins_remembered_config_broadcasts_it()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(s =>
+        {
+            s.PanelDevices["q60dev"] = new PanelDeviceRecord
+            {
+                Id = "q60dev",
+                Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480 },
+                Layout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg" } } },
+            };
+        });
+        var standIn = "playlist:q60dev:" + MarketplaceType;
+        using var first = JsonDocument.Parse("\"#123456\"");
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs =
+            new Dictionary<string, Dictionary<string, JsonElement>> { [MarketplaceType] = new() { ["color"] = first.RootElement.Clone() } });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        using var second = JsonDocument.Parse("\"#654321\"");
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs![MarketplaceType] =
+            new Dictionary<string, JsonElement> { ["color"] = second.RootElement.Clone() });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal(standIn, frame.AppId);
+        Assert.Equal("#654321", frame.Values["color"].GetString());
     }
 
     private static void Set(WidgetSettingsService svc, string instanceId, string color)

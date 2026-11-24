@@ -36,7 +36,6 @@ public sealed class WidgetSettingsService
     {
         _store = store;
         _registry = registry;
-        _store.Read(st => Reconcile(st, new List<WidgetSettingsDocument>()));
         _store.OnChanged += OnStoreChanged;
     }
 
@@ -101,7 +100,7 @@ public sealed class WidgetSettingsService
                 written = doc;
                 pending.Add(doc);
             }
-            Reconcile(s, pending);
+            if (_primed) Reconcile(s, pending, emitUnseen: false);
         });
         foreach (var doc in pending)
         {
@@ -117,14 +116,34 @@ public sealed class WidgetSettingsService
     /// </summary>
     public event System.Action<string, WidgetSettingsDocument>? SettingsChanged;
 
-    // Process-wide and seeded from the clock so revisions keep increasing across service restarts.
-    private static long _revision = System.DateTime.UtcNow.Ticks;
+    // Process-wide and seeded from the clock (milliseconds, so it stays inside the integer range a JS number holds exactly) so revisions keep increasing across service restarts.
+    private static long _revision = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private readonly ConcurrentDictionary<string, string> _fingerprints = new(System.StringComparer.Ordinal);
+
+    /// <summary>Whether any client listens for settings frames. Null means always (no hub attached). Gates the per-write scan.</summary>
+    public System.Func<bool>? HasListeners { get; set; }
+
+    private volatile bool _primed;
 
     private void OnStoreChanged()
     {
+        if (HasListeners is { } has && !has())
+        {
+            // Nobody to tell: drop state so the next listener's first scan starts clean.
+            _primed = false;
+            _fingerprints.Clear();
+            return;
+        }
         var pending = new List<WidgetSettingsDocument>();
-        _store.Read(s => Reconcile(s, pending));
+        // Load manifests before taking the store lock so a first disk scan never holds it.
+        _registry.TryGet(string.Empty, out _);
+        _store.Read(s =>
+        {
+            // The first scan after a listener appears reports every placement (current values, fresh revision); later scans only changes.
+            var first = !_primed;
+            _primed = true;
+            Reconcile(s, pending, emitUnseen: first);
+        });
         foreach (var doc in pending)
         {
             SettingsChanged?.Invoke(doc.AppId, doc);
@@ -132,21 +151,28 @@ public sealed class WidgetSettingsService
     }
 
     /// <summary>
-    /// Compares every app placement's effective settings with the last seen state. A placement seen for the
-    /// first time only records a baseline; a changed one gets a fresh revision and is added to <paramref name="changed"/>.
+    /// Compares every app placement's effective settings with the last seen state; a changed one gets a fresh
+    /// revision and is added to <paramref name="changed"/>. A placement seen for the first time is reported only
+    /// when <paramref name="emitUnseen"/>. Entries for placements that no longer exist are pruned.
     /// </summary>
-    private void Reconcile(NexusSettings s, List<WidgetSettingsDocument> changed)
+    private void Reconcile(NexusSettings s, List<WidgetSettingsDocument> changed, bool emitUnseen)
     {
+        var live = new HashSet<string>(System.StringComparer.Ordinal);
         foreach (var id in AppInstanceIds(s))
         {
+            live.Add(id);
             if (!TryBuild(s, id, out var doc)) continue;
             var fp = Fingerprint(doc);
             if (_fingerprints.TryGetValue(id, out var last) && last == fp) continue;
             var seen = last is not null;
             _fingerprints[id] = fp;
-            if (!seen) continue;
+            if (!seen && !emitUnseen) continue;
             doc.Revision = Interlocked.Increment(ref _revision);
             changed.Add(doc);
+        }
+        foreach (var key in _fingerprints.Keys)
+        {
+            if (!live.Contains(key)) _fingerprints.TryRemove(key, out _);
         }
     }
 
@@ -165,9 +191,16 @@ public sealed class WidgetSettingsService
             }
         }
         Collect(s.Panel.DashboardLayout);
-        foreach (var device in s.PanelDevices.Values)
+        foreach (var (deviceId, device) in s.PanelDevices)
         {
             foreach (var layout in PanelLayoutSlots.All(device)) Collect(layout);
+            if (PanelLayoutSlots.Active(device)?.SingleWidgetConfigs is { } remembered)
+            {
+                foreach (var type in remembered.Keys)
+                {
+                    if (MarketplaceIdFromType(type) is not null) ids.Add(PlaylistStandInPrefix + deviceId + ":" + type);
+                }
+            }
         }
         return ids;
     }

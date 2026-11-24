@@ -11,6 +11,7 @@ public static class WidgetSettingsServiceWiring
 
     internal static WidgetSettingsService Wire(WidgetSettingsService service, MultiplexHub hub)
     {
+        service.HasListeners = () => hub.AnyTopicHasSubscribers(AppSettingsTopics.TopicPrefix);
         service.SettingsChanged += (instanceId, doc) => AppSettingsTopics.Broadcast(hub, instanceId, doc);
         return service;
     }
