@@ -63,7 +63,7 @@ public static class LianLiAioProtocol
         (2000, 1), (2300, 25), (2600, 50), (2900, 75), (3200, 100),
     };
 
-    private const byte LightScopeBoth = 2;
+    internal const byte LightScopeBoth = 2;
     private const byte LightModeStatic = 3;
     private const byte LightBrightnessFull = 4;
     /// <summary>The reference driver's default speed; a static ring ignores it.</summary>
@@ -168,6 +168,23 @@ public static class LianLiAioProtocol
             payload[5 + (slot * 3)] = g;
             payload[6 + (slot * 3)] = b;
         }
+        payload[18] = LightSourceHost;
+        FillACommand(report, CmdSetPumpLight, payload);
+    }
+
+    /// <summary>
+    /// Plays a firmware animation on the pump ring. <paramref name="colors"/> is up to four RGB
+    /// triples in slot order; unused slots stay zero, as in the vendor app's captures.
+    /// </summary>
+    public static void FillSetPumpEffect(
+        Span<byte> report, byte scope, byte mode, byte brightness, byte speed, ReadOnlySpan<byte> colors)
+    {
+        Span<byte> payload = stackalloc byte[19];
+        payload[0] = scope;
+        payload[1] = mode;
+        payload[2] = brightness;
+        payload[3] = speed;
+        colors[..Math.Min(colors.Length, 12)].CopyTo(payload[4..]);
         payload[18] = LightSourceHost;
         FillACommand(report, CmdSetPumpLight, payload);
     }

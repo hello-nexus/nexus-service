@@ -7,6 +7,7 @@ using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Peripherals.JpegPanels;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.JpegPanels;
@@ -261,6 +262,63 @@ public class Galahad2LcdAioTests
         Assert.All(report[25..], b => Assert.Equal(0, b));
     }
 
+    // The two payloads below are L-Connect's own, from a USB capture of the vendor app.
+    [Fact]
+    public void Ring_effect_static_red_matches_the_vendor_capture()
+    {
+        var report = new byte[ReportLength];
+        LianLiAioProtocol.FillSetPumpEffect(report, 0, 0x03, 4, 0, new byte[] { 0xff, 0, 0 });
+
+        Assert.Equal(
+            new byte[] { 0x01, 0x83, 0, 0, 0, 0x13, 0x00, 0x03, 0x04, 0x00, 0xff, 0x00, 0x00 },
+            report[..13]);
+        Assert.All(report[13..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void Ring_effect_meteor_carries_four_colour_slots_in_order()
+    {
+        var report = new byte[ReportLength];
+        var colors = new byte[] { 0xff, 0, 0, 0, 0, 0xff, 0, 0xff, 0, 0xff, 0xff, 0 };
+        LianLiAioProtocol.FillSetPumpEffect(report, 0, 0x06, 4, 3, colors);
+
+        Assert.Equal(new byte[] { 0x01, 0x83, 0, 0, 0, 0x13, 0x00, 0x06, 0x04, 0x03 }, report[..10]);
+        Assert.Equal(colors, report[10..22]);
+        Assert.Equal(new byte[] { 0, 0, 0 }, report[22..25]);
+    }
+
+    [Fact]
+    public void Ring_effect_without_colours_leaves_every_slot_zero()
+    {
+        var report = new byte[ReportLength];
+        LianLiAioProtocol.FillSetPumpEffect(report, 0, 0x02, 4, 3, ReadOnlySpan<byte>.Empty);
+
+        Assert.Equal(new byte[] { 0x01, 0x83, 0, 0, 0, 0x13, 0x00, 0x02, 0x04, 0x03 }, report[..10]);
+        Assert.All(report[10..], b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void Ring_effect_write_goes_out_on_both_scopes_and_drains_its_reply()
+    {
+        var (aio, device) = Attached();
+        device.Replies.Enqueue(new byte[] { 0x01, 0x83 });
+
+        Assert.True(aio.SetRingEffect(0x05, 4, 2, new byte[] { 1, 2, 3, 4, 5, 6 }));
+
+        Assert.Empty(device.Replies);
+        Assert.Equal(new byte[] { 0x01, 0x83, 0, 0, 0, 0x13, 2, 0x05, 4, 2, 1, 2, 3, 4, 5, 6, 0 }, device.Writes[0][..17]);
+    }
+
+    [Fact]
+    public void Ring_effect_catalog_lists_only_the_captured_modes_with_their_colour_counts()
+    {
+        Assert.Equal(
+            new[] { ("rainbowMorph", (byte)2, 0), ("breathing", (byte)4, 1), ("runway", (byte)5, 2), ("meteor", (byte)6, 4) },
+            Galahad2LcdRingEffects.All.Select(e => (e.Id, e.WireByte, e.Colors)).ToArray());
+        Assert.Null(Galahad2LcdRingEffects.Find("static"));
+        Assert.Equal((byte)6, Galahad2LcdRingEffects.Find("meteor")!.WireByte);
+    }
+
     [Fact]
     public void A_ring_write_drains_its_own_reply()
     {
@@ -309,6 +367,40 @@ public class Galahad2LcdAioTests
         writer.Tick();
         var write = Assert.Single(device.Writes);
         Assert.Equal(new byte[] { 0, 0, 0 }, write[10..13]);
+    }
+
+    [Fact]
+    public void A_saved_ring_effect_is_replayed_once_when_the_ring_is_uncontrolled()
+    {
+        var (writer, _, device, store) = RingWriter();
+        store.Update(s =>
+        {
+            s.Devices.UncontrolledLightingDevices.Add(Galahad2LcdLightingProvider.RingZoneId);
+            s.Devices.Galahad2LcdRingEffect = new Galahad2LcdRingEffectSettings
+            {
+                Effect = "runway", Speed = 3, Brightness = 4, Colors = new() { "#ff0000", "#0000ff" },
+            };
+        });
+
+        writer.Tick();
+        writer.Tick();
+
+        var write = Assert.Single(device.Writes);
+        Assert.Equal(new byte[] { 0x01, 0x83, 0, 0, 0, 0x13, 2, 0x05, 4, 3, 0xff, 0, 0, 0, 0, 0xff }, write[..16]);
+    }
+
+    [Fact]
+    public void A_saved_ring_effect_is_never_replayed_while_nexus_drives_the_ring()
+    {
+        var (writer, _, device, store) = RingWriter();
+        store.Update(s => s.Devices.Galahad2LcdRingEffect = new Galahad2LcdRingEffectSettings
+        {
+            Effect = "meteor", Colors = new() { "#ff0000", "#00ff00", "#0000ff", "#ffffff" },
+        });
+
+        writer.Tick();
+
+        Assert.DoesNotContain(device.Writes, w => w[7] == 0x06);
     }
 
     private static (Galahad2LcdLightingFrameWriter Writer, DeviceFrame Frame, QueuedHidDevice Device, InMemoryConfigStore Store) RingWriter()

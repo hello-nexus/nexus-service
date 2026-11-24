@@ -93,6 +93,24 @@ public sealed class Galahad2LcdAio : BackgroundService
         return true;
     }, false);
 
+    /// <summary>Plays a firmware animation on the pump-head ring; false when nothing is attached or the write fails.</summary>
+    public bool SetRingEffect(byte mode, byte brightness, byte speed, ReadOnlySpan<byte> colors)
+    {
+        // A span cannot cross into the exchange lambda, so the colours are copied first.
+        var packed = colors.ToArray();
+        return _hub.Exchange((device, report) =>
+        {
+            LianLiAioProtocol.FillSetPumpEffect(report, LianLiAioProtocol.LightScopeBoth, mode, brightness, speed, packed);
+            if (!device.Write(report))
+            {
+                return false;
+            }
+            Span<byte> ack = stackalloc byte[64];
+            device.Read(ack, AckTimeoutMs);
+            return true;
+        }, false);
+    }
+
     /// <summary>Drives the pump at a duty percent from the next tick, or hands it back with null.</summary>
     public void SetPumpDuty(int? dutyPercent)
     {
