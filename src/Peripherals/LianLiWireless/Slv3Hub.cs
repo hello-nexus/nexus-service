@@ -268,7 +268,7 @@ public sealed partial class Slv3Hub : IDisposable
     // RX handle, never UsbResetAnother: the reset re-enumerates the RX, a Windows
     // device sound each time.
     private const int RxBusyPollsBeforeReset = 60;
-    // Busy-streak reopens that leave the RX busy before the next one resets it through the TX.
+    // RX recoveries without a good reply in between before the next busy-streak recovery resets the RX through the TX.
     private const int RxBusyReopensBeforeTxReset = 2;
     // A chain that matched its target and then reports a mismatch must keep reporting it this many polls before a bind goes out, so a one-poll misread never steers it.
     internal const int BindMismatchPollsBeforeSend = 3;
@@ -1597,9 +1597,18 @@ public sealed partial class Slv3Hub : IDisposable
         }
         if (!intent.Manual)
         {
-            if (intent.Confirmed && ++intent.MismatchPolls < BindMismatchPollsBeforeSend)
+            if (intent.Confirmed)
             {
-                return;
+                // A busy or missed poll leaves the last record in place and the poll counter unmoved, so a poll counts once and only when the chain was heard in it.
+                if (!_knownChains.TryGetValue(key, out var heard) || heard.Poll != _devicePolls || intent.CountedPoll == _devicePolls)
+                {
+                    return;
+                }
+                intent.CountedPoll = _devicePolls;
+                if (++intent.MismatchPolls < BindMismatchPollsBeforeSend)
+                {
+                    return;
+                }
             }
             if (_nowMs() < intent.NextSendMs)
             {
@@ -4005,6 +4014,7 @@ public sealed partial class Slv3Hub : IDisposable
         public int Sends;
         public int MismatchPolls;
         public bool Confirmed;
+        public long CountedPoll = -1;
         public long NextSendMs;
     }
 

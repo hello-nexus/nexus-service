@@ -286,6 +286,40 @@ public partial class Slv3HubTests
         Assert.True(hub.State.Fans[0].BoundToUs);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_garbage_record_followed_by_busy_or_missed_polls_sends_no_bind(bool busy)
+    {
+        var (hub, net, tx, rx) = CreateConnectedHub();
+        hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [FanKey] = 1 };
+        hub.LockBoundDevices = () => true;
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 1, Pwm = new byte[] { 6, 6, 6, 6 } };
+        net.Fans.Add(fan);
+        Ticks(hub, 3);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 245;
+        fan.Channel = 245;
+        fan.MasterMac = Convert.FromHexString("00BA07F5F5F5");
+        Ticks(hub, 1);
+        if (busy)
+        {
+            rx.BusyReads = true;
+        }
+        else
+        {
+            net.Fans.Remove(fan);
+        }
+        for (var i = 0; i < 5; i++)
+        {
+            hub.PollTick();
+        }
+
+        Assert.Empty(AllBindFrames(tx));
+    }
+
     [Fact]
     public void A_mismatch_of_a_bound_chain_gets_its_first_bind_on_the_third_consecutive_poll()
     {
