@@ -549,7 +549,8 @@ public static class FanProfiles
     public static bool IsPresetCurveAtDefaults(CurveDocument c)
     {
         if (c.Preset is null) return false;
-        return MatchesPresetTemplate(c, PresetDefaults.For(c.Preset));
+        // A curve still on the prior template reads as default before the migration reaches it.
+        return MatchesPresetTemplate(c, PresetDefaults.For(c.Preset)) || IsOnPriorPresetTemplate(c);
     }
 
     /// <summary>Response times silent and balanced shipped with before their current defaults.</summary>

@@ -381,7 +381,6 @@ public class FanProfilesTests : IDisposable
     public void UntouchedPriorPresetCurve_MovesToTheNewResponseTime(string preset, double prior, double current)
     {
         _store.Update(s => { s.Cooling.CurvesSeeded = true; s.Cooling.Curves.Add(PriorTemplate(preset, prior)); });
-        Assert.False(FanProfiles.IsPresetCurveAtDefaults(_store.Load().Cooling.Curves[0]));
 
         FanProfiles.SeedDefaultPresetCurves(_fans, _store);
 
@@ -405,6 +404,66 @@ public class FanProfilesTests : IDisposable
         var curves = _store.Load().Cooling.Curves;
         Assert.Equal(1.5, curves.Single(c => c.Preset == "balanced").Graph!.ResponseTime);
         Assert.Equal(2.0, curves.Single(c => c.Preset == "silent").Graph!.ResponseTime);
+    }
+
+    [Fact]
+    public void PriorTemplateCurve_ReadsAsDefault_BeforeTheMigrationRuns()
+    {
+        var c = new CoolingSettings { CurvesSeeded = true };
+        c.Curves.Add(PriorTemplate("silent", 3.0));
+        c.Curves.Add(PriorTemplate("balanced", 1.5));
+
+        Assert.All(c.Curves, curve => Assert.True(FanProfiles.IsPresetCurveAtDefaults(curve), curve.Preset));
+        Assert.True(Nexus.Service.Migration.Nexus2RecommendedPreset.IsUntouched(c, "balanced"));
+    }
+
+    [Fact]
+    public void PriorPresetMigration_LeavesALinearBlockWithAnotherValue()
+    {
+        var curve = PriorTemplate("balanced", 1.5);
+        curve.Linear!.ResponseTime = 2.5;
+        _store.Update(s => { s.Cooling.CurvesSeeded = true; s.Cooling.Curves.Add(curve); });
+
+        Assert.True(FanProfiles.MigratePriorPresetResponseTimes(_store));
+
+        var stored = Assert.Single(_store.Load().Cooling.Curves);
+        Assert.Equal(3.0, stored.Graph!.ResponseTime);
+        Assert.Equal(2.5, stored.Linear!.ResponseTime);
+    }
+
+    [Fact]
+    public void InactiveProfileOnThePriorTemplate_MigratesWhenItBecomesActive()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(_tempDir, "switch")).FullName;
+        var store = new JsonConfigStore(Path.Combine(dir, "settings.json"));
+        var pm = new ProfileManager(store);
+        try
+        {
+            pm.Initialize();
+            var first = pm.GetActiveEntry()!.Id;
+            var second = pm.CreateProfile("Second").Id;
+            pm.SwitchProfile(second);
+            store.Update(s =>
+            {
+                s.Cooling.CurvesSeeded = true;
+                s.Cooling.Curves.Clear();
+                s.Cooling.Curves.Add(PriorTemplate("silent", 3.0));
+            });
+            pm.SwitchProfile(first);
+            FanProfiles.SeedDefaultPresetCurves(_fans, store);
+            Assert.Equal(3.0, pm.ExportProfile(second)!.Cooling.Curves.Single().Graph!.ResponseTime);
+
+            // The profile-switch path runs the same seed (AppBootstrap.ReapplyAfterProfileSwitch).
+            pm.SwitchProfile(second);
+            FanProfiles.SeedDefaultPresetCurves(_fans, store);
+
+            Assert.Equal(5.0, store.Load().Cooling.Curves.Single().Graph!.ResponseTime);
+        }
+        finally
+        {
+            pm.Dispose();
+            store.Dispose();
+        }
     }
 
     [Fact]
@@ -447,6 +506,11 @@ public class FanProfilesTests : IDisposable
             pm.Dispose();
             store.Dispose();
         }
+
+        using var reopened = new JsonConfigStore(Path.Combine(dir, "settings.json"));
+        var persisted = reopened.Load().Cooling.Curves;
+        Assert.Equal(5.0, persisted.Single(c => c.Preset == "silent").Graph!.ResponseTime);
+        Assert.Equal(3.0, persisted.Single(c => c.Preset == "balanced").Graph!.ResponseTime);
     }
 
     [Fact]
