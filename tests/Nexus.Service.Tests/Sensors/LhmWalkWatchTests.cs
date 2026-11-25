@@ -404,4 +404,97 @@ public class LhmWalkWatchTests
 
         Assert.True(await waiter);
     }
+
+    [Fact]
+    public void TryRunNow_skips_without_waiting_while_another_reader_holds_the_gate()
+    {
+        var gate = new object();
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            lock (gate)
+            {
+                held.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            }
+        }) { IsBackground = true };
+        holder.Start();
+        Assert.True(held.Wait(TimeSpan.FromSeconds(10)));
+
+        var ran = false;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var result = LhmWalkWatch.TryRunNow(gate, () => { ran = true; return true; });
+
+        Assert.False(result);
+        Assert.False(ran);
+        Assert.True(clock.ElapsedMilliseconds < 1_000);
+        release.Set();
+        holder.Join();
+    }
+
+    [Fact]
+    public void TryRunNow_runs_and_returns_the_action_result_when_free()
+    {
+        var gate = new object();
+
+        Assert.True(LhmWalkWatch.TryRunNow(gate, () => true));
+        Assert.False(LhmWalkWatch.TryRunNow(gate, () => false));
+        Assert.True(Monitor.TryEnter(gate));
+        Monitor.Exit(gate);
+    }
+
+    [Fact]
+    public void A_stale_drive_reads_as_missing_for_its_own_sensors_only_until_cleared()
+    {
+        var watch = new LhmWalkWatch();
+
+        Assert.Equal(41f, watch.Read(41f, "/nvme/0/temperature/0"));
+        watch.MarkHardwareStale("/nvme/0", true);
+
+        Assert.Null(watch.Read(41f, "/nvme/0/temperature/0"));
+        Assert.Equal(41f, watch.Read(41f, "/nvme/1/temperature/0"));
+        Assert.Equal(41f, watch.Read(41f, "/nvme/01/temperature/0"));
+        Assert.Equal(41f, watch.Read(41f, "/lpc/nct6797d/temperature/0"));
+
+        watch.MarkHardwareStale("/nvme/0", false);
+        Assert.Equal(41f, watch.Read(41f, "/nvme/0/temperature/0"));
+    }
+
+    [Fact]
+    public void Acquire_with_a_bound_gives_up_after_the_bound_when_a_walk_holds_the_gate()
+    {
+        var gate = new object();
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            lock (gate)
+            {
+                held.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            }
+        }) { IsBackground = true };
+        holder.Start();
+        Assert.True(held.Wait(TimeSpan.FromSeconds(10)));
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        Assert.False(LhmWalkWatch.Acquire(gate, neverWait: false, maxWait: TimeSpan.FromMilliseconds(100)));
+        Assert.InRange(clock.ElapsedMilliseconds, 50, 5_000);
+
+        release.Set();
+        holder.Join();
+        Assert.True(LhmWalkWatch.Acquire(gate, neverWait: false, maxWait: TimeSpan.FromMilliseconds(100)));
+        Monitor.Exit(gate);
+    }
+
+    [Theory]
+    [InlineData("/ata/id_error", true)]
+    [InlineData("/nvme/id_error", true)]
+    [InlineData("/nvme/0", false)]
+    [InlineData("/ata/0", false)]
+    public void Only_the_shared_error_identifier_is_unidentifiable(string id, bool expected)
+    {
+        Assert.Equal(expected, LhmWalkWatch.IsUnidentifiable(id));
+    }
 }

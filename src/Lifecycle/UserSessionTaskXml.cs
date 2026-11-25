@@ -39,20 +39,24 @@ internal static class UserSessionTaskXml
     }
 
     /// <summary>
-    /// Principals for the task XML's UserId and for schtasks /RU. A bare user name
-    /// equal to the computer name resolves to the computer, and schtasks rejects it
-    /// at UserId ("The parameter is incorrect"), so that case registers the session
-    /// account's SID instead, and its LSA name for /RU, which refuses SIDs. The
-    /// session account is used only while that session still belongs to username.
+    /// Principals for the task XML's UserId and for schtasks /RU. The bare WTS user
+    /// name does not resolve for an Entra ID account (domain "AzureAD") and
+    /// resolves to the computer for a user named like it, so when the console
+    /// session still belongs to username its SID goes in UserId and its LSA name in
+    /// /RU, which refuses SIDs. Without a session account the name is qualified
+    /// with <paramref name="domain"/> (callers pass it only while the session still
+    /// belongs to username), else with the computer name when the user is named like
+    /// the computer, else left bare.
     /// </summary>
     internal static (string UserId, string RunAs) TaskPrincipal(
-        string username, string machineName, Func<(string Sid, string? Name, string User)?> sessionAccount)
+        string username, string machineName, Func<(string Sid, string? Name, string User)?> sessionAccount,
+        string? domain = null)
     {
-        if (!string.Equals(username, machineName, StringComparison.OrdinalIgnoreCase))
-        {
-            return (username, username);
-        }
-        var qualified = $"{machineName}\\{username}";
+        var qualified = !string.IsNullOrEmpty(domain) && !username.Contains('\\', StringComparison.Ordinal)
+            ? $"{domain}\\{username}"
+            : string.Equals(username, machineName, StringComparison.OrdinalIgnoreCase)
+                ? $"{machineName}\\{username}"
+                : username;
         if (sessionAccount() is { } account
             && string.Equals(account.User, username, StringComparison.OrdinalIgnoreCase))
         {

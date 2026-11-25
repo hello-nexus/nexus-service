@@ -93,6 +93,25 @@ public sealed class MultiplexHub
         return false;
     }
 
+    /// <summary>True when any client (or test subscription) is subscribed to a topic starting with <paramref name="prefix"/>.</summary>
+    public bool AnyTopicHasSubscribers(string prefix)
+    {
+        foreach (var (_, client) in _clients)
+        {
+            if (client.IsSubscribedToPrefix(prefix))
+                return true;
+        }
+        lock (_testSubsLock)
+        {
+            foreach (var (topic, n) in _testSubs)
+            {
+                if (n > 0 && topic.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
+    }
+
     public bool TopicHasSubscribers(string topic)
     {
         foreach (var (_, client) in _clients)
@@ -518,6 +537,19 @@ public sealed class MultiplexHub
         {
             lock (_topicLock)
                 return _topics.Contains(topic);
+        }
+
+        public bool IsSubscribedToPrefix(string prefix)
+        {
+            lock (_topicLock)
+            {
+                foreach (var t in _topics)
+                {
+                    if (t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
         }
 
         public void Subscribe(string topic)

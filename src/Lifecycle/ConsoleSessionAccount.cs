@@ -50,6 +50,19 @@ internal static class ConsoleSessionAccount
         return sessionId == 0xFFFFFFFF ? string.Empty : SessionString(sessionId, WtsDomainName);
     }
 
+    /// <summary>The console session's domain, only while that session's user is still <paramref name="user"/>; empty otherwise. User and domain are read for one session id.</summary>
+    [SupportedOSPlatform("windows")]
+    internal static string ConsoleDomainFor(string user)
+    {
+        var sessionId = WTSGetActiveConsoleSessionId();
+        if (sessionId == 0xFFFFFFFF
+            || !string.Equals(SessionUserName(sessionId), user, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+        return SessionString(sessionId, WtsDomainName);
+    }
+
     private static string SessionUserName(uint sessionId) => SessionString(sessionId, WtsUserName);
 
     private static string SessionString(uint sessionId, int infoClass)

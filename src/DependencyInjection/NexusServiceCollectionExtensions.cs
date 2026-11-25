@@ -2724,7 +2724,10 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusWidgets(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Widgets.AppRegistry>();
-        services.AddSingleton<Nexus.Service.Widgets.WidgetSettingsService>();
+        services.AddSingleton(sp => Nexus.Service.Widgets.WidgetSettingsServiceWiring.Create(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Widgets.AppRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Widgets.AppProxyService>();
         // Every widget fetch runs through this one: a followed redirect would
         // escape the proxy's host allowlist and carry the build credential off

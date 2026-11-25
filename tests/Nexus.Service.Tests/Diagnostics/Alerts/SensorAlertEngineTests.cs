@@ -1365,4 +1365,15 @@ public partial class SensorAlertEngineTests
         Assert.Equal("91.5", p["value"]);
         Assert.Equal("80", p["threshold"]);
     }
+
+    [Theory]
+    [InlineData(524288000, "Throughput", "B/s", "500.00 MB/s")]
+    [InlineData(612345678.5, "throughput", "B/s", "583.98 MB/s")]
+    [InlineData(20480, "Throughput", "B/s", "20.0 KB/s")]
+    [InlineData(12.345, "Data", "GB", "12.35 GB")]
+    [InlineData(5, "Data", "GB", "5 GB")]
+    public void Format_ThroughputIsMegabytesPerSecondAndDataIsGb(double value, string type, string units, string expected)
+    {
+        Assert.Equal(expected, SensorAlertText.Format(value, type, units, fahrenheit: false));
+    }
 }
