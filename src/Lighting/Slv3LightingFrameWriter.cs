@@ -500,7 +500,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     /// <summary>The divisor an upload starts at: the remembered one, or one lower when the periodic probe is due.</summary>
     internal int StartDivisor(string macHex, ChainRolling st, double nowMs)
     {
-        var divisor = _windowDivisors.GetValueOrDefault(macHex, 1);
+        var divisor = Math.Min(_windowDivisors.GetValueOrDefault(macHex, 1), MaxDivisorFor(Frames));
         if (divisor > 1 && nowMs >= st.ProbeAtMs)
         {
             st.ProbeAtMs = nowMs + DivisorProbeMs;
@@ -856,7 +856,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             }
             return;
         }
-        if (ok && st.UploadDivisor != _windowDivisors.GetValueOrDefault(macHex, 1))
+        // A divisor learned under another plan means a different loop length, so only the current plan's uploads teach it.
+        if (ok && st.UploadStretch == _windowStretch && st.UploadFrames == Frames && st.UploadDivisor != _windowDivisors.GetValueOrDefault(macHex, 1))
         {
             _windowDivisors[macHex] = st.UploadDivisor;
             st.ProbeAtMs = UtcNowMs() + DivisorProbeMs;

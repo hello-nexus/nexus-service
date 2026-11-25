@@ -3713,7 +3713,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
             }
             NoteConfigChangedLocked();
-            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs(), ServiceLog.Info);
+            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs(), ServiceLog.Info, live: true);
         }
 
         effectIndexHex = Convert.ToHexString(effectIndex);

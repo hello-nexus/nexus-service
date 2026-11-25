@@ -35,6 +35,7 @@ internal sealed class Slv3DeviceWatch
     {
         public readonly string[] Ring = new string[SentRingSize];
         public readonly long[] RingMs = new long[SentRingSize];
+        public readonly bool[] RingLive = new bool[SentRingSize];
         public int RingNext;
         public string Reported = "";
         public long LastConfirmMs;
@@ -70,7 +71,7 @@ internal sealed class Slv3DeviceWatch
     }
 
     /// <summary>An upload carrying <paramref name="idxHex"/> was fully written to the TX.</summary>
-    internal void NoteSent(string mac, string idxHex, long nowMs, Action<string>? log = null)
+    internal void NoteSent(string mac, string idxHex, long nowMs, Action<string>? log = null, bool live = false)
     {
         lock (_gate)
         {
@@ -85,13 +86,14 @@ internal sealed class Slv3DeviceWatch
                 c.UnconfirmedSinceMs = nowMs;
                 c.OldestIdx = idxHex;
             }
-            if (log is not null && c.Ring[c.RingNext].Length > 0)
+            if (log is not null && c.Ring[c.RingNext].Length > 0 && !c.RingLive[c.RingNext])
             {
                 // The slot is reused, so this upload was never echoed.
                 LogEcho(c, mac, "never", c.Ring[c.RingNext], c.RingMs[c.RingNext], nowMs, log);
             }
             c.Ring[c.RingNext] = idxHex;
             c.RingMs[c.RingNext] = nowMs;
+            c.RingLive[c.RingNext] = live;
             c.RingNext = (c.RingNext + 1) % SentRingSize;
         }
     }
@@ -170,7 +172,7 @@ internal sealed class Slv3DeviceWatch
                     if (i != slot)
                     {
                         c.Unconfirmed++;
-                        LogEcho(c, mac, "superseded", c.Ring[i], c.RingMs[i], nowMs, log);
+                        if (!c.RingLive[i]) LogEcho(c, mac, "superseded", c.Ring[i], c.RingMs[i], nowMs, log);
                     }
                     c.Ring[i] = "";
                 }

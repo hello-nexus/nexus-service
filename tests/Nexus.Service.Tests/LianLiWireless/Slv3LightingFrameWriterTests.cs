@@ -979,6 +979,24 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
+    public void A_divisor_learned_under_a_longer_plan_is_not_kept_after_the_plan_drops()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var mac = Convert.ToHexString(FanMac);
+        var st = new Slv3LightingFrameWriter.ChainRolling
+        {
+            UploadFrames = Slv3LightingFrameWriter.LongWindowFrames,
+            UploadStretch = 1,
+            UploadDivisor = 5,
+            UploadResult = Slv3Hub.WindowUploadResult.Sent,
+            Upload = Task.FromResult(true),
+        };
+        // The writer plans short windows, so an upload that settled at a long window's divisor must not teach it.
+        writer.CollectUpload(mac, st);
+        Assert.Equal(1, writer.StartDivisor(mac, st, 0));
+    }
+
+    [Fact]
     public async Task The_learned_divisor_resets_on_a_content_change_and_probes_one_step_lower_periodically()
     {
         var (_, _, _, _, _, writer, _) = CreateBoundSetup();
