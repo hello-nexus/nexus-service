@@ -380,7 +380,7 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         }
     }
 
-    private static IEnumerable<AudioDevice> Enumerate(IntPtr enumPtr, EDataFlow flow, string direction, int stateMask = DEVICE_STATE_ACTIVE)
+    private static IEnumerable<AudioDevice> Enumerate(IntPtr enumPtr, EDataFlow flow, string direction)
     {
         var result = new List<AudioDevice>();
         string defaultId = "";
@@ -389,7 +389,7 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
             try { defaultId = GetId(defDev); } finally { Release(defDev); }
         }
 
-        if (EnumAudioEndpoints(enumPtr, flow, stateMask, out var coll) < 0 || coll == IntPtr.Zero)
+        if (EnumAudioEndpoints(enumPtr, flow, DEVICE_STATE_ACTIVE, out var coll) < 0 || coll == IntPtr.Zero)
             return result;
         try
         {

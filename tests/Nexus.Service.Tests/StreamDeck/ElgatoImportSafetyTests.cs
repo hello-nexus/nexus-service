@@ -150,9 +150,31 @@ public sealed class ElgatoImportSafetyTests
         });
         stack.Children.Add(new ElgatoActionData { Uuid = "com.example.plugin.dial", Settings = Json(new { }) });
         var (_, report) = Translator(Devices()).Translate(profile);
+        var entries = report.Unmapped.Where(e => e.Dial == 1).ToList();
+        Assert.Equal(2, entries.Count);
+        Assert.Single(entries, e => e.Reason == "multiStep");
+        Assert.Single(entries, e => e.Reason == "deviceReset");
+        Assert.DoesNotContain(entries, e => e.Detail?.Contains("reset") == true);
+    }
+
+    [Fact]
+    public void DialStack_DeviceResetInLaterChild_IsReported()
+    {
+        var profile = DialProfile(("com.elgato.streamdeck.dial.stack", new { }));
+        var stack = profile.PagesById["only"].Dials[0];
+        stack.Children.Add(new ElgatoActionData
+        {
+            Uuid = "com.elgato.volume-controller.output-device-control",
+            Settings = Json(new { deviceId = "{ACTIVE}" }),
+        });
+        stack.Children.Add(new ElgatoActionData
+        {
+            Uuid = "com.elgato.volume-controller.output-device-control",
+            Settings = Json(new { deviceId = "{OTHER-PC}" }),
+        });
+        var (_, report) = Translator(Devices()).Translate(profile);
         var entry = Assert.Single(report.Unmapped, e => e.Dial == 1);
-        Assert.Equal("multiStep", entry.Reason);
-        Assert.Contains("device reset", entry.Detail);
+        Assert.Equal("deviceReset", entry.Reason);
     }
 
     [Fact]

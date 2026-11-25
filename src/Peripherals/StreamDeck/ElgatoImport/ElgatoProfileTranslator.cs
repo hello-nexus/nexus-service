@@ -298,7 +298,7 @@ public sealed class ElgatoProfileTranslator
             DeckDial? placeholder = null;
             foreach (var (_, (action, inherited)) in ordered)
             {
-                var (dial, mapped, reason, detail) = BuildDial(action);
+                var (dial, mapped, reason, detail, alsoReset) = BuildDial(action);
                 if (mapped)
                 {
                     if (dial.Stack is { Count: > 0 } nested)
@@ -336,6 +336,17 @@ public sealed class ElgatoProfileTranslator
                         Detail = detail,
                     });
                 }
+                if (alsoReset)
+                {
+                    report.Unmapped.Add(new ElgatoUnmappedEntry
+                    {
+                        Page = reportPageNumber,
+                        Dial = index + 1,
+                        Name = action.Name,
+                        Uuid = action.Uuid,
+                        Reason = DeviceResetNote,
+                    });
+                }
             }
 
             while (dials.Count <= index)
@@ -363,7 +374,8 @@ public sealed class ElgatoProfileTranslator
         return entries;
     }
 
-    private (DeckDial Dial, bool Mapped, string? Reason, string? Detail) BuildDial(ElgatoActionData action)
+    /// <summary>AlsoReset: a device reset the single Reason cannot carry because steps were dropped.</summary>
+    private (DeckDial Dial, bool Mapped, string? Reason, string? Detail, bool AlsoReset) BuildDial(ElgatoActionData action)
     {
         if (action.Uuid == ElgatoActionTypes.DialStack)
         {
@@ -375,7 +387,7 @@ public sealed class ElgatoProfileTranslator
         if (dialAction is not null)
         {
             dial.Action = dialAction;
-            return (dial, true, note, null);
+            return (dial, true, note, null, false);
         }
 
         // Placeholder keeps the face; with neither title nor icon the Elgato
@@ -386,10 +398,10 @@ public sealed class ElgatoProfileTranslator
         }
         if (failureReason is not null)
         {
-            return (dial, false, failureReason, null);
+            return (dial, false, failureReason, null, false);
         }
         var reason = action.Uuid.StartsWith(ElgatoActionTypes.BuiltinPrefix, StringComparison.Ordinal) ? "unsupported" : "plugin";
-        return (dial, false, reason, action.Uuid);
+        return (dial, false, reason, action.Uuid, false);
     }
 
     private DeckDial BuildDialFace(ElgatoActionData action)
@@ -414,10 +426,10 @@ public sealed class ElgatoProfileTranslator
     }
 
     /// <summary>Entries that cannot be translated are dropped; a single survivor becomes the dial itself.</summary>
-    private (DeckDial, bool, string?, string?) BuildDialStack(ElgatoActionData action)
+    private (DeckDial, bool, string?, string?, bool) BuildDialStack(ElgatoActionData action)
     {
         var entries = new List<DeckDial>();
-        string? stackNote = null;
+        var anyReset = false;
         foreach (var child in action.Children)
         {
             var (entryAction, _, childNote) = TryBuildDialAction(child);
@@ -425,7 +437,7 @@ public sealed class ElgatoProfileTranslator
             {
                 continue;
             }
-            stackNote ??= childNote;
+            anyReset |= childNote == DeviceResetNote;
             var entry = BuildDialFace(child);
             entry.Action = entryAction;
             entries.Add(entry);
@@ -439,15 +451,12 @@ public sealed class ElgatoProfileTranslator
             {
                 dial.Label = action.Name;
             }
-            return (dial, false, "multiStep", dropped > 0 ? $"{dropped} step(s) unsupported" : null);
+            return (dial, false, "multiStep", dropped > 0 ? $"{dropped} step(s) unsupported" : null, false);
         }
 
         var result = entries.Count == 1 ? entries[0] : new DeckDial { Stack = entries };
-        // Reason carries one value; when a step was dropped as well, the device reset stays visible in the detail.
-        var detail = dropped > 0
-            ? stackNote == DeviceResetNote ? $"{dropped} step(s) dropped; device reset to default" : $"{dropped} step(s) dropped"
-            : null;
-        return (result, true, dropped > 0 ? "multiStep" : stackNote, detail);
+        var detail = dropped > 0 ? $"{dropped} step(s) dropped" : null;
+        return (result, true, dropped > 0 ? "multiStep" : anyReset ? DeviceResetNote : null, detail, dropped > 0 && anyReset);
     }
 
     /// <summary>
