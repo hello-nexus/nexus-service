@@ -587,13 +587,14 @@ public class Y70ProviderTests
         }
     }
 
-    private static (Y70Provider Provider, FakeDdcBrightnessProvider Ddc, Y70DisplayHub Hub, FakeY70PortDiscovery Discovery, InMemoryY70ConfigStore Store) BuildUnidentified(int usbPid)
+    private static (Y70Provider Provider, FakeDdcBrightnessProvider Ddc, Y70DisplayHub Hub, FakeY70PortDiscovery Discovery, InMemoryY70ConfigStore Store) BuildUnidentified(int usbPid, Func<long>? clock = null)
     {
         var discovery = new FakeY70PortDiscovery(Y70DisplayProtocol.VariantTouch) { PortAvailable = false };
         var hub = new Y70DisplayHub(discovery, _ => new FakeNp50Transport());
         var ddc = new FakeDdcBrightnessProvider();
         var store = new InMemoryY70ConfigStore();
-        var provider = new Y70Provider(hub, store, new FakeY70OrientationProvider(), ddc, new HardwarePresence(new PresentUsb(usbPid)));
+        var provider = new Y70Provider(hub, store, new FakeY70OrientationProvider(), ddc, new HardwarePresence(new PresentUsb(usbPid)))
+        { Clock = clock ?? (() => Environment.TickCount64) };
         return (provider, ddc, hub, discovery, store);
     }
 
@@ -615,6 +616,55 @@ public class Y70ProviderTests
         WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpVideoGainRed && w.Value == gain));
         Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
         Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+    }
+
+    [Fact]
+    public void Deferred_slider_write_is_applied_once_the_variant_becomes_known()
+    {
+        var (provider, ddc, hub, discovery, _) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+
+        provider.SetBrightness(40);
+        Assert.Empty(ddc.VcpWrites);
+
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+        provider.ApplyDeferredBrightness();
+
+        var gain = Y70DisplayProtocol.TouchRgbGainForPercent(40);
+        WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpVideoGainRed && w.Value == gain));
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
+        Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+    }
+
+    [Fact]
+    public void Apply_deferred_brightness_writes_nothing_when_nothing_was_deferred()
+    {
+        var (provider, ddc, hub, discovery, _) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+
+        provider.ApplyDeferredBrightness();
+        System.Threading.Thread.Sleep(400);
+
+        Assert.Empty(ddc.VcpWrites);
+    }
+
+    [Fact]
+    public void Deferred_write_falls_back_to_raw_brightness_past_the_deadline()
+    {
+        long now = 1_000;
+        var (provider, ddc, _, _, store) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId, () => now);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+        Assert.Empty(ddc.VcpWrites);
+
+        now += 16_000;
+        provider.ApplyDeferredBrightness();
+
+        // The second write lands inside the coalescing window, so it goes out on the trailing flush.
+        WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpBrightness));
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), ddc.VcpWrites);
     }
 
     [Fact]

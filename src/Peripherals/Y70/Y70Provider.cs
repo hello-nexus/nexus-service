@@ -298,6 +298,53 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// different product id and an identified variant, so it is never deferred; with no presence source
     /// (nothing to tell them apart) nothing is deferred.
     /// </summary>
+    // Deferred writes are re-applied by ApplyDeferredBrightness once the variant is known. A hub that never
+    // identifies must not leave the control dead, so the deferral ends DeferDeadlineMs after the first defer.
+    private const long DeferDeadlineMs = 15_000;
+    private long _deferStartedAt = -1;
+    private volatile bool _brightnessDeferred;
+    private bool _deferFallbackLogged;
+
+    private bool ShouldDeferRawBrightness()
+    {
+        var now = Clock();
+        if (_deferStartedAt < 0)
+        {
+            _deferStartedAt = now;
+        }
+        if (now - _deferStartedAt >= DeferDeadlineMs)
+        {
+            if (!_deferFallbackLogged)
+            {
+                _deferFallbackLogged = true;
+                LogApply("transport=ddc variant still unknown after the defer deadline; writing raw brightness");
+            }
+            _brightnessDeferred = false;
+            return false;
+        }
+        _brightnessDeferred = true;
+        return true;
+    }
+
+    public void ApplyDeferredBrightness()
+    {
+        if (!_brightnessDeferred)
+        {
+            return;
+        }
+        if (!string.IsNullOrEmpty(_hub.Variant))
+        {
+            _brightnessDeferred = false;
+            _deferStartedAt = -1;
+            ReapplySettledBrightness();
+        }
+        else if (Clock() - _deferStartedAt >= DeferDeadlineMs)
+        {
+            // Past the deadline the write falls back to raw brightness (ShouldDeferRawBrightness).
+            ReapplyBrightness();
+        }
+    }
+
     private bool TouchMayBePresent() =>
         string.IsNullOrEmpty(_hub.Variant)
         && _presence is not null
@@ -381,7 +428,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                 {
                     DdcWriteRgbBrightness(pct);
                 }
-                else if (TouchMayBePresent())
+                else if (TouchMayBePresent() && ShouldDeferRawBrightness())
                 {
                     // Raw VCP 0x10 on a Touch lowers the scaler luminance under the gain path and nothing restores it.
                     LogApply("transport=ddc deferred (variant unknown, Touch serial controller present)");

@@ -20,6 +20,8 @@ public interface IY70Provider
     void ReapplyBrightness() { }
     /// <summary>Forgets one-time per-connection display prep (the Touch color preset) so the next write sends it again.</summary>
     void InvalidateDisplayPrep() { }
+    /// <summary>Applies the stored brightness once if a write was deferred while the display variant was unknown.</summary>
+    void ApplyDeferredBrightness() { }
     /// <summary>The reapply that runs once the helper's write gate has settled: re-sends the display prep, then the brightness.</summary>
     void ReapplySettledBrightness() => ReapplyBrightness();
     bool GetToggle();

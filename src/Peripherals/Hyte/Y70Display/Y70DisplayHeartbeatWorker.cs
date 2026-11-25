@@ -244,6 +244,14 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
                 ScheduleSettledReapply();
                 ServiceLog.Info("[y70-display-heartbeat] newly detected; orientation and brightness re-applied");
             }
+            else
+            {
+                // Applies a brightness write the provider deferred while the hub variant was unknown.
+                lock (_applyLock)
+                {
+                    _y70.ApplyDeferredBrightness();
+                }
+            }
         }
         else if (_wasDetected && ++_absentTicks >= DetectDropTicks)
         {
