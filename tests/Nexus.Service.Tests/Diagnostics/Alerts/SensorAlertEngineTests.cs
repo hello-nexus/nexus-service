@@ -1368,7 +1368,7 @@ public partial class SensorAlertEngineTests
 
     [Theory]
     [InlineData(524288000, "Throughput", "B/s", "500.00 MB/s")]
-    [InlineData(612345678.5, "throughput", "B/s", "584.00 MB/s")]
+    [InlineData(612345678.5, "throughput", "B/s", "583.98 MB/s")]
     [InlineData(20480, "Throughput", "B/s", "20.0 KB/s")]
     [InlineData(12.345, "Data", "GB", "12.35 GB")]
     [InlineData(5, "Data", "GB", "5 GB")]

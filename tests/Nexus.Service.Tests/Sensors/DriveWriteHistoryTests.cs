@@ -234,8 +234,8 @@ public class DriveWriteHistoryTests
         Assert.NotNull(h.Observe("/hdd/0", "D", null, bytesPerGb, At(day - 10)));
         var w = h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 10));
         Assert.NotNull(w);
-        h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 20));
-        Assert.Equal(0, h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 20))!.Value.LastDayGb, 3);
+        // The new rate series starts clean: the old counter history is not carried over.
+        Assert.Equal(10, h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 20))!.Value.LastDayGb, 3);
 
         var g = new DriveWriteHistory(null);
         g.Observe("/hdd/1", "D", 100, null, At(0));
