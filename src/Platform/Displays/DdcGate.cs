@@ -35,7 +35,7 @@ internal static class DdcGate
     /// panels have finished re-training their links, and a transaction landing
     /// in that window is the same hazard as one landing during the blank.
     /// </summary>
-    private static readonly TimeSpan UnlockSettle = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan UnlockSettle = DdcGateTiming.UnlockSettle;
 
     /// <summary>
     /// Without session notifications, a gap this long between calls may hide

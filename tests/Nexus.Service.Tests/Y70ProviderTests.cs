@@ -571,6 +571,93 @@ public class Y70ProviderTests
         Assert.False(provider.GetToggle());
     }
 
+    private sealed class PresentUsb : IUsbEnumerator
+    {
+        private readonly int _pid;
+        public PresentUsb(int pid) => _pid = pid;
+        public List<UsbDeviceEntry> Enumerate() => new() { new UsbDeviceEntry { VendorId = Y70DisplayProtocol.VendorId, ProductId = _pid } };
+    }
+
+    private static void WaitFor(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline && !condition())
+        {
+            System.Threading.Thread.Sleep(10);
+        }
+    }
+
+    private static (Y70Provider Provider, FakeDdcBrightnessProvider Ddc, Y70DisplayHub Hub, FakeY70PortDiscovery Discovery, InMemoryY70ConfigStore Store) BuildUnidentified(int usbPid)
+    {
+        var discovery = new FakeY70PortDiscovery(Y70DisplayProtocol.VariantTouch) { PortAvailable = false };
+        var hub = new Y70DisplayHub(discovery, _ => new FakeNp50Transport());
+        var ddc = new FakeDdcBrightnessProvider();
+        var store = new InMemoryY70ConfigStore();
+        var provider = new Y70Provider(hub, store, new FakeY70OrientationProvider(), ddc, new HardwarePresence(new PresentUsb(usbPid)));
+        return (provider, ddc, hub, discovery, store);
+    }
+
+    [Fact]
+    public void Unknown_variant_with_touch_serial_present_sends_no_raw_brightness_then_settled_reapply_writes_gains()
+    {
+        var (provider, ddc, hub, discovery, store) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+
+        Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+        provider.ReapplySettledBrightness();
+
+        var gain = Y70DisplayProtocol.TouchRgbGainForPercent(40);
+        WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpVideoGainRed && w.Value == gain));
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
+        Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+    }
+
+    [Fact]
+    public void Unknown_variant_without_touch_serial_still_writes_raw_brightness()
+    {
+        var (provider, ddc, _, _, store) = BuildUnidentified(Y70DisplayProtocol.Y70TrulyProductId);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), ddc.VcpWrites);
+    }
+
+    [Fact]
+    public void Settled_reapply_resends_the_touch_preset_before_the_gains()
+    {
+        var (provider, _, ddc, _) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        provider.SetBrightness(30);
+        Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode));
+        var before = ddc.VcpWrites.Count;
+
+        provider.ReapplySettledBrightness();
+
+        WaitFor(() => ddc.VcpWrites.Count >= before + 4);
+        var after = ddc.VcpWrites.Skip(before).ToList();
+        Assert.Equal(Y70DisplayProtocol.VcpColorPresetMode, after[0].Code);
+        Assert.Equal(Y70DisplayProtocol.VcpVideoGainRed, after[1].Code);
+    }
+
+    [Fact]
+    public void Invalidate_display_prep_makes_the_next_write_resend_the_touch_preset()
+    {
+        var (provider, _, ddc, _) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        provider.SetBrightness(30);
+        Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode));
+
+        provider.InvalidateDisplayPrep();
+        provider.ReapplyBrightness();
+
+        WaitFor(() => ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode) >= 2);
+        Assert.Equal(2, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode));
+    }
+
     [Fact]
     public void Touch_brightness_with_serial_down_writes_gains_never_vcp_brightness()
     {

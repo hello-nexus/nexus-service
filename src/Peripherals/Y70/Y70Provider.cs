@@ -151,6 +151,22 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private volatile bool _gameModeScreenOff;
     private readonly object _powerLock = new();
 
+    public void InvalidateDisplayPrep()
+    {
+        // Prep state is only mutated under _ddcRpcLock.
+        lock (_ddcRpcLock)
+        {
+            _touchPresetEpoch = -1;
+            _touchPresetAttemptEpoch = -1;
+        }
+    }
+
+    public void ReapplySettledBrightness()
+    {
+        InvalidateDisplayPrep();
+        ReapplyBrightness();
+    }
+
     /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
     public void ReapplyBrightness()
     {
@@ -276,6 +292,17 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     /// dim through the gain registers - a raw VCP 0x10 write lowers the
     /// scaler luminance underneath the gain path and nothing restores it.
     /// </summary>
+    /// <summary>
+    /// The variant is not identified yet (the hub identifies it on connect, after the first detect at boot) but
+    /// the Touch serial controller's USB id is present, so this may be a Touch. A DDC-only Truly or GT has a
+    /// different product id and an identified variant, so it is never deferred; with no presence source
+    /// (nothing to tell them apart) nothing is deferred.
+    /// </summary>
+    private bool TouchMayBePresent() =>
+        string.IsNullOrEmpty(_hub.Variant)
+        && _presence is not null
+        && _presence.UsbPresent(Y70DisplayProtocol.VendorId, Y70DisplayProtocol.Y70TouchProductId);
+
     private bool TouchVariantKnown => _hub.Variant == Y70DisplayProtocol.VariantTouch;
 
     private void ApplySerial(bool screenOn, int pct)
@@ -350,8 +377,19 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                     pct = _pendingDdcBrightness;
                     _lastDdcBrightnessWriteAt = Environment.TickCount64;
                 }
-                if (TouchVariantKnown) DdcWriteRgbBrightness(pct);
-                else DdcWriteBrightness(pct);
+                if (TouchVariantKnown)
+                {
+                    DdcWriteRgbBrightness(pct);
+                }
+                else if (TouchMayBePresent())
+                {
+                    // Raw VCP 0x10 on a Touch lowers the scaler luminance under the gain path and nothing restores it.
+                    LogApply("transport=ddc deferred (variant unknown, Touch serial controller present)");
+                }
+                else
+                {
+                    DdcWriteBrightness(pct);
+                }
             }
         }
         catch (Exception ex)

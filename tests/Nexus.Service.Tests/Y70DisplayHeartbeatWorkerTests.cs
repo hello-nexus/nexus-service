@@ -303,7 +303,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         delay.ReleaseAll();
         await worker.PendingSettledReapply!;
 
-        Assert.Equal(2, y70.BrightnessCount);
+        Assert.Equal(1, y70.SettledCount);
     }
 
     [Fact]
@@ -319,8 +319,9 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         delay.ReleaseAll();
         await latest;
 
-        // detect (1) + helper connect (1) + a single delayed reapply (1)
-        Assert.Equal(3, y70.BrightnessCount);
+        // detect (1) + helper connect (1), then a single settled reapply
+        Assert.Equal(2, y70.BrightnessCount);
+        Assert.Equal(1, y70.SettledCount);
     }
 
     [Fact]
@@ -527,6 +528,8 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         public bool Connected;
         public int ApplyCount;
         public int BrightnessCount;
+        public int InvalidateCount;
+        public int SettledCount;
 
         public bool IsConnected() => Connected;
         public string GetOrientation() => "PortraitFlipped";
@@ -537,6 +540,8 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         public int GetBrightness() => 0;
         public void SetBrightness(int brightness) { }
         public void ReapplyBrightness() => BrightnessCount++;
+        public void InvalidateDisplayPrep() => InvalidateCount++;
+        public void ReapplySettledBrightness() => SettledCount++;
         public bool GetToggle() => false;
         public void SetToggle(bool toggle) { }
         public void SetGameModeScreenOff(bool screenOff) { }

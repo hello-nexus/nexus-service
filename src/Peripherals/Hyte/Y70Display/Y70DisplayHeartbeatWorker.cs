@@ -30,7 +30,8 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
 
     // The helper holds display writes for a settle window after it starts and may keep one for retry, only
     // re-sending it on the next write. One delayed reapply after the boot applies is that next write.
-    private static readonly TimeSpan DefaultSettleDelay = TimeSpan.FromSeconds(8);
+    // Must exceed the helper's DdcGate settle window, or the reapply lands inside it and is held again.
+    private static readonly TimeSpan DefaultSettleDelay = Nexus.Service.Platform.Displays.DdcGateTiming.UnlockSettle + TimeSpan.FromSeconds(3);
     private static readonly TimeSpan StopWait = TimeSpan.FromSeconds(1);
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly object _settleLock = new();
@@ -93,6 +94,8 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         {
             lock (_applyLock)
             {
+                // A new helper process has no held-write queue, so a preset it only held is gone.
+                _y70.InvalidateDisplayPrep();
                 _y70.ApplyEffectiveOrientation();
                 _y70.ReapplyBrightness();
             }
@@ -149,7 +152,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         {
             lock (_applyLock)
             {
-                _y70.ReapplyBrightness();
+                _y70.ReapplySettledBrightness();
             }
         }
         catch (Exception ex)
