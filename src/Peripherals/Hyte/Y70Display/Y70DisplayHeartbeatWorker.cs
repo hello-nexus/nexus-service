@@ -31,6 +31,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     // The helper holds display writes for a settle window after it starts and may keep one for retry, only
     // re-sending it on the next write. One delayed reapply after the boot applies is that next write.
     private static readonly TimeSpan DefaultSettleDelay = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan StopWait = TimeSpan.FromSeconds(1);
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly object _settleLock = new();
     private CancellationTokenSource? _settleCts;
@@ -106,18 +107,28 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     // At most one reapply is pending: each edge cancels the previous one and restarts the delay.
     private void ScheduleSettledReapply()
     {
-        CancellationToken token;
+        CancellationTokenSource? replaced;
         lock (_settleLock)
         {
             if (_stopped)
             {
                 return;
             }
-            _settleCts?.Cancel();
+            replaced = _settleCts;
             _settleCts = new CancellationTokenSource();
-            token = _settleCts.Token;
+            PendingSettledReapply = RunSettledReapplyAsync(_settleCts.Token);
         }
-        PendingSettledReapply = RunSettledReapplyAsync(token);
+        CancelAndDispose(replaced);
+    }
+
+    private static void CancelAndDispose(CancellationTokenSource? cts)
+    {
+        if (cts is null)
+        {
+            return;
+        }
+        cts.Cancel();
+        cts.Dispose();
     }
 
     private async Task RunSettledReapplyAsync(CancellationToken token)
@@ -147,14 +158,24 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
         }
     }
 
-    public override Task StopAsync(CancellationToken cancellationToken)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        CancellationTokenSource? cts;
+        Task? pending;
         lock (_settleLock)
         {
             _stopped = true;
-            _settleCts?.Cancel();
+            cts = _settleCts;
+            _settleCts = null;
+            pending = PendingSettledReapply;
         }
-        return base.StopAsync(cancellationToken);
+        CancelAndDispose(cts);
+        // A reapply already past its delay is mid-write; give it a moment instead of cutting the helper RPC off.
+        if (pending is not null)
+        {
+            await Task.WhenAny(pending, Task.Delay(StopWait, CancellationToken.None)).ConfigureAwait(false);
+        }
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // Once per detection event, independent of the control gate: assigning the case is not device control.

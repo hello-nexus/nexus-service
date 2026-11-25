@@ -318,7 +318,6 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         var latest = worker.PendingSettledReapply!;
         delay.ReleaseAll();
         await latest;
-        await Task.Yield();
 
         // detect (1) + helper connect (1) + a single delayed reapply (1)
         Assert.Equal(3, y70.BrightnessCount);

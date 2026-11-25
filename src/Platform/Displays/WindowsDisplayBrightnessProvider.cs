@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Nexus.Service.Models.Displays;
 
 namespace Nexus.Service.Platform.Displays;
@@ -13,7 +14,7 @@ namespace Nexus.Service.Platform.Displays;
 /// panels are not handled here; they need WmiMonitorBrightnessMethods or
 /// IOCTL_VIDEO_*.
 /// </summary>
-public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvider
+public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvider, IDisposable
 {
     private const int DefaultDdcWriteCooldownMs = 160;
 
@@ -64,12 +65,52 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // on replay stays held and goes out again ahead of the next write.
     private const int HeldWriteMaxAttempts = 3;
 
+    // A failed replay would otherwise wait for an unrelated write that may never come. One-shot, re-armed
+    // only while entries remain; the attempt cap above bounds the retries.
+    private const int HeldRetryDelayMs = 2000;
+    private readonly Timer _heldRetry;
+    private bool _disposed;
+
     public WindowsDisplayBrightnessProvider()
     {
         // A session unlock or settle is the moment a failing display is likely to answer again.
         // Subscribed first so a throwing ApplyHeldWrites cannot skip it.
         DdcGate.Opened += _negativeProbes.Clear;
         DdcGate.Opened += ApplyHeldWrites;
+        _heldRetry = new Timer(_ => RetryHeld(), null, Timeout.Infinite, Timeout.Infinite);
+    }
+
+    public void Dispose()
+    {
+        DdcGate.Opened -= _negativeProbes.Clear;
+        DdcGate.Opened -= ApplyHeldWrites;
+        lock (_writeGate)
+        {
+            _disposed = true;
+            _heldRetry.Dispose();
+        }
+    }
+
+    // Timer callback: never throws, an unhandled exception here is process-fatal.
+    private void RetryHeld()
+    {
+        try
+        {
+            lock (_writeGate)
+            {
+                if (_disposed || _held.Count == 0) return;
+                if (DdcGate.ShouldSkip(out _))
+                {
+                    _heldRetry.Change(HeldRetryDelayMs, Timeout.Infinite);
+                    return;
+                }
+                ApplyHeldLocked();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"held write retry failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private bool Skip(string op, string id)
@@ -130,6 +171,7 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             else if (w.Attempts + 1 < HeldWriteMaxAttempts) _held.Add(w with { Attempts = w.Attempts + 1 });
         }
         Log($"applied {applied}/{writes.Length} held write(s), {_held.Count} kept for retry");
+        if (_held.Count > 0 && !_disposed) _heldRetry.Change(HeldRetryDelayMs, Timeout.Infinite);
     }
 
     public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null)
