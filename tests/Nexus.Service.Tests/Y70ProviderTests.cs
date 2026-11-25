@@ -680,7 +680,6 @@ public class Y70ProviderTests
         WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpBrightness));
         provider.ApplyDeferredBrightness();
         provider.ApplyDeferredBrightness();
-        System.Threading.Thread.Yield();
 
         Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpBrightness));
     }
