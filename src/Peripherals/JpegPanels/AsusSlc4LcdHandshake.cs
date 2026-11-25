@@ -22,8 +22,9 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 /// The enable is the one message a frame stream depends on, so <see cref="BeforeFrame"/>
 /// re-sends it a few times at a low rate until a reply says OK. Steady-state traffic never
 /// waits on a reply: replies are drained without blocking on the frame path, and only the
-/// attach waits, with the hub's lock released for the wait itself. Replies are matched to
-/// messages by SeqNumber, else by command name.
+/// attach waits, with the hub's lock released for the wait itself. The panel's replies carry
+/// no command and no SeqNumber; they carry AckNumber, one more than the SeqNumber of the
+/// message they answer. Replies are matched by that, else by SeqNumber, else by command name.
 /// </summary>
 public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBrightness, IJpegPanelSession
 {
@@ -273,12 +274,23 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
         string text = decoded.Length > 0 ? Encoding.ASCII.GetString(decoded) : Printable(reply);
         string? command = null;
         int key = -1;
-        if (TryParseSequence(text, out int sequence) && _outstanding.TryGetValue(sequence, out var bySeq))
+        if (TryParseNumber(text, "AckNumber=", out int ack))
         {
-            command = bySeq;
-            key = sequence;
+            if (_outstanding.TryGetValue(ack - 1, out var byAck))
+            {
+                command = byAck;
+                key = ack - 1;
+            }
         }
-        else if (!TryParseSequence(text, out _))
+        else if (TryParseNumber(text, "SeqNumber=", out int sequence))
+        {
+            if (_outstanding.TryGetValue(sequence, out var bySeq))
+            {
+                command = bySeq;
+                key = sequence;
+            }
+        }
+        else
         {
             foreach (var pair in _outstanding)
             {
@@ -303,10 +315,9 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
         return command;
     }
 
-    private static bool TryParseSequence(string text, out int sequence)
+    private static bool TryParseNumber(string text, string tag, out int sequence)
     {
         sequence = 0;
-        const string tag = "SeqNumber=";
         int at = text.IndexOf(tag, StringComparison.Ordinal);
         if (at < 0)
         {
