@@ -65,6 +65,7 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     // only while entries remain; the attempt cap above bounds the retries.
     private const int HeldRetryDelayMs = 2000;
     private readonly Timer _heldRetry;
+    private bool _retryPending;
 
     public WindowsDisplayBrightnessProvider()
     {
@@ -83,11 +84,12 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             lock (_writeGate)
             {
                 // A closed gate is not re-armed: DdcGate.Opened replays the held writes when it opens.
+                _retryPending = false;
                 if (_held.Count == 0 || DdcGate.ShouldSkip(out _))
                 {
                     return;
                 }
-                ReplayHeld(countAttempt: true);
+                ReplayHeld(countAttempt: true, null, out _);
             }
         }
         catch (Exception ex)
@@ -112,18 +114,20 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
     }
 
     /// <summary>
-    /// Caller holds <see cref="_writeGate"/>. True when the write was held or queued behind an earlier failed
-    /// write for the same display, so the caller must not write it directly. Otherwise anything still held was
+    /// Caller holds <see cref="_writeGate"/>. Anything other than NotHandled means the write was held, or written in
+    /// its predecessor's position, and the caller must not write it again. Otherwise anything still held was
     /// replayed first, so writes reach the monitor in order. This replay does not burn attempts.
+    /// <paramref name="writtenDto"/> is the real result when a brightness write went out during the replay.
     /// </summary>
-    private bool HoldIfGated(HeldWrite write, string op)
+    private HeldIncoming HoldIfGated(HeldWrite write, string op, out DisplayBrightnessDto? writtenDto)
     {
+        writtenDto = null;
         if (Skip(op, write.Id))
         {
             _held.Hold(write);
-            return true;
+            return HeldIncoming.Queued;
         }
-        return ReplayHeld(countAttempt: false, write);
+        return ReplayHeld(countAttempt: false, write, out writtenDto);
     }
 
     private void ApplyHeldWrites()
@@ -134,28 +138,43 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             {
                 return;
             }
-            ReplayHeld(countAttempt: true);
+            ReplayHeld(countAttempt: true, null, out _);
         }
     }
 
-    private bool ReplayHeld(bool countAttempt, HeldWrite? incoming = null)
+    private HeldIncoming ReplayHeld(bool countAttempt, HeldWrite? incoming, out DisplayBrightnessDto? writtenDto)
     {
+        writtenDto = null;
         if (_held.Count == 0)
         {
-            return false;
+            return HeldIncoming.NotHandled;
         }
+        DisplayBrightnessDto? dto = null;
         var result = _held.Replay(
-            w => w.Code is byte code
-                ? WriteVcp(w.Id, code, w.Value)
-                : WriteBrightness(w.Id, w.Value).Status == DisplayBrightnessWriteStatuses.Applied,
+            w =>
+            {
+                if (w.Code is byte code)
+                {
+                    return WriteVcp(w.Id, code, w.Value);
+                }
+                var written = WriteBrightness(w.Id, w.Value);
+                if (incoming is { } inc && w.Id == inc.Id && w.Code == inc.Code && w.Value == inc.Value)
+                {
+                    dto = written;
+                }
+                return written.Status == DisplayBrightnessWriteStatuses.Applied;
+            },
             countAttempt,
             incoming);
+        writtenDto = dto;
         Log($"applied {result.Applied}/{result.Total} held write(s), {_held.Count} kept for retry");
-        if (_held.Count > 0)
+        // One pending retry at a time: re-arming on every write would keep postponing a counted retry.
+        if (_held.Count > 0 && !_retryPending)
         {
+            _retryPending = true;
             _heldRetry.Change(HeldRetryDelayMs, Timeout.Infinite);
         }
-        return result.IncomingQueued;
+        return result.Incoming;
     }
 
     public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null)
@@ -319,7 +338,12 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         var requested = ClampPercent(percent);
         lock (_writeGate)
         {
-            if (HoldIfGated(new HeldWrite(id, null, requested), "set"))
+            var handled = HoldIfGated(new HeldWrite(id, null, requested), "set", out var writtenDto);
+            if (handled == HeldIncoming.Written && writtenDto is not null)
+            {
+                return writtenDto;
+            }
+            if (handled != HeldIncoming.NotHandled)
             {
                 UpdateCachedBrightness(id, requested);
                 return AppliedBrightness(id, requested, requested);
@@ -433,7 +457,7 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         lock (_writeGate)
         {
             // A held write reports success: it reaches the monitor once the gate opens.
-            if (HoldIfGated(new HeldWrite(id, code, value), $"setVcp 0x{code:X2}")) return true;
+            if (HoldIfGated(new HeldWrite(id, code, value), $"setVcp 0x{code:X2}", out _) != HeldIncoming.NotHandled) return true;
             return WriteVcp(id, code, value);
         }
     }

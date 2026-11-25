@@ -134,20 +134,20 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         var pct = Math.Clamp(brightness, 0, 100);
         // Touch and Truly both dim over DDC/CI (gain registers vs VCP 0x10);
         // WritePendingDdcBrightness picks the register set by variant.
-        // Under _powerLock so the ScreenOff read and the write are atomic against a toggle. Game-mode screen-off
-        // is deliberately not consulted: a slider move is explicit user intent.
-        lock (_powerLock)
+        if (SerialTransportSelected)
         {
-            if (SerialTransportSelected)
+            // Only the serial frame depends on ScreenOff: _powerLock makes that read, the write and the persist
+            // atomic against a toggle. The DDC path takes no lock, so a slow helper RPC never stalls slider ticks.
+            // Game-mode screen-off is deliberately not consulted: a slider move is explicit user intent.
+            lock (_powerLock)
             {
                 ApplySerial(!_store.Load().Y70.ScreenOff, Shown(pct));
+                _store.Update(s => s.Y70.Brightness = pct);
             }
-            else
-            {
-                DdcSetBrightnessCoalesced(Shown(pct));
-            }
-            _store.Update(s => s.Y70.Brightness = pct);
+            return;
         }
+        DdcSetBrightnessCoalesced(Shown(pct));
+        _store.Update(s => s.Y70.Brightness = pct);
     }
 
     // Game-mode (focus) screen-off. _powerLock makes the flag check in ReapplyBrightness and the flag set plus
@@ -386,9 +386,9 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     // land out of order; each writer sends the latest pending value, so a
     // stale thread at worst duplicates the newest write.
     private readonly object _ddcRpcLock = new();
-    // TickCount64 is >= 0, so -interval keeps the first write immediate
-    // (long.MinValue would wrap the subtraction below negative).
-    private long _lastDdcBrightnessWriteAt = -DdcWriteIntervalMs;
+    // Far in the past whatever the injected clock reads, so the first write is immediate
+    // (long.MinValue itself would wrap the subtraction below negative).
+    private long _lastDdcBrightnessWriteAt = long.MinValue / 2;
     private int _pendingDdcBrightness;
     private Timer? _ddcBrightnessFlush;
     private bool _disposed;

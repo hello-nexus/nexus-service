@@ -89,7 +89,7 @@ public class HeldWriteQueueTests
 
         var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 20));
 
-        Assert.True(result.IncomingQueued);
+        Assert.True(result.Incoming == HeldIncoming.Queued);
         Assert.DoesNotContain(written, w => w.Code == 2);
         Assert.Equal(2, queue.Count);
 
@@ -107,12 +107,43 @@ public class HeldWriteQueueTests
 
         var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
 
-        Assert.True(result.IncomingQueued);
+        Assert.Equal(HeldIncoming.Queued, result.Incoming);
         failing.Clear();
         written.Clear();
         queue.Replay(w => Write(written, failing, w), countAttempt: true);
         Assert.Equal(new byte?[] { 1, 2, 3 }, written.Select(w => w.Code).ToArray());
         Assert.Equal(21, written[1].Value);
+    }
+
+    [Fact]
+    public void A_new_write_takes_its_predecessors_slot_even_when_a_later_entry_fails()
+    {
+        // preset (1), gainR (2) is replaced by the new write, gainG (3) fails on replay.
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20), W(3, 30));
+        failing.Add(3);
+
+        var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
+
+        Assert.Equal(HeldIncoming.Written, result.Incoming);
+        Assert.Equal(new byte?[] { 1, 2, 3 }, written.Select(w => w.Code).ToArray());
+        Assert.Equal(21, written[1].Value);
+        Assert.Equal(1, queue.Count);
+    }
+
+    [Fact]
+    public void A_new_write_that_fails_in_its_predecessors_slot_is_held_there()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20), W(3, 30));
+        failing.Add(2);
+
+        var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
+
+        Assert.Equal(HeldIncoming.Queued, result.Incoming);
+        failing.Clear();
+        written.Clear();
+        queue.Replay(w => Write(written, failing, w), countAttempt: true);
+        Assert.Equal(new byte?[] { 2, 3 }, written.Select(w => w.Code).ToArray());
+        Assert.Equal(21, written[0].Value);
     }
 
     [Fact]
@@ -122,7 +153,7 @@ public class HeldWriteQueueTests
 
         var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 20));
 
-        Assert.False(result.IncomingQueued);
+        Assert.Equal(HeldIncoming.NotHandled, result.Incoming);
         Assert.Equal(0, queue.Count);
     }
 
