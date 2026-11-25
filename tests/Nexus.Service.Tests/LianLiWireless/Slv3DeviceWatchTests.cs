@@ -235,6 +235,18 @@ public class Slv3DeviceWatchTests
     }
 
     [Fact]
+    public void Overtaken_live_pushes_are_counted_but_not_logged()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "01020301", 1_000, live: true);
+        watch.NoteSent(Mac, "01020302", 1_500);
+        watch.NoteReported(Mac, "01020302", 1_800, log.Add);
+        Assert.DoesNotContain(log, l => l.Contains("superseded"));
+        Assert.Equal(1, watch.Take(Mac, 2_000)!.Value.Unconfirmed);
+    }
+
+    [Fact]
     public void Gap_lines_are_rate_limited_per_chain()
     {
         var watch = new Slv3DeviceWatch();
