@@ -32,9 +32,6 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
 
     public bool OnAttach(IHidDevice device, int reportLength)
     {
-        FlushSuppressed();
-        _anomalyLog.Reset();
-        _verboseLeft = VerboseExchanges;
         _booted = false;
         _lastRealtimeMs = 0;
 
@@ -49,6 +46,11 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
             ServiceLog.Warn("[asrock-lcd] connect refused by the panel");
             return false;
         }
+
+        // A healthy connect re-arms full logging; a panel that never answers keeps the limiter across retries.
+        FlushSuppressed();
+        _anomalyLog.Reset();
+        _verboseLeft = VerboseExchanges;
 
         _booted = AsRockLcdProtocol.ParseBootFinished(reply);
         if (!_booted)

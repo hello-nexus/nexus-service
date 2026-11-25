@@ -99,7 +99,6 @@ internal sealed class RepeatLogLimiter
         _intervalMs = intervalMs;
     }
 
-    /// <summary>True when the caller should log; <paramref name="suppressed"/> is the count dropped since the last line.</summary>
     public void Reset()
     {
         _passed = 0;
@@ -115,6 +114,7 @@ internal sealed class RepeatLogLimiter
         return n;
     }
 
+    /// <summary>True when the caller should log; <paramref name="suppressed"/> is the count dropped since the last line.</summary>
     public bool TryAcquire(long nowMs, out int suppressed)
     {
         suppressed = 0;
