@@ -537,6 +537,21 @@ public sealed partial class Slv3Hub : IDisposable
     // Seeded so a restart does not replay the index a chain last reported.
     private byte _effectCounter = (byte)Environment.TickCount64;
 
+    internal Slv3DeviceWatch DeviceWatch { get; } = new();
+
+    // Window uploads that got their late passes or skipped them for the air budget, per chain since the last take.
+    private readonly Dictionary<string, (int Done, int Skipped)> _latePassCounts = new(StringComparer.OrdinalIgnoreCase);
+
+    internal (int Done, int Skipped) TakeLatePassCounts(string macHex)
+    {
+        lock (_lock)
+        {
+            var counts = _latePassCounts.GetValueOrDefault(macHex);
+            _latePassCounts.Remove(macHex);
+            return counts;
+        }
+    }
+
     // Device-list records span more than one page once enough chains are bound
     // (up to MaxSlot, plus non-fan devices), so the poll requests
     // ceil(count/RecordsPerPage) pages. Clamp so a corrupt count can't trigger
@@ -777,6 +792,7 @@ public sealed partial class Slv3Hub : IDisposable
         _lastFanRecords = new List<Slv3DeviceRecord>();
         _anyAioBound = false;
         _knownChains.Clear();
+        DeviceWatch.Clear(_nowMs(), ServiceLog.Info);
         _unconfirmedChains.Clear();
         _bindingLogs.Clear();
         _intents.Clear();
@@ -2624,6 +2640,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
                 _knownChains[key] = new Slv3KnownChain(record, nowMs, _devicePolls, _blindTotalMs);
                 Diag.OnSeen(key, nowMs, reply.AsSpan(offset, Slv3Protocol.RecordLength), record.RxType, record.Channel);
+                DeviceWatch.NoteReported(key, Convert.ToHexString(record.EffectIndex), nowMs, ServiceLog.Info);
             }
         }
         _pollRecords = pollRecords;
@@ -2631,6 +2648,7 @@ public sealed partial class Slv3Hub : IDisposable
 
         Diag.EndPoll(nowMs, gotList: true);
         ExpireChainsLocked(nowMs);
+        DeviceWatch.Check(nowMs, key => _knownChains.TryGetValue(key, out var k) && IsBoundToUsLocked(k.Record), ServiceLog.Info);
 
         // Page estimate follows the larger of the reply's count and the tracked
         // set, so a partial report can't shrink the next read below the full list.
@@ -2720,6 +2738,7 @@ public sealed partial class Slv3Hub : IDisposable
                 ReleaseIdentifyLocked(key, "chain drop");
                 _userOps.Remove(key);
                 _userBoundWired.Remove(key);
+                DeviceWatch.Remove(key, nowMs, ServiceLog.Info);
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);
@@ -3607,10 +3626,11 @@ public sealed partial class Slv3Hub : IDisposable
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, UploadOutcome outcome)
     {
         var raw = Slv3RgbFrame.BuildFrameBuffer(frames, brightnessPercent);
-        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out _, out var tooLarge))
+        if (!TryPrepareUpload(macHex, raw, ledCount, frameCount, intervalTicks, window: true, out var channel, out var rxType, out var packets, out var windowIndex, out var tooLarge))
         {
             return tooLarge ? WindowUploadResult.TooLarge : WindowUploadResult.Failed;
         }
+        var firstPassesWritten = false;
         BeginUpload();
         try
         {
@@ -3641,6 +3661,8 @@ public sealed partial class Slv3Hub : IDisposable
                     }
                 }
                 NoteConfigChangedLocked();
+                firstPassesWritten = true;
+                DeviceWatch.NoteSent(macHex, Convert.ToHexString(windowIndex), _nowMs(), ServiceLog.Info);
             }
             // The late passes' cost is booked at decision time so a concurrent
             // upload's check already sees it; the passes themselves are not re-counted.
@@ -3648,14 +3670,20 @@ public sealed partial class Slv3Hub : IDisposable
             var latePasses = 0;
             lock (_lock)
             {
+                var late = _latePassCounts.GetValueOrDefault(macHex);
                 if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
                 {
+                    _latePassCounts[macHex] = (late.Done + 1, late.Skipped);
                     latePasses = WindowLatePasses;
                     var now = _nowMs();
                     for (var i = 0; i < lateCost; i++)
                     {
                         _airSendsMs.Enqueue(now);
                     }
+                }
+                else
+                {
+                    _latePassCounts[macHex] = (late.Done, late.Skipped + 1);
                 }
             }
             // Late passes release the lock between packets so the device-list poll keeps running.
@@ -3678,6 +3706,10 @@ public sealed partial class Slv3Hub : IDisposable
         }
         finally
         {
+            if (!firstPassesWritten)
+            {
+                DeviceWatch.NoteSendFailed(macHex);
+            }
             EndUpload();
         }
     }
@@ -3729,15 +3761,24 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return false;
             }
+        }
 
-            byte[] compressed;
-            try
+        // Compression is the long step and raw is a private copy, so it runs outside the send lock.
+        byte[] compressed;
+        try
+        {
+            compressed = TinyUz.Compress(raw);
+        }
+        catch (InvalidOperationException)
+        {
+            tooLarge = true;
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (_tx is null || !TryFindRecordLocked(mac, out var record) || !IsBoundToUsLocked(record))
             {
-                compressed = TinyUz.Compress(raw);
-            }
-            catch (InvalidOperationException)
-            {
-                tooLarge = true;
                 return false;
             }
 
@@ -3776,7 +3817,12 @@ public sealed partial class Slv3Hub : IDisposable
         BeginUpload();
         try
         {
-            return SendRgbDataParts(channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex, outcome);
+            var sent = SendRgbDataParts(macHex, channel, rxType, packets, effectIndex, dataPasses, out effectIndexHex, outcome);
+            if (!sent)
+            {
+                DeviceWatch.NoteSendFailed(macHex);
+            }
+            return sent;
         }
         finally
         {
@@ -3800,7 +3846,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
-    private bool SendRgbDataParts(byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex, UploadOutcome outcome)
+    private bool SendRgbDataParts(string macHex, byte channel, byte rxType, byte[][] packets, byte[] effectIndex, int dataPasses, out string effectIndexHex, UploadOutcome outcome)
     {
         effectIndexHex = "";
         // The header gaps run with _lock RELEASED so the device-list poll keeps
@@ -3839,6 +3885,7 @@ public sealed partial class Slv3Hub : IDisposable
                 }
             }
             NoteConfigChangedLocked();
+            DeviceWatch.NoteSent(macHex, Convert.ToHexString(effectIndex), _nowMs(), ServiceLog.Info);
         }
 
         effectIndexHex = Convert.ToHexString(effectIndex);
