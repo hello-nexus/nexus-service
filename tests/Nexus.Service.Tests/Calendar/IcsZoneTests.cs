@@ -51,6 +51,16 @@ public sealed class IcsZoneTests
         Assert.Empty(failures);
     }
 
+    [Theory]
+    [InlineData("US Eastern Standard Time", "America/Indiana/Indianapolis")]
+    [InlineData("FLE Standard Time", "Europe/Kyiv")]
+    [InlineData("Nepal Standard Time", "Asia/Kathmandu")]
+    [InlineData("Myanmar Standard Time", "Asia/Yangon")]
+    public void Renamed_zones_offer_both_the_legacy_and_current_iana_id(string windowsId, string currentIana)
+    {
+        Assert.Contains(currentIana, WindowsZoneMap.ToIanaCandidates(windowsId));
+    }
+
     [Fact]
     public void Primary_iana_ids_round_trip_to_their_windows_id()
     {
