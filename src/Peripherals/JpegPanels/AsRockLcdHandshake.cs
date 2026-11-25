@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Text;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
@@ -20,6 +21,11 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
 
     private const int ReplyTimeoutMs = 300;
 
+    // Every exchange of the first few is logged in full; afterwards only failures, rate limited.
+    private const int VerboseExchanges = 4;
+
+    private readonly RepeatLogLimiter _anomalyLog = new(burst: 5, intervalMs: 60_000);
+    private int _verboseLeft = VerboseExchanges;
     private int _sequence;
     private bool _booted;
     private long _lastRealtimeMs;
@@ -103,18 +109,57 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
             return null;
         }
         framed.CopyTo(report, 0);
-        if (!device.Write(report))
-        {
-            return null;
-        }
 
-        var buffer = new byte[reportLength];
-        int read = device.Read(buffer, ReplyTimeoutMs);
-        if (read <= 0)
+        long started = Stopwatch.GetTimestamp();
+        int read = 0;
+        byte[]? decoded = null;
+        bool wrote = device.Write(report);
+        if (wrote)
         {
-            return null;
+            var buffer = new byte[reportLength];
+            read = device.Read(buffer, ReplyTimeoutMs);
+            if (read > 0)
+            {
+                decoded = AsRockLcdProtocol.Decode(buffer.AsSpan(0, read));
+            }
         }
-        var decoded = AsRockLcdProtocol.Decode(buffer.AsSpan(0, read));
-        return decoded.Length == 0 ? null : decoded;
+        long elapsedMs = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+
+        var outcome = AsRockLcdExchangeLog.Classify(wrote, read, decoded, out var status);
+        LogExchange(device, command, outcome, status, elapsedMs, decoded);
+        return decoded is { Length: > 0 } ? decoded : null;
+    }
+
+    private void LogExchange(
+        IHidDevice device, string command, AsRockExchangeOutcome outcome, string? status, long elapsedMs, byte[]? decoded)
+    {
+        bool verbose = _verboseLeft > 0;
+        if (verbose)
+        {
+            _verboseLeft--;
+        }
+        if (!verbose && outcome == AsRockExchangeOutcome.Ok)
+        {
+            return;
+        }
+        string? suffix = null;
+        if (!verbose)
+        {
+            if (!_anomalyLog.TryAcquire(Environment.TickCount64, out int suppressed))
+            {
+                return;
+            }
+            suffix = suppressed > 0 ? $" ({suppressed} similar exchange failures since the last line)" : null;
+        }
+        var line = AsRockLcdExchangeLog.Format(
+            command, outcome, status, elapsedMs, decoded, device.LastWriteError, ReplyTimeoutMs) + suffix;
+        if (outcome == AsRockExchangeOutcome.Ok)
+        {
+            ServiceLog.Info(line);
+        }
+        else
+        {
+            ServiceLog.Warn(line);
+        }
     }
 }
