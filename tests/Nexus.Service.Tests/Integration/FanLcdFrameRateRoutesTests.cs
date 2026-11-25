@@ -4,15 +4,16 @@ using Microsoft.Extensions.DependencyInjection;
 using Nexus.Service.Auth;
 using Nexus.Service.Panel;
 using Nexus.Service.Peripherals.FanLcd;
+using Nexus.Service.Peripherals.LianLiFlex;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Persistence;
 
 namespace Nexus.Service.Tests.Integration;
 
 /// <summary>
-/// The per-screen clip frame rate cap through the real wireless and TL screen routes. The Flex
-/// route shares the same checks but refuses a screen the hardware has not reported, so it cannot
-/// be reached without a unit; its DTO and storage use the same helpers these tests pin.
+/// The per-screen clip frame rate cap through the real wireless, TL and Flex screen routes. The
+/// Flex route refuses a screen the hardware has not reported, so its test registers one on the
+/// injected Flex screen hub first.
 /// </summary>
 public sealed class FanLcdFrameRateRoutesTests : IClassFixture<NexusAppFactory>
 {
@@ -95,5 +96,39 @@ public sealed class FanLcdFrameRateRoutesTests : IClassFixture<NexusAppFactory>
         Assert.Equal(45, StoredTl());
         Assert.False(await PostRefused(client, route, 100000));
         Assert.Equal(PanelDeviceRegistry.MaxFpsCap, StoredTl());
+    }
+
+    [Fact]
+    public async Task The_flex_route_stores_off_as_zero_a_cap_clamped_and_reports_the_effective_cap()
+    {
+        var lcd = _factory.Services.GetRequiredService<FlexLcdHub>();
+        lcd.Hub.UpdateScreens(new[] { new Slv3LcdScreenInfo { Serial = "S1", Position = 0 } });
+        var client = Client();
+        const string route = "/devices/lianli-flex/screen/settings";
+
+        async Task<int> ReportedCap()
+        {
+            var body = await client.GetFromJsonAsync<JsonElement>("/devices/lianli-flex/screens");
+            return body.GetProperty("screens")[0].GetProperty("fpsCap").GetInt32();
+        }
+
+        int? Stored() =>
+            _factory.Services.GetRequiredService<IConfigStore>().Load().Devices.FlexLcdScreens["S1"].FpsCap;
+
+        Assert.Equal(FanLcdClipTiming.DefaultFps, await ReportedCap());
+
+        Assert.True(await PostRefused(client, route, -1));
+        Assert.False(_factory.Services.GetRequiredService<IConfigStore>().Load().Devices.FlexLcdScreens.ContainsKey("S1"));
+
+        Assert.False(await PostRefused(client, route, 0));
+        Assert.Equal(0, Stored());
+        Assert.Equal(0, await ReportedCap());
+
+        Assert.False(await PostRefused(client, route, 60));
+        Assert.Equal(60, Stored());
+        Assert.Equal(60, await ReportedCap());
+
+        Assert.False(await PostRefused(client, route, 100000));
+        Assert.Equal(PanelDeviceRegistry.MaxFpsCap, Stored());
     }
 }
