@@ -32,6 +32,20 @@ public sealed partial class Slv3Hub : IDisposable
     private readonly object _lock = new();
     private readonly Dictionary<string, Slv3PendingCommand> _pendingCommands = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DeferredUnbind> _deferredUnbinds = new(StringComparer.Ordinal);
+
+    internal const string PendingBinding = "binding";
+    internal const string PendingUnbinding = "unbinding";
+    /// <summary>How long a user bind or unbind is reported as pending before the record speaks for itself; an RX outage has held one for about a minute.</summary>
+    internal const long PendingOpTimeoutMs = 120_000;
+
+    // A bind or unbind the user asked for, by chain MAC hex, until the chain's record echoes it or the timeout passes.
+    private readonly Dictionary<string, (string Op, long StartedMs)> _userOps = new(StringComparer.Ordinal);
+
+    // USB-owned units seen not bound to us, so the switch to USB ownership is noted once.
+    private readonly HashSet<string> _wiredNoted = new(StringComparer.Ordinal);
+
+    /// <summary>Raised with a chain's MAC hex when it is unbound, dropped or handed to USB, so an identify flash scheduled for it is cleared. Runs under the hub lock: keep it short and never call back into the hub.</summary>
+    public Action<string>? ChainReleased { get; set; }
     // Last cmd_seq issued per chain MAC hex, so back-to-back commands stay
     // monotonic even before the chain's record echoes the previous one
     // (L-Connect's per-device targe_cmd_seq).
@@ -91,6 +105,99 @@ public sealed partial class Slv3Hub : IDisposable
     public Func<string, bool>? WiredOwned { get; set; }
 
     internal const string WiredOwnedError = "connected by USB";
+
+    /// <summary>A USB-connected unit the user asked to bind: reconcile carries the bind on, like any manual bind.</summary>
+    private bool IsManualBindingLocked(string key) =>
+        _intents.TryGetValue(key, out var intent) && !intent.Unbinding && intent.Manual;
+
+    // Logs how each pending user bind or unbind ended: echoed by the chain's record, or still unechoed at the timeout.
+    private void SettleUserOpsLocked()
+    {
+        if (_userOps.Count == 0)
+        {
+            return;
+        }
+        List<string>? done = null;
+        foreach (var (key, op) in _userOps)
+        {
+            var elapsed = _nowMs() - op.StartedMs;
+            var echoed = false;
+            if (TryParseMac(key, out var mac) && TryFindRecordLocked(mac, out var record))
+            {
+                echoed = op.Op == PendingBinding ? IsBoundToUsLocked(record) : !IsBoundToUsLocked(record);
+                if (echoed)
+                {
+                    ServiceLog.Info($"[lianli-wireless] {(op.Op == PendingBinding ? "bind" : "unbind")} of {key} confirmed after {elapsed} ms: {DescribeBinding(record, _masterMac)}");
+                }
+            }
+            if (!echoed && elapsed >= PendingOpTimeoutMs)
+            {
+                ServiceLog.Warn($"[lianli-wireless] {(op.Op == PendingBinding ? "bind" : "unbind")} of {key} not confirmed after {elapsed} ms");
+                echoed = true;
+            }
+            if (echoed)
+            {
+                (done ??= new List<string>()).Add(key);
+            }
+        }
+        if (done is not null)
+        {
+            foreach (var key in done)
+            {
+                _userOps.Remove(key);
+            }
+        }
+    }
+
+    /// <summary>"binding" or "unbinding" while a user bind or unbind is not yet echoed by the chain's record, else empty.</summary>
+    private string PendingOpLocked(Slv3DeviceRecord record)
+    {
+        if (!_userOps.TryGetValue(Convert.ToHexString(record.Mac), out var op) || _nowMs() - op.StartedMs >= PendingOpTimeoutMs)
+        {
+            return "";
+        }
+        var echoed = op.Op == PendingBinding ? IsBoundToUsLocked(record) : !IsBoundToUsLocked(record);
+        return echoed ? "" : op.Op;
+    }
+
+    // An identify flash left running on a chain that leaves the radio would never be ended: drop the pending
+    // select command and let the lighting layer clear its flash, which makes the next frame a plain restore.
+    private void ReleaseIdentifyLocked(string key, string why)
+    {
+        var dropped = _pendingCommands.TryGetValue(key, out var cmd) && cmd.RfCmd == Slv3Protocol.RfSelect && _pendingCommands.Remove(key);
+        try
+        {
+            ChainReleased?.Invoke(key);
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Warn($"[lianli-wireless] identify clear for {key} failed: {ex.Message}");
+        }
+        if (dropped)
+        {
+            ServiceLog.Info($"[lianli-wireless] identify of {key} cleared on {why}");
+        }
+    }
+
+    // A unit that turns USB-owned while not bound to us is released from identify once, as an unbind does.
+    private void NoteWiredHandoversLocked()
+    {
+        foreach (var record in _lastFanRecords)
+        {
+            var key = Convert.ToHexString(record.Mac);
+            if (IsWiredOwned(key) && !IsBoundToUsLocked(record))
+            {
+                if (_wiredNoted.Add(key))
+                {
+                    ReleaseIdentifyLocked(key, "USB ownership");
+                }
+            }
+            else
+            {
+                _wiredNoted.Remove(key);
+            }
+        }
+    }
 
     /// <summary>A wired fan that is being released from the radio: the only thing reconcile does for it.</summary>
     private bool IsReleasingLocked(string key)
@@ -670,6 +777,8 @@ public sealed partial class Slv3Hub : IDisposable
         _ownedSlotSightings.Clear();
         _pendingCommands.Clear();
         _deferredUnbinds.Clear();
+        _userOps.Clear();
+        _wiredNoted.Clear();
         _lastIssuedSeq.Clear();
         _rxAbsentSinceMs = 0;
         _txAbsentSinceMs = 0;
@@ -1386,6 +1495,8 @@ public sealed partial class Slv3Hub : IDisposable
     // With the lock off no chain is steered back; only an operation started here (manual Bind, Unbind, slot-conflict unbind, or a channel-only move of a chain already ours) is carried on.
     private void ReconcileLocked()
     {
+        SettleUserOpsLocked();
+        NoteWiredHandoversLocked();
         if (Slv3Protocol.MacIsZero(_masterMac))
         {
             return;
@@ -1393,7 +1504,7 @@ public sealed partial class Slv3Hub : IDisposable
         var merged = new Dictionary<string, Slv3DeviceRecord>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
-            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(Convert.ToHexString(record.Mac))) || IsReleasingLocked(Convert.ToHexString(record.Mac)))
+            if (!IsWiredOwned(Convert.ToHexString(record.Mac)) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(Convert.ToHexString(record.Mac))) || IsReleasingLocked(Convert.ToHexString(record.Mac)) || IsManualBindingLocked(Convert.ToHexString(record.Mac)))
             {
                 merged[Convert.ToHexString(record.Mac)] = record;
             }
@@ -1401,7 +1512,7 @@ public sealed partial class Slv3Hub : IDisposable
         foreach (var record in _pollRecords)
         {
             var key = Convert.ToHexString(record.Mac);
-            if ((!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
+            if ((!IsWiredOwned(key) || (IsBoundToUsLocked(record) && !_userUnbound.Contains(key)) || IsReleasingLocked(key) || IsManualBindingLocked(key)) && (merged.ContainsKey(key) || _intents.ContainsKey(key) || _owned.ContainsKey(key)))
             {
                 merged[key] = record;
             }
@@ -2580,6 +2691,7 @@ public sealed partial class Slv3Hub : IDisposable
                 Diag.OnDropped(key, nowMs);
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
+                ReleaseIdentifyLocked(key, "chain drop");
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);
@@ -2836,6 +2948,7 @@ public sealed partial class Slv3Hub : IDisposable
             || (IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record)),
         UsbPresent = record.IsHydroShift && !IsBoundToUsLocked(record) && _soleUnboundHydroShift && _usbAioMac is null && _usbAioPresent,
         WiredOwned = IsWiredOwned(Convert.ToHexString(record.Mac)) && !IsBoundToUsLocked(record),
+        Pending = PendingOpLocked(record),
         RadioDrivesUsb = IsWiredOwned(Convert.ToHexString(record.Mac)) && IsBoundToUsLocked(record),
         CoolantTempC = record.CoolantTempC,
         FirmwareVersion = record.RfVersion,
@@ -2985,12 +3098,19 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool Bind(string macHex, out string error)
     {
-        error = "";
-        if (IsWiredOwned(macHex))
+        var ok = BindCore(macHex, out error);
+        if (!ok)
         {
-            error = WiredOwnedError;
-            return false;
+            ServiceLog.Warn($"[lianli-wireless] bind of {macHex} refused: {error}");
         }
+        return ok;
+    }
+
+    // A USB-connected unit that no master holds is bound like any other: the receiver takes the RF bind frame
+    // while USB-attached, and the wired handler hands it to the radio once it reports our master.
+    private bool BindCore(string macHex, out string error)
+    {
+        error = "";
         if (_lockBound)
         {
             error = LockedError;
@@ -3042,7 +3162,8 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return true;
             }
-            ServiceLog.Info($"[lianli-wireless] bind requested for {key} on slot {slot}");
+            _userOps[key] = (PendingBinding, _nowMs());
+            ServiceLog.Info($"[lianli-wireless] bind requested for {key} on slot {slot}{(IsWiredOwned(key) ? " (unit is connected by USB)" : "")}");
             _owned[key] = slot;
             _ownedDirty = true;
             _lastBindMs = _nowMs();
@@ -3088,6 +3209,16 @@ public sealed partial class Slv3Hub : IDisposable
     /// </summary>
     public bool Unbind(string macHex, out string error)
     {
+        var ok = UnbindCore(macHex, out error);
+        if (!ok)
+        {
+            ServiceLog.Warn($"[lianli-wireless] unbind of {macHex} refused: {error}");
+        }
+        return ok;
+    }
+
+    private bool UnbindCore(string macHex, out string error)
+    {
         error = "";
         if (_lockBound)
         {
@@ -3131,6 +3262,7 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 // The screens go back to USB content first; the release frame follows their acknowledgement or the hold.
                 _deferredUnbinds[key] = new DeferredUnbind(_nowMs() + FlexLcdUnbindHoldMs, macHex);
+                _userOps[key] = (PendingUnbinding, _nowMs());
                 ServiceLog.Info($"[lianli-wireless] unbind of {key} waits for its wireless theme switch to clear");
                 return true;
             }
@@ -3142,6 +3274,8 @@ public sealed partial class Slv3Hub : IDisposable
 
     private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord? existing)
     {
+        _userOps[key] = (PendingUnbinding, _userOps.TryGetValue(key, out var begun) && begun.Op == PendingUnbinding ? begun.StartedMs : _nowMs());
+        ReleaseIdentifyLocked(key, "unbind");
         _userUnbound.Add(key);
         _unboundHere.Add(key);
         if (_owned.Remove(key))

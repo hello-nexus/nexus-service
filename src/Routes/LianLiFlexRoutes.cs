@@ -157,7 +157,7 @@ public static partial class LianLiFlexRoutes
         MapRound2Endpoints(app);
 
         app.MapGet("/devices/lianli-flex/state", (FlexHub hub, FlexScreens screens, FlexLcdHub lcd, Slv3Hub radio, IConfigStore store, Nexus.Service.Lighting.FlexLightingFrameWriter writer) =>
-            Results.Json(BuildState(hub, store.Load(), screens, writer.IsIdentifying, lcd, mac => radio.State.Fans.Any(f => f.BoundToUs && string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))), AppJsonContext.Default.LianLiFlexStateResponse));
+            Results.Json(BuildState(hub, store.Load(), screens, writer.IsIdentifying, lcd, mac => RadioFanOf(radio, mac) is not null, mac => RadioFanOf(radio, mac)?.FanCount ?? 0), AppJsonContext.Default.LianLiFlexStateResponse));
 
         app.MapGet("/devices/lianli-flex/lighting", (FlexHub hub, IConfigStore store) =>
             Results.Json(BuildLighting(hub, store.Load()), AppJsonContext.Default.LianLiFlexLightingResponse));
@@ -437,7 +437,11 @@ public static partial class LianLiFlexRoutes
         return screen;
     }
 
-    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null, Func<string, bool>? identifying = null, FlexLcdHub? lcd = null, Func<string, bool>? radioBound = null)
+    private static Slv3FanInfo? RadioFanOf(Slv3Hub radio, string mac) =>
+        radio.State.Fans.FirstOrDefault(f => f.BoundToUs && string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase));
+
+    /// <param name="radioFans">Fan count the radio reports for a unit bound to this PC's radio, or 0. A receiver on USB alone cannot be asked how many fans it has (it reports one), so the radio record is the better count.</param>
+    internal static LianLiFlexStateResponse BuildState(FlexHub hub, NexusSettings settings, FlexScreens? screens = null, Func<string, bool>? identifying = null, FlexLcdHub? lcd = null, Func<string, bool>? radioBound = null, Func<string, int>? radioFans = null)
     {
         var units = hub.Units;
         var screenOnly = lcd is null
@@ -459,7 +463,7 @@ public static partial class LianLiFlexRoutes
                 Slot = u.Info.RxType,
                 DevType = u.Info.DevType,
                 FanType = u.Info.FansType,
-                FanCount = u.Fans,
+                FanCount = Math.Max(u.Fans, radioFans?.Invoke(u.Mac) ?? 0),
                 Rpm = u.Info.Rpm,
                 Pwm = u.Info.Pwm,
                 FirmwareVersion = u.FirmwareVersion,

@@ -70,6 +70,9 @@ public class FlexRoutesTests
         var state = LianLiFlexRoutes.BuildState(hub, settings);
         Assert.False(Assert.Single(state.Fans).RadioBound);
         Assert.True(Assert.Single(LianLiFlexRoutes.BuildState(hub, settings, null, null, null, mac => mac == "6D1007F517E1").Fans).RadioBound);
+        var wiredCount = Assert.Single(state.Fans).FanCount;
+        Assert.Equal(3, Assert.Single(LianLiFlexRoutes.BuildState(hub, settings, null, null, null, mac => mac == "6D1007F517E1", mac => mac == "6D1007F517E1" ? 3 : 0).Fans).FanCount);
+        Assert.Equal(wiredCount, Assert.Single(LianLiFlexRoutes.BuildState(hub, settings, null, null, null, null, mac => 0).Fans).FanCount);
         var json = System.Text.Json.JsonSerializer.Serialize(state, Nexus.Service.Serialization.AppJsonContext.Default.LianLiFlexStateResponse);
         Assert.Contains("\"family\":\"tlFlex\"", json);
         Assert.Contains("\"mac\":\"6D1007F517E1\"", json);

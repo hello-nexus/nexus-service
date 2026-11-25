@@ -482,6 +482,19 @@ public sealed class Np50IdentifyTracker
         lock (_lock) _entries[id] = (now, now + TimeSpan.FromMilliseconds(dur).Ticks);
     }
 
+    /// <summary>Ends the identify flash of every id that starts with <paramref name="idPrefix"/>.</summary>
+    public void ClearPrefix(string idPrefix)
+    {
+        if (string.IsNullOrEmpty(idPrefix)) return;
+        lock (_lock)
+        {
+            foreach (var id in _entries.Keys.Where(k => k.StartsWith(idPrefix, StringComparison.Ordinal)).ToList())
+            {
+                _entries.Remove(id);
+            }
+        }
+    }
+
     public bool TryGetActive(string id, long nowTicks, out long startTicks)
     {
         lock (_lock)

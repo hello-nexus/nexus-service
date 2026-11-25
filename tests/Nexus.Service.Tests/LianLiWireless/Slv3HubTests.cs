@@ -222,7 +222,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_fan_connected_by_USB_is_listed_flagged_and_never_bound_or_commanded()
+    public void A_fan_connected_by_USB_is_listed_flagged_and_never_commanded_until_bound()
     {
         var (hub, net, tx, _) = CreateConnectedHub();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
@@ -235,8 +235,6 @@ public partial class Slv3HubTests
         Assert.True(fan.WiredOwned);
         Assert.True(fan.UsbConnected);
         Assert.False(fan.BoundToUs);
-        Assert.False(ManualBind(hub, Convert.ToHexString(FanMac), out var error));
-        Assert.Equal(Slv3Hub.WiredOwnedError, error);
         var mac = Convert.ToHexString(FanMac);
         Assert.False(hub.SetPortDuty(mac, 0, 50));
         Assert.False(hub.Identify(mac));
@@ -262,7 +260,7 @@ public partial class Slv3HubTests
         Assert.False(hub.State.Fans[0].WiredOwned);
         Assert.False(hub.State.Fans[0].UsbConnected);
         Assert.True(hub.SetPortDuty(mac, 0, 50));
-        Assert.False(ManualBind(hub, mac, out _));
+        Assert.True(ManualBind(hub, mac, out _));
         hub.SetLockBoundDevices(false);
         Assert.True(hub.Unbind(mac, out var error), error);
         for (var i = 0; i < 4; i++)
