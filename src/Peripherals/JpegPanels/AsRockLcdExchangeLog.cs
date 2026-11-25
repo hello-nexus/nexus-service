@@ -59,6 +59,9 @@ internal static class AsRockLcdExchangeLog
         return sb.ToString();
     }
 
+    internal static string FormatSuppressed(int count) =>
+        $"[asrock-lcd] {count} more exchange failures suppressed";
+
     internal static string Format(
         string command, AsRockExchangeOutcome outcome, string? status, long elapsedMs,
         ReadOnlySpan<byte> reply, int writeError, int timeoutMs)
@@ -81,7 +84,7 @@ internal static class AsRockLcdExchangeLog
     }
 }
 
-/// <summary>Lets the first <c>burst</c> events through, then one summary per interval with the count held back.</summary>
+/// <summary>Lets the first <c>burst</c> events through, then one line per interval; the held-back count is reported via <see cref="TakeSuppressed"/>.</summary>
 internal sealed class RepeatLogLimiter
 {
     private readonly int _burst;
@@ -97,6 +100,21 @@ internal sealed class RepeatLogLimiter
     }
 
     /// <summary>True when the caller should log; <paramref name="suppressed"/> is the count dropped since the last line.</summary>
+    public void Reset()
+    {
+        _passed = 0;
+        _suppressed = 0;
+        _lastSummaryMs = 0;
+    }
+
+    /// <summary>Returns and clears the count held back since the last emitted line.</summary>
+    public int TakeSuppressed()
+    {
+        int n = _suppressed;
+        _suppressed = 0;
+        return n;
+    }
+
     public bool TryAcquire(long nowMs, out int suppressed)
     {
         suppressed = 0;

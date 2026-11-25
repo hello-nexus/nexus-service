@@ -76,6 +76,37 @@ public class AsRockLcdExchangeLogTests
     }
 
     [Fact]
+    public void Limiter_take_and_reset_drop_the_held_back_count()
+    {
+        var limiter = new RepeatLogLimiter(burst: 1, intervalMs: 1000);
+        Assert.True(limiter.TryAcquire(0, out _));
+        Assert.False(limiter.TryAcquire(10, out _));
+        Assert.False(limiter.TryAcquire(20, out _));
+        Assert.Equal(2, limiter.TakeSuppressed());
+        Assert.Equal(0, limiter.TakeSuppressed());
+        Assert.False(limiter.TryAcquire(30, out _));
+        limiter.Reset();
+        Assert.Equal(0, limiter.TakeSuppressed());
+        Assert.True(limiter.TryAcquire(40, out _));
+    }
+
+    [Fact]
+    public void Suppressed_line_does_not_claim_the_failures_are_similar()
+    {
+        var line = AsRockLcdExchangeLog.FormatSuppressed(7);
+        Assert.Contains("7 more exchange failures suppressed", line);
+        Assert.DoesNotContain("similar", line);
+    }
+
+    [Theory]
+    [InlineData(-3, "abandoned")]
+    [InlineData(-1, "handle closing")]
+    public void Sentinel_write_errors_are_named(int code, string fragment)
+    {
+        Assert.Contains(fragment, JpegPanelDiagnostics.DescribeWriteError(code));
+    }
+
+    [Fact]
     public void Limiter_passes_the_burst_then_one_summary_per_interval()
     {
         var limiter = new RepeatLogLimiter(burst: 2, intervalMs: 1000);

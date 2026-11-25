@@ -32,6 +32,9 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
 
     public bool OnAttach(IHidDevice device, int reportLength)
     {
+        FlushSuppressed();
+        _anomalyLog.Reset();
+        _verboseLeft = VerboseExchanges;
         _booted = false;
         _lastRealtimeMs = 0;
 
@@ -61,6 +64,7 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
     {
         Exchange(device, reportLength, "POST", "realtimeDisplay", "{\"enable\":false}");
         Exchange(device, reportLength, "POST", "disconn", null);
+        FlushSuppressed();
     }
 
     public bool BeforeFrame(IHidDevice device, int reportLength, long nowMs)
@@ -130,6 +134,15 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
         return decoded is { Length: > 0 } ? decoded : null;
     }
 
+    private void FlushSuppressed()
+    {
+        int pending = _anomalyLog.TakeSuppressed();
+        if (pending > 0)
+        {
+            ServiceLog.Warn(AsRockLcdExchangeLog.FormatSuppressed(pending));
+        }
+    }
+
     private void LogExchange(
         IHidDevice device, string command, AsRockExchangeOutcome outcome, string? status, long elapsedMs, byte[]? decoded)
     {
@@ -138,21 +151,27 @@ public sealed class AsRockLcdHandshake : IJpegPanelHandshake
         {
             _verboseLeft--;
         }
-        if (!verbose && outcome == AsRockExchangeOutcome.Ok)
+        if (outcome == AsRockExchangeOutcome.Ok)
         {
-            return;
+            FlushSuppressed();
+            if (!verbose)
+            {
+                return;
+            }
         }
-        string? suffix = null;
-        if (!verbose)
+        else if (!verbose)
         {
             if (!_anomalyLog.TryAcquire(Environment.TickCount64, out int suppressed))
             {
                 return;
             }
-            suffix = suppressed > 0 ? $" ({suppressed} similar exchange failures since the last line)" : null;
+            if (suppressed > 0)
+            {
+                ServiceLog.Warn(AsRockLcdExchangeLog.FormatSuppressed(suppressed));
+            }
         }
         var line = AsRockLcdExchangeLog.Format(
-            command, outcome, status, elapsedMs, decoded, device.LastWriteError, ReplyTimeoutMs) + suffix;
+            command, outcome, status, elapsedMs, decoded, device.LastWriteError, ReplyTimeoutMs);
         if (outcome == AsRockExchangeOutcome.Ok)
         {
             ServiceLog.Info(line);

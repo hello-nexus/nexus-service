@@ -19,6 +19,8 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
     private const int ERROR_IO_PENDING = 997;
     private const uint WAIT_OBJECT_0 = 0x0;
     private const uint WAIT_TIMEOUT = 0x102;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+    private const int WaitAbandonedCode = -3;
 
     private const int WriteTimeoutMs = 1000;
     private const int ERROR_TIMEOUT = 1460;
@@ -184,7 +186,11 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     private bool WriteCore(ReadOnlySpan<byte> report)
     {
-        if (_handle == IntPtr.Zero) return false;
+        if (_handle == IntPtr.Zero)
+        {
+            Volatile.Write(ref _lastWriteError, -1);
+            return false;
+        }
         var buf = HidReportPadding.Pad(report, _outputReportLen);
         if (!_overlapped)
         {
@@ -215,11 +221,17 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
                 }
 
                 var wait = NativeApi.WaitForSingleObject(_writeEvent, WriteTimeoutMs);
+                var waitError = wait == WAIT_FAILED ? Marshal.GetLastWin32Error() : 0;
                 if (wait != WAIT_OBJECT_0)
                 {
                     NativeApi.CancelIo(_handle);
                     NativeApi.GetOverlappedResult(_handle, &ov, out _, true);
-                    Volatile.Write(ref _lastWriteError, ERROR_TIMEOUT);
+                    Volatile.Write(ref _lastWriteError, wait switch
+                    {
+                        WAIT_TIMEOUT => ERROR_TIMEOUT,
+                        WAIT_FAILED => waitError,
+                        _ => WaitAbandonedCode,
+                    });
                     return false;
                 }
             }

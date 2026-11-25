@@ -2,12 +2,13 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 
 internal static class JpegPanelDiagnostics
 {
-    /// <summary>Win32 code from the last HID write; 0 means none recorded, -1 the handle was closing, -2 zero bytes transferred.</summary>
+    /// <summary>Win32 code from the last HID write; 0 means none recorded, -1 the handle was closing, -2 zero bytes transferred, -3 wait abandoned.</summary>
     internal static string DescribeWriteError(int code) => code switch
     {
         0 => "no OS error recorded",
         -1 => "handle closing",
         -2 => "write completed with zero bytes",
+        -3 => "write wait abandoned or returned an unexpected state",
         5 => "Win32 error 5 (access denied)",
         6 => "Win32 error 6 (invalid handle)",
         31 => "Win32 error 31 (device not functioning)",
