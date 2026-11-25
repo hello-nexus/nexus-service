@@ -30,8 +30,9 @@ public sealed class ElgatoProfileTranslator
 
     private readonly DeckImageStore _images;
     private readonly IAudioDeviceProvider? _devices;
-    // Read once per Translate, not per dial.
+    // Read once per Translate, not per dial. Translate runs on a fresh instance so the singleton holds no per-call state.
     private AudioDeviceList? _deviceList;
+    private AudioKnownEndpointIds? _knownIds;
     private bool _deviceListRead;
 
     public ElgatoProfileTranslator(DeckImageStore images, IAudioDeviceProvider? devices = null)
@@ -40,10 +41,11 @@ public sealed class ElgatoProfileTranslator
         _devices = devices;
     }
 
-    public (DeckConfig Config, ElgatoImportReport Report) Translate(ElgatoProfile profile)
+    public (DeckConfig Config, ElgatoImportReport Report) Translate(ElgatoProfile profile) =>
+        new ElgatoProfileTranslator(_images, _devices).TranslateCore(profile);
+
+    private (DeckConfig Config, ElgatoImportReport Report) TranslateCore(ElgatoProfile profile)
     {
-        _deviceList = null;
-        _deviceListRead = false;
         var (cols, rows, _) = ElgatoModelCatalog.Resolve(profile.Model, profile.MaxColSeen, profile.MaxRowSeen);
         var report = new ElgatoImportReport();
         var config = new DeckConfig();
@@ -441,7 +443,11 @@ public sealed class ElgatoProfileTranslator
         }
 
         var result = entries.Count == 1 ? entries[0] : new DeckDial { Stack = entries };
-        return (result, true, dropped > 0 ? "multiStep" : stackNote, dropped > 0 ? $"{dropped} step(s) dropped" : null);
+        // Reason carries one value; when a step was dropped as well, the device reset stays visible in the detail.
+        var detail = dropped > 0
+            ? stackNote == DeviceResetNote ? $"{dropped} step(s) dropped; device reset to default" : $"{dropped} step(s) dropped"
+            : null;
+        return (result, true, dropped > 0 ? "multiStep" : stackNote, detail);
     }
 
     /// <summary>
@@ -573,10 +579,12 @@ public sealed class ElgatoProfileTranslator
             try
             {
                 _deviceList = _devices?.ListDevices();
+                _knownIds = _devices?.ListKnownEndpointIds();
             }
             catch (Exception)
             {
                 _deviceList = null;
+                _knownIds = null;
             }
         }
         var list = _deviceList;
@@ -585,7 +593,7 @@ public sealed class ElgatoProfileTranslator
             return (id, false);
         }
         var detected = capture ? list.Inputs : list.Outputs;
-        var known = capture ? list.KnownInputIds : list.KnownOutputIds;
+        var known = (capture ? _knownIds?.Inputs : _knownIds?.Outputs) ?? new List<string>();
         if (detected.Count == 0 && known.Count == 0)
         {
             return (id, false);
@@ -1172,7 +1180,8 @@ public sealed class ElgatoProfileTranslator
     /// </summary>
     private static bool IsLocalRootedPath(string path)
     {
-        if (path.StartsWith("\\\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
+        // Windows reads any mix of the two separators as a UNC prefix.
+        if (path.Length >= 2 && path[0] is '/' or '\\' && path[1] is '/' or '\\')
         {
             return false;
         }

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Nexus.Service.Activity;
 using Nexus.Service.Deck;
 using Nexus.Service.Models.Activity;
@@ -16,12 +17,14 @@ public sealed class ElgatoImportSafetyTests
     private sealed class FakeAudioDevices : IAudioDeviceProvider
     {
         public AudioDeviceList List { get; set; } = new();
+        public AudioKnownEndpointIds Known { get; set; } = new();
         public int Reads { get; private set; }
         public AudioDeviceList ListDevices()
         {
             Reads++;
             return List;
         }
+        public AudioKnownEndpointIds ListKnownEndpointIds() => Known;
         public bool SetDefaultOutput(string deviceId) => true;
         public bool SetDefaultInput(string deviceId) => true;
         public bool SetSpatial(string deviceId, string formatId) => true;
@@ -61,6 +64,8 @@ public sealed class ElgatoImportSafetyTests
     [InlineData("\\\\evil-host\\share\\payload.exe")]
     [InlineData("//evil-host/share/payload.exe")]
     [InlineData("\\\\.\\pipe\\x")]
+    [InlineData("/\\host\\share\\x.exe")]
+    [InlineData("\\/host/share")]
     [InlineData("\\\\?\\C:\\x")]
     [InlineData("relative\\dir\\")]
     [InlineData("..\\up")]
@@ -94,9 +99,9 @@ public sealed class ElgatoImportSafetyTests
         List = new AudioDeviceList
         {
             Outputs = { new AudioDevice { Id = "{ACTIVE}", Name = "Speakers" } },
-            KnownOutputIds = { "{ACTIVE}", "{Unplugged}" },
             Inputs = { new AudioDevice { Id = "{MIC}", Name = "Mic", Direction = "input" } },
         },
+        Known = { Outputs = { "{ACTIVE}", "{Unplugged}" } },
     };
 
     [Fact]
@@ -131,6 +136,36 @@ public sealed class ElgatoImportSafetyTests
         Assert.Equal(1, devices.Reads);
         translator.Translate(DialProfile(("com.elgato.volume-controller.output-device-control", new { deviceId = "{ACTIVE}" })));
         Assert.Equal(2, devices.Reads);
+    }
+
+    [Fact]
+    public void DialStack_DroppedStepAndDeviceReset_BothStayInTheReport()
+    {
+        var profile = DialProfile(("com.elgato.streamdeck.dial.stack", new { }));
+        var stack = profile.PagesById["only"].Dials[0];
+        stack.Children.Add(new ElgatoActionData
+        {
+            Uuid = "com.elgato.volume-controller.output-device-control",
+            Settings = Json(new { deviceId = "{OTHER-PC}" }),
+        });
+        stack.Children.Add(new ElgatoActionData { Uuid = "com.example.plugin.dial", Settings = Json(new { }) });
+        var (_, report) = Translator(Devices()).Translate(profile);
+        var entry = Assert.Single(report.Unmapped, e => e.Dial == 1);
+        Assert.Equal("multiStep", entry.Reason);
+        Assert.Contains("device reset", entry.Detail);
+    }
+
+    [Fact]
+    public async Task ConcurrentTranslates_DoNotShareDeviceListState()
+    {
+        var translator = Translator(Devices());
+        var tasks = Enumerable.Range(0, 8).Select(_ => Task.Run(() => translator.Translate(DialProfile(
+            ("com.elgato.volume-controller.output-device-control", new { deviceId = "{OTHER-PC}" })))));
+        foreach (var (config, report) in await Task.WhenAll(tasks))
+        {
+            Assert.Null(config.Pages[0].Dials![0].Action!.DeviceId);
+            Assert.Single(report.Unmapped, e => e.Reason == "deviceReset");
+        }
     }
 
     [Fact]
