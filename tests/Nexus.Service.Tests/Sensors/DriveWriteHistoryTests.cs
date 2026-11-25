@@ -98,13 +98,13 @@ public class DriveWriteHistoryTests
     }
 
     [Fact]
-    public void RateFallback_LongGapCountsAsNoWrites()
+    public void RateFallback_GapOverTheCapIsNotIntegrated()
     {
         var h = new DriveWriteHistory(null);
         const double bytesPerGb = 1024.0 * 1024.0 * 1024.0;
         h.Observe("/hdd/0", "Drive H", null, bytesPerGb, At(0));
         var w = h.Observe("/hdd/0", "Drive H", null, bytesPerGb, At(3000))!.Value;
-        Assert.Equal(DriveWriteHistory.MaxIntegrateSeconds, w.LastHourGb, 3);
+        Assert.Equal(0, w.LastHourGb, 3);
         Assert.True(DriveWriteHistory.MaxIntegrateSeconds > 60);
     }
 
@@ -222,6 +222,34 @@ public class DriveWriteHistoryTests
         {
             File.Delete(path);
         }
+    }
+
+    [Fact]
+    public void CounterGoneForGood_FallsBackToRateOrDropsTheSeries()
+    {
+        const double bytesPerGb = 1024.0 * 1024.0 * 1024.0;
+        var h = new DriveWriteHistory(null);
+        h.Observe("/hdd/0", "D", 100, null, At(0));
+        var day = DriveWriteHistory.DaySeconds;
+        Assert.NotNull(h.Observe("/hdd/0", "D", null, bytesPerGb, At(day - 10)));
+        var w = h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 10));
+        Assert.NotNull(w);
+        h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 20));
+        Assert.Equal(0, h.Observe("/hdd/0", "D", null, bytesPerGb, At(day + 20))!.Value.LastDayGb, 3);
+
+        var g = new DriveWriteHistory(null);
+        g.Observe("/hdd/1", "D", 100, null, At(0));
+        Assert.Null(g.Observe("/hdd/1", "D", null, null, At(day + 10)));
+    }
+
+    [Fact]
+    public void ShortCounterDropout_HoldsTheLastObservedCounter()
+    {
+        var h = new DriveWriteHistory(null);
+        h.Observe("/nvme/0", "A", 100, null, At(0));
+        h.Observe("/nvme/0", "A", 110, null, At(100));
+        var w = h.Observe("/nvme/0", "A", null, null, At(160))!.Value;
+        Assert.Equal(10, w.LastHourGb, 3);
     }
 
     [Fact]

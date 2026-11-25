@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Nexus.Service.Models.Sensors;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
@@ -26,6 +27,11 @@ public sealed class DriveWriteSeries
     public double Integrated { get; set; }
     public long LastT { get; set; }
     public List<DriveWriteSample> Samples { get; set; } = new();
+    /// <summary>Newest counter reading this run, so a short dropout holds the real value rather than the last snapshot. Not persisted.</summary>
+    [JsonIgnore]
+    public double LastCounterGb { get; set; }
+    [JsonIgnore]
+    public long LastCounterT { get; set; }
 }
 
 public sealed class DriveWriteHistoryFile
@@ -47,7 +53,7 @@ internal sealed class DriveWriteHistory
     internal const int SnapshotSeconds = 300;
     internal const int HourSeconds = 3600;
     internal const int DaySeconds = 86400;
-    // Longest span one rate reading is assumed to hold. It must exceed the slowest caller cadence; a longer gap (sleep, restart) counts as no writes, a lower bound.
+    // Longest span one rate reading is assumed to hold. It must exceed the slowest caller cadence; a longer gap (sleep, restart) is not integrated at all, a lower bound.
     internal const int MaxIntegrateSeconds = 300;
     private const int MaxSamples = 400;
     private const double BytesPerGb = 1024.0 * 1024.0 * 1024.0;
@@ -81,13 +87,23 @@ internal sealed class DriveWriteHistory
             var hasRate = bytesPerSecond is { } r && double.IsFinite(r) && r >= 0;
             if (series is { Source: CounterSource } && !hasCounter)
             {
-                // A counter-based series never falls back to rate: one missing poll must not wipe its history.
-                if (series.Samples.Count == 0)
+                // One missing poll must not wipe the history, but a counter gone for longer than the day window is gone for good.
+                var lastSeen = series.LastCounterT != 0 ? series.LastCounterT : series.Samples.Count > 0 ? series.Samples[^1].T : 0;
+                if (lastSeen == 0 || nowT - lastSeen > DaySeconds)
+                {
+                    series = null;
+                    _series.Remove(driveId);
+                    _dirty = true;
+                }
+                else if (series.Samples.Count == 0)
                 {
                     return null;
                 }
-                var held = series.Samples[^1].Gb;
-                return new DriveWrittenWindows(Delta(series.Samples, held, nowT - HourSeconds), Delta(series.Samples, held, nowT - DaySeconds));
+                else
+                {
+                    var held = series.LastCounterT != 0 ? series.LastCounterGb : series.Samples[^1].Gb;
+                    return new DriveWrittenWindows(Delta(series.Samples, held, nowT - HourSeconds), Delta(series.Samples, held, nowT - DaySeconds));
+                }
             }
             var source = hasCounter ? CounterSource : hasRate ? RateSource : null;
             if (source is null)
@@ -106,10 +122,13 @@ internal sealed class DriveWriteHistory
             if (source == CounterSource)
             {
                 cumulative = counterGb!.Value;
+                series.LastCounterGb = cumulative;
+                series.LastCounterT = nowT;
             }
             else
             {
-                var dt = Math.Clamp(nowT - series.LastT, 0, MaxIntegrateSeconds);
+                var gap = nowT - series.LastT;
+                var dt = gap is > 0 and <= MaxIntegrateSeconds ? gap : 0;
                 series.Integrated += bytesPerSecond!.Value * dt / BytesPerGb;
                 cumulative = series.Integrated;
             }

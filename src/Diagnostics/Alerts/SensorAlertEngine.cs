@@ -1536,7 +1536,7 @@ internal static class SensorAlertText
         }
         if (string.Equals(type, "Throughput", StringComparison.OrdinalIgnoreCase))
         {
-            return (value / (1024.0 * 1024.0)).ToString("0.0", CultureInfo.InvariantCulture) + " MB/s";
+            return Nexus.Service.Sensors.SensorValueText.FormatThroughput((float)value);
         }
         var number = value.ToString("0.##", CultureInfo.InvariantCulture);
         if (units.Length == 0)
