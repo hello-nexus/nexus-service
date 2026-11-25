@@ -151,8 +151,8 @@ public static class HydroShift2Protocol
     private const int DrainMaxReads = 16;
 
     /// <summary>
-    /// Discards replies still queued on the IN pipe. Disconnect sends StopPlay and never reads its
-    /// reply, so the next session's first exchange would otherwise run one reply behind. Never throws.
+    /// Discards replies a previous session left queued on the IN pipe (Disconnect never reads
+    /// StopPlay's reply), so a new session starts on an empty pipe. Never throws.
     /// </summary>
     public static void DrainStaleReplies(IBulkUsbPipe pipe, Span<byte> scratch)
     {
