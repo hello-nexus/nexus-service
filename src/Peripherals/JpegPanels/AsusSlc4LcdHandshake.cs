@@ -15,9 +15,9 @@ namespace Nexus.Service.Peripherals.JpegPanels;
 ///
 /// The vendor app opens with <c>conn</c> and <c>power</c> (resume), then its screen-on
 /// exchange: <c>waterBlockScreen</c> (enable), <c>devStateGet</c>, <c>realtimeDisplay</c>
-/// (enable). It then streams frames with no further control traffic. Interrupt-IN was not
-/// captured, so replies are unseen: the attach waits for each one long enough to cover the
-/// vendor's own spacing between messages, logs it, and carries on when none comes.
+/// (enable). It then streams frames with no further control traffic. The attach waits for
+/// each reply long enough to cover the vendor's own spacing between messages, logs it, and
+/// carries on when none comes.
 ///
 /// The enable is the one message a frame stream depends on, so <see cref="BeforeFrame"/>
 /// re-sends it a few times at a low rate until a reply says OK. Steady-state traffic never
@@ -265,8 +265,9 @@ public sealed class AsusSlc4LcdHandshake : IJpegPanelHandshake, IJpegPanelBright
     }
 
     /// <summary>
-    /// Matches a reply to the message it answers by SeqNumber, else by command name, logs it and
-    /// returns the command; an unmatched reply is logged and returns null, and confirms nothing.
+    /// Matches a reply to the message it answers by AckNumber (one more than its SeqNumber); a reply
+    /// without AckNumber falls back to SeqNumber, then command name. Logs it and returns the
+    /// command; an unmatched reply is logged and returns null, and confirms nothing.
     /// </summary>
     private string? Dispatch(byte[] reply)
     {

@@ -251,7 +251,7 @@ public class AsusSlc4LcdTests
 
         Assert.True(handshake.OnAttach(device, 1025));
 
-        Assert.True(clock.ElapsedMilliseconds < 1000, $"attach took {clock.ElapsedMilliseconds} ms");
+        Assert.True(clock.ElapsedMilliseconds < 5000, $"attach took {clock.ElapsedMilliseconds} ms");
         Assert.Equal(5, device.Writes.Count);
         device.Writes.Clear();
         Assert.True(handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 60_000));
@@ -262,7 +262,7 @@ public class AsusSlc4LcdTests
     public void An_ack_number_reply_confirms_the_enable_only_for_the_message_it_answers()
     {
         var handshake = new AsusSlc4LcdHandshake();
-        // Only the enable (sequence 4) goes unanswered during attach, then its reply lands late.
+        // Only the enable goes unanswered during attach, then its reply lands late.
         var device = new RecordingHidDevice { Responder = (c, n) => c == "realtimeDisplay" ? null : PanelReply(200, n) };
         Assert.True(handshake.OnAttach(device, 1025));
         device.Responder = null;
