@@ -150,31 +150,44 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
             return HeldIncoming.NotHandled;
         }
         DisplayBrightnessDto? dto = null;
-        var result = _held.Replay(
-            w =>
-            {
-                if (w.Code is byte code)
+        HeldReplayResult result;
+        try
+        {
+            result = _held.Replay(
+                w =>
                 {
-                    return WriteVcp(w.Id, code, w.Value);
-                }
-                var written = WriteBrightness(w.Id, w.Value);
-                if (incoming is { } inc && w.Id == inc.Id && w.Code == inc.Code && w.Value == inc.Value)
-                {
-                    dto = written;
-                }
-                return written.Status == DisplayBrightnessWriteStatuses.Applied;
-            },
-            countAttempt,
-            incoming);
+                    if (w.Code is byte code)
+                    {
+                        return WriteVcp(w.Id, code, w.Value);
+                    }
+                    var written = WriteBrightness(w.Id, w.Value);
+                    if (incoming is { } inc && w.Id == inc.Id && w.Code == inc.Code && w.Value == inc.Value)
+                    {
+                        dto = written;
+                    }
+                    return written.Status == DisplayBrightnessWriteStatuses.Applied;
+                },
+                countAttempt,
+                incoming);
+        }
+        finally
+        {
+            // Also on a rethrow: the re-held entries would otherwise strand with no retry pending.
+            ArmRetry();
+        }
         writtenDto = dto;
         Log($"applied {result.Applied}/{result.Total} held write(s), {_held.Count} kept for retry");
-        // One pending retry at a time: re-arming on every write would keep postponing a counted retry.
+        return result.Incoming;
+    }
+
+    // One pending retry at a time: re-arming on every write would keep postponing a counted retry.
+    private void ArmRetry()
+    {
         if (_held.Count > 0 && !_retryPending)
         {
             _retryPending = true;
             _heldRetry.Change(HeldRetryDelayMs, Timeout.Infinite);
         }
-        return result.Incoming;
     }
 
     public IReadOnlyList<DisplayDto> Enumerate(IReadOnlyCollection<string>? excludedIds = null)

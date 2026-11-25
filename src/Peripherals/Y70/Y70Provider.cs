@@ -29,9 +29,11 @@ namespace Nexus.Service.Peripherals.Y70;
 /// Orientation goes through <see cref="IDisplayOrientationProvider"/> (Windows
 /// rotation).
 ///
-/// The config store is the source of truth the UI reads; every setter writes
-/// the hardware first (best-effort) and then persists, so GET reflects the last
-/// requested value even when the panel is briefly detached.
+/// The config store is the source of truth the UI reads; setters write the
+/// hardware (best-effort) and persist, so GET reflects the last requested value
+/// even when the panel is briefly detached. DDC brightness persists first and
+/// every DDC brightness write resolves its value from the store ("last
+/// persisted wins"); the other setters write the hardware first.
 ///
 /// UNVERIFIED: the DDC/CI branch (Truly / GW) and the Touch RGB-gain branch
 /// have NOT been tested on hardware; only the plain serial path (Infinite,
@@ -150,7 +152,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         // critical section (DdcSetBrightnessCoalesced). Either its section follows this persist and it sends this
         // value, or it ran earlier and this write's own coalescer call follows it and sets the final pending value.
         _store.Update(s => s.Y70.Brightness = pct);
-        DdcSetBrightnessCoalesced(() => Shown(pct));
+        DdcSetBrightnessCoalesced(() => Shown(_store.Load().Y70.Brightness));
     }
 
     // Game-mode (focus) screen-off. _powerLock makes the flag check in ReapplyBrightness and the flag set plus

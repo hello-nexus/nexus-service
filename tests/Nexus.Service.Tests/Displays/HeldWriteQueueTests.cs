@@ -140,6 +140,43 @@ public class HeldWriteQueueTests
 
         Assert.Equal(HeldIncoming.HeldAfterFailure, result.Incoming);
         Assert.Equal(1, queue.Count);
+        failing.Clear();
+        written.Clear();
+        queue.Replay(w => Write(written, failing, w), countAttempt: true);
+        Assert.Equal(21, Assert.Single(written).Value);
+    }
+
+    [Fact]
+    public void A_throw_while_the_new_write_has_no_predecessor_still_holds_the_new_write_last()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20));
+
+        Assert.Throws<System.InvalidOperationException>(() => queue.Replay(
+            w => w.Code == 1 ? throw new System.InvalidOperationException("boom") : Write(written, failing, w),
+            countAttempt: false,
+            incoming: W(9, 90)));
+
+        written.Clear();
+        queue.Replay(w => Write(written, failing, w), countAttempt: true);
+        Assert.Equal(new byte?[] { 1, 2, 9 }, written.Select(w => w.Code).ToArray());
+        Assert.Equal(90, written[2].Value);
+    }
+
+    [Fact]
+    public void The_new_write_itself_throwing_is_held_in_its_slot_with_the_rest_behind_it()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20), W(3, 30));
+
+        Assert.Throws<System.InvalidOperationException>(() => queue.Replay(
+            w => w.Code == 2 ? throw new System.InvalidOperationException("boom") : Write(written, failing, w),
+            countAttempt: false,
+            incoming: W(2, 21)));
+
+        Assert.Equal(2, queue.Count);
+        written.Clear();
+        queue.Replay(w => Write(written, failing, w), countAttempt: true);
+        Assert.Equal(new byte?[] { 2, 3 }, written.Select(w => w.Code).ToArray());
+        Assert.Equal(21, written[0].Value);
     }
 
     [Fact]
