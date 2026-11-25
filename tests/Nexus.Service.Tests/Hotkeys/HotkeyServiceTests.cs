@@ -243,6 +243,18 @@ public sealed class HotkeyServiceTests : IDisposable
         Assert.Equal(HotkeyStatus.Disabled, statuses["b"]);
     }
 
+    [Theory]
+    [InlineData("macos", "Ctrl+numlock")]
+    [InlineData("windows", "Ctrl+numpadenter")]
+    [InlineData("windows", "Ctrl+numpadequal")]
+    public async Task A_key_with_no_code_on_this_os_reports_unsupported_not_conflict(string platform, string combo)
+    {
+        _registrar.Platform = platform;
+        var service = Service();
+        await service.UpsertAsync(ActionBinding("a", combo));
+        Assert.Equal(HotkeyStatus.Unsupported, Statuses(service)["a"]);
+    }
+
     [Fact]
     public async Task An_os_refusal_reports_conflict_and_keeps_the_binding()
     {

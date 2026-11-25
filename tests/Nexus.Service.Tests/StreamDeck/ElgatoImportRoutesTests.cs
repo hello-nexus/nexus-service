@@ -140,8 +140,8 @@ public sealed class ElgatoImportRoutesTests : IDisposable
             var root = doc.RootElement;
             var report = root.GetProperty("report");
             Assert.Equal(29, report.GetProperty("totalKeys").GetInt32());
-            Assert.Equal(22, report.GetProperty("mappedKeys").GetInt32());
-            Assert.Equal(10, report.GetProperty("unmapped").GetArrayLength());
+            Assert.Equal(21, report.GetProperty("mappedKeys").GetInt32());
+            Assert.Equal(11, report.GetProperty("unmapped").GetArrayLength());
             var config = root.GetProperty("config");
             Assert.Equal(2, config.GetProperty("pages").GetArrayLength());
 

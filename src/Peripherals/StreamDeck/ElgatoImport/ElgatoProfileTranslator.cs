@@ -4,7 +4,9 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using Nexus.Service.Activity;
 using Nexus.Service.Deck;
+using Nexus.Service.Models.Activity;
 using Nexus.Service.Models.Peripherals.StreamDeck;
 
 namespace Nexus.Service.Peripherals.StreamDeck.ElgatoImport;
@@ -23,21 +25,40 @@ public sealed class ElgatoProfileTranslator
     private const int MaxDials = 6;
     /// <summary>Multimedia's actionIdx for the dial's system volume control.</summary>
     private const int MultimediaVolumeDialIdx = 18;
+    /// <summary>Report reason for a volume dial whose device binding became the system default.</summary>
+    private const string DeviceResetNote = "deviceReset";
 
     private readonly DeckImageStore _images;
+    private readonly IAudioDeviceProvider? _devices;
+    // Read once per Translate, not per dial. Translate runs on a fresh instance so the singleton holds no per-call state.
+    private AudioDeviceList? _deviceList;
+    private AudioKnownEndpointIds? _knownIds;
+    private bool _deviceListRead;
 
-    public ElgatoProfileTranslator(DeckImageStore images)
+    public ElgatoProfileTranslator(DeckImageStore images, IAudioDeviceProvider? devices = null)
     {
         _images = images;
+        _devices = devices;
     }
 
-    public (DeckConfig Config, ElgatoImportReport Report) Translate(ElgatoProfile profile)
+    public (DeckConfig Config, ElgatoImportReport Report) Translate(ElgatoProfile profile) =>
+        new ElgatoProfileTranslator(_images, _devices).TranslateCore(profile);
+
+    private (DeckConfig Config, ElgatoImportReport Report) TranslateCore(ElgatoProfile profile)
     {
         var (cols, rows, _) = ElgatoModelCatalog.Resolve(profile.Model, profile.MaxColSeen, profile.MaxRowSeen);
         var report = new ElgatoImportReport();
         var config = new DeckConfig();
         // Elgato page position (0-based in Pages.Pages) to the Nexus page it became.
         var pageMap = new Dictionary<int, int>();
+
+        // A Default that is also in the page list is an ordinary page; only one outside the list is the shared dial layer.
+        var defaultPage = profile.DefaultPageId.Length > 0 && !profile.TopPageIds.Contains(profile.DefaultPageId) &&
+            profile.PagesById.TryGetValue(profile.DefaultPageId, out var defaultData)
+            ? defaultData
+            : null;
+        // Dial positions of the Default page that at least one kept page inherits; only those are reported (as Page 0).
+        var inheritedDials = new HashSet<int>();
 
         var originalIndex = 0;
         foreach (var topId in profile.TopPageIds)
@@ -59,9 +80,10 @@ public sealed class ElgatoProfileTranslator
             var pendingPageNumber = config.Pages.Count + 1;
             var ancestorStack = new HashSet<string>(StringComparer.Ordinal) { topId };
             var slots = FlattenPage(page, cols, rows, profile, pendingPageNumber, ancestorStack, report);
-            var dials = BuildDials(page, pendingPageNumber, report);
+            var pageInherited = new HashSet<int>();
+            var dials = BuildDials(page, defaultPage, pendingPageNumber, report, null, pageInherited);
 
-            if (report.TotalKeys == beforeKeys)
+            if (report.TotalKeys == beforeKeys && pageInherited.Count == 0)
             {
                 // Zero non-skipped actions on this page - drop it and any
                 // tentative notes tagged above.
@@ -71,6 +93,13 @@ public sealed class ElgatoProfileTranslator
 
             pageMap[originalIndex - 1] = config.Pages.Count;
             config.Pages.Add(new DeckPage { Slots = slots, Dials = dials });
+            inheritedDials.UnionWith(pageInherited);
+        }
+
+        if (defaultPage is not null && inheritedDials.Count > 0)
+        {
+            // Counted and reported once (Page 0); the pages above inherit these dials without recounting.
+            BuildDials(defaultPage, null, 0, report, inheritedDials, null);
         }
 
         if (config.Pages.Count == 0)
@@ -174,6 +203,7 @@ public sealed class ElgatoProfileTranslator
                     Page = reportPageNumber,
                     Position = $"{col},{row}",
                     Name = action.Name,
+                    Uuid = action.Uuid,
                     Reason = built.Reason,
                     Detail = built.Detail,
                 });
@@ -221,44 +251,131 @@ public sealed class ElgatoProfileTranslator
         return (slot, false, reason, action.Uuid);
     }
 
-    /// <summary>The page's (or folder's) dials, null when it has none so a folder keeps its page's dials.</summary>
-    private List<DeckDial>? BuildDials(ElgatoPageData page, int reportPageNumber, ElgatoImportReport report)
+    /// <summary>
+    /// The page's (or folder's) dials, null when it has none so a folder keeps its page's dials.
+    /// A dial position the page leaves empty inherits the whole stack of <paramref name="fallback"/>
+    /// (the Default page); a position the page defines at any row replaces it entirely. Inherited
+    /// entries are built but not counted or reported, and their positions land in <paramref name="inheritedOut"/>.
+    /// <paramref name="only"/> limits the build to those dial positions.
+    /// Every entry of a stacked dial is imported; the row the router points at comes first.
+    /// </summary>
+    private List<DeckDial>? BuildDials(ElgatoPageData page, ElgatoPageData? fallback, int reportPageNumber, ElgatoImportReport report, HashSet<int>? only, HashSet<int>? inheritedOut)
     {
         var dials = new List<DeckDial>();
-        foreach (var (index, action) in page.Dials.OrderBy(kv => kv.Key))
+        var own = DialEntriesOf(page);
+        var inheritable = fallback is null ? new Dictionary<(int Dial, int Row), ElgatoActionData>() : DialEntriesOf(fallback);
+        var indexes = own.Keys.Concat(inheritable.Keys).Select(k => k.Dial);
+
+        foreach (var index in indexes.Distinct().OrderBy(i => i))
         {
-            if (index >= MaxDials || ElgatoActionTypes.IsSkippable(action.Uuid))
+            if (index >= MaxDials || (only is not null && !only.Contains(index)))
             {
                 continue;
             }
 
-            report.TotalKeys++;
-            var (dial, mapped, reason, detail) = BuildDial(action);
+            var rows = new SortedDictionary<int, (ElgatoActionData Action, bool Inherited)>();
+            var definedHere = own.Keys.Any(k => k.Dial == index);
+            foreach (var kv in (definedHere ? own : inheritable).Where(kv => kv.Key.Dial == index))
+            {
+                rows[kv.Key.Row] = (kv.Value, !definedHere);
+            }
+            var ordered = rows.Where(kv => !ElgatoActionTypes.IsSkippable(kv.Value.Action.Uuid)).ToList();
+            if (ordered.Count == 0)
+            {
+                continue;
+            }
+            if (page.DialRouters.TryGetValue(index, out var activeRow) && ordered.FindIndex(kv => kv.Key == activeRow) is > 0 and var at)
+            {
+                ordered = ordered.Skip(at).Concat(ordered.Take(at)).ToList();
+            }
+
+            if (!definedHere)
+            {
+                inheritedOut?.Add(index);
+            }
+
+            var built = new List<DeckDial>();
+            DeckDial? placeholder = null;
+            foreach (var (_, (action, inherited)) in ordered)
+            {
+                var (dial, mapped, reason, detail, alsoReset) = BuildDial(action);
+                if (mapped)
+                {
+                    if (dial.Stack is { Count: > 0 } nested)
+                    {
+                        built.AddRange(nested);
+                    }
+                    else
+                    {
+                        built.Add(dial);
+                    }
+                }
+                else
+                {
+                    placeholder ??= dial;
+                }
+                if (inherited)
+                {
+                    continue;
+                }
+
+                report.TotalKeys++;
+                if (mapped)
+                {
+                    report.MappedKeys++;
+                }
+                if (reason is not null)
+                {
+                    report.Unmapped.Add(new ElgatoUnmappedEntry
+                    {
+                        Page = reportPageNumber,
+                        Dial = index + 1,
+                        Name = action.Name,
+                        Uuid = action.Uuid,
+                        Reason = reason,
+                        Detail = detail,
+                    });
+                }
+                if (alsoReset)
+                {
+                    report.Unmapped.Add(new ElgatoUnmappedEntry
+                    {
+                        Page = reportPageNumber,
+                        Dial = index + 1,
+                        Name = action.Name,
+                        Uuid = action.Uuid,
+                        Reason = DeviceResetNote,
+                    });
+                }
+            }
+
             while (dials.Count <= index)
             {
                 dials.Add(new DeckDial());
             }
-            dials[index] = dial;
-            if (mapped)
+            dials[index] = built.Count switch
             {
-                report.MappedKeys++;
-            }
-            if (reason is not null)
-            {
-                report.Unmapped.Add(new ElgatoUnmappedEntry
-                {
-                    Page = reportPageNumber,
-                    Dial = index + 1,
-                    Name = action.Name,
-                    Reason = reason,
-                    Detail = detail,
-                });
-            }
+                0 => placeholder ?? new DeckDial(),
+                1 => built[0],
+                _ => new DeckDial { Stack = built },
+            };
         }
         return dials.Count > 0 ? dials : null;
     }
 
-    private (DeckDial Dial, bool Mapped, string? Reason, string? Detail) BuildDial(ElgatoActionData action)
+    /// <summary>Every dial entry of a page; Dials entries absent from DialEntries count as row 0.</summary>
+    private static Dictionary<(int Dial, int Row), ElgatoActionData> DialEntriesOf(ElgatoPageData page)
+    {
+        var entries = new Dictionary<(int Dial, int Row), ElgatoActionData>(page.DialEntries);
+        foreach (var (dial, action) in page.Dials)
+        {
+            entries.TryAdd((dial, 0), action);
+        }
+        return entries;
+    }
+
+    /// <summary>AlsoReset: a device reset the single Reason cannot carry because steps were dropped.</summary>
+    private (DeckDial Dial, bool Mapped, string? Reason, string? Detail, bool AlsoReset) BuildDial(ElgatoActionData action)
     {
         if (action.Uuid == ElgatoActionTypes.DialStack)
         {
@@ -270,7 +387,7 @@ public sealed class ElgatoProfileTranslator
         if (dialAction is not null)
         {
             dial.Action = dialAction;
-            return (dial, true, note, null);
+            return (dial, true, note, null, false);
         }
 
         // Placeholder keeps the face; with neither title nor icon the Elgato
@@ -281,10 +398,10 @@ public sealed class ElgatoProfileTranslator
         }
         if (failureReason is not null)
         {
-            return (dial, false, failureReason, null);
+            return (dial, false, failureReason, null, false);
         }
         var reason = action.Uuid.StartsWith(ElgatoActionTypes.BuiltinPrefix, StringComparison.Ordinal) ? "unsupported" : "plugin";
-        return (dial, false, reason, action.Uuid);
+        return (dial, false, reason, action.Uuid, false);
     }
 
     private DeckDial BuildDialFace(ElgatoActionData action)
@@ -309,16 +426,18 @@ public sealed class ElgatoProfileTranslator
     }
 
     /// <summary>Entries that cannot be translated are dropped; a single survivor becomes the dial itself.</summary>
-    private (DeckDial, bool, string?, string?) BuildDialStack(ElgatoActionData action)
+    private (DeckDial, bool, string?, string?, bool) BuildDialStack(ElgatoActionData action)
     {
         var entries = new List<DeckDial>();
+        var anyReset = false;
         foreach (var child in action.Children)
         {
-            var (entryAction, _, _) = TryBuildDialAction(child);
+            var (entryAction, _, childNote) = TryBuildDialAction(child);
             if (entryAction is null)
             {
                 continue;
             }
+            anyReset |= childNote == DeviceResetNote;
             var entry = BuildDialFace(child);
             entry.Action = entryAction;
             entries.Add(entry);
@@ -332,11 +451,12 @@ public sealed class ElgatoProfileTranslator
             {
                 dial.Label = action.Name;
             }
-            return (dial, false, "multiStep", dropped > 0 ? $"{dropped} step(s) unsupported" : null);
+            return (dial, false, "multiStep", dropped > 0 ? $"{dropped} step(s) unsupported" : null, false);
         }
 
         var result = entries.Count == 1 ? entries[0] : new DeckDial { Stack = entries };
-        return (result, true, dropped > 0 ? "multiStep" : null, dropped > 0 ? $"{dropped} step(s) dropped" : null);
+        var detail = dropped > 0 ? $"{dropped} step(s) dropped" : null;
+        return (result, true, dropped > 0 ? "multiStep" : anyReset ? DeviceResetNote : null, detail, dropped > 0 && anyReset);
     }
 
     /// <summary>
@@ -344,7 +464,7 @@ public sealed class ElgatoProfileTranslator
     /// for a type with no dial translation at all, leaving the caller to
     /// classify it as unsupported or plugin.
     /// </summary>
-    private static (DeckDialAction? Action, string? FailureReason, string? Note) TryBuildDialAction(ElgatoActionData action)
+    private (DeckDialAction? Action, string? FailureReason, string? Note) TryBuildDialAction(ElgatoActionData action)
     {
         switch (action.Uuid)
         {
@@ -357,9 +477,17 @@ public sealed class ElgatoProfileTranslator
             case ElgatoActionTypes.KeyBrightness:
                 return (new DeckDialAction { Type = DeckDialTypes.DeckBrightness }, null, null);
             case ElgatoActionTypes.VolumeOutput:
-                return (new DeckDialAction { Type = DeckDialTypes.Volume, Step = ReadVolumeStep(action.Settings) }, null, null);
+            {
+                var (outId, outReset) = ReadDeviceId(action.Settings, false);
+                return (new DeckDialAction { Type = DeckDialTypes.Volume, Step = ReadVolumeStep(action.Settings), DeviceId = outId }, null, outReset ? DeviceResetNote : null);
+            }
             case ElgatoActionTypes.VolumeInput:
-                return (new DeckDialAction { Type = DeckDialTypes.MicVolume, Step = ReadVolumeStep(action.Settings) }, null, null);
+            {
+                var (inId, inReset) = ReadDeviceId(action.Settings, true);
+                return (new DeckDialAction { Type = DeckDialTypes.MicVolume, Step = ReadVolumeStep(action.Settings), DeviceId = inId }, null, inReset ? DeviceResetNote : null);
+            }
+            case ElgatoActionTypes.SpotifyDial:
+                return BuildSpotifyDialAction(action);
             case ElgatoActionTypes.KeysAdaptor:
                 return BuildActionTriggerDialAction(action);
             default:
@@ -422,6 +550,66 @@ public sealed class ElgatoProfileTranslator
             return (null, "multiStep", null);
         }
         return (custom, null, mappedParts < Math.Min(3, action.Children.Count) ? "multiStep" : partNote);
+    }
+
+    /// <summary>Turn is system volume and press is play/pause; the plugin's double and triple press (next and previous track) have no dial slot, so they are noted.</summary>
+    private static (DeckDialAction?, string?, string?) BuildSpotifyDialAction(ElgatoActionData action)
+    {
+        var step = ElgatoJson.GetDouble(action.Settings, "volumeStep");
+        DeckAction Volume(string op) => new() { Type = "system", SystemAction = new DeckSystemAction { Op = op, Step = step } };
+        var custom = new DeckDialAction
+        {
+            Type = DeckDialTypes.Custom,
+            TurnLeft = Volume("volumeDown"),
+            TurnRight = Volume("volumeUp"),
+            Push = new DeckAction { Type = "system", SystemAction = new DeckSystemAction { Op = "mediaPlayPause" } },
+        };
+        var gestures = !string.IsNullOrEmpty(ElgatoJson.GetString(action.Settings, "doublePress")) ||
+            !string.IsNullOrEmpty(ElgatoJson.GetString(action.Settings, "triplePress"));
+        return (custom, null, gestures ? "dialPartial" : null);
+    }
+
+    /// <summary>
+    /// The chosen endpoint id; null for the system default so the dial keeps following it. An id this
+    /// machine has never seen (the profile came from another PC) becomes the default and is flagged
+    /// as reset; a known endpoint that is unplugged or disabled keeps its id. With no readable device
+    /// list the id is kept.
+    /// </summary>
+    private (string? Id, bool Reset) ReadDeviceId(JsonElement settings, bool capture)
+    {
+        var id = ElgatoJson.GetString(settings, "deviceId");
+        if (string.IsNullOrEmpty(id) || id == "default")
+        {
+            return (null, false);
+        }
+        if (!_deviceListRead)
+        {
+            _deviceListRead = true;
+            try
+            {
+                _deviceList = _devices?.ListDevices();
+                _knownIds = _devices?.ListKnownEndpointIds();
+            }
+            catch (Exception)
+            {
+                _deviceList = null;
+                _knownIds = null;
+            }
+        }
+        var list = _deviceList;
+        if (list is null)
+        {
+            return (id, false);
+        }
+        var detected = capture ? list.Inputs : list.Outputs;
+        var known = (capture ? _knownIds?.Inputs : _knownIds?.Outputs) ?? new List<string>();
+        if (detected.Count == 0 && known.Count == 0)
+        {
+            return (id, false);
+        }
+        var seen = detected.Exists(d => string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase)) ||
+            known.Exists(k => string.Equals(k, id, StringComparison.OrdinalIgnoreCase));
+        return seen ? (id, false) : (null, true);
     }
 
     /// <summary>Volume Controller stores volumeStep as a numeric string; a number is tolerated.</summary>
@@ -536,7 +724,7 @@ public sealed class ElgatoProfileTranslator
             {
                 folderSlots.RemoveAt(backIndex);
             }
-            slot.Folder = new DeckFolder { Slots = folderSlots, Dials = BuildDials(childPage, reportPageNumber, report) };
+            slot.Folder = new DeckFolder { Slots = folderSlots, Dials = BuildDials(childPage, null, reportPageNumber, report, null, null) };
             return (slot, true, null, null);
         }
         finally
@@ -619,15 +807,28 @@ public sealed class ElgatoProfileTranslator
             case ElgatoActionTypes.Open:
             {
                 var built = BuildOpenAction(action);
-                return built is not null ? (built, null, null) : (null, "open", null);
+                if (built is not null)
+                {
+                    return (built, null, null);
+                }
+                // A path that exists but is not a local rooted one (UNC, device, relative) is refused, not "missing".
+                var rawPath = StripOuterQuotes(ElgatoJson.GetString(action.Settings, "path") ?? "");
+                return (null, rawPath.Length > 0 ? "unsupported" : "open", null);
             }
             case ElgatoActionTypes.OpenApp:
             {
-                // Unverified settings shape; only translate when it carries
-                // the same "path" key system.open uses, else it is an
-                // unmapped first-party builtin like any other.
-                var built = BuildOpenAction(action);
-                return built is not null ? (built, null, null) : (null, "unsupported", null);
+                var built = BuildOpenAppAction(action, out var openNote);
+                return built is not null ? (built, null, openNote) : (null, "unsupported", null);
+            }
+            case ElgatoActionTypes.KeyBrightness:
+            {
+                // actionIdx 0 raises brightness and 1 lowers it.
+                var op = ElgatoJson.GetInt(action.Settings, "actionIdx") switch { 0 => "up", 1 => "down", _ => null };
+                return op is null ? (null, "unsupported", null) : (new DeckAction { Type = "deckBrightness", Op = op }, null, null);
+            }
+            case ElgatoActionTypes.Sleep:
+            {
+                return (new DeckAction { Type = "deckSleep" }, null, null);
             }
             case ElgatoActionTypes.Website:
             {
@@ -812,13 +1013,17 @@ public sealed class ElgatoProfileTranslator
         {
             return null;
         }
-        var key = QtKeyToToken(qtCode.Value);
+        // KeyModifiers can carry flag bits above the Int32 range, so it is read as a long.
+        var modifiers = slotEl.ValueKind == JsonValueKind.Object && slotEl.TryGetProperty("KeyModifiers", out var modEl) &&
+            modEl.ValueKind == JsonValueKind.Number && modEl.TryGetInt64(out var modBits)
+            ? modBits
+            : 0;
+        var key = (modifiers & KeypadFlag) != 0 ? KeypadToken(qtCode.Value) ?? QtKeyToToken(qtCode.Value) : QtKeyToToken(qtCode.Value);
         if (key is null)
         {
             return null;
         }
 
-        var modifiers = ElgatoJson.GetInt(slotEl, "KeyModifiers") ?? 0;
         var parts = new List<string>(5);
         if ((modifiers & 0x2) != 0)
         {
@@ -840,13 +1045,30 @@ public sealed class ElgatoProfileTranslator
         return string.Join('+', parts);
     }
 
+    /// <summary>KeyModifiers bit Elgato sets on a numeric keypad key.</summary>
+    private const long KeypadFlag = 0x4000;
+
+    /// <summary>Qt::Key of a keypad key to its keypad token (digits and the Qt codes for the operator and Enter keys); null when it is none of those.</summary>
+    private static string? KeypadToken(int code) => code switch
+    {
+        >= 0x30 and <= 0x39 => "numpad" + (char)code,
+        0x2B => "numpadadd",
+        0x2D => "numpadsubtract",
+        0x2A => "numpadmultiply",
+        0x2F => "numpaddivide",
+        0x2E or 0x2C => "numpaddecimal",
+        0x3D => "numpadequal",
+        0x01000004 or 0x01000005 => "numpadenter",
+        _ => null,
+    };
+
     private static bool IsPopulatedHotkeySlot(JsonElement slotEl)
     {
         var qt = ElgatoJson.GetInt(slotEl, "QTKeyCode");
         return qt is not null && qt != 0x01FFFFFF;
     }
 
-    /// <summary>Qt::Key value to a ParseHotkey-compatible token, or null when Nexus has no representable key (e.g. punctuation like '.').</summary>
+    /// <summary>Qt::Key value to a ParseHotkey-compatible token, or null when Nexus has no representable key (a shifted symbol such as '+').</summary>
     private static string? QtKeyToToken(int code)
     {
         if (code is >= 0x30 and <= 0x39)
@@ -861,9 +1083,28 @@ public sealed class ElgatoProfileTranslator
         {
             return "space";
         }
-        if (code == 0x2E)
+        var punctuation = code switch
         {
-            return ".";
+            0x2E => ".",
+            0x2C => ",",
+            0x2D => "-",
+            0x3D => "=",
+            0x2F => "/",
+            0x3B => ";",
+            0x27 => "'",
+            0x5B => "[",
+            0x5D => "]",
+            0x5C => "\\",
+            0x60 => "`",
+            _ => null,
+        };
+        if (punctuation is not null)
+        {
+            return punctuation;
+        }
+        if (code == 0x01000025)
+        {
+            return "numlock";
         }
         if (code is >= 0x01000030 and <= 0x01000047)
         {
@@ -899,15 +1140,65 @@ public sealed class ElgatoProfileTranslator
             return null;
         }
         var path = StripOuterQuotes(raw);
-        if (path.Length == 0)
+        if (path.Length == 0 || !IsLocalRootedPath(path))
         {
             return null;
         }
         // A .app bundle is a directory on disk, but the OS "open" launches it
         // like a file - never route it to openFolder.
         var isDir = !path.EndsWith(".app", StringComparison.OrdinalIgnoreCase) &&
-            (path.EndsWith('/') || path.EndsWith('\\') || (Path.IsPathRooted(path) && Directory.Exists(path)));
+            (path.EndsWith('/') || path.EndsWith('\\') || Directory.Exists(path));
         return new DeckAction { Type = isDir ? "openFolder" : "openFile", Path = path };
+    }
+
+    /// <summary>
+    /// Open Application stores exec and bundle_path (older builds stored path). A macOS exec inside
+    /// a .app resolves to the bundle; a launcher that needs args goes through its Start Menu shortcut.
+    /// </summary>
+    private static DeckAction? BuildOpenAppAction(ElgatoActionData action, out string? note)
+    {
+        note = null;
+        var exec = ElgatoJson.GetString(action.Settings, "exec");
+        var bundle = ElgatoJson.GetString(action.Settings, "bundle_path");
+        var target = !string.IsNullOrEmpty(exec) && exec.Contains(".app/", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(bundle)
+            ? bundle
+            : !string.IsNullOrEmpty(exec) ? exec : bundle;
+        if (!string.IsNullOrEmpty(ElgatoJson.GetString(action.Settings, "args")))
+        {
+            var source = ElgatoJson.GetString(action.Settings, "source");
+            if (!string.IsNullOrEmpty(source) && source.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+            {
+                target = source;
+            }
+            else
+            {
+                note = "openAppArgs";
+            }
+        }
+        if (string.IsNullOrEmpty(target))
+        {
+            return BuildOpenAction(action);
+        }
+        var path = StripOuterQuotes(target);
+        return IsLocalRootedPath(path) ? new DeckAction { Type = "openFile", Path = path } : null;
+    }
+
+    /// <summary>
+    /// True for a drive-letter or POSIX absolute path. UNC shares, device paths and relative paths are
+    /// refused because the profile is untrusted and they would reach a remote host or resolve against the working directory.
+    /// </summary>
+    private static bool IsLocalRootedPath(string path)
+    {
+        // Windows reads any mix of the two separators as a UNC prefix.
+        if (path.Length >= 2 && path[0] is '/' or '\\' && path[1] is '/' or '\\')
+        {
+            return false;
+        }
+        if (path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/')
+        {
+            return true;
+        }
+        return path.StartsWith('/');
     }
 
     private static string StripOuterQuotes(string s) =>
@@ -928,11 +1219,8 @@ public sealed class ElgatoProfileTranslator
 
     private static DeckAction? BuildMultimediaAction(ElgatoActionData action)
     {
-        var idx = ElgatoJson.GetInt(action.Settings, "actionIdx");
-        if (idx is null)
-        {
-            return null;
-        }
+        // A freshly dropped Multimedia key stores no actionIdx and plays or pauses.
+        var idx = ElgatoJson.GetInt(action.Settings, "actionIdx") ?? 1;
         var op = idx switch
         {
             0 => "mediaPrev",

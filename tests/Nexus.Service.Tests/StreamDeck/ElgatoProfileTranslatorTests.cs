@@ -40,8 +40,8 @@ public sealed class ElgatoProfileTranslatorTests : IDisposable
     {
         var (_, report) = _translator.Translate(ReadFixtureProfile());
         Assert.Equal(29, report.TotalKeys);
-        Assert.Equal(22, report.MappedKeys);
-        Assert.Equal(10, report.Unmapped.Count);
+        Assert.Equal(21, report.MappedKeys);
+        Assert.Equal(11, report.Unmapped.Count);
     }
 
     [Fact]
@@ -130,12 +130,12 @@ public sealed class ElgatoProfileTranslatorTests : IDisposable
     }
 
     [Fact]
-    public void Translate_OpenAction_BarePathIsFile()
+    public void Translate_OpenAction_BarePathIsRefusedAsRelative()
     {
-        var (config, _) = _translator.Translate(ReadFixtureProfile());
+        var (config, report) = _translator.Translate(ReadFixtureProfile());
         var slot = Slot(config, 0, 1, 1);
-        Assert.Equal("openFile", slot.Action!.Type);
-        Assert.Equal("notepad", slot.Action.Path);
+        Assert.Null(slot.Action);
+        Assert.Contains(report.Unmapped, e => e.Page == 1 && e.Position == "1,1" && e.Reason == "unsupported");
     }
 
     [Fact]

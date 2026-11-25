@@ -268,6 +268,12 @@ public sealed partial class Slv3Hub : IDisposable
     // RX handle, never UsbResetAnother: the reset re-enumerates the RX, a Windows
     // device sound each time.
     private const int RxBusyPollsBeforeReset = 60;
+    // A chain that matched its target and then reports a mismatch must keep reporting it this many polls before a bind goes out, so a one-poll misread never steers it.
+    internal const int BindMismatchPollsBeforeSend = 3;
+    // Bind frames sent at poll cadence before resends back off, so a record the chain never corrects cannot be spammed.
+    internal const int BindBurstSends = 5;
+    private const long BindResendBackoffMs = 1_000;
+    private const long BindResendBackoffMaxMs = 15_000;
     private int _rxBusyStreak;
     private byte[]? _firstBusyReply;
 
@@ -1577,12 +1583,35 @@ public sealed partial class Slv3Hub : IDisposable
                 _bindSaveArmed = true;
             }
             intent.Sends = 0;
+            intent.MismatchPolls = 0;
+            intent.NextSendMs = 0;
+            intent.Confirmed = true;
             intent.Manual = false;
             if (!_lockBound)
             {
                 _intents.Remove(key);
             }
             return;
+        }
+        if (!intent.Manual)
+        {
+            if (intent.Confirmed)
+            {
+                // A busy or missed poll leaves the last record in place and the poll counter unmoved, so a poll counts once and only when the chain was heard in it.
+                if (!_knownChains.TryGetValue(key, out var heard) || heard.Poll != _devicePolls || intent.CountedPoll == _devicePolls)
+                {
+                    return;
+                }
+                intent.CountedPoll = _devicePolls;
+                if (++intent.MismatchPolls < BindMismatchPollsBeforeSend)
+                {
+                    return;
+                }
+            }
+            if (_nowMs() < intent.NextSendMs)
+            {
+                return;
+            }
         }
         // Unlocked, only a manual Bind or a channel-only move of a chain already ours is carried on, never against a live foreign master.
         if (!_lockBound && (IsLiveMasterLocked(record.MasterMac)
@@ -1607,6 +1636,11 @@ public sealed partial class Slv3Hub : IDisposable
         intent.NoSlotLogged = false;
         SendBindFrameLocked(record, intent.TargetRx, unbind: false);
         NoteSendLocked(key, intent, "bind", record);
+        intent.Confirmed = false;
+        if (!intent.Manual && intent.Sends >= BindBurstSends)
+        {
+            intent.NextSendMs = _nowMs() + Math.Min(BindResendBackoffMs << Math.Min(intent.Sends - BindBurstSends, 4), BindResendBackoffMaxMs);
+        }
     }
 
     private bool NeedsBind(BindIntent intent, Slv3DeviceRecord record) =>
@@ -3827,6 +3861,11 @@ public sealed partial class Slv3Hub : IDisposable
         {
             _channel = (byte)channel;
             State.Channel = channel;
+            // A channel move is intended, not a misread, so it skips the mismatch persistence gate.
+            foreach (var intent in _intents.Values)
+            {
+                intent.Confirmed = false;
+            }
             // L-Connect SwitchChannel: every chain kept bound reports the old channel and is walked over by the reconcile.
             RunPassLocked(() =>
             {
@@ -3971,6 +4010,10 @@ public sealed partial class Slv3Hub : IDisposable
         public bool Manual;
         public bool NoSlotLogged;
         public int Sends;
+        public int MismatchPolls;
+        public bool Confirmed;
+        public long CountedPoll = -1;
+        public long NextSendMs;
     }
 
     // An unbind waiting for the chain's wireless theme switch to clear; ClearedAtMs is when the bits were seen cleared and the config save went out.

@@ -25,14 +25,16 @@ public sealed class ElgatoProfilesResponse
 /// <summary>One key the translator could not (or only partly) map, from POST .../import.</summary>
 public sealed class ElgatoUnmappedEntry
 {
-    /// <summary>1-based top-level page index; nested-folder entries report their top-level ancestor's page.</summary>
+    /// <summary>1-based top-level page index; nested-folder entries report their top-level ancestor's page; 0 is the profile's Default dial page.</summary>
     public int Page { get; set; }
     /// <summary>"col,row" within whichever grid the key lives in (the top page, or a folder's own grid); empty for a dial or a whole-page note.</summary>
     public string Position { get; set; } = "";
     /// <summary>1-based dial index when the entry is a dial rather than a key.</summary>
     public int? Dial { get; set; }
     public string Name { get; set; } = "";
-    /// <summary>hotkey | open | website | text | media | plugin | unsupported | multiStep | pageLimit | hotkeyExtraSlots | textEnterIgnored | monitoringSensor | audioPath.</summary>
+    /// <summary>The Elgato action UUID (a plugin's own id for a third-party action), so the user sees exactly what is missing.</summary>
+    public string Uuid { get; set; } = "";
+    /// <summary>hotkey | open | website | text | media | plugin | unsupported | multiStep | pageLimit | hotkeyExtraSlots | textEnterIgnored | monitoringSensor | audioPath | openAppArgs | dialPartial.</summary>
     public string Reason { get; set; } = "";
     public string? Detail { get; set; }
 }

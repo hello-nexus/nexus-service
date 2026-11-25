@@ -2778,7 +2778,7 @@ public partial class Slv3HubTests
     [Fact]
     public void The_bind_save_waits_for_every_owned_chain_to_reach_its_target()
     {
-        var (hub, net, tx, _, _) = CreateRebindHub();
+        var (hub, net, tx, clock, _) = CreateRebindHub();
         var second = new SimulatedFan { Mac = SecondFanMac, IgnoresBind = true };
         net.Fans.Add(second);
         hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [Convert.ToHexString(FanMac)] = 4, [Convert.ToHexString(SecondFanMac)] = 5 };
@@ -2787,6 +2787,7 @@ public partial class Slv3HubTests
         Assert.Empty(SaveCfgFrames(tx));
 
         second.IgnoresBind = false;
+        clock.AdvanceMs(15_000);
         Ticks(hub, BindSaveTicks * 2);
         Assert.Single(SaveCfgFrames(tx));
     }

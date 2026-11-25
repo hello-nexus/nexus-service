@@ -79,6 +79,45 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
         return list;
     }, fallback: new AudioDeviceList(), op: "list");
 
+    public AudioKnownEndpointIds ListKnownEndpointIds() => RunOnComThread(() =>
+    {
+        var known = new AudioKnownEndpointIds();
+        var clsid = MMDeviceEnumeratorClsid;
+        var iid = IID_IMMDeviceEnumerator;
+        if (CoCreateInstance(ref clsid, IntPtr.Zero, ClsCtxInprocServer, ref iid, out var enumPtr) < 0)
+            return known;
+        try
+        {
+            known.Outputs.AddRange(EnumerateIds(enumPtr, EDataFlow.eRender));
+            known.Inputs.AddRange(EnumerateIds(enumPtr, EDataFlow.eCapture));
+        }
+        finally { Release(enumPtr); }
+        return known;
+    }, fallback: new AudioKnownEndpointIds(), op: "list-known");
+
+    private static List<string> EnumerateIds(IntPtr enumPtr, EDataFlow flow)
+    {
+        var ids = new List<string>();
+        if (EnumAudioEndpoints(enumPtr, flow, DEVICE_STATE_ALL, out var coll) < 0 || coll == IntPtr.Zero)
+            return ids;
+        try
+        {
+            if (GetCount(coll, out var count) < 0) return ids;
+            for (uint i = 0; i < count; i++)
+            {
+                if (GetItem(coll, i, out var dev) < 0 || dev == IntPtr.Zero) continue;
+                try
+                {
+                    var id = GetId(dev);
+                    if (!string.IsNullOrEmpty(id)) ids.Add(id);
+                }
+                finally { Release(dev); }
+            }
+        }
+        finally { Release(coll); }
+        return ids;
+    }
+
     /// <summary>Spatial sound for the default output, read as its own work
     /// item so a stalled or throwing audiosrv call cannot blank the list.</summary>
     private AudioSpatialState ReadSpatialForDefault(AudioDeviceList list)
@@ -486,6 +525,7 @@ public sealed unsafe class WindowsAudioDeviceProvider : IAudioDeviceProvider, ID
     private const int ClsCtxInprocServer = 0x1;
     private const int STGM_READ = 0x0;
     private const int DEVICE_STATE_ACTIVE = 0x1;
+    private const int DEVICE_STATE_ALL = 0xF;
 
     private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
     private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }

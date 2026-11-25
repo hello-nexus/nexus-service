@@ -74,9 +74,9 @@ public sealed class WindowsInputter : IInputterProvider
     private static bool SendKey(ushort vk, bool down)
     {
         var input = new INPUT { type = INPUT_KEYBOARD };
-        input.ki.wVk = vk;
+        input.ki.wVk = (ushort)(vk & 0xFF);
         // The right-hand Ctrl, Alt and Win are extended keys; without the flag Windows maps them to the left-hand keys.
-        var extended = vk is VK_RCONTROL or VK_RMENU or VK_RWIN ? KEYEVENTF_EXTENDEDKEY : 0u;
+        var extended = vk is VK_RCONTROL or VK_RMENU or VK_RWIN || (vk & ExtendedKeyBit) != 0 ? KEYEVENTF_EXTENDEDKEY : 0u;
         input.ki.dwFlags = extended | (down ? 0u : KEYEVENTF_KEYUP);
         return SendInput(1, ref input, Marshal.SizeOf<INPUT>()) == 1;
     }
@@ -119,6 +119,23 @@ public sealed class WindowsInputter : IInputterProvider
             "ArrowRight" => 0x27,
             "CapsLock" => 0x14,
             "NumLock" => 0x90,
+            "Numpad0" => 0x60,
+            "Numpad1" => 0x61,
+            "Numpad2" => 0x62,
+            "Numpad3" => 0x63,
+            "Numpad4" => 0x64,
+            "Numpad5" => 0x65,
+            "Numpad6" => 0x66,
+            "Numpad7" => 0x67,
+            "Numpad8" => 0x68,
+            "Numpad9" => 0x69,
+            "NumpadMultiply" => 0x6A,
+            "NumpadAdd" => 0x6B,
+            "NumpadSubtract" => 0x6D,
+            "NumpadDecimal" => 0x6E,
+            "NumpadDivide" => 0x6F | ExtendedKeyBit,
+            "NumpadEnter" => 0x0D | ExtendedKeyBit,
+            "NumpadEqual" => 0xBB, // Windows has no keypad equals VK; the main-row key is the closest
             "ScrollLock" => 0x91,
             "PrintScreen" => 0x2C,
             "Period" => 0xBE, // VK_OEM_PERIOD
@@ -148,6 +165,8 @@ public sealed class WindowsInputter : IInputterProvider
     // P/Invoke constants
     private const uint INPUT_KEYBOARD = 1;
     private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    /// <summary>Above the 8-bit VK range: marks a key (keypad Divide, keypad Enter) that SendInput needs flagged extended.</summary>
+    private const ushort ExtendedKeyBit = 0x100;
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_SHIFT = 0x10;
