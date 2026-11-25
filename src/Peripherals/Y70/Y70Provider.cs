@@ -134,15 +134,20 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         var pct = Math.Clamp(brightness, 0, 100);
         // Touch and Truly both dim over DDC/CI (gain registers vs VCP 0x10);
         // WritePendingDdcBrightness picks the register set by variant.
-        if (SerialTransportSelected)
+        // Under _powerLock so the ScreenOff read and the write are atomic against a toggle. Game-mode screen-off
+        // is deliberately not consulted: a slider move is explicit user intent.
+        lock (_powerLock)
         {
-            ApplySerial(!_store.Load().Y70.ScreenOff, Shown(pct));
+            if (SerialTransportSelected)
+            {
+                ApplySerial(!_store.Load().Y70.ScreenOff, Shown(pct));
+            }
+            else
+            {
+                DdcSetBrightnessCoalesced(Shown(pct));
+            }
+            _store.Update(s => s.Y70.Brightness = pct);
         }
-        else
-        {
-            DdcSetBrightnessCoalesced(Shown(pct));
-        }
-        _store.Update(s => s.Y70.Brightness = pct);
     }
 
     // Game-mode (focus) screen-off. _powerLock makes the flag check in ReapplyBrightness and the flag set plus
@@ -395,7 +400,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         {
             if (_disposed) return;
             _pendingDdcBrightness = pct;
-            var now = Environment.TickCount64;
+            var now = Clock();
             if (now - _lastDdcBrightnessWriteAt < interval)
             {
                 _ddcBrightnessFlush ??= new Timer(_ => WritePendingDdcBrightness(), null, Timeout.Infinite, Timeout.Infinite);
@@ -426,7 +431,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                 lock (_ddcStateLock)
                 {
                     pct = _pendingDdcBrightness;
-                    _lastDdcBrightnessWriteAt = Environment.TickCount64;
+                    _lastDdcBrightnessWriteAt = Clock();
                 }
                 if (TouchVariantKnown)
                 {
