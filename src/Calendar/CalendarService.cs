@@ -39,6 +39,8 @@ public sealed class CalendarService
         public string? ETag;
         public string? LastModified;
         public string? BodyHash;
+        /// <summary>CalendarUrl.IdentityKey of the feed address, computed once so an add never decrypts every stored URL.</summary>
+        public string? IdentityKey;
         public bool Syncing;
         public DateTimeOffset? LastAttempt;
         public DateTimeOffset? LastFinished;
@@ -93,6 +95,7 @@ public sealed class CalendarService
                         {
                             st.LastAttempt = DateTimeOffset.FromUnixTimeMilliseconds(ms);
                         }
+                        st.IdentityKey = Uri.TryCreate(SecretProtector.Unprotect(rec.UrlProtected), UriKind.Absolute, out var known) ? CalendarUrl.IdentityKey(known) : null;
                         LoadCache(st);
                         _sources.Add(st);
                     }
@@ -350,7 +353,7 @@ public sealed class CalendarService
             var key = CalendarUrl.IdentityKey(uri);
             foreach (var other in _sources)
             {
-                if (other.Record.Kind == CalendarKinds.Ics && IsSameFeed(other.Record, key))
+                if (other.Record.Kind == CalendarKinds.Ics && other.IdentityKey == key)
                 {
                     return new CalendarAddResult { Error = CalendarErrors.Duplicate };
                 }
@@ -359,6 +362,7 @@ public sealed class CalendarService
             {
                 // Marked busy from the start so the worker cannot fetch the same source concurrently.
                 Syncing = true,
+                IdentityKey = key,
                 Record = new CalendarSourceRecord
                 {
                     Id = "cal_" + Guid.NewGuid().ToString("N").Substring(0, 12),
@@ -379,8 +383,10 @@ public sealed class CalendarService
         {
             // A cancelled first fetch leaves no error and no sync time: it is a failure, not a source.
             failure = st.Error ?? (st.Record.LastSyncedAt is null ? CalendarErrors.Unreachable : null);
-            if (failure is null && st.BodyHash is { } hash
-                && _sources.Any(o => !ReferenceEquals(o, st) && o.Record.Kind == CalendarKinds.Ics && o.BodyHash == hash))
+            // Empty feeds all hash alike and failing sources hold a stale body, so neither counts as a match.
+            if (failure is null && st.BodyHash is { } hash && st.Feed is { Events.Count: > 0 }
+                && _sources.Any(o => !ReferenceEquals(o, st) && o.Record.Kind == CalendarKinds.Ics && o.Error is null
+                    && o.Feed is { Events.Count: > 0 } && o.BodyHash == hash))
             {
                 failure = CalendarErrors.Duplicate;
             }
@@ -403,10 +409,6 @@ public sealed class CalendarService
         }
         return new CalendarAddResult { Source = created };
     }
-
-    private static bool IsSameFeed(CalendarSourceRecord record, string key) =>
-        Uri.TryCreate(SecretProtector.Unprotect(record.UrlProtected), UriKind.Absolute, out var existing)
-        && CalendarUrl.IdentityKey(existing) == key;
 
     public sealed class ProbeResult
     {
@@ -694,8 +696,8 @@ public sealed class CalendarService
                 string? etag, lastMod;
                 lock (_gate)
                 {
-                    etag = st.Feed is null ? null : st.ETag;
-                    lastMod = st.Feed is null ? null : st.LastModified;
+                    etag = st.Feed is null || st.BodyHash is null ? null : st.ETag;
+                    lastMod = st.Feed is null || st.BodyHash is null ? null : st.LastModified;
                 }
                 var result = await _fetcher.FetchAsync(uri, etag, lastMod, ct).ConfigureAwait(false);
                 switch (result.Outcome)
@@ -774,6 +776,7 @@ public sealed class CalendarService
         {
             return CalendarErrors.NotIcs;
         }
+        var bodyHash = HashBody(result.Body ?? "");
         lock (_gate)
         {
             st.Feed = feed;
@@ -785,7 +788,7 @@ public sealed class CalendarService
             }
             st.ETag = result.ETag;
             st.LastModified = result.LastModified;
-            st.BodyHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(result.Body ?? "")));
+            st.BodyHash = bodyHash;
             // A source deleted mid-sync must not get its cache re-created.
             if (_sources.Contains(st))
             {
@@ -793,6 +796,21 @@ public sealed class CalendarService
             }
         }
         return null;
+    }
+
+    /// <summary>SHA-256 of the unfolded feed with DTSTAMP lines left out, so a feed that restamps on every request still matches itself.</summary>
+    internal static string HashBody(string body)
+    {
+        var sb = new System.Text.StringBuilder(body.Length);
+        foreach (var line in IcsLexer.Unfold(body))
+        {
+            if (line.StartsWith("DTSTAMP", StringComparison.OrdinalIgnoreCase) && line.Length > 7 && line[7] is ':' or ';')
+            {
+                continue;
+            }
+            sb.Append(line).Append('\n');
+        }
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sb.ToString())));
     }
 
     private void RaiseChanged()

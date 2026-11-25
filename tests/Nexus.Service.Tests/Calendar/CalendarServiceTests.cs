@@ -187,6 +187,73 @@ public sealed class CalendarServiceTests : IDisposable
         Assert.Equal(2, svc.ListSources().Count);
     }
 
+    private static string StampedFeed(string stamp) =>
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nSUMMARY:A\r\nDTSTAMP:" + stamp + "\r\nDTSTART:20261105T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    [Fact]
+    public async Task Add_ignores_DTSTAMP_when_comparing_content()
+    {
+        var svc = New();
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(StampedFeed("20261117T100000Z"));
+        await svc.AddAsync(SecretUrl, "A", "#000000", CancellationToken.None);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(StampedFeed("20261117T110000Z"));
+
+        var result = await svc.AddAsync("https://mirror.example.org/copy.ics", "B", "#000000", CancellationToken.None);
+
+        Assert.Equal("duplicate", result.Error);
+    }
+
+    [Fact]
+    public async Task Add_does_not_treat_two_empty_calendars_as_identical()
+    {
+        var svc = New();
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+        await svc.AddAsync(SecretUrl, "A", "#000000", CancellationToken.None);
+
+        var result = await svc.AddAsync("https://other.example.org/empty.ics", "B", "#000000", CancellationToken.None);
+
+        Assert.Null(result.Error);
+        Assert.Equal(2, svc.ListSources().Count);
+    }
+
+    [Fact]
+    public async Task Add_does_not_compare_content_with_a_failing_source()
+    {
+        var svc = New();
+        await svc.AddAsync(SecretUrl, "Old", "#000000", CancellationToken.None);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Fail("notFound", 404);
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        await svc.RunDueAsync(CancellationToken.None);
+        Assert.Equal("error", svc.ListSources()[0].Status);
+        _fetcher.Handler = (_, _) => FakeCalendarFetcher.Ok(IcsFixtures.Google);
+
+        var result = await svc.AddAsync("https://calendar.example.com/ical/rotated-token/basic.ics", "New", "#000000", CancellationToken.None);
+
+        Assert.Null(result.Error);
+        Assert.Equal(2, svc.ListSources().Count);
+    }
+
+    [Fact]
+    public async Task A_source_without_a_stored_hash_refetches_unconditionally_to_fill_it()
+    {
+        var svc = New();
+        await svc.AddAsync(SecretUrl, "Work", "#000000", CancellationToken.None);
+        var cache = Directory.GetFiles(Path.Combine(_root, "calendar", "cache")).Single();
+        File.WriteAllText(cache, System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(cache), "\"bodyHash\":\\s*\"[0-9A-F]+\",?", ""));
+        var upgraded = New();
+        _fetcher.Calls.Clear();
+        _fetcher.Handler = (_, etag) => etag is null ? FakeCalendarFetcher.Ok(IcsFixtures.Google) : FakeCalendarFetcher.NotModified();
+        _clock.Advance(TimeSpan.FromMinutes(16));
+
+        await upgraded.RunDueAsync(CancellationToken.None);
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        await upgraded.RunDueAsync(CancellationToken.None);
+
+        Assert.Equal(2, _fetcher.Calls.Count);
+        Assert.Null(_fetcher.Calls[0].ETag);
+        Assert.NotNull(_fetcher.Calls[1].ETag);
+    }
+
     [Fact]
     public async Task Webcal_is_rewritten_to_https()
     {
