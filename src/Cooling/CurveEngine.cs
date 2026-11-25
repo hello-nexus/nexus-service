@@ -234,6 +234,37 @@ public sealed class CurveEngine : BackgroundService
         lock (_manualReplayed) { _manualReplayed.Clear(); }
     }
 
+    // Walk sequence recorded at resume; negative when no re-drive is pending.
+    private long _resumeWalkSeq = -1;
+
+    /// <summary>Firmware or the driver can hand a fan back to its own control across sleep, and the write
+    /// dedup would then hold the duty back forever. Arms a one-shot re-drive that the tick performs once an
+    /// LHM walk begun after the resume has completed: readings cached from before sleep look fresh, and a
+    /// write before the chip settles would be reverted again.</summary>
+    public void OnSystemResumed()
+    {
+        var seq = _guard.WalkBeginSeq();
+        Interlocked.Exchange(ref _resumeWalkSeq, seq);
+        ServiceLog.Info($"[curve-engine] resume: re-drive armed, waiting for a sensor walk begun after walk {seq}");
+    }
+
+    private void ConsumeResumeRedrive()
+    {
+        var pending = Interlocked.Read(ref _resumeWalkSeq);
+        if (pending < 0 || _guard.WalkCompletedSeq() <= pending)
+        {
+            return;
+        }
+        // Idempotent steps first; the pending mark is cleared only once the retake succeeded, so a throw retries on the next tick.
+        lock (_lastWrite) { _lastWrite.Clear(); }
+        ClearManualReplayed();
+        _fans.RetakeControlAfterResume();
+        if (Interlocked.CompareExchange(ref _resumeWalkSeq, -1, pending) == pending)
+        {
+            ServiceLog.Info($"[curve-engine] resume: re-drive fired after sensor walk {_guard.WalkCompletedSeq()}, every curve and manual duty is written again");
+        }
+    }
+
     internal void Tick()
     {
         try
@@ -267,6 +298,7 @@ public sealed class CurveEngine : BackgroundService
             _step = "waiting for fresh readings";
             return;
         }
+        Isolated("resume retake", ConsumeResumeRedrive);
 
         // The watchdog drove cooling mode from its own thread while this loop was stalled:
         // forget what was written so every duty, unchanged ones included, is written again.
@@ -419,6 +451,8 @@ public sealed class CurveEngine : BackgroundService
                 // Flat curves do not need a reading to evaluate, but they still
                 // carry a sensor binding that the curve stream reports.
                 float? temp = null;
+                // A route or MCP edit can reshape the live Outputs list mid-tick.
+                var curveOutputs = CoolingSnapshots.Outputs(curveDoc);
                 if (curveDoc.Input.Id.Length > 0)
                 {
                     temp = _fans.ReadTemperature(curveDoc.Input.Id);
@@ -457,7 +491,7 @@ public sealed class CurveEngine : BackgroundService
                     "Linear" => EvaluateLinear(curveDoc.Linear, temp!.Value),
                     "Graph" => EvaluateGraph(curveDoc.Graph, temp!.Value),
                     "Mixed" => EvaluateMix(curveDoc.Mixed, MixView(rawByCurve, exemptFromGlobal, globalMod)),
-                    "Sync" => EvaluateSync(curveDoc.Sync, channelDuty, curveDoc.Outputs),
+                    "Sync" => EvaluateSync(curveDoc.Sync, channelDuty, curveOutputs),
                     "Trigger" => EvaluateTrigger(curveDoc, temp!.Value),
                     "Auto" => EvaluateAuto(curveDoc, temp!.Value),
                     _ => null,
@@ -499,7 +533,7 @@ public sealed class CurveEngine : BackgroundService
                 // don't push redundant PWM commands at the firmware.
                 var outputStates = new List<CurveOutputState>();
                 var nowMs = Clock();
-                foreach (var output in curveDoc.Outputs)
+                foreach (var output in curveOutputs)
                 {
                     var offset = offsets.TryGetValue(output.Id, out var off) ? off : 0;
                     var appliedSpeed = missingSource
@@ -949,6 +983,26 @@ public sealed class CurveEngine : BackgroundService
         return linear.MinSpeed + ratio * (linear.MaxSpeed - linear.MinSpeed);
     }
 
+    private static bool IsSortedByTemp(List<Nexus.Service.Persistence.GraphPoint> points)
+    {
+        for (var i = 1; i < points.Count; i++)
+        {
+            if (points[i].Temp < points[i - 1].Temp)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Separate method so the closure is only allocated on this rare path.
+    private static List<Nexus.Service.Persistence.GraphPoint> SortedPointsCopy(GraphCurveData graph)
+    {
+        var copy = CoolingSnapshots.Retry(() => graph.Points.ToList());
+        copy.Sort((a, b) => a.Temp.CompareTo(b.Temp));
+        return copy;
+    }
+
     internal static double? EvaluateGraph(GraphCurveData? graph, float temp)
     {
         if (graph is null || graph.Points.Count == 0)
@@ -956,8 +1010,16 @@ public sealed class CurveEngine : BackgroundService
             return null;
         }
 
+        // The live list is never sorted in place: another thread may be editing it. Points are normally stored in order, so the common path reads them as they are and allocates nothing.
         var points = graph.Points;
-        points.Sort((a, b) => a.Temp.CompareTo(b.Temp));
+        if (!IsSortedByTemp(points))
+        {
+            points = SortedPointsCopy(graph);
+            if (points.Count == 0)
+            {
+                return null;
+            }
+        }
 
         if (temp <= points[0].Temp)
         {
@@ -1358,7 +1420,7 @@ public sealed class CurveEngine : BackgroundService
         var owned = new HashSet<string>(StringComparer.Ordinal);
         foreach (var curve in curves)
         {
-            foreach (var o in curve.Outputs)
+            foreach (var o in CoolingSnapshots.Outputs(curve))
             {
                 owned.Add(o.Id);
             }

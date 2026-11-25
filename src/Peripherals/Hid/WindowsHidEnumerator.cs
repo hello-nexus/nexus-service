@@ -21,12 +21,23 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
             path => HidPathIds.MayMatch(path, vendorId, productId),
             attrs => attrs.VendorID == (ushort)vendorId && attrs.ProductID == (ushort)productId);
 
+    public (IReadOnlyList<string> Paths, IReadOnlyList<HidDeviceInfo> Fresh) Scan(int vendorId, int productId, IReadOnlyCollection<string> knownPaths)
+    {
+        var paths = new List<string>();
+        var fresh = EnumerateDevices(
+            path => HidPathIds.MayMatch(path, vendorId, productId),
+            attrs => attrs.VendorID == (ushort)vendorId && attrs.ProductID == (ushort)productId,
+            seenPaths: paths,
+            skipPaths: knownPaths);
+        return (paths, fresh);
+    }
+
     public IReadOnlyList<HidDeviceInfo> FindAll() => EnumerateDevices(null, null);
 
     /// <summary><see cref="FindAll"/> without the per-device serial read, for callers that only need usages.</summary>
     public IReadOnlyList<HidDeviceInfo> FindAllWithoutSerials() => EnumerateDevices(null, null, readSerial: false);
 
-    private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true)
+    private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true, List<string>? seenPaths = null, IReadOnlyCollection<string>? skipPaths = null)
     {
         var result = new List<HidDeviceInfo>();
         Native.HidD_GetHidGuid(out var hidGuid);
@@ -67,6 +78,12 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
 
                     var devicePath = Marshal.PtrToStringUni(detail + 4) ?? "";
                     if (string.IsNullOrEmpty(devicePath) || (pathFilter is not null && !pathFilter(devicePath)))
+                    {
+                        continue;
+                    }
+
+                    seenPaths?.Add(devicePath);
+                    if (skipPaths is not null && skipPaths.Contains(devicePath))
                     {
                         continue;
                     }
@@ -147,7 +164,11 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
     /// <summary>hidapi's own default queue depth for an input handle (hid.c HidD_SetNumInputBuffers call).</summary>
     private const uint InputBufferDepth = 64;
 
-    public IHidDevice? Open(string path, bool forInput = false)
+    public IHidDevice? Open(string path, bool forInput = false) => OpenCore(path, forInput, quiet: false);
+
+    public IHidDevice? OpenQuiet(string path, bool forInput = false) => OpenCore(path, forInput, quiet: true);
+
+    private IHidDevice? OpenCore(string path, bool forInput, bool quiet)
     {
         // Try progressively less restrictive access if another process (e.g. vendor
         // apps like Razer Synapse, G HUB) holds exclusive access. We log the mode
@@ -185,7 +206,10 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
             return null;
         }
 
-        ServiceLog.Info($"[hid] opened {path.Substring(System.Math.Max(0, path.Length - 60))} with access={modeUsed}");
+        if (!quiet)
+        {
+            ServiceLog.Info($"[hid] opened {path.Substring(System.Math.Max(0, path.Length - 60))} with access={modeUsed}");
+        }
 
         if (forInput)
         {

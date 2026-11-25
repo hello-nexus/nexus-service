@@ -30,13 +30,15 @@ public sealed class PowerEventListener : IHostedService, IDisposable
     private readonly Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? _slv3;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? _curve;
     private readonly Nexus.Service.Lifecycle.ResumeSelfRestart? _selfRestart;
+    private readonly Nexus.Service.Cooling.CurveEngine? _curveEngine;
     private readonly Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? _aio;
 #if WINDOWS
     private bool _subscribed;
 #endif
 
-    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null, Nexus.Service.Lifecycle.ResumeSelfRestart? selfRestart = null)
+    public PowerEventListener(RgbBridge bridge, SleepBlackoutCoordinator blackout, Nexus.Service.Peripherals.LianLi.LianLiHubSet? lianLi = null, Nexus.Service.Peripherals.LianLiWireless.Slv3Hub? slv3 = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2CurveLcdDriver? curve = null, Nexus.Service.Peripherals.BulkPanels.HydroShift2Aio? aio = null, Nexus.Service.Lifecycle.ResumeSelfRestart? selfRestart = null, Nexus.Service.Cooling.CurveEngine? curveEngine = null)
     {
+        _curveEngine = curveEngine;
         _selfRestart = selfRestart;
         _curve = curve;
         _aio = aio;
@@ -98,6 +100,9 @@ public sealed class PowerEventListener : IHostedService, IDisposable
         else if (e.Mode == PowerModes.Resume)
         {
             ServiceLog.Info("[power-events] system resumed - bouncing OpenRGB subprocess");
+            // First, ahead of the diagnostics and device work below: a call there that waits on a held lock must not keep the fans from being driven again.
+            try { _curveEngine?.OnSystemResumed(); }
+            catch (Exception ex) { ServiceLog.Warn($"[power-events] curve engine resume failed: {ex.Message}"); }
             ServiceLog.Info($"[resume] resumed: devices before restart={_bridge.Devices.Count}, smbus mutex={RgbBridge.ProbeSmbusMutex()}, {RgbBridge.LhmWalkSummary()}");
             _blackout.OnResumed();
             _bridge.OnSystemResume();

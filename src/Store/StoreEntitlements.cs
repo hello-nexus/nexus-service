@@ -60,9 +60,10 @@ public sealed class StoreEntitlements
         if (string.IsNullOrEmpty(accountId)) return new StoreAuthorization(false, "sign_in_required", null);
 
         var path = $"/store/apps/{appId}/download?version={Uri.EscapeDataString(version)}";
-        if (!string.IsNullOrWhiteSpace(nexusVersion))
+        var clientVersion = StoreCatalogProxy.ClientVersion(nexusVersion);
+        if (clientVersion.Length > 0)
         {
-            path += $"&nexusVersion={Uri.EscapeDataString(nexusVersion)}";
+            path += $"&nexusVersion={Uri.EscapeDataString(clientVersion)}";
         }
 
         var result = await _accounts.WithAuthAsync(
@@ -78,6 +79,12 @@ public sealed class StoreEntitlements
             && result.Value.Body.Contains("not_yet_released", StringComparison.Ordinal))
         {
             return new StoreAuthorization(false, "not_yet_released", null);
+        }
+        // A version above this build's floor is a 403 as well; signing in cannot fix it.
+        if (result.StatusCode == 403 && result.Value is not null
+            && result.Value.Body.Contains("requires_newer_nexus", StringComparison.Ordinal))
+        {
+            return new StoreAuthorization(false, "version_unavailable", null);
         }
         if (result.StatusCode is 401 or 403) return new StoreAuthorization(false, "sign_in_required", null);
         if (result.StatusCode == 404) return new StoreAuthorization(false, "version_unavailable", null);

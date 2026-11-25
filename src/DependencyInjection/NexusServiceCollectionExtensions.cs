@@ -296,7 +296,17 @@ public static class NexusServiceCollectionExtensions
             new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.NzxtFanControllerCoolingProvider.IsNzxtFanControllerId, sp.GetRequiredService<Nexus.Service.Cooling.NzxtFanControllerCoolingProvider>()),
             new CompositeFanControlProvider.FanSource(
+                Nexus.Service.Cooling.CorsairPsuCoolingProvider.IsCorsairPsuId, sp.GetRequiredService<Nexus.Service.Cooling.CorsairPsuCoolingProvider>()),
+            new CompositeFanControlProvider.FanSource(
                 Nexus.Service.Cooling.CommanderCoreCoolingProvider.IsCommanderCoreId, sp.GetRequiredService<Nexus.Service.Cooling.CommanderCoreCoolingProvider>())));
+        services.AddSingleton<Nexus.Service.Cooling.CorsairPsuCoolingProvider>(sp =>
+        {
+            var lhm = sp.GetService<LhmComputer>();
+            return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
+                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
+                () => lhm is null || lhm.OpenTask.IsCompleted,
+                psuTemperatures: () => lhm?.PsuTemperatures() ?? System.Array.Empty<Nexus.Service.Cooling.PsuTemperature>());
+        });
         services.AddSingleton<ICoolingProvider>(sp => (ICoolingProvider)sp.GetRequiredService<IFanControlProvider>());
 #elif MACOS
         services.AddSingleton<MacFanControlProvider>();
@@ -1301,6 +1311,11 @@ public static class NexusServiceCollectionExtensions
             wirelessHub.DisplayWatch = new Nexus.Service.Peripherals.LianLiWireless.WindowsDisplayStateWatch(wirelessHub.OnDisplayState);
 #endif
             wirelessHub.WiredOwned = mac => sp.GetService<Nexus.Service.Peripherals.LianLiFlex.FlexHub>()?.Find(mac) is not null;
+#if WINDOWS
+            wirelessHub.Diag.StartWriter(Nexus.Service.Platform.ServiceLog.LogsDirectory, Nexus.Service.Peripherals.LianLiWireless.Slv3UsbParent.Resolve);
+#else
+            wirelessHub.Diag.StartWriter(Nexus.Service.Platform.ServiceLog.LogsDirectory);
+#endif
             return wirelessHub;
         });
         services.AddSingleton<Nexus.Service.Cooling.Slv3CoolingProvider>(sp =>
@@ -1795,7 +1810,7 @@ public static class NexusServiceCollectionExtensions
                 sp.GetRequiredService<Nexus.Service.Peripherals.CorsairLink.CorsairLinkLcd>()));
 
         // Lian Li Strimer Plus: HID connection worker + lighting.
-        services.AddSingleton<Nexus.Service.Peripherals.Strimer.StrimerHub>();
+        services.AddSingleton<Nexus.Service.Peripherals.Strimer.StrimerUnits>();
         services.AddSingleton<Nexus.Service.Lighting.StrimerLightingDeviceProvider>();
         services.AddSingleton<Nexus.Service.Lighting.ILightingFrameContributor>(
             sp => sp.GetRequiredService<Nexus.Service.Lighting.StrimerLightingDeviceProvider>());
@@ -2075,6 +2090,9 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>();
         services.AddHostedService(sp =>
             sp.GetRequiredService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70DisplayHeartbeatWorker>());
+#if WINDOWS
+        services.AddHostedService<Nexus.Service.Peripherals.Hyte.Y70Display.Y70HelperConnectHook>();
+#endif
 
         // Tryx Panorama AIO: current firmware enumerates as a Windows usbprint
         // device (VID 0x391A, "RK PANO"); Linux/other platforms still see the
@@ -2196,7 +2214,9 @@ public static class NexusServiceCollectionExtensions
                 && Array.Exists(wireless.State.Fans, f => f.BoundToUs
                     && Nexus.Service.Peripherals.LianLiWireless.Slv3Protocol.IsHydroShiftDevType((byte)f.DevType)
                     && (mac is null || string.Equals(f.Mac, mac, StringComparison.OrdinalIgnoreCase))),
-                mac => !store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac, out var screen) || screen.NexusWidgets);
+                mac => !store.Load().Devices.LianLiWireless.AioScreens.TryGetValue(mac, out var screen) || screen.NexusWidgets,
+                ownershipMark: () => wireless.PollMark,
+                ownershipSettledSince: wireless.OwnershipSettledSince);
             // Each switch to RF control redraws the AIO's own screen over the glass, so Nexus
             // widgets wipe it again. A change of owner stops or starts the stream now; the AIO's
             // own screen gets a fresh switch, acknowledged a drive tick or more after the stream
@@ -2289,6 +2309,22 @@ public static class NexusServiceCollectionExtensions
         services.AddSingleton<Nexus.Service.Platform.Weather.IWeatherProvider, Nexus.Service.Platform.Weather.OpenMeteoWeatherProvider>();
         services.AddSingleton<Nexus.Service.Lighting.Sun.SunLocationResolver>();
         services.AddHostedService(sp => sp.GetRequiredService<Nexus.Service.Lighting.Sun.SunLocationResolver>());
+        return services;
+    }
+
+    public static IServiceCollection AddNexusCalendar(this IServiceCollection services)
+    {
+        services.AddSingleton<Nexus.Service.Calendar.ICalendarFetcher, Nexus.Service.Calendar.HttpCalendarFetcher>();
+        services.AddSingleton(sp =>
+        {
+            var calendar = new Nexus.Service.Calendar.CalendarService(
+                Nexus.Service.Persistence.NexusDataPaths.NexusRoot(),
+                sp.GetRequiredService<Nexus.Service.Calendar.ICalendarFetcher>());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            calendar.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastCalendar(hub);
+            return calendar;
+        });
+        services.AddHostedService<Nexus.Service.Calendar.CalendarSyncWorker>();
         return services;
     }
 
@@ -2691,7 +2727,10 @@ public static class NexusServiceCollectionExtensions
     public static IServiceCollection AddNexusWidgets(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Widgets.AppRegistry>();
-        services.AddSingleton<Nexus.Service.Widgets.WidgetSettingsService>();
+        services.AddSingleton(sp => Nexus.Service.Widgets.WidgetSettingsServiceWiring.Create(
+            sp.GetRequiredService<Nexus.Service.Persistence.IConfigStore>(),
+            sp.GetRequiredService<Nexus.Service.Widgets.AppRegistry>(),
+            sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>()));
         services.AddSingleton<Nexus.Service.Widgets.AppProxyService>();
         // Every widget fetch runs through this one: a followed redirect would
         // escape the proxy's host allowlist and carry the build credential off

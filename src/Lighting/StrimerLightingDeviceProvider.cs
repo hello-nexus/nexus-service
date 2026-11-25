@@ -14,21 +14,21 @@ namespace Nexus.Service.Lighting;
 public sealed class StrimerLightingDeviceProvider :
     ILightingDeviceProvider, ILightingFrameContributor, IDeviceStructureSource, IOpenRgbDeviceOwner
 {
-    private readonly StrimerHub _hub;
+    private readonly StrimerUnits _units;
     private readonly IConfigStore _store;
     private readonly Np50IdentifyTracker _identify;
     private string _lastSignature = "";
 
     private readonly Dictionary<string, DeviceFrame> _frameCache = new();
 
-    public StrimerLightingDeviceProvider(StrimerHub hub, IConfigStore store, Np50IdentifyTracker identify)
+    public StrimerLightingDeviceProvider(StrimerUnits units, IConfigStore store, Np50IdentifyTracker identify)
     {
-        _hub = hub;
+        _units = units;
         _store = store;
         _identify = identify;
     }
 
-    public bool IsConnected => _hub.IsConnected;
+    public bool IsConnected => _units.IsConnected;
 
     // Prevents RgbBridge from seeding OpenRGB frames for these LEDs when the device
     // appears in OpenRGB alongside the native HID path.
@@ -39,7 +39,9 @@ public sealed class StrimerLightingDeviceProvider :
 
     public void OnHubStateUpdated()
     {
-        var sig = !_hub.IsConnected ? "disconnected" : _store.Load().Devices.StrimerLighting.ArgbSync ? "argb" : "connected";
+        var mask = 0;
+        foreach (var h in _units.Connected()) mask |= 1 << h.Unit;
+        var sig = mask == 0 ? "disconnected" : (_store.Load().Devices.StrimerLighting.ArgbSync ? "argb" : "connected") + mask;
         if (sig == _lastSignature) return;
         _lastSignature = sig;
         try { DevicesChanged?.Invoke(); } catch { /* swallow subscriber failures */ }
@@ -50,23 +52,26 @@ public sealed class StrimerLightingDeviceProvider :
     public GetLightingDevicesResponse GetAll()
     {
         var resp = new GetLightingDevicesResponse { IsInit = true };
-        if (!_hub.IsConnected) return resp;
+        var connected = _units.Connected();
+        if (connected.Count == 0) return resp;
         var settings = _store.Load();
         // Under ARGB sync the cable plays the motherboard header, so its cards only point at the device page.
         var reason = settings.Devices.StrimerLighting.ArgbSync ? LightingDevice.ReasonArgbInput : null;
         var slot = 0;
-        var structures = BuildStructures();
-        foreach (var structure in structures)
+        foreach (var hub in connected)
         {
-            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            foreach (var structure in BuildStructures(hub))
             {
-                resp.Devices.Add(BuildCard(structure, zone, slot++, settings, reason));
+                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                {
+                    resp.Devices.Add(BuildCard(structure, zone, slot++, settings, reason, hub.HealthKey));
+                }
             }
         }
         return resp;
     }
 
-    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, string? devicePageReason)
+    private static LightingDevice BuildCard(DeviceStructure structure, ResolvedZone zone, int slot, NexusSettings settings, string? devicePageReason, string parentId)
     {
         var disabled = settings.Devices.DisabledLightingDevices;
         var prefs    = settings.Devices.LightingDevicePrefs;
@@ -99,7 +104,7 @@ public sealed class StrimerLightingDeviceProvider :
             CanvasW           = layout?.W ?? defW,
             CanvasH           = layout?.H ?? defH,
             CanvasRotation    = ((((layout?.Rotation ?? 0) % 360) + 360) % 360),
-            ParentDeviceId    = "strimer",
+            ParentDeviceId    = parentId,
             ZoneIndex         = zone.Ordinal,
             ZoneType          = "linear",
             ZoneResizable     = false,
@@ -175,27 +180,32 @@ public sealed class StrimerLightingDeviceProvider :
 
     public IReadOnlyList<DeviceStructure> GetStructures()
     {
-        if (!_hub.IsConnected || _store.Load().Devices.StrimerLighting.ArgbSync) return Array.Empty<DeviceStructure>();
-        return BuildStructures();
+        if (!_units.IsConnected || _store.Load().Devices.StrimerLighting.ArgbSync) return Array.Empty<DeviceStructure>();
+        var all = new List<DeviceStructure>();
+        foreach (var hub in _units.Connected()) all.AddRange(BuildStructures(hub));
+        return all;
     }
 
     // ── ILightingFrameContributor ──
 
     public IReadOnlyList<DeviceFrame> BuildFrames(int startingIndex)
     {
-        if (!_hub.IsConnected) return Array.Empty<DeviceFrame>();
+        var connected = _units.Connected();
+        if (connected.Count == 0) return Array.Empty<DeviceFrame>();
         var settings = _store.Load();
         if (settings.Devices.StrimerLighting.ArgbSync) return Array.Empty<DeviceFrame>();
         var layouts  = settings.Lighting.DeviceLayouts;
         var frames   = new List<DeviceFrame>();
         var idx      = startingIndex;
         var slot     = 0;
-        var structures = BuildStructures();
-        foreach (var structure in structures)
+        foreach (var hub in connected)
         {
-            foreach (var zone in ZoneResolution.Resolve(structure, settings))
+            foreach (var structure in BuildStructures(hub))
             {
-                frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, slot++, layouts, ref idx));
+                foreach (var zone in ZoneResolution.Resolve(structure, settings))
+                {
+                    frames.Add(BuildOrReuseFrame(zone.Id, zone.FrameLedCount, slot++, layouts, ref idx));
+                }
             }
         }
         if (_frameCache.Count > frames.Count)
@@ -247,15 +257,20 @@ public sealed class StrimerLightingDeviceProvider :
         return frame;
     }
 
-    internal DeviceStructure[] BuildStructures()
+    internal DeviceStructure[] BuildStructures(StrimerHub hub)
     {
-        var atxKey = DeviceKeyComputer.ForFirstParty(StrimerProtocol.VendorId, StrimerProtocol.ProductId, "atx");
-        var gpuKey = DeviceKeyComputer.ForFirstParty(StrimerProtocol.VendorId, StrimerProtocol.ProductId, "gpu");
+        var prefix = hub.IdPrefix;
+        // Unit 1 keeps the original keys and names; later units get a numeric suffix.
+        var n = hub.Unit + 1;
+        var tag = hub.Unit == 0 ? "" : n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var label = hub.Unit == 0 ? "" : $" ({n})";
+        var atxKey = DeviceKeyComputer.ForFirstParty(StrimerProtocol.VendorId, StrimerProtocol.ProductId, "atx" + tag);
+        var gpuKey = DeviceKeyComputer.ForFirstParty(StrimerProtocol.VendorId, StrimerProtocol.ProductId, "gpu" + tag);
 
         var atx = new DeviceStructure
         {
-            DeviceId  = "strimer:atx",
-            Name      = "Strimer 24-Pin ATX",
+            DeviceId  = prefix + "atx",
+            Name      = "Strimer 24-Pin ATX" + label,
             DeviceKey = atxKey,
         };
         for (var s = 0; s < StrimerProtocol.AtxZoneCount; s++)
@@ -271,8 +286,8 @@ public sealed class StrimerLightingDeviceProvider :
             });
             atx.DefaultZones.Add(new DefaultZoneDef
             {
-                Id            = $"strimer:atx:z{s}",
-                Name          = $"Strimer ATX {s + 1}",
+                Id            = $"{prefix}atx:z{s}",
+                Name          = $"Strimer ATX {s + 1}{label}",
                 RawName       = $"ATX Strip {s + 1}",
                 DeviceKey     = atxKey,
                 LegacyZoneIndex = -1,
@@ -282,8 +297,8 @@ public sealed class StrimerLightingDeviceProvider :
 
         var gpu = new DeviceStructure
         {
-            DeviceId  = "strimer:gpu",
-            Name      = "Strimer 8-Pin GPU",
+            DeviceId  = prefix + "gpu",
+            Name      = "Strimer 8-Pin GPU" + label,
             DeviceKey = gpuKey,
         };
         for (var s = 0; s < StrimerProtocol.NormalizeGpuZoneCount(_store.Load().Devices.StrimerGpuZones); s++)
@@ -299,8 +314,8 @@ public sealed class StrimerLightingDeviceProvider :
             });
             gpu.DefaultZones.Add(new DefaultZoneDef
             {
-                Id            = $"strimer:gpu:z{s}",
-                Name          = $"Strimer GPU {s + 1}",
+                Id            = $"{prefix}gpu:z{s}",
+                Name          = $"Strimer GPU {s + 1}{label}",
                 RawName       = $"GPU Strip {s + 1}",
                 DeviceKey     = gpuKey,
                 LegacyZoneIndex = -1,

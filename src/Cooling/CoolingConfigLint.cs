@@ -242,7 +242,10 @@ public static class CoolingConfigLint
         _ => null,
     };
 
-    /// <summary>Sets the shared curve to its computed form: a Graph on the CPU input with the limit-relative points and the Balanced preset's response time.</summary>
+    /// <summary>Seconds; fixed so a change to the Balanced preset never rewrites stored guard curves.</summary>
+    public const double GuardResponseTime = 1.5;
+
+    /// <summary>Sets the shared curve to its computed form: a Graph on the CPU input with the limit-relative points and <see cref="GuardResponseTime"/>.</summary>
     public static void ApplyGuardCurve(CurveDocument curve, TemperatureSource cpuInput, double limitC)
     {
         curve.Name = "Thermal guard";
@@ -258,7 +261,7 @@ public static class CoolingConfigLint
         curve.Auto = null;
         curve.Graph = new GraphCurveData
         {
-            ResponseTime = FanProfiles.PresetDefaults.For("balanced").ResponseTime,
+            ResponseTime = GuardResponseTime,
             SpeedModifier = 1.0,
             Points = GuardCurvePoints(limitC),
         };

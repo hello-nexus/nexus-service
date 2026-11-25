@@ -13,6 +13,12 @@ public sealed record RyujinSnapshot(double LiquidTempC, int PumpRpm, int FanRpm,
     public static readonly RyujinSnapshot Empty = new(0, 0, 0, -1, -1, false);
 }
 
+/// <summary>Progress of the stored-media upload, read by the display route; State is idle, uploading, done or failed.</summary>
+public sealed record RyujinUploadState(string State, int Sent, int Total, string Message, string Reason = "")
+{
+    public static readonly RyujinUploadState Idle = new("idle", 0, 0, "");
+}
+
 /// <summary>
 /// Owns the cooler's own HID handle. It is separate from the LCD's handle so pump and fan work
 /// whether or not the bulk side ever opens. Callers only record the duty they want; the worker
@@ -65,6 +71,47 @@ public sealed class RyujinCoolingHub : IDisposable
 
     public RyujinSnapshot Snapshot => _snapshot;
 
+    private readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> _stashedAcks = new();
+
+    /// <summary>An upload acknowledgement a keepalive poll read before the uploader asked for it; null when none.</summary>
+    internal byte[]? TakeStashedAck() => _stashedAcks.TryDequeue(out var ack) ? ack : null;
+
+    private const int MaxStashedAcks = 64;
+    private volatile bool _capturingAcks;
+
+    /// <summary>Starts keeping acknowledgements that a keepalive poll reads; only an upload attempt wants them.</summary>
+    internal void BeginAckCapture()
+    {
+        _stashedAcks.Clear();
+        _capturingAcks = true;
+    }
+
+    internal void EndAckCapture()
+    {
+        _capturingAcks = false;
+        _stashedAcks.Clear();
+    }
+
+    private volatile RyujinUploadState _upload = RyujinUploadState.Idle;
+
+    public RyujinUploadState Upload
+    {
+        get => _upload;
+        set => _upload = value;
+    }
+
+    /// <summary>The attached HID handle for the worker thread's upload, which reads its own acknowledgements.</summary>
+    internal IHidDevice? Device
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _device;
+            }
+        }
+    }
+
     /// <summary>True while the last status reply is recent enough to trust the temperature and speeds.</summary>
     public bool StatusFresh
     {
@@ -86,6 +133,7 @@ public sealed class RyujinCoolingHub : IDisposable
         {
             _device?.Dispose();
             _device = device;
+            EndAckCapture();
             _snapshot = RyujinSnapshot.Empty;
             ResetSession();
             _connected = true;
@@ -109,6 +157,7 @@ public sealed class RyujinCoolingHub : IDisposable
         lock (_stateLock)
         {
             _connected = false;
+            EndAckCapture();
             _snapshot = RyujinSnapshot.Empty;
             ResetSession();
             _device?.Dispose();
@@ -306,6 +355,10 @@ public sealed class RyujinCoolingHub : IDisposable
             // A reply to something else (a sensor text slot, say) is skipped without a mention.
             if (!RyujinCoolingProtocol.IsReplyTo(report, status))
             {
+                if (_capturingAcks && RyujinUploadProtocol.AckKind(report) != 0 && _stashedAcks.Count < MaxStashedAcks)
+                {
+                    _stashedAcks.Enqueue(report.ToArray());
+                }
                 continue;
             }
             if (status && RyujinCoolingProtocol.TryParseStatus(report, out var temp, out var pump, out var fan))

@@ -108,6 +108,9 @@ internal static class Slv3WinUsbInterop
     // through a real OVERLAPPED; a NULL overlapped works for the RF interrupt
     // pipes but the LCD bulk OUT pipe returns ERROR_BAD_COMMAND without one.
     public const uint ERROR_IO_PENDING = 997;
+    // A read that hit the pipe's PIPE_TRANSFER_TIMEOUT, and one cut short by WinUsb_AbortPipe.
+    public const int ERROR_SEM_TIMEOUT = 121;
+    public const int ERROR_OPERATION_ABORTED = 995;
 
     [DllImport("winusb.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -123,6 +126,17 @@ internal static class Slv3WinUsbInterop
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    public const uint Infinite = 0xFFFFFFFF;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForMultipleObjects(
+        uint count, IntPtr[] handles, [MarshalAs(UnmanagedType.Bool)] bool waitAll, uint milliseconds);
+
+    // Cancels the one overlapped transfer, so the wait that follows returns at once.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CancelIoEx(IntPtr file, IntPtr overlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

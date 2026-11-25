@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 
 namespace Nexus.Service.Peripherals.Strimer;
@@ -11,7 +12,30 @@ public sealed class StrimerHub : IDisposable
     private IHidDevice? _device;
     private bool _disposed;
     private int _consecutiveWriteFailures;
-    private const string HealthKey = "strimer";
+
+    /// <param name="unit">Zero-based slot. Slot 0 keeps the original ids and health key so a single-controller install is unchanged.</param>
+    public StrimerHub(int unit = 0)
+    {
+        Unit = unit;
+        IdPrefix = unit == 0 ? "strimer:" : $"strimer:{unit + 1}:";
+        HealthKey = unit == 0 ? "strimer" : $"strimer:{unit + 1}";
+    }
+
+    public int Unit { get; }
+
+    /// <summary>Bumped on every attach, so a consumer can tell a reattach inside one polling gap from an uninterrupted connection.</summary>
+    public int Generation => Volatile.Read(ref _generation);
+    private int _generation;
+
+    /// <summary>Prefix of every device and zone id this unit owns.</summary>
+    public string IdPrefix { get; }
+
+    public string HealthKey { get; }
+
+    /// <summary>HID path of the attached controller; null while detached.</summary>
+    public string? AttachedPath { get { lock (_lock) return _device?.Path; } }
+
+    private const string HandlerId = "strimer";
 
     public StrimerState State { get; } = new();
 
@@ -27,6 +51,7 @@ public sealed class StrimerHub : IDisposable
         {
             _device = device;
             State.IsConnected = true;
+            Interlocked.Increment(ref _generation);
             Nexus.Service.Lighting.LightingWriteHealth.Shared.Forget(HealthKey, deviceLeft: false);
         }
     }
@@ -113,12 +138,12 @@ public sealed class StrimerHub : IDisposable
         if (ok)
         {
             _consecutiveWriteFailures = 0;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey, HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteSuccess(HealthKey, HandlerId);
         }
         else
         {
             _consecutiveWriteFailures++;
-            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey, HealthKey);
+            Nexus.Service.Lighting.LightingWriteHealth.Shared.NoteFailure(HealthKey, HandlerId);
         }
     }
 

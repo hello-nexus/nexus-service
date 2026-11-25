@@ -21,8 +21,8 @@ public class StrimerFrameWriterTests
     {
         _hub.Attach(_spy);
         _store.Update(s => s.Devices.StrimerLighting.Mode = "custom");
-        var provider = new StrimerLightingDeviceProvider(_hub, _store, new Np50IdentifyTracker());
-        _writer = new StrimerLightingFrameWriter(new LightingEngine(), _hub, _store, new Np50IdentifyTracker(), provider);
+        var provider = new StrimerLightingDeviceProvider(new StrimerUnits(_hub), _store, new Np50IdentifyTracker());
+        _writer = new StrimerLightingFrameWriter(new LightingEngine(), new StrimerUnits(_hub), _store, new Np50IdentifyTracker(), provider);
     }
 
     [Fact]
@@ -77,8 +77,8 @@ public class StrimerArgbSyncTests
     public StrimerArgbSyncTests()
     {
         _hub.Attach(_spy);
-        _provider = new StrimerLightingDeviceProvider(_hub, _store, new Np50IdentifyTracker());
-        _writer = new StrimerLightingFrameWriter(new LightingEngine(), _hub, _store, new Np50IdentifyTracker(), _provider);
+        _provider = new StrimerLightingDeviceProvider(new StrimerUnits(_hub), _store, new Np50IdentifyTracker());
+        _writer = new StrimerLightingFrameWriter(new LightingEngine(), new StrimerUnits(_hub), _store, new Np50IdentifyTracker(), _provider);
     }
 
     private static bool IsSync(StrimerTransportSpy.Call c, byte on) => c.Bytes[1] == 0x10 && c.Bytes[2] == 0x40 && c.Bytes[3] == on;

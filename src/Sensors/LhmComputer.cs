@@ -50,6 +50,35 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     private readonly object _rotationalLock = new();
     private readonly LhmWalkWatch _walkWatch = LhmWalkWatch.Shared;
     private long _lastUpdateTicks;
+    private readonly LhmSlowWalkReport _slowWalk = new(() => Environment.TickCount64);
+    private readonly LhmDimmBackoff _dimmBackoff = new(() => Environment.TickCount64);
+    private readonly LhmSlowItemLog _slowItems = new(() => Environment.TickCount64);
+    // Drive updates run here, never on the walk the curve engine drives, so one stuck drive cannot hold that walk.
+    // A drive whose update runs past the overdue limit reads as missing until it returns, so a curve on its temperature falls back instead of steering by a frozen value.
+    private readonly LhmStorageUpdater _storage = new(
+        StorageStartGrace,
+        StorageOverdue,
+        (id, name, limit) =>
+        {
+            if (!LhmWalkWatch.IsUnidentifiable(id))
+            {
+                LhmWalkWatch.Shared.MarkHardwareStale(id, true);
+            }
+            ServiceLog.Warn($"[lhm] storage update for {name} ({id}) running > {limit.TotalSeconds:F0}s; its readings are paused until it returns");
+        },
+        (id, name) =>
+        {
+            if (!LhmWalkWatch.IsUnidentifiable(id))
+            {
+                LhmWalkWatch.Shared.MarkHardwareStale(id, false);
+            }
+            ServiceLog.Info($"[lhm] storage update for {name} ({id}) returned; its readings resumed");
+        });
+    private static readonly TimeSpan StorageStartGrace = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan StorageOverdue = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan StorageShutdownWait = TimeSpan.FromSeconds(2);
+    // A forced walk waits this long, total, for the drive updates it queued itself, so an explicit refresh still reads fresh values from healthy drives.
+    private static readonly TimeSpan StorageForceWait = TimeSpan.FromSeconds(3);
     private const long UpdateErrorLogIntervalMs = 60_000;
     private readonly Dictionary<string, long> _updateErrorLoggedAt = new(StringComparer.Ordinal);
     private readonly IConfigStore _config;
@@ -174,8 +203,14 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
 
     public Computer Instance => _computer;
 
-    private void OnWalkStalled(TimeSpan age) =>
-        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s; sensor readings reported as missing until it completes");
+    /// <summary>True while DIMM reads are paused; the sticks' sensors hold their last value, so callers must not publish them.</summary>
+    internal bool DimmReadsPaused => _dimmBackoff.Paused;
+
+    private void OnWalkStalled(TimeSpan age)
+    {
+        var inside = _walkWatch.CurrentItem is { } at ? $", inside {at.Item}" : "";
+        ServiceLog.Warn($"[resume] LHM walk stalled for {age.TotalSeconds:F0}s{inside}; sensor readings reported as missing until it completes");
+    }
 
     /// <summary>True for the LHM cooler the Kraken hub is driving; see <see cref="KrakenLhmSensors.IsHubDriven(Nexus.Service.Peripherals.Nzxt.KrakenHub?, string, int)"/>.</summary>
     internal bool IsHubDriven(IHardware hw) =>
@@ -255,7 +290,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 {
                     return;
                 }
-                _walkWatch.BeginWalk();
+                _walkWatch.BeginWalk(sensorWalk: false);
                 _walkWatch.SetItem("spd-gate");
                 try
                 {
@@ -398,14 +433,20 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// finished yet - callers see an empty <see cref="Computer.Hardware"/>
     /// collection and degrade to "no sensors" until warmup completes.
     /// </summary>
-    public void Update(SensorRefresh refresh = SensorRefresh.Normal)
+    public void Update(SensorRefresh refresh = SensorRefresh.Normal) => UpdateCore(refresh, walkWait: null);
+
+    /// <summary>
+    /// False only when a forced reader gave up on a running walk after <paramref name="walkWait"/> (null waits without bound) or the open has not finished,
+    /// so the caller's data is old. A Normal reader that finds a walk running is served by the walk's cached values and gets true.
+    /// </summary>
+    private bool UpdateCore(SensorRefresh refresh, TimeSpan? walkWait)
     {
-        if (!_openTask.IsCompletedSuccessfully) return;
+        if (!_openTask.IsCompletedSuccessfully) return false;
 
         var floorMs = refresh == SensorRefresh.Fast ? FastFloorMs : NormalFloorMs;
         if (refresh != SensorRefresh.Force && Environment.TickCount64 - Interlocked.Read(ref _lastUpdateTicks) < floorMs)
         {
-            return;
+            return true;
         }
         // Outside _updateLock: an IConfigStore.Update mutator can hold the store lock while waiting for it.
         var settings = _config.Load();
@@ -416,18 +457,20 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         // Normal readers never wait on a walk: while one runs they get the cached values. Forced and fast
         // readers need fresh data and wait, unless the walk is stale (wedged), when nobody waits.
         var held = false;
+        // Jobs this walk queued itself; a drive already mid-update is not waited for.
+        var queuedJobs = new List<LhmStorageUpdater.Job>();
         try
         {
-            held = LhmWalkWatch.Acquire(_updateLock, refresh == SensorRefresh.Normal || _walkWatch.IsStale);
+            held = LhmWalkWatch.Acquire(_updateLock, refresh == SensorRefresh.Normal || _walkWatch.IsStale, walkWait);
             if (!held)
             {
-                return;
+                return refresh == SensorRefresh.Normal;
             }
 
             var now = Environment.TickCount64;
             if (refresh != SensorRefresh.Force && now - _lastUpdateTicks < floorMs)
             {
-                return;
+                return true;
             }
 
             Interlocked.Exchange(ref _lastUpdateTicks, now);
@@ -441,21 +484,26 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             {
                 _walkWatch.BeginWalk();
             }
+            _slowWalk.Begin();
+            _dimmBackoff.BeginWalk();
+            var walkStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
                 using (WindowsTimerResolution.Elevate())
                 {
+                    var presentStorage = new List<object>();
                     foreach (var hw in _computer.Hardware)
                     {
-                        // StorageDevice keeps its skip counter per instance and reads the static
-                        // at the top of its own Update, so setting it here is per-drive. Throughput
-                        // and free space are on separate paths and still refresh every walk.
+                        // StorageDevice keeps its skip counter per instance and reads the cycle static
+                        // at the top of its own Update. The walk only decides the value; the storage worker
+                        // sets the static for each drive's update. Throughput and free space are on
+                        // separate paths and still refresh every walk.
                         if (hw.HardwareType == HardwareType.Storage)
                         {
+                            presentStorage.Add(hw);
                             var forceStorage = SmartPollDemand.StorageForce(
                                 monitoring.LiveDriveActivity, refresh == SensorRefresh.Force, _explicitStorageRefresh);
                             var cycles = SmartCyclesFor(hw, monitoring, smartDemand, forceStorage);
-                            StorageDevice.SmartUpdateCycleCount = cycles;
                             if (!monitoring.LiveDriveActivity)
                             {
                                 // Any Update() reads throughput and free space from the drive, so skip it
@@ -468,18 +516,44 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                                     continue;
                                 }
                                 _storageUpdatedAt[id] = now;
-                                StorageDevice.SmartUpdateCycleCount = 1;
+                                cycles = 1;
                             }
+
+                            var storageCycles = cycles;
+                            if (_storage.Request(
+                                hw,
+                                hw.Identifier.ToString(),
+                                hw.Name,
+                                () => StorageDevice.SmartUpdateCycleCount = storageCycles,
+                                () => UpdateStorage(hw)) is { } queued)
+                            {
+                                queuedJobs.Add(queued);
+                            }
+                            continue;
                         }
 
                         TryUpdate(hw);
                         foreach (var sub in hw.SubHardware)
                             TryUpdate(sub);
                     }
+                    _storage.Retain(presentStorage);
                 }
             }
             finally
             {
+                if (_slowWalk.Finish((long)System.Diagnostics.Stopwatch.GetElapsedTime(walkStart).TotalMilliseconds) is { } slowLine)
+                {
+                    ServiceLog.Warn(slowLine);
+                }
+                switch (_dimmBackoff.EndWalk())
+                {
+                    case LhmDimmBackoff.Outcome.Paused:
+                        ServiceLog.Warn($"[lhm] DIMM SPD reads blocked by another SMBus user ({_dimmBackoff.LastSlowestMs / 1000.0:F1}s per stick); pausing RAM temperature reads for {LhmDimmBackoff.PauseMs / 60_000} min");
+                        break;
+                    case LhmDimmBackoff.Outcome.Recovered:
+                        ServiceLog.Info("[lhm] DIMM SPD reads fast again; RAM temperature reads resumed");
+                        break;
+                }
                 if (!_testHost && _walkWatch.EndWalk())
                 {
                     ServiceLog.Info("[resume] LHM walk completed again; sensor readings live");
@@ -493,11 +567,36 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 Monitor.Exit(_updateLock);
             }
         }
+        // Outside _updateLock and the walk's timing: a stuck drive costs this forced reader the wait, not the engine's walks.
+        if (held && queuedJobs.Count > 0 && (refresh == SensorRefresh.Force || _explicitStorageRefresh))
+        {
+            var deadline = Environment.TickCount64 + (long)StorageForceWait.TotalMilliseconds;
+            foreach (var job in queuedJobs)
+            {
+                job.Wait(TimeSpan.FromMilliseconds(Math.Max(0, deadline - Environment.TickCount64)));
+            }
+        }
+        return held;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="read"/> on the drive's own worker, behind its updates, so it never overlaps one.
+    /// Null means a read for that drive is already queued or running, or the service is shutting down.
+    /// </summary>
+    internal LhmStorageUpdater.Job? RequestStorageRead(IHardware drive, Action read) => _storage.RequestRead(drive, read);
+
+    private void UpdateStorage(IHardware hw)
+    {
+        TryUpdate(hw, onWalk: false);
+        foreach (var sub in hw.SubHardware)
+        {
+            TryUpdate(sub, onWalk: false);
+        }
     }
 
     // One unplugged or busy HID cooler (KrakenV2/V3 throw from Update) must not
     // fail the walk for every other device or the routes that triggered it.
-    private void TryUpdate(IHardware hw)
+    private void TryUpdate(IHardware hw, bool onWalk = true)
     {
         // A Kraken the hub drives is not polled here. Everything that reads its entries
         // takes the hub's values instead, because LHM's stay at their last reading.
@@ -508,24 +607,86 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         try
         {
             var item = hw.Identifier.ToString();
-            if (_walkWatch.SpdQuiesced && item.StartsWith("/memory/dimm", StringComparison.Ordinal))
+            var isDimm = LhmComponentIdentifiers.IsDimmModule(item);
+            if (isDimm && (_walkWatch.SpdQuiesced || _dimmBackoff.ShouldSkip))
             {
                 _walkWatch.SetItem(null);
                 return;
             }
-            _walkWatch.SetItem(item);
-            hw.Update();
+            // The walk's item marker and slow-walk report belong to the walk thread; the storage worker has neither.
+            if (onWalk)
+            {
+                _walkWatch.SetItem(item);
+            }
+            var itemStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            try
+            {
+                // The PSU driver's command and reply pair must not interleave with a fan write.
+                if (hw.HardwareType == HardwareType.Psu)
+                {
+                    lock (Nexus.Service.Peripherals.Corsair.Psu.CorsairPsuBus.Gate)
+                    {
+                        hw.Update();
+                    }
+                }
+                else
+                {
+                    hw.Update();
+                }
+            }
+            finally
+            {
+                var ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(itemStart).TotalMilliseconds;
+                if (onWalk)
+                {
+                    _slowWalk.Record(item, ms);
+                }
+                if (_slowItems.Record(item, hw.Name, ms) is { } slowLine)
+                {
+                    ServiceLog.Warn(slowLine);
+                }
+                if (isDimm)
+                {
+                    _dimmBackoff.RecordStick(ms);
+                }
+            }
         }
         catch (Exception ex)
         {
             var key = hw.Identifier.ToString();
             var now = Environment.TickCount64;
-            if (_updateErrorLoggedAt.TryGetValue(key, out var last) && now - last < UpdateErrorLogIntervalMs)
-                return;
+            lock (_updateErrorLoggedAt)
+            {
+                if (_updateErrorLoggedAt.TryGetValue(key, out var last) && now - last < UpdateErrorLogIntervalMs)
+                    return;
 
-            _updateErrorLoggedAt[key] = now;
+                _updateErrorLoggedAt[key] = now;
+            }
             ServiceLog.Warn($"[lhm] update failed for {hw.Name}: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>The PSU temperature sensors, leaving out a reading from a stalled walk and one the curve sources would also drop.</summary>
+    public IReadOnlyList<Nexus.Service.Cooling.PsuTemperature> PsuTemperatures()
+    {
+        var result = new List<Nexus.Service.Cooling.PsuTemperature>();
+        foreach (var hw in _computer.Hardware)
+        {
+            if (hw.HardwareType != HardwareType.Psu)
+            {
+                continue;
+            }
+            foreach (var sensor in hw.Sensors)
+            {
+                if (sensor.SensorType == SensorType.Temperature
+                    && LhmWalkWatch.Shared.Read(sensor.Value) is { } v
+                    && Nexus.Service.Cooling.TemperatureSourceFilter.IsPlausible(v))
+                {
+                    result.Add(new Nexus.Service.Cooling.PsuTemperature(sensor.Name, v));
+                }
+            }
+        }
+        return result;
     }
 
     /// <summary>False when the user turned off live drive activity: drive reads then happen only for SMART and explicit requests.</summary>
@@ -534,17 +695,21 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// <summary>Called by a SMART reader before it reads drive values; walks first when drive reads had stopped.</summary>
     public void BeforeSmartRead()
     {
-        // Serialized so a second reader waits for the first reader's walk; never taken while holding _updateLock.
-        lock (_readerLock)
+        // A reader never waits on another reader, and waits only a fresh-limit for a running walk (walks are short now that drives run
+        // elsewhere). A walk stuck longer gets the cached readings, and the reader window reopens so the next reader asks again.
+        // Never taken while holding _updateLock.
+        LhmWalkWatch.TryRunNow(_readerLock, () =>
         {
             var wasClosed = SmartLiveConsumers.NoteRead();
-            if (!wasClosed || !_openTask.IsCompletedSuccessfully) return;
+            if (!wasClosed || !_openTask.IsCompletedSuccessfully) return false;
             var demand = SmartPollDemand.Capture(_gates, _config.Load(), SmartLiveConsumers.Subscribed(_hub));
-            if (SmartPollDemand.ReaderMustWalk(wasClosed, demand, StorageIdentifiers()))
+            if (SmartPollDemand.ReaderMustWalk(wasClosed, demand, StorageIdentifiers()) && !UpdateCore(SensorRefresh.Force, LhmWalkWatch.FreshLimit))
             {
-                Update(SensorRefresh.Force);
+                SmartLiveConsumers.Forget();
+                return false;
             }
-        }
+            return true;
+        });
     }
 
     /// <summary>A forced walk for an explicit health refresh; opens the reader window so every drive reads, serialized with the other SMART readers.</summary>
@@ -620,6 +785,8 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         try { _openTask.Wait(); } catch { /* shutdown best-effort */ }
         _disposed = true;
         ResetSpdPages(SpdDisposeBudget);
+        // Close must not race a drive update still inside LHM; a drive that never returns only costs this bounded wait.
+        _storage.Shutdown(StorageShutdownWait);
         // Close can block on the driver a wedged walk is stuck in, and a service that never stops stays down.
         if (!LhmWalkWatch.TryRunWhenIdle(_updateLock, CloseWalkWait, _computer.Close))
         {

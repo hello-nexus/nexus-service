@@ -42,8 +42,10 @@ licenses. Their respective license texts ship alongside the bundled binaries.
 - **Project**: LibreHardwareMonitorLib
 - **Upstream**: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
 - **License**: Mozilla Public License 2.0 (MPL-2.0)
-- **Usage**: consumed unmodified as the official NuGet package; provides the
-  Windows sensor backend (CPU / GPU / motherboard / fan / temperature)
+- **Usage**: built from source as a git submodule of the hello-nexus fork
+  (https://github.com/hello-nexus/LibreHardwareMonitor, branch `nexus`: a pinned
+  upstream commit plus patches submitted upstream); provides the Windows sensor
+  backend (CPU / GPU / motherboard / fan / temperature)
 
 ## Skia, SkiaSharp, HarfBuzz and libjpeg-turbo
 

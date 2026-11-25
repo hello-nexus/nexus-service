@@ -87,7 +87,7 @@ public static class SmartClassifier
         var hasCriticalWarning = false;
 
         // ATA rules only apply to attribute ids that are an ATA/SATA SMART convention;
-        // an NVMe drive's SmartAttributes list should be empty, but guard explicitly.
+        // guard explicitly so a synthesized NVMe attribute never matches an ATA convention.
         if (input.Bus != StorageBusKind.Nvme)
         {
             foreach (var att in input.Attributes)
@@ -105,17 +105,20 @@ public static class SmartClassifier
             }
         }
 
-        // Vendor-computed threshold breach applies to any attribute on any bus.
-        foreach (var att in input.Attributes)
+        // NVMe attributes are synthesized from the health log (spare is Current, its threshold Threshold), so the health-log block judges them instead.
+        if (input.Bus != StorageBusKind.Nvme)
         {
-            if (att.Threshold == 0) continue;
-            if (att.Current > att.Threshold) continue;
+            foreach (var att in input.Attributes)
+            {
+                if (att.Threshold == 0) continue;
+                if (att.Current > att.Threshold) continue;
 
-            reasons.Add(new SmartReason("smart.vendorHealth", ReasonSeverity.Act,
-                $"{att.Name} at or below its vendor threshold",
-                $"Attribute {att.Id} ({att.Name}) current value {att.Current} is at or below its threshold {att.Threshold}."));
-            flagged.Add(att.Id);
-            vendorHealthAdded = true;
+                reasons.Add(new SmartReason("smart.vendorHealth", ReasonSeverity.Act,
+                    $"{att.Name} at or below its vendor threshold",
+                    $"Attribute {att.Id} ({att.Name}) current value {att.Current} is at or below its threshold {att.Threshold}."));
+                flagged.Add(att.Id);
+                vendorHealthAdded = true;
+            }
         }
 
         if (input.PredictsFailure == true)

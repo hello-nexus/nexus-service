@@ -97,7 +97,12 @@ public partial class SensorAlertEngineTests
     private sealed class StubFans : Nexus.Service.Cooling.IFanControlProvider
     {
         public List<Nexus.Service.Models.Cooling.FanChannel> Channels { get; } = new();
-        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => Channels.ToList();
+        public int Reads { get; private set; }
+        public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels()
+        {
+            Reads++;
+            return Channels.ToList();
+        }
         public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
         public float? ReadTemperature(string sensorId) => null;
         public int SetFanSpeed(string channelId, int dutyPercent) => dutyPercent;
@@ -1359,5 +1364,16 @@ public partial class SensorAlertEngineTests
         Assert.Equal("CPU Package", p["sensorName"]);
         Assert.Equal("91.5", p["value"]);
         Assert.Equal("80", p["threshold"]);
+    }
+
+    [Theory]
+    [InlineData(524288000, "Throughput", "B/s", "500.00 MB/s")]
+    [InlineData(612345678.5, "throughput", "B/s", "583.98 MB/s")]
+    [InlineData(20480, "Throughput", "B/s", "20.0 KB/s")]
+    [InlineData(12.345, "Data", "GB", "12.35 GB")]
+    [InlineData(5, "Data", "GB", "5 GB")]
+    public void Format_ThroughputIsMegabytesPerSecondAndDataIsGb(double value, string type, string units, string expected)
+    {
+        Assert.Equal(expected, SensorAlertText.Format(value, type, units, fahrenheit: false));
     }
 }

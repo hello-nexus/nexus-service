@@ -390,6 +390,20 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.OverlayIdentifyDto))]
 [JsonSerializable(typeof(Nexus.Service.Models.Displays.IdentifyDisplaysBody))]
 
+// Calendar
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarSourceDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarEventDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarListResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarEventsResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarCreateRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarPatchRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarSettingsDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarSettingsRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarRefreshResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarErrorResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarProbeRequest))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarProbeResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarChangedFrame))]
 // Weather
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSnapshot))]
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherHourlyForecast))]
@@ -1162,6 +1176,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OpenUrlRequest))]
 // Widgets - settings
 [JsonSerializable(typeof(WidgetSettingsDocument))]
+[JsonSerializable(typeof(AppSettingsFrame))]
 [JsonSerializable(typeof(WidgetSettingsPatch))]
 [JsonSerializable(typeof(Dictionary<string, System.Text.Json.JsonElement>))]
 // Widgets - proxy
@@ -1352,6 +1367,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaUploadResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaDeleteRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LightingRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LcdRingEffectResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LcdRingEffectRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto[]))]
 // Asiahorse Umbra V2.

@@ -34,6 +34,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
     private readonly NvmlPowerLimits _nvmlPowerLimits = new();
     private string? _ramBrandModel;
     private string? _storageBrandModel;
+    private readonly DriveWriteHistory _driveWrites = new(DriveWriteHistory.DefaultPath());
 
     public LibreHardwareSensorProvider(LhmComputer lhm, AstralMonitor? astral = null, Nexus.Service.Peripherals.Nzxt.KrakenHub? kraken = null)
     {
@@ -368,6 +369,14 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
             {
                 var component = BuildComponent(hw, hideLiveStorage: hideLive);
                 var id = LhmComponentIdentifiers.BuildSmartStorageId(hw.Identifier.ToString());
+                try
+                {
+                    DriveWriteHistory.Append(_driveWrites, hw.Identifier.ToString(), component.Name, component.Sensors, DateTimeOffset.UtcNow);
+                }
+                catch (Exception ex)
+                {
+                    ServiceLog.Warn($"[drive-writes] derived sensors skipped for {hw.Identifier}: {ex.GetType().Name}: {ex.Message}");
+                }
                 result[id] = new StorageComponent
                 {
                     Id = id,
@@ -375,6 +384,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     Sensors = component.Sensors,
                 };
             }
+            _driveWrites.Flush();
         }
     }
 
@@ -519,7 +529,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
                     extras.EmbeddedControllers.Add(BuildComponent(hw));
                     break;
                 case HardwareType.Memory:
-                    if (LhmComponentIdentifiers.IsDimmModule(hw.Identifier.ToString()))
+                    if (!_lhm.DimmReadsPaused && LhmComponentIdentifiers.IsDimmModule(hw.Identifier.ToString()))
                         extras.MemoryModules.Add(BuildComponent(hw));
                     break;
             }
@@ -559,7 +569,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
 
     private static readonly SensorHoldLast Hold = new();
 
-    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), LhmWalkWatch.Shared.Read(s.Value), Environment.TickCount64, out _);
+    private static float HeldValue(ISensor s) => Hold.Resolve(s.Identifier.ToString(), LhmWalkWatch.Shared.Read(s.Value, s.Identifier.ToString()), Environment.TickCount64, out _);
 
     private static List<HardwareSensor> MapSensors(IHardware hw, bool hideLiveStorage = false)
     {
@@ -575,7 +585,7 @@ public sealed class LibreHardwareSensorProvider : ISensorProvider, IDisposable
         {
             var now = Environment.TickCount64;
             var key = s.Identifier.ToString();
-            var reading = LhmWalkWatch.Shared.Read(s.Value);
+            var reading = LhmWalkWatch.Shared.Read(s.Value, key);
             var value = Hold.Resolve(key, reading, now, out var missed);
             var stale = !missed && (reading is not { } raw || !float.IsFinite(raw));
             if (missed && isGpu && !LhmWalkWatch.Shared.IsStale)

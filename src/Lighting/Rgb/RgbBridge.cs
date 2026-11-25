@@ -2246,7 +2246,7 @@ public sealed class RgbBridge : IDisposable
         foreach (var slice in slices)
         {
             var zoneStart = 0;
-            for (var z = 0; z < slice.Segment && z < d.Zones.Count; z++) zoneStart += d.Zones[z].LedCount;
+            for (var z = 0; z < slice.Segment && z < d.Zones.Count; z++) zoneStart += d.Zones[z].BufferLedCount;
             for (var i = 0; i < slice.Count && pos + i < names.Length; i++)
             {
                 var led = zoneStart + slice.Start + i;
@@ -2821,12 +2821,13 @@ public sealed class RgbBridge : IDisposable
         return ($"zone {zoneIdx}", -1);
     }
 
+    /// <summary>LEDs the zones hold in the device's color buffer, so it matches the device's LED count on a healthy controller.</summary>
     internal static int SumZoneLeds(RgbDevice d)
     {
         var total = 0;
         foreach (var z in d.Zones)
         {
-            total += z.LedCount;
+            total += z.BufferLedCount;
         }
         return total;
     }
