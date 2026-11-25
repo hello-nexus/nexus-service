@@ -184,4 +184,19 @@ public partial class Slv3HubTests
         Assert.True(hub.State.Fans[0].BoundToUs);
         Assert.Contains(FanKey, saved.Keys);
     }
+
+    [Fact]
+    public void A_stale_saved_slot_of_a_USB_unit_is_replaced_by_the_slot_the_bind_echoes()
+    {
+        var (hub, net, _, saved, _) = CreateOwnershipHub(new() { [FanKey] = 9 });
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254 });
+        Ticks(hub, Slv3Hub.ChainConfirmSightings + 1);
+        MarkWired(hub);
+        Assert.True(ManualBind(hub, FanKey));
+
+        Ticks(hub, 3);
+
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(hub.State.Fans[0].Slot, saved[FanKey]);
+    }
 }

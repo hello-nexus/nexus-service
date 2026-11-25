@@ -41,6 +41,9 @@ public sealed partial class Slv3Hub : IDisposable
     // A bind or unbind the user asked for, by chain MAC hex, until the chain's record echoes it or the timeout passes.
     private readonly Dictionary<string, (string Op, long StartedMs)> _userOps = new(StringComparer.Ordinal);
 
+    // USB-connected units the user asked to bind, until unbound or dropped: a bind that echoes late, after the pending timeout, is still saved.
+    private readonly HashSet<string> _userBoundWired = new(StringComparer.Ordinal);
+
     // USB-owned units seen not bound to us, so the switch to USB ownership is noted once.
     private readonly HashSet<string> _wiredNoted = new(StringComparer.Ordinal);
 
@@ -125,11 +128,6 @@ public sealed partial class Slv3Hub : IDisposable
             if (TryParseMac(key, out var mac) && TryFindRecordLocked(mac, out var record))
             {
                 echoed = op.Op == PendingBinding ? IsBoundToUsLocked(record) : !IsBoundToUsLocked(record);
-                if (echoed && op.Op == PendingBinding && !_owned.ContainsKey(key) && ValidSlot(record.RxType))
-                {
-                    _owned[key] = record.RxType;
-                    _ownedDirty = true;
-                }
                 if (echoed)
                 {
                     ServiceLog.Info($"[lianli-wireless] {(op.Op == PendingBinding ? "bind" : "unbind")} of {key} confirmed after {elapsed} ms: {DescribeBinding(record, _masterMac)}");
@@ -190,6 +188,12 @@ public sealed partial class Slv3Hub : IDisposable
         foreach (var record in _lastFanRecords)
         {
             var key = Convert.ToHexString(record.Mac);
+            if (_userBoundWired.Contains(key) && IsBoundToUsLocked(record) && ValidSlot(record.RxType)
+                && (!_owned.TryGetValue(key, out var savedSlot) || savedSlot != record.RxType))
+            {
+                _owned[key] = record.RxType;
+                _ownedDirty = true;
+            }
             if (IsWiredOwned(key) && !IsBoundToUsLocked(record))
             {
                 if (_wiredNoted.Add(key))
@@ -785,6 +789,7 @@ public sealed partial class Slv3Hub : IDisposable
         _pendingCommands.Clear();
         _deferredUnbinds.Clear();
         _userOps.Clear();
+        _userBoundWired.Clear();
         _wiredNoted.Clear();
         _lastIssuedSeq.Clear();
         _rxAbsentSinceMs = 0;
@@ -2714,6 +2719,7 @@ public sealed partial class Slv3Hub : IDisposable
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 ReleaseIdentifyLocked(key, "chain drop");
                 _userOps.Remove(key);
+                _userBoundWired.Remove(key);
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);
@@ -3187,7 +3193,11 @@ public sealed partial class Slv3Hub : IDisposable
             }
             _userOps[key] = (PendingBinding, _nowMs());
             ServiceLog.Info($"[lianli-wireless] bind requested for {key} on slot {slot}{(IsWiredOwned(key) ? " (unit is connected by USB)" : "")}");
-            if (!wired)
+            if (wired)
+            {
+                _userBoundWired.Add(key);
+            }
+            else
             {
                 // A USB-connected unit joins the saved list only once its record echoes the bind.
                 _owned[key] = slot;
@@ -3301,6 +3311,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord? existing)
     {
+        _userBoundWired.Remove(key);
         _userOps[key] = (PendingUnbinding, _userOps.TryGetValue(key, out var begun) && begun.Op == PendingUnbinding ? begun.StartedMs : _nowMs());
         ReleaseIdentifyLocked(key, "unbind");
         _userUnbound.Add(key);
