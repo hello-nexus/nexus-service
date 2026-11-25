@@ -490,6 +490,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         var (stretch, cycleMs) = WindowPlan(_planChains, _planLeds);
 #if DEV_TOOLS
         if (_lab.Current.Stretch is { } forced) stretch = forced;
+        if (_lab.Current.CycleMs is { } forcedCycle) cycleMs = forcedCycle;
 #endif
         _windowRequestPeriodMs = cycleMs / _planChains;
         if (stretch >= _windowStretch) _stretchDownSinceMs = 0;

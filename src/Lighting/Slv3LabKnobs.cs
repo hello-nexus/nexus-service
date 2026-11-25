@@ -18,6 +18,7 @@ internal sealed record Slv3LabKnobs
     public bool ExtraSameIndex { get; init; }
     public int? WindowFrames { get; init; }
     public int? Stretch { get; init; }
+    public int? CycleMs { get; init; }
     public string TargetMac { get; init; } = "";
     public bool LivePath { get; init; }
 
@@ -43,6 +44,7 @@ internal sealed record Slv3LabKnobs
                     case "extraSameIndex" when IsBool(v): k = k with { ExtraSameIndex = v.GetBoolean() }; break;
                     case "windowFrames" when v.TryGetInt32(out var f): k = k with { WindowFrames = Math.Clamp(f, MinWindowFrames, MaxWindowFrames) }; break;
                     case "stretch" when v.TryGetInt32(out var s): k = k with { Stretch = Math.Clamp(s, 1, 6) }; break;
+                    case "cycleMs" when v.TryGetInt32(out var c): k = k with { CycleMs = Math.Clamp(c, 150, 10_000) }; break;
                     case "targetMac" when v.ValueKind == JsonValueKind.String: k = k with { TargetMac = (v.GetString() ?? "").Trim().ToUpperInvariant() }; break;
                     case "livePath" when IsBool(v): k = k with { LivePath = v.GetBoolean() }; break;
                 }
@@ -59,7 +61,7 @@ internal sealed record Slv3LabKnobs
     private static bool IsBool(JsonElement v) => v.ValueKind is JsonValueKind.True or JsonValueKind.False;
 
     public override string ToString() =>
-        $"resend={Resend} forcedExtraUploads={ForcedExtraUploads} extraSameIndex={ExtraSameIndex} windowFrames={WindowFrames?.ToString() ?? "-"} stretch={Stretch?.ToString() ?? "-"} targetMac={(TargetMac.Length == 0 ? "-" : TargetMac)} livePath={LivePath}";
+        $"resend={Resend} forcedExtraUploads={ForcedExtraUploads} extraSameIndex={ExtraSameIndex} windowFrames={WindowFrames?.ToString() ?? "-"} stretch={Stretch?.ToString() ?? "-"} cycleMs={CycleMs?.ToString() ?? "-"} targetMac={(TargetMac.Length == 0 ? "-" : TargetMac)} livePath={LivePath}";
 }
 
 /// <summary>Re-reads the knob file at most every two seconds; the snapshot is replaced whole.</summary>
