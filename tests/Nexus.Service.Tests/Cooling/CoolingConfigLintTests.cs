@@ -226,7 +226,7 @@ public class CoolingConfigLintTests
         Assert.Equal(
             new[] { Fan1 }.Concat(Followers).OrderBy(x => x),
             guard.Outputs.Select(o => o.Id).OrderBy(x => x));
-        Assert.Equal(FanProfiles.PresetDefaults.For("balanced").ResponseTime, guard.Graph!.ResponseTime);
+        Assert.Equal(1.5, guard.Graph!.ResponseTime);
         Assert.Equal(4, result.Healed.Count);
 
         // Nothing else drives those channels, and no per-channel curves exist.
@@ -247,6 +247,19 @@ public class CoolingConfigLintTests
         var raised = Input(T1Curves(), 100);
         var guard100 = CoolingConfigLint.Heal(raised, CoolingConfigLint.Analyze(raised))!.Curves.Single(c => c.Id == CoolingConfigLint.GuardCurveId);
         Assert.Equal(new (double, double)[] { (45, 30), (60, 40), (75, 60), (90, 85), (100, 100) }, Points(guard100));
+    }
+
+    [Fact]
+    public void TheSharedCurve_KeepsAFixedResponseTime_IndependentOfTheBalancedPreset()
+    {
+        var cpu = Sources()[0];
+        var stored = new CurveDocument { Id = CoolingConfigLint.GuardCurveId, Outputs = { new CurveOutputDocument { Id = Fan1, Type = "Fan" } } };
+        CoolingConfigLint.ApplyGuardCurve(stored, cpu, 95);
+
+        // A guard curve written by an earlier build at 1.5 s still matches, so it is not rewritten.
+        Assert.Equal(1.5, stored.Graph!.ResponseTime);
+        Assert.NotEqual(1.5, FanProfiles.PresetDefaults.For("balanced").ResponseTime);
+        Assert.True(CoolingConfigLint.GuardCurveMatches(stored, cpu, 95));
     }
 
     [Fact]

@@ -166,7 +166,10 @@ public static class OpenRgbZoneSupport
                     Index = z,
                     Name = string.IsNullOrWhiteSpace(zone.Name) ? $"Zone {z + 1}" : zone.Name,
                     LedCount = effective,
-                    FrameLedCount = raw,
+                    // What the zone holds in the device's color buffer: an
+                    // effects-only zone reports its size but holds one LED, and
+                    // counting its size here shifts every later header.
+                    FrameLedCount = zone.BufferLedCount,
                     Resizable = split && IsZoneResizable(zone.ZoneType),
                     MaxLedCount = zone.LedsMax > int.MaxValue ? 0 : (int)zone.LedsMax,
                     ZoneType = ZoneTypeName(zone.ZoneType),

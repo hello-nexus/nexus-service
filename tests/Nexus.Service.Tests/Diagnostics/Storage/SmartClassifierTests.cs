@@ -113,6 +113,35 @@ public class SmartClassifierTests
     }
 
     [Fact]
+    public void Nvme_synthesized_spare_attribute_equal_to_threshold_is_good()
+    {
+        var nvme = new NvmeHealthLog
+        {
+            CriticalWarning = 0,
+            CompositeTemperatureKelvin = 300,
+            AvailableSpare = 100,
+            AvailableSpareThreshold = 100,
+            PercentageUsed = 17,
+            DataUnitsReadBytes = 0,
+            DataUnitsWrittenBytes = 0,
+            PowerCycles = 0,
+            PowerOnHours = 0,
+            UnsafeShutdowns = 0,
+            MediaErrors = 0,
+            ErrorInfoLogEntries = 0,
+        };
+        var input = new SmartClassifierInput(
+            StorageBusKind.Nvme,
+            new List<SmartAttributeSample> { new(226, "Available Spare", 100, 100, 100, Raw: 100) },
+            nvme, VendorHealth: null, PredictsFailure: null);
+
+        var result = SmartClassifier.Classify(input);
+
+        Assert.Empty(result.Reasons);
+        Assert.Equal(DriveStatus.Good, result.Status);
+    }
+
+    [Fact]
     public void Nvme_spare_below_threshold_is_act_and_warning_without_other_escalation()
     {
         var nvme = new NvmeHealthLog
