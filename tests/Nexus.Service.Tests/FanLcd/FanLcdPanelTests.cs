@@ -122,6 +122,7 @@ public class FanLcdPanelTests
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "clock", Brightness = 80 }));
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "video", MediaId = "clip-a", Brightness = 30 }));
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "video", MediaId = "clip-a", Brightness = 80, Rotation = 2 }));
+        Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { ContentType = "video", MediaId = "clip-a", Brightness = 80, FpsCap = 60 }));
         Assert.NotEqual(pick, FanLcdStreamingWorker.PickOf(new LianLiWirelessScreenSettings { NexusPanel = true, ContentType = "video", MediaId = "clip-a", Brightness = 80 }));
     }
 
