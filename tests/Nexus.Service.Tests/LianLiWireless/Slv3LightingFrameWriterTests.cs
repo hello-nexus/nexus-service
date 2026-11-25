@@ -591,14 +591,91 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Theory]
-    [InlineData(1, 132, 1, 700)]
-    [InlineData(5, 702, 5, 3699)]
-    [InlineData(8, 798, 6, 4391)]
-    public void WindowPlan_sizes_the_round_to_half_the_air_budget(int chains, int leds, int stretch, int cycleMs)
+    [InlineData(1, 132, 1, 700, 30)]
+    [InlineData(2, 264, 2, 2642, 60)]
+    [InlineData(4, 528, 4, 5283, 60)]
+    [InlineData(5, 702, 5, 6999, 60)]
+    [InlineData(7, 720, 5, 7328, 60)]
+    [InlineData(8, 798, 6, 8141, 60)]
+    public void WindowPlan_sizes_the_round_to_half_the_air_budget(int chains, int leds, int stretch, int cycleMs, int frames)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
         Assert.Equal(stretch, plan.Stretch);
         Assert.Equal(cycleMs, plan.CycleMs, 0);
+        Assert.Equal(frames, plan.Frames);
+    }
+
+    [Theory]
+    [InlineData(1, 132)]
+    [InlineData(1, 60)]
+    public void WindowPlan_keeps_short_windows_when_the_frame_interval_is_not_stretched(int chains, int leds)
+    {
+        var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
+        Assert.Equal(1, plan.Stretch);
+        Assert.Equal(Slv3LightingFrameWriter.WindowFrames, plan.Frames);
+    }
+
+    [Theory]
+    [InlineData(2, 264)]
+    [InlineData(4, 528)]
+    [InlineData(7, 720)]
+    [InlineData(8, 798)]
+    [InlineData(1, 174)]
+    public void WindowPlan_long_windows_halve_uploads_without_a_longer_frame_interval(int chains, int leds)
+    {
+        var shortStretch = (int)Math.Ceiling(Math.Max(Math.Max(450, (8 * chains + 0.47 * leds) * 10), 150 * chains) / 750);
+        var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
+        Assert.Equal(Slv3LightingFrameWriter.LongWindowFrames, plan.Frames);
+        Assert.True(plan.Stretch <= Math.Min(6, shortStretch));
+        // A window holds more than the round it must outlast, whatever the chain count.
+        var windowMs = plan.Frames * Slv3LightingFrameWriter.WindowIntervalTicks / 1.6 * plan.Stretch;
+        Assert.True(windowMs > plan.CycleMs * 4 / 3);
+    }
+
+    [Fact]
+    public void WindowMargin_is_the_window_less_wrap_safety_round_and_upload()
+    {
+        // Stretch 1: 26 usable frames of 33.125 ms, two safety frames and two wrap frames already taken off.
+        var margin = Slv3LightingFrameWriter.WindowMarginMs(1, 30, 700, 200);
+        Assert.Equal(26 * 33.125 - 900, margin, 3);
+    }
+
+    [Theory]
+    [InlineData(2, 60, 2642, 390, 744)]
+    [InlineData(4, 60, 5283, 780, 1490)]
+    [InlineData(5, 60, 7328, 780, 1333)]
+    [InlineData(6, 60, 8141, 780, 2408)]
+    public void WindowMargin_stays_positive_at_the_planned_cycle_with_a_slow_upload(int stretch, int frames, double cycleMs, double uploadMs, int marginMs)
+    {
+        Assert.Equal(marginMs, Slv3LightingFrameWriter.WindowMarginMs(stretch, frames, cycleMs, uploadMs), 0);
+    }
+
+    [Fact]
+    public void ReduceWindow_keeps_the_loop_slots_of_a_long_window()
+    {
+        const int Leds = 2;
+        const long First = 47;
+        var full = new byte[Slv3LightingFrameWriter.LongWindowFrames * Leds * 3];
+        for (var j = 0; j < Slv3LightingFrameWriter.LongWindowFrames; j++)
+        {
+            Array.Fill(full, (byte)j, Slv3LightingFrameWriter.WindowSlot(First + j, Slv3LightingFrameWriter.LongWindowFrames) * Leds * 3, Leds * 3);
+        }
+        var reduced = Slv3LightingFrameWriter.ReduceWindow(full, Leds, First, 2, Slv3LightingFrameWriter.LongWindowFrames);
+        Assert.Equal(Slv3LightingFrameWriter.LongWindowFrames / 2 * Leds * 3, reduced.Length);
+        // Loop slot = (frame / divisor) mod count: each group holds the frame at its centre.
+        for (var group = (First + 1) / 2; group < (First + 1) / 2 + 30; group++)
+        {
+            var expected = (byte)Math.Clamp(group * 2 - First, 0, 59);
+            Assert.Equal(expected, reduced[(int)(group % 30) * Leds * 3]);
+        }
+    }
+
+    [Fact]
+    public void WindowTickTimes_cover_the_requested_frame_count()
+    {
+        var ticks = Slv3LightingFrameWriter.WindowTickTimes(0, 1.6, 100, 53 * 3, Slv3LightingFrameWriter.LongWindowFrames);
+        Assert.Equal(60, ticks.Length);
+        Assert.InRange(ticks[1] - ticks[0], 99, 100);
     }
 
     [Theory]
