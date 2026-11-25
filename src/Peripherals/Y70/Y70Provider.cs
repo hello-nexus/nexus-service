@@ -193,8 +193,12 @@ public sealed class Y70Provider : IY70Provider, IDisposable
 
     public void SetToggle(bool screenOff)
     {
-        DriveScreenPower(!screenOff);
-        _store.Update(s => s.Y70.ScreenOff = screenOff);
+        // Under _powerLock so a concurrent reapply never reads the old ScreenOff between the drive and the persist.
+        lock (_powerLock)
+        {
+            DriveScreenPower(!screenOff);
+            _store.Update(s => s.Y70.ScreenOff = screenOff);
+        }
     }
 
     /// <summary>Drives screen power without persisting; screenOff=false restores the stored preference, so a panel the user switched off by hand stays off.</summary>
@@ -285,19 +289,6 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private bool TouchTransportSelected =>
         _hub.IsConnected && _hub.Variant == Y70DisplayProtocol.VariantTouch;
 
-    /// <summary>
-    /// True once a Touch has ever identified over serial (Variant survives a
-    /// Disconnect). The DDC register-set choice keys on this, not on
-    /// IsConnected: a Touch with its serial link transiently down must still
-    /// dim through the gain registers - a raw VCP 0x10 write lowers the
-    /// scaler luminance underneath the gain path and nothing restores it.
-    /// </summary>
-    /// <summary>
-    /// The variant is not identified yet (the hub identifies it on connect, after the first detect at boot) but
-    /// the Touch serial controller's USB id is present, so this may be a Touch. A DDC-only Truly or GT has a
-    /// different product id and an identified variant, so it is never deferred; with no presence source
-    /// (nothing to tell them apart) nothing is deferred.
-    /// </summary>
     // Deferred writes are re-applied by ApplyDeferredBrightness once the variant is known. A hub that never
     // identifies must not leave the control dead, so the deferral ends DeferDeadlineMs after the first defer.
     private const long DeferDeadlineMs = 15_000;
@@ -345,11 +336,24 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         }
     }
 
+    /// <summary>
+    /// The variant is not identified yet (the hub identifies it on connect, after the first detect at boot) but
+    /// the Touch serial controller's USB id is present, so this may be a Touch. A DDC-only Truly or GT has a
+    /// different product id and an identified variant, so it is never deferred; with no presence source
+    /// (nothing to tell them apart) nothing is deferred.
+    /// </summary>
     private bool TouchMayBePresent() =>
         string.IsNullOrEmpty(_hub.Variant)
         && _presence is not null
         && _presence.UsbPresent(Y70DisplayProtocol.VendorId, Y70DisplayProtocol.Y70TouchProductId);
 
+    /// <summary>
+    /// True once a Touch has ever identified over serial (Variant survives a
+    /// Disconnect). The DDC register-set choice keys on this, not on
+    /// IsConnected: a Touch with its serial link transiently down must still
+    /// dim through the gain registers - a raw VCP 0x10 write lowers the
+    /// scaler luminance underneath the gain path and nothing restores it.
+    /// </summary>
     private bool TouchVariantKnown => _hub.Variant == Y70DisplayProtocol.VariantTouch;
 
     private void ApplySerial(bool screenOn, int pct)

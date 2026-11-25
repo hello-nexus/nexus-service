@@ -644,8 +644,8 @@ public class Y70ProviderTests
         Assert.True(hub.EnsureConnected());
 
         provider.ApplyDeferredBrightness();
-        System.Threading.Thread.Sleep(400);
 
+        // Nothing was deferred, so no write is issued; the trailing flush is not armed either.
         Assert.Empty(ddc.VcpWrites);
     }
 
@@ -665,6 +665,39 @@ public class Y70ProviderTests
         // The second write lands inside the coalescing window, so it goes out on the trailing flush.
         WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpBrightness));
         Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), ddc.VcpWrites);
+    }
+
+    [Fact]
+    public void Deadline_fallback_writes_raw_brightness_once_across_repeated_calls()
+    {
+        long now = 1_000;
+        var (provider, ddc, _, _, store) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId, () => now);
+        store.Load().Y70.Brightness = 40;
+        provider.ReapplyBrightness();
+        now += 16_000;
+
+        provider.ApplyDeferredBrightness();
+        WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpBrightness));
+        provider.ApplyDeferredBrightness();
+        provider.ApplyDeferredBrightness();
+        System.Threading.Thread.Yield();
+
+        Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpBrightness));
+    }
+
+    [Fact]
+    public void Deferral_resolving_during_game_mode_screen_off_does_not_relight_the_screen()
+    {
+        var (provider, ddc, hub, discovery, _) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+        provider.SetBrightness(40);
+        provider.SetGameModeScreenOff(true);
+        var before = ddc.VcpWrites.Count;
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+
+        provider.ApplyDeferredBrightness();
+
+        Assert.DoesNotContain(ddc.VcpWrites.Skip(before), w => w.Code == Y70DisplayProtocol.VcpVideoGainRed);
     }
 
     [Fact]

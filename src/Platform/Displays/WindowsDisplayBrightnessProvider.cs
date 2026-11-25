@@ -146,13 +146,25 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         var writes = _held.ToArray();
         _held.Clear();
         var applied = 0;
+        // A display whose earlier entry failed keeps its later entries held behind it, so each retry
+        // replays that display's sequence in the original order (a preset must land before its gains).
+        var blocked = new HashSet<string>();
         foreach (var w in writes)
         {
+            if (blocked.Contains(w.Id))
+            {
+                _held.Add(w);
+                continue;
+            }
             var ok = w.Code is byte code
                 ? WriteVcp(w.Id, code, w.Value)
                 : WriteBrightness(w.Id, w.Value).Status == DisplayBrightnessWriteStatuses.Applied;
             if (ok) applied++;
-            else if (w.Attempts + 1 < HeldWriteMaxAttempts) _held.Add(w with { Attempts = w.Attempts + 1 });
+            else if (w.Attempts + 1 < HeldWriteMaxAttempts)
+            {
+                _held.Add(w with { Attempts = w.Attempts + 1 });
+                blocked.Add(w.Id);
+            }
         }
         Log($"applied {applied}/{writes.Length} held write(s), {_held.Count} kept for retry");
         if (_held.Count > 0) _heldRetry.Change(HeldRetryDelayMs, Timeout.Infinite);

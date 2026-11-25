@@ -215,6 +215,20 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     }
 
     [Fact]
+    public void Non_edge_detected_ticks_apply_deferred_brightness_but_the_edge_tick_does_not()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+
+        worker.Tick();
+        Assert.Equal(0, y70.DeferredCount);
+
+        worker.Tick();
+        worker.Tick();
+        Assert.Equal(2, y70.DeferredCount);
+    }
+
+    [Fact]
     public void Redetect_after_sustained_disconnect_reapplies_brightness()
     {
         var y70 = new FakeY70Provider { Connected = true };
@@ -529,6 +543,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         public int ApplyCount;
         public int BrightnessCount;
         public int InvalidateCount;
+        public int DeferredCount;
         public int SettledCount;
 
         public bool IsConnected() => Connected;
@@ -541,6 +556,7 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         public void SetBrightness(int brightness) { }
         public void ReapplyBrightness() => BrightnessCount++;
         public void InvalidateDisplayPrep() => InvalidateCount++;
+        public void ApplyDeferredBrightness() => DeferredCount++;
         public void ReapplySettledBrightness() => SettledCount++;
         public bool GetToggle() => false;
         public void SetToggle(bool toggle) { }
