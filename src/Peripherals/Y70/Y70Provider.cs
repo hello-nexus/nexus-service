@@ -146,8 +146,11 @@ public sealed class Y70Provider : IY70Provider, IDisposable
             }
             return;
         }
-        DdcSetBrightnessCoalesced(Shown(pct));
+        // Persist before the write: a concurrent reapply resolves its value from the store inside the coalescer's
+        // critical section (DdcSetBrightnessCoalesced). Either its section follows this persist and it sends this
+        // value, or it ran earlier and this write's own coalescer call follows it and sets the final pending value.
         _store.Update(s => s.Y70.Brightness = pct);
+        DdcSetBrightnessCoalesced(() => Shown(pct));
     }
 
     // Game-mode (focus) screen-off. _powerLock makes the flag check in ReapplyBrightness and the flag set plus
@@ -182,14 +185,14 @@ public sealed class Y70Provider : IY70Provider, IDisposable
             {
                 return;
             }
-            var shown = Shown(y70.Brightness);
             if (SerialTransportSelected)
             {
-                ApplySerial(true, shown);
+                ApplySerial(true, Shown(y70.Brightness));
             }
             else
             {
-                DdcSetBrightnessCoalesced(shown);
+                // Resolved under the coalescer's lock so a slider tick that persisted meanwhile is not overwritten.
+                DdcSetBrightnessCoalesced(() => Shown(_store.Load().Y70.Brightness));
             }
         }
     }
@@ -249,7 +252,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                     DdcSetPower(true);
                     _touchDdcStandbyFallback = false;
                 }
-                DdcSetBrightnessCoalesced(Math.Max(Shown(_store.Load().Y70.Brightness), Y70DisplayProtocol.MinBrightnessOnPercent));
+                DdcSetBrightnessCoalesced(() => Math.Max(Shown(_store.Load().Y70.Brightness), Y70DisplayProtocol.MinBrightnessOnPercent));
             }
         }
         else if (SerialTransportSelected)
@@ -393,13 +396,14 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private Timer? _ddcBrightnessFlush;
     private bool _disposed;
 
-    private void DdcSetBrightnessCoalesced(int pct)
+    /// <summary>The value is resolved inside <see cref="_ddcStateLock"/>, at the moment it becomes the pending write.</summary>
+    private void DdcSetBrightnessCoalesced(Func<int> resolve)
     {
         var interval = TouchVariantKnown ? DdcRgbWriteIntervalMs : DdcWriteIntervalMs;
         lock (_ddcStateLock)
         {
             if (_disposed) return;
-            _pendingDdcBrightness = pct;
+            _pendingDdcBrightness = resolve();
             var now = Clock();
             if (now - _lastDdcBrightnessWriteAt < interval)
             {

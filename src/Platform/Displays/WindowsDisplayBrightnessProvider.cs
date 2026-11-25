@@ -339,7 +339,7 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         lock (_writeGate)
         {
             var handled = HoldIfGated(new HeldWrite(id, null, requested), "set", out var writtenDto);
-            if (handled == HeldIncoming.Written && writtenDto is not null)
+            if ((handled == HeldIncoming.Written || handled == HeldIncoming.HeldAfterFailure) && writtenDto is not null)
             {
                 return writtenDto;
             }
@@ -457,7 +457,11 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         lock (_writeGate)
         {
             // A held write reports success: it reaches the monitor once the gate opens.
-            if (HoldIfGated(new HeldWrite(id, code, value), $"setVcp 0x{code:X2}", out _) != HeldIncoming.NotHandled) return true;
+            var handled = HoldIfGated(new HeldWrite(id, code, value), $"setVcp 0x{code:X2}", out _);
+            // Held behind an earlier failure reports success (it reaches the monitor later); a write that was attempted
+            // in its slot and failed reports the failure, so the caller's one-time prep does not latch on it.
+            if (handled == HeldIncoming.HeldAfterFailure) return false;
+            if (handled != HeldIncoming.NotHandled) return true;
             return WriteVcp(id, code, value);
         }
     }

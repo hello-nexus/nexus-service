@@ -16,8 +16,10 @@ internal enum HeldIncoming
     NotHandled,
     /// <summary>Written during the replay, in its predecessor's position.</summary>
     Written,
-    /// <summary>Held, in order, behind an earlier failed write for the same display.</summary>
+    /// <summary>Held, in order, behind an earlier failed write for the same display; nothing was attempted.</summary>
     Queued,
+    /// <summary>Attempted in its predecessor's position and failed; held there for retry. The caller reports the failure.</summary>
+    HeldAfterFailure,
 }
 
 /// <summary>
@@ -64,45 +66,94 @@ internal sealed class HeldWriteQueue
         var applied = 0;
         var state = HeldIncoming.NotHandled;
         var blocked = new HashSet<string>();
-        foreach (var w in writes)
+
+        // Failure policy for a replayed (not incoming) entry: charged an attempt only on counted replays, dropped at the cap.
+        void HoldFailed(HeldWrite entry)
         {
-            if (incoming is { } inc && w.Id == inc.Id && w.Code == inc.Code)
-            {
-                var entry = inc with { Attempts = 0 };
-                if (!blocked.Contains(entry.Id) && write(entry))
-                {
-                    applied++;
-                    state = HeldIncoming.Written;
-                    continue;
-                }
-                blocked.Add(entry.Id);
-                _held.Add(entry);
-                state = HeldIncoming.Queued;
-                continue;
-            }
-            if (blocked.Contains(w.Id))
-            {
-                _held.Add(w);
-                continue;
-            }
-            if (write(w))
-            {
-                applied++;
-                continue;
-            }
-            blocked.Add(w.Id);
             if (!countAttempt)
             {
-                _held.Add(w);
+                _held.Add(entry);
             }
-            else if (w.Attempts + 1 < _maxAttempts)
+            else if (entry.Attempts + 1 < _maxAttempts)
             {
-                _held.Add(w with { Attempts = w.Attempts + 1 });
+                _held.Add(entry with { Attempts = entry.Attempts + 1 });
             }
             else
             {
                 // Dropped at the cap: it no longer holds back the entries behind it.
-                blocked.Remove(w.Id);
+                blocked.Remove(entry.Id);
+            }
+        }
+
+        for (var i = 0; i < writes.Length; i++)
+        {
+            var w = writes[i];
+            var isIncoming = incoming is { } inc && w.Id == inc.Id && w.Code == inc.Code;
+            var entry = isIncoming ? incoming!.Value with { Attempts = 0 } : w;
+            if (blocked.Contains(entry.Id))
+            {
+                _held.Add(entry);
+                if (isIncoming)
+                {
+                    state = HeldIncoming.Queued;
+                }
+                continue;
+            }
+            bool ok;
+            try
+            {
+                ok = write(entry);
+            }
+            catch
+            {
+                // A throwing write must not lose the rest of the queue: the current entry counts as failed and
+                // everything not yet processed stays held, with the new write in its predecessor's slot.
+                if (isIncoming)
+                {
+                    _held.Add(entry);
+                }
+                else
+                {
+                    blocked.Add(entry.Id);
+                    HoldFailed(entry);
+                }
+                var placed = isIncoming || state != HeldIncoming.NotHandled;
+                for (var j = i + 1; j < writes.Length; j++)
+                {
+                    if (!placed && incoming is { } inc2 && writes[j].Id == inc2.Id && writes[j].Code == inc2.Code)
+                    {
+                        _held.Add(inc2 with { Attempts = 0 });
+                        placed = true;
+                    }
+                    else
+                    {
+                        _held.Add(writes[j]);
+                    }
+                }
+                if (!placed && incoming is { } pending)
+                {
+                    _held.Add(pending with { Attempts = 0 });
+                }
+                throw;
+            }
+            if (ok)
+            {
+                applied++;
+                if (isIncoming)
+                {
+                    state = HeldIncoming.Written;
+                }
+                continue;
+            }
+            blocked.Add(entry.Id);
+            if (isIncoming)
+            {
+                _held.Add(entry);
+                state = HeldIncoming.HeldAfterFailure;
+            }
+            else
+            {
+                HoldFailed(entry);
             }
         }
         if (incoming is { } last && state == HeldIncoming.NotHandled && blocked.Contains(last.Id))

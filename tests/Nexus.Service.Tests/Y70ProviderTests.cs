@@ -340,6 +340,23 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void A_slider_set_between_the_reapply_store_read_and_its_write_is_not_overwritten()
+    {
+        var (provider, _, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTruly);
+        store.Load().Y70.Brightness = 40;
+        // The hook fires on the reapply's first store read; the slider then persists and writes before the
+        // reapply reaches the coalescer.
+        store.OnLoad = () => provider.SetBrightness(70);
+
+        provider.ReapplyBrightness();
+
+        WaitFor(() => ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpBrightness) >= 2);
+        var brightness = ddc.VcpWrites.Where(w => w.Code == Y70DisplayProtocol.VcpBrightness).ToList();
+        Assert.Equal(70, brightness[^1].Value);
+        Assert.DoesNotContain(brightness, w => w.Value == 40);
+    }
+
+    [Fact]
     public void ReapplyBrightness_on_serial_variant_leaves_a_switched_off_screen_dark()
     {
         var (provider, serial, _, store) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
@@ -895,7 +912,25 @@ public class Y70ProviderTests
         private readonly NexusSettings _settings = new();
 
         public string SettingsPath => ":memory:";
-        public NexusSettings Load() => _settings;
+        /// <summary>
+        /// One-shot hook run during the next <see cref="Load"/>, to interleave another caller. That Load returns the
+        /// values as they were before the hook ran, like a snapshot read that a concurrent writer then outdates.
+        /// </summary>
+        public Action? OnLoad;
+        public NexusSettings Load()
+        {
+            var hook = OnLoad;
+            if (hook is null)
+            {
+                return _settings;
+            }
+            OnLoad = null;
+            var snapshot = new NexusSettings();
+            snapshot.Y70.Brightness = _settings.Y70.Brightness;
+            snapshot.Y70.ScreenOff = _settings.Y70.ScreenOff;
+            hook();
+            return snapshot;
+        }
         public void Update(Action<NexusSettings> mutator) { mutator(_settings); OnChanged?.Invoke(); }
         public void Reload() { }
         public void FlushNow() { }

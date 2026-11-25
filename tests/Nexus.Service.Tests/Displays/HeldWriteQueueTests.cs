@@ -89,7 +89,7 @@ public class HeldWriteQueueTests
 
         var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 20));
 
-        Assert.True(result.Incoming == HeldIncoming.Queued);
+        Assert.Equal(HeldIncoming.Queued, result.Incoming);
         Assert.DoesNotContain(written, w => w.Code == 2);
         Assert.Equal(2, queue.Count);
 
@@ -131,6 +131,74 @@ public class HeldWriteQueueTests
     }
 
     [Fact]
+    public void A_new_write_that_fails_in_its_slot_is_reported_as_a_failure_and_stays_held()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20));
+        failing.Add(2);
+
+        var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
+
+        Assert.Equal(HeldIncoming.HeldAfterFailure, result.Incoming);
+        Assert.Equal(1, queue.Count);
+    }
+
+    [Fact]
+    public void A_predecessor_on_one_display_is_written_while_another_display_is_blocked()
+    {
+        var (queue, written, failing) = Build(W(1, 10, "display-b"), W(2, 20), W(3, 30, "display-b"));
+        failing.Add(1);
+
+        var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
+
+        Assert.Equal(HeldIncoming.Written, result.Incoming);
+        Assert.Contains(written, w => w.Id == Id && w.Code == 2 && w.Value == 21);
+        Assert.DoesNotContain(written, w => w.Id == "display-b" && w.Code == 3);
+        Assert.Equal(2, queue.Count);
+    }
+
+    [Fact]
+    public void Applied_counts_the_new_write_written_in_its_slot()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20));
+
+        var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
+
+        Assert.Equal(2, result.Applied);
+        Assert.Equal(2, result.Total);
+    }
+
+    [Fact]
+    public void A_throwing_write_keeps_the_rest_of_the_queue_held_in_order()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20), W(3, 30));
+
+        Assert.Throws<System.InvalidOperationException>(() => queue.Replay(
+            w => w.Code == 2 ? throw new System.InvalidOperationException("boom") : Write(written, failing, w),
+            countAttempt: true));
+
+        Assert.Equal(2, queue.Count);
+        written.Clear();
+        queue.Replay(w => Write(written, failing, w), countAttempt: true);
+        Assert.Equal(new byte?[] { 2, 3 }, written.Select(w => w.Code).ToArray());
+    }
+
+    [Fact]
+    public void A_throwing_write_keeps_the_new_write_in_its_predecessors_slot()
+    {
+        var (queue, written, failing) = Build(W(1, 10), W(2, 20), W(3, 30));
+
+        Assert.Throws<System.InvalidOperationException>(() => queue.Replay(
+            w => w.Code == 1 ? throw new System.InvalidOperationException("boom") : Write(written, failing, w),
+            countAttempt: false,
+            incoming: W(3, 31)));
+
+        written.Clear();
+        queue.Replay(w => Write(written, failing, w), countAttempt: true);
+        Assert.Equal(new byte?[] { 1, 2, 3 }, written.Select(w => w.Code).ToArray());
+        Assert.Equal(31, written[2].Value);
+    }
+
+    [Fact]
     public void A_new_write_that_fails_in_its_predecessors_slot_is_held_there()
     {
         var (queue, written, failing) = Build(W(1, 10), W(2, 20), W(3, 30));
@@ -138,7 +206,7 @@ public class HeldWriteQueueTests
 
         var result = queue.Replay(w => Write(written, failing, w), countAttempt: false, incoming: W(2, 21));
 
-        Assert.Equal(HeldIncoming.Queued, result.Incoming);
+        Assert.Equal(HeldIncoming.HeldAfterFailure, result.Incoming);
         failing.Clear();
         written.Clear();
         queue.Replay(w => Write(written, failing, w), countAttempt: true);
