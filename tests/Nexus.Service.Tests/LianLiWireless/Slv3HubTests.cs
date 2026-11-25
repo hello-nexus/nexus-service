@@ -2404,7 +2404,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_busy_rx_that_two_reopens_do_not_clear_is_reset_through_the_tx_and_keeps_the_list()
+    public void A_busy_rx_that_a_reopen_does_not_clear_keeps_reopening_without_a_reset()
     {
         var clock = new ManualClock();
         var net = new FakeSlv3Network();
@@ -2422,38 +2422,25 @@ public partial class Slv3HubTests
         Assert.True(hub.DriveTick());
 
         rx.BusyReads = true;
-        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
+        for (var i = 0; i < 4 * 60; i++)
+        {
+            Assert.True(hub.PollTick());
+        }
         Assert.Equal(2, rxOpens);
-        clock.AdvanceMs(60_000);
-        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
-        Assert.Equal(3, rxOpens);
         Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
 
-        clock.AdvanceMs(60_000);
-        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
-        Assert.Contains(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
+        for (var round = 0; round < 3; round++)
+        {
+            clock.AdvanceMs(60_000);
+            for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
+        }
+        Assert.Equal(5, rxOpens);
+        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
         Assert.Single(hub.State.Fans);
-        Assert.True(hub.IsConnected);
 
         rx.BusyReads = false;
-        clock.AdvanceMs(60_000);
-        for (var i = 0; i < 5; i++) Assert.True(hub.PollTick());
+        Assert.True(hub.PollTick());
         Assert.False(Assert.Single(hub.State.Fans).Stale);
-    }
-
-    [Fact]
-    public void A_busy_spell_cleared_after_one_reopen_never_resets_the_tx()
-    {
-        var (hub, net, tx, rx, _) = CreateConnectedHubCountingRxOpens();
-        net.Fans.Add(new SimulatedFan { Mac = FanMac });
-        Assert.True(hub.DriveTick());
-
-        rx.BusyReads = true;
-        for (var i = 0; i < 60; i++) Assert.True(hub.PollTick());
-        rx.BusyReads = false;
-        for (var i = 0; i < 5; i++) Assert.True(hub.PollTick());
-
-        Assert.DoesNotContain(tx.SentFrames, f => f.Length >= 1 && f[0] == Slv3Protocol.UsbResetAnother);
     }
 
     [Fact]

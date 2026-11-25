@@ -268,8 +268,6 @@ public sealed partial class Slv3Hub : IDisposable
     // RX handle, never UsbResetAnother: the reset re-enumerates the RX, a Windows
     // device sound each time.
     private const int RxBusyPollsBeforeReset = 60;
-    // RX recoveries without a good reply in between before the next busy-streak recovery resets the RX through the TX.
-    private const int RxBusyReopensBeforeTxReset = 2;
     // A chain that matched its target and then reports a mismatch must keep reporting it this many polls before a bind goes out, so a one-poll misread never steers it.
     internal const int BindMismatchPollsBeforeSend = 3;
     // Bind frames sent at poll cadence before resends back off, so a record the chain never corrects cannot be spammed.
@@ -2678,7 +2676,7 @@ public sealed partial class Slv3Hub : IDisposable
             return true;
         }
         var first = _firstBusyReply is { } b ? Convert.ToHexString(b, 0, Math.Min(b.Length, Slv3Protocol.UsbPacketSize)) : "";
-        return BeginRxRecoveryLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies (first {first})", resetViaTx: _rxRecoveries >= RxBusyReopensBeforeTxReset);
+        return BeginRxRecoveryLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies (first {first})", resetViaTx: false);
     }
 
     // Only a good reply clears the busy and failure streaks, so an RX that
