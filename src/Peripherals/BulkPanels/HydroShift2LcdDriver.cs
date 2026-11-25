@@ -66,6 +66,8 @@ public sealed class HydroShift2LcdDriver : IBulkPanelDriver
         _clock.Restart();
         _lastTimestamp = 0;
 
+        HydroShift2Protocol.DrainStaleReplies(pipe, _reply);
+
         var version = Exchange(pipe, HydroShift2Protocol.CommandGetVersion, HydroShift2Protocol.EncodeCommand(
             HydroShift2Protocol.CommandGetVersion, ReadOnlySpan<byte>.Empty, NextTimestamp()));
         if (version is null)

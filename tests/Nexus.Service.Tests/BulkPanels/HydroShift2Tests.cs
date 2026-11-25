@@ -167,6 +167,28 @@ public class HydroShift2Tests
     }
 
     [Fact]
+    public void Connect_drains_a_stale_StopPlay_reply_left_by_the_previous_session()
+    {
+        var pipe = new FirmwarePipe();
+        pipe.Pending.Enqueue(Reply(HydroShift2Protocol.CommandStopPlay.ToString("X2") + "C8"));
+        var driver = new HydroShift2LcdDriver();
+
+        Assert.Equal((480, 480), driver.Connect(pipe, null));
+
+        Assert.Equal("lianlih2s_0001_0027", driver.Firmware);
+        Assert.Equal(2, pipe.ReadsBeforeFirstWrite);
+        Assert.Empty(pipe.Pending);
+    }
+
+    [Fact]
+    public void Connect_survives_a_transport_that_throws_while_draining()
+    {
+        var pipe = new FirmwarePipe { ThrowOnFirstRead = true };
+
+        Assert.Equal((480, 480), new HydroShift2LcdDriver().Connect(pipe, null));
+    }
+
+    [Fact]
     public void Connect_fails_when_the_panel_never_answers()
     {
         var pipe = new FirmwarePipe { Silent = true };
@@ -888,6 +910,8 @@ public class HydroShift2Tests
         public Queue<byte[]> Pending { get; } = new();
         public bool Silent { get; set; }
         public int ProductId { get; set; } = HydroShift2Protocol.ProductIdSquare;
+        public bool ThrowOnFirstRead { get; set; }
+        public int ReadsBeforeFirstWrite { get; private set; }
 
         public byte[] Commands => Writes.Select(w => Decrypt(w)[0]).ToArray();
 
@@ -918,6 +942,15 @@ public class HydroShift2Tests
 
         public int Read(Span<byte> buffer, int timeoutMs)
         {
+            if (Writes.Count == 0)
+            {
+                ReadsBeforeFirstWrite++;
+            }
+            if (ThrowOnFirstRead)
+            {
+                ThrowOnFirstRead = false;
+                throw new InvalidOperationException("transport fault");
+            }
             if (!Pending.TryDequeue(out var reply))
             {
                 return 0;
