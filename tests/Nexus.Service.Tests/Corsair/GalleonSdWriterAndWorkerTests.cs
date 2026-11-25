@@ -109,6 +109,83 @@ public class GalleonSdWriterAndWorkerTests
     }
 
     [Fact]
+    public void Keyboard_writer_saved_toggle_stops_frames_holds_hardware_mode_and_off_resumes_streaming()
+    {
+        var rig = new KeyboardRig();
+        rig.Engine.SetEffect(new PaintEffect());
+        var id = rig.Hub.Attached!.DeviceId;
+
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string> { id });
+        rig.Writer.Tick();
+        rig.Writer.Tick();
+
+        Assert.DoesNotContain(rig.Hid.Device.Writes, w => w[3] is GalleonSdProtocol.CmdBlockFirst or GalleonSdProtocol.CmdBlockNext);
+        Assert.DoesNotContain(Commands(rig.Hid.Device, GalleonSdProtocol.CmdStartTx), w => (w[5] | (w[6] << 8)) == GalleonSdProtocol.DirectResource);
+        Assert.Equal(GalleonSdProtocol.ModeHardware, Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
+
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string>());
+        rig.Writer.Tick();
+
+        Assert.Single(Commands(rig.Hid.Device, GalleonSdProtocol.CmdBlockFirst));
+        Assert.Equal(GalleonSdProtocol.ModeSoftware, Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet).Last()[6]);
+        rig.Hub.Dispose();
+    }
+
+    [Fact]
+    public void Keyboard_writer_saved_with_no_effect_still_holds_hardware_mode()
+    {
+        var rig = new KeyboardRig();
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string> { rig.Hub.Attached!.DeviceId });
+
+        rig.Writer.Tick();
+
+        Assert.Contains(Commands(rig.Hid.Device, GalleonSdProtocol.CmdSet), w => w[6] == GalleonSdProtocol.ModeHardware);
+        Assert.Empty(Commands(rig.Hid.Device, GalleonSdProtocol.CmdBlockFirst));
+        rig.Hub.Dispose();
+    }
+
+    [Fact]
+    public void Keyboard_cards_report_the_saved_to_keyboard_flag_from_settings_and_the_dials_do_not()
+    {
+        var rig = new KeyboardRig();
+        var unit = rig.Hub.Attached!;
+        var off = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load());
+        Assert.All(off, c => Assert.True(c.SaveToDeviceSupported));
+        Assert.All(off, c => Assert.False(c.SavedToDevice));
+
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string> { unit.DeviceId });
+        var on = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load());
+        Assert.All(on, c => Assert.True(c.SavedToDevice));
+
+        Assert.True(GalleonSdLightingDeviceProvider.IsKeyboardId(unit.DeviceId));
+        Assert.False(GalleonSdLightingDeviceProvider.IsKeyboardId(GalleonSdProtocol.DialsDeviceIdPrefix + "X"));
+        Assert.False(GalleonSdLightingDeviceProvider.IsKeyboardId("openrgb-s-1"));
+        rig.Hub.Dispose();
+    }
+
+    [Fact]
+    public void A_blocked_keyboard_still_reports_the_toggle_on_and_carries_the_reason_separately()
+    {
+        var rig = new KeyboardRig();
+        var unit = rig.Hub.Attached!;
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string> { unit.DeviceId });
+
+        var blocked = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load(), GalleonSdHub.SavedBlockedForeignHost);
+        Assert.All(blocked, c => Assert.True(c.SavedToDevice));
+        Assert.All(blocked, c => Assert.Equal(GalleonSdHub.SavedBlockedForeignHost, c.SavedToDeviceReason));
+
+        var clear = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load());
+        Assert.All(clear, c => Assert.True(c.SavedToDevice));
+        Assert.All(clear, c => Assert.Null(c.SavedToDeviceReason));
+
+        rig.Store.Update(s => s.Devices.SaveToDeviceLightingDevices = new List<string>());
+        var off = GalleonSdLightingDeviceProvider.BuildCards(unit, rig.Store.Load(), GalleonSdHub.SavedBlockedForeignHost);
+        Assert.All(off, c => Assert.False(c.SavedToDevice));
+        Assert.All(off, c => Assert.Null(c.SavedToDeviceReason));
+        rig.Hub.Dispose();
+    }
+
+    [Fact]
     public void Keyboard_writer_with_no_effect_never_touches_the_board()
     {
         var rig = new KeyboardRig();

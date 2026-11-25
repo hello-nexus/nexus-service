@@ -374,6 +374,10 @@ internal static class AppBootstrap
         app.Services.GetRequiredService<Nexus.Service.Peripherals.LianLiTl.TlFanHub>().TopologyChanged +=
             () => PanelTopics.BroadcastLighting(muxHub);
 
+        // The keyboard's saved-colors card reason (foreign host, write cap, failed writes) has no engine frame either.
+        app.Services.GetRequiredService<Nexus.Service.Peripherals.Corsair.Galleon.GalleonSdHub>().SavedBlockedChanged +=
+            () => PanelTopics.BroadcastLighting(muxHub);
+
         // A lighting device appearing or dropping (boot, OpenRGB restart, hot-plug)
         // refreshes every lighting view, so one that loaded earlier recounts.
         if (app.Services.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>() is { } rgbBridge)
