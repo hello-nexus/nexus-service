@@ -11,6 +11,8 @@ namespace Nexus.Service.Activity;
 public interface IAudioDeviceProvider
 {
     AudioDeviceList ListDevices();
+    /// <summary>Every endpoint id this PC has ever registered, including unplugged and disabled ones. Ids only, so it is cheap; empty when the provider cannot tell. Called on demand, not by <see cref="ListDevices"/>.</summary>
+    AudioKnownEndpointIds ListKnownEndpointIds() => new();
     bool SetDefaultOutput(string deviceId);
     bool SetDefaultInput(string deviceId);
     /// <summary>Switches the endpoint's spatial sound format; empty turns it

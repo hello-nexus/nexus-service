@@ -422,38 +422,98 @@ public class CorsairLinkLcdTests
     // GIF frame delay parsing
     // -------------------------------------------------------------------------
 
-    [Fact]
-    public void ParseGifFrameDelays_extracts_centiseconds_as_ms()
+    private static readonly byte[] PlainImageData = { 0x02, 0x44, 0x01 };
+
+    // A 1x1 GIF89a with a 2-color global table. Each frame is an optional Graphic Control Extension
+    // (delay in centiseconds), then an image whose one data sub-block holds the given bytes.
+    private static byte[] Gif(params (int? Centiseconds, byte[] ImageData)[] frames)
     {
-        // Two GCE blocks: delay = 5cs (50ms) and delay = 10cs (100ms).
-        var gif = new byte[]
+        var gif = new List<byte>();
+        gif.AddRange("GIF89a"u8.ToArray());
+        gif.AddRange(new byte[] { 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00 });
+        gif.AddRange(new byte[] { 0, 0, 0, 255, 255, 255 });
+        foreach (var (cs, data) in frames)
         {
-            // GCE 1: delay = 5 centiseconds
-            0x21, 0xF9, 0x04, 0x00, 0x05, 0x00, 0x00, 0x00,
-            // GCE 2: delay = 10 centiseconds
-            0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00,
-        };
-
-        var delays = CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif);
-
-        Assert.Equal(2, delays.Length);
-        Assert.Equal(50, delays[0]);
-        Assert.Equal(100, delays[1]);
+            if (cs is { } delay)
+            {
+                gif.AddRange(new byte[] { 0x21, 0xF9, 0x04, 0x00, (byte)delay, (byte)(delay >> 8), 0x00, 0x00 });
+            }
+            gif.AddRange(new byte[] { 0x2C, 0, 0, 0, 0, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02 });
+            gif.Add((byte)data.Length);
+            gif.AddRange(data);
+            gif.Add(0x00);
+        }
+        gif.Add(0x3B);
+        return gif.ToArray();
     }
 
     [Fact]
-    public void ParseGifFrameDelays_minimum_10ms()
+    public void ParseGifFrameDelays_extracts_centiseconds_as_ms()
     {
-        // delay = 0 centiseconds -> minimum 10ms.
-        var gif = new byte[]
-        {
-            0x21, 0xF9, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
-        };
+        var gif = Gif((5, PlainImageData), (10, PlainImageData));
 
-        var delays = CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif);
+        Assert.Equal(new[] { 50, 100 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif));
+    }
 
-        Assert.Single(delays);
-        Assert.Equal(10, delays[0]);
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void ParseGifFrameDelays_minimum_10ms(int centiseconds)
+    {
+        var gif = Gif((centiseconds, PlainImageData));
+
+        Assert.Equal(new[] { 10 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif));
+    }
+
+    [Fact]
+    public void ParseGifFrameDelays_does_not_read_a_delay_out_of_image_data()
+    {
+        // Compressed pixels can hold the GCE marker; a byte scan read this one as a 655 s frame.
+        var lookalike = new byte[] { 0x21, 0xF9, 0x04, 0x00, 0xFF, 0xFF, 0x00, 0x00 };
+        var gif = Gif((3, lookalike), (4, PlainImageData));
+
+        Assert.Equal(new[] { 30, 40 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif));
+    }
+
+    [Fact]
+    public void ParseGifFrameDelays_gives_an_image_without_a_GCE_the_minimum_and_skips_nothing()
+    {
+        var gif = Gif((null, PlainImageData), (7, PlainImageData));
+
+        Assert.Equal(new[] { 10, 70 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif));
+    }
+
+    [Fact]
+    public void ParseGifFrameDelays_skips_a_local_color_table_and_other_extensions()
+    {
+        var gif = new List<byte>(Gif((5, PlainImageData)));
+        // Insert a comment extension before the GCE, and mark the image's local color table (2 entries).
+        var comment = new byte[] { 0x21, 0xFE, 0x03, 0x21, 0xF9, 0x04, 0x00 };
+        gif.InsertRange(13 + 6, comment);
+        var descriptorPacked = gif.IndexOf(0x2C) + 9;
+        gif[descriptorPacked] = 0x80;
+        gif.InsertRange(descriptorPacked + 1, new byte[] { 9, 9, 9, 8, 8, 8 });
+
+        Assert.Equal(new[] { 50 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(gif.ToArray()));
+    }
+
+    [Fact]
+    public void ParseGifFrameDelays_counts_only_the_images_a_truncated_file_completes()
+    {
+        var whole = Gif((5, PlainImageData), (6, PlainImageData));
+        var lastImageStart = Array.LastIndexOf(whole, (byte)0x2C);
+
+        // Cut inside the second image's data, and just before its sub-block terminator.
+        Assert.Equal(new[] { 50 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(whole[..(lastImageStart + 13)]));
+        Assert.Equal(new[] { 50 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(whole[..^2]));
+        Assert.Equal(new[] { 50, 60 }, CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(whole[..^1]));
+        Assert.Empty(CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(whole[..8]));
+    }
+
+    [Fact]
+    public void ParseGifFrameDelays_reads_nothing_from_a_file_that_is_not_a_GIF()
+    {
+        Assert.Empty(CorsairLinkLcdMediaLibrary.ParseGifFrameDelays(new byte[] { 0x21, 0xF9, 0x04, 0x00, 0x05, 0x00, 0x00, 0x00 }));
     }
 
     // -------------------------------------------------------------------------

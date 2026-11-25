@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
@@ -25,6 +26,7 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private bool _wasStreaming;
+    private bool? _lastSaved;
     private RgbColor[][] _buffers = Array.Empty<RgbColor[]>();
 
     public GalleonSdLightingFrameWriter(LightingEngine engine, GalleonSdHub hub, IConfigStore store, Np50IdentifyTracker identify, FeatureGates? gates = null)
@@ -81,10 +83,29 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         if (unit is null)
         {
             _wasStreaming = false;
+            _lastSaved = null;
             return;
         }
 
-        if (_engine.CurrentEffectName == "none")
+        var settings = _store.Load();
+        var wanted = settings.Devices.SaveToDeviceLightingDevices.Contains(unit.DeviceId);
+        if (!wanted)
+        {
+            NoteSaved(false, "setting off");
+            _hub.SetSavedToDevice(false);
+        }
+        // Onboard writes cannot run (foreign host, gave up, cap): stream live instead of leaving the board on its own defaults.
+        // A write-cap block ends by itself once the transaction window frees; saved mode resumes then.
+        if (wanted && _hub.SavedBlockedReason == GalleonSdHub.SavedBlockedWriteCap) _hub.TryClearWriteCap();
+        var blocked = wanted && _hub.SavedBlockedReason is not null;
+        if (blocked)
+        {
+            NoteSaved(false, $"blocked: {_hub.SavedBlockedReason}");
+            _hub.FallBackToLive();
+        }
+        var saved = wanted && !blocked;
+
+        if (!saved && _engine.CurrentEffectName == "none")
         {
             if (_wasStreaming)
             {
@@ -95,28 +116,58 @@ public sealed class GalleonSdLightingFrameWriter : IHostedService, IDisposable
         }
 
         var devices = _engine.Devices;
-        if (devices.Length == 0) return;
+        if (!saved && devices.Length == 0) return;
 
-        var settings = _store.Load();
         var structure = GalleonSdLightingDeviceProvider.BuildStructure(unit);
         var zones = ZoneResolution.Resolve(structure, settings);
         var uncontrolled = settings.Devices.UncontrolledLightingDevices;
         if (ZoneResolution.IsFullyUncontrolled(zones, uncontrolled))
         {
             _wasStreaming = false;
+            NoteSaved(false, "device uncontrolled");
+            _hub.SetSavedToDevice(false, undo: false);
             _hub.ReleaseToHardware();
+            return;
+        }
+
+        // Saved to the keyboard: the board stays in hardware mode and no live frame is sent. The composed frame
+        // goes to the hub, which writes it into onboard layers once it holds still. No effect means no frame, so
+        // whatever the keyboard already holds is left alone.
+        if (saved)
+        {
+            _wasStreaming = false;
+            var frame = _engine.CurrentEffectName != "none" && devices.Length > 0
+                ? Compose(structure, zones, devices, settings, uncontrolled)
+                : null;
+            NoteSaved(true, "setting on");
+            _hub.SetSavedToDevice(true, frame is null ? default : frame);
             return;
         }
         _wasStreaming = true;
 
+        var live = Compose(structure, zones, devices, settings, uncontrolled);
+        if (live is not null) _hub.WriteFrame(live);
+    }
+
+    private void NoteSaved(bool saved, string cause)
+    {
+        if (_lastSaved == saved) return;
+        _lastSaved = saved;
+        ServiceLog.Info($"[galleon-sd-onboard] saved mode -> {(saved ? "on" : "off")} ({cause})");
+    }
+
+    private RgbColor[]? Compose(
+        DeviceStructure structure,
+        IReadOnlyList<ResolvedZone> zones,
+        IReadOnlyList<DeviceFrame> devices,
+        NexusSettings settings,
+        IReadOnlyList<string> uncontrolled)
+    {
         SegmentFrameComposer.EnsureBuffers(structure, ref _buffers);
         var touched = SegmentFrameComposer.Compose(
             structure, zones, devices, settings.Devices.DisabledLightingDevices, uncontrolled,
             settings.Devices.LightingDevicePrefs, MasterBrightness.Resolve(settings), 1.0,
             DateTime.UtcNow.Ticks, _identify, _buffers, _engine.Live);
-        if (touched[GalleonSdLightingDeviceProvider.LedsSegment])
-        {
-            _hub.WriteFrame(_buffers[GalleonSdLightingDeviceProvider.LedsSegment]);
-        }
+        return touched[GalleonSdLightingDeviceProvider.LedsSegment] ? _buffers[GalleonSdLightingDeviceProvider.LedsSegment] : null;
     }
 }

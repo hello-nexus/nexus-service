@@ -171,7 +171,7 @@ public sealed class WindowsFanControlProvider : IFanControlProvider, ICoolingPro
             var sensor = FindSensorById(hw, sensorId);
             if (sensor is null) continue;
 
-            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : LhmWalkWatch.Shared.Read(sensor.Value);
+            return IsHubDrivenKraken(hw) ? KrakenLhmSensors.Liquid(_kraken!) : LhmWalkWatch.Shared.Read(sensor.Value, sensor.Identifier.ToString());
         }
 
         return null;

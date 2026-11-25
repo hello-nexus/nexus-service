@@ -140,6 +140,8 @@ namespace Nexus.Service.Serialization;
 // so a streamed panel keeps its layout/theme across restarts/re-attaches.
 [JsonSerializable(typeof(Nexus.Service.Panel.Streams.StreamedPanelRecord))]
 [JsonSerializable(typeof(Dictionary<string, Nexus.Service.Panel.Streams.StreamedPanelRecord>))]
+// Derived per-drive write windows: cumulative snapshots so the day window survives a restart.
+[JsonSerializable(typeof(Nexus.Service.Sensors.DriveWriteHistoryFile))]
 // Smart (network) lights - paired Hue / Nanoleaf / WLED / etc. config.
 [JsonSerializable(typeof(SmartLightsSettings))]
 [JsonSerializable(typeof(SmartLightConfig))]
@@ -159,6 +161,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(NollieStandaloneSettings))]
 [JsonSerializable(typeof(Dictionary<string, NollieStandaloneSettings>))]
 [JsonSerializable(typeof(Galahad2LightingSettings))]
+[JsonSerializable(typeof(Galahad2LcdRingEffectSettings))]
 [JsonSerializable(typeof(GlacialLcdSettings))]
 [JsonSerializable(typeof(GlacialLcdSlot))]
 [JsonSerializable(typeof(List<GlacialLcdSlot>))]
@@ -196,6 +199,9 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(List<RecentApp>))]
 [JsonSerializable(typeof(DeckConfig))]
 [JsonSerializable(typeof(DeckFolder))]
+[JsonSerializable(typeof(GalleonOnboardRecord))]
+[JsonSerializable(typeof(GalleonOwnedLayer))]
+[JsonSerializable(typeof(Dictionary<string, GalleonOnboardRecord>))]
 [JsonSerializable(typeof(DeckSlot))]
 [JsonSerializable(typeof(List<DeckSlot>))]
 [JsonSerializable(typeof(DeckIcon))]

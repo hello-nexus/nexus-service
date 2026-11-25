@@ -38,6 +38,10 @@ public class MacInputterTests
     [InlineData("Minus", 27)]
     [InlineData("Equal", 24)]
     [InlineData("Backquote", 50)]
+    [InlineData("Numpad0", 82)]
+    [InlineData("Numpad8", 91)]
+    [InlineData("NumpadSubtract", 78)]
+    [InlineData("NumpadEnter", 76)]
     public void ParseKey_MapsToMacKeycode(string key, int code)
         => Assert.Equal((ushort)code, MacInputter.ParseKey(key));
 

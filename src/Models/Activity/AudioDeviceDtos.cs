@@ -13,6 +13,13 @@ public sealed class AudioDevice
     public string Direction { get; set; } = "output";
 }
 
+/// <summary>Endpoint ids only, in-process (never serialized).</summary>
+public sealed class AudioKnownEndpointIds
+{
+    public List<string> Outputs { get; } = new();
+    public List<string> Inputs { get; } = new();
+}
+
 public sealed class AudioDeviceList : ApiResponse
 {
     public List<AudioDevice> Outputs { get; set; } = new();

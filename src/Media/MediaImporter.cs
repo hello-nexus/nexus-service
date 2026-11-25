@@ -278,7 +278,7 @@ public static class MediaImporter
         if (proc.ExitCode != 0)
         {
             var tail = stderr.Length > 400 ? stderr[^400..] : stderr;
-            throw new FfmpegExitException($"ffmpeg exit {proc.ExitCode}: {tail.Trim()}");
+            throw new FfmpegExitException($"ffmpeg exit {proc.ExitCode}: {tail.Trim()}", stderr);
         }
         return stderr;
     }
@@ -328,4 +328,8 @@ public static class MediaImporter
 }
 
 /// <summary>ffmpeg ran to completion and exited non-zero, as opposed to failing to start or timing out.</summary>
-internal sealed class FfmpegExitException(string message) : InvalidOperationException(message);
+internal sealed class FfmpegExitException(string message, string stderr = "") : InvalidOperationException(message)
+{
+    /// <summary>All of ffmpeg's stderr, for a caller that reads stream info from a run that still failed.</summary>
+    public string Stderr { get; } = stderr;
+}

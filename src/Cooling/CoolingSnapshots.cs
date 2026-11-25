@@ -15,6 +15,8 @@ internal static class CoolingSnapshots
 
     public static List<CurveDocument> Curves(CoolingSettings cooling) => Retry(() => cooling.Curves.ToList());
 
+    public static List<CurveOutputDocument> Outputs(CurveDocument curve) => Retry(() => curve.Outputs.ToList());
+
     public static List<string> OutputIds(CurveDocument curve) => Retry(() => curve.Outputs.Select(o => o.Id).ToList());
 
     public static Dictionary<string, int> ManualSpeeds(CoolingSettings cooling) => Retry(() => Copy(cooling.ManualSpeeds));

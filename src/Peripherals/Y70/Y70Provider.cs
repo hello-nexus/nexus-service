@@ -29,9 +29,11 @@ namespace Nexus.Service.Peripherals.Y70;
 /// Orientation goes through <see cref="IDisplayOrientationProvider"/> (Windows
 /// rotation).
 ///
-/// The config store is the source of truth the UI reads; every setter writes
-/// the hardware first (best-effort) and then persists, so GET reflects the last
-/// requested value even when the panel is briefly detached.
+/// The config store is the source of truth the UI reads; setters write the
+/// hardware (best-effort) and persist, so GET reflects the last requested value
+/// even when the panel is briefly detached. DDC brightness persists first and
+/// every DDC brightness write resolves its value from the store ("last
+/// persisted wins"); the other setters write the hardware first.
 ///
 /// UNVERIFIED: the DDC/CI branch (Truly / GW) and the Touch RGB-gain branch
 /// have NOT been tested on hardware; only the plain serial path (Infinite,
@@ -136,31 +138,64 @@ public sealed class Y70Provider : IY70Provider, IDisposable
         // WritePendingDdcBrightness picks the register set by variant.
         if (SerialTransportSelected)
         {
-            ApplySerial(!_store.Load().Y70.ScreenOff, Shown(pct));
+            // Only the serial frame depends on ScreenOff: _powerLock makes that read, the write and the persist
+            // atomic against a toggle. The DDC path takes no lock, so a slow helper RPC never stalls slider ticks.
+            // Game-mode screen-off is deliberately not consulted: a slider move is explicit user intent.
+            lock (_powerLock)
+            {
+                ApplySerial(!_store.Load().Y70.ScreenOff, Shown(pct));
+                _store.Update(s => s.Y70.Brightness = pct);
+            }
+            return;
         }
-        else
-        {
-            DdcSetBrightnessCoalesced(Shown(pct));
-        }
+        // Persist before the write: a concurrent reapply resolves its value from the store inside the coalescer's
+        // critical section (DdcSetBrightnessCoalesced). Either its section follows this persist and it sends this
+        // value, or it ran earlier and this write's own coalescer call follows it and sets the final pending value.
         _store.Update(s => s.Y70.Brightness = pct);
+        DdcSetBrightnessCoalesced(() => Shown(_store.Load().Y70.Brightness));
+    }
+
+    // Game-mode (focus) screen-off. _powerLock makes the flag check in ReapplyBrightness and the flag set plus
+    // power write in SetGameModeScreenOff atomic against each other; it is always taken before _ddcRpcLock and
+    // _ddcStateLock, and nothing takes it while holding those.
+    private volatile bool _gameModeScreenOff;
+    private readonly object _powerLock = new();
+
+    public void InvalidateDisplayPrep()
+    {
+        // Prep state is only mutated under _ddcRpcLock.
+        lock (_ddcRpcLock)
+        {
+            _touchPresetEpoch = -1;
+            _touchPresetAttemptEpoch = -1;
+        }
+    }
+
+    public void ReapplySettledBrightness()
+    {
+        InvalidateDisplayPrep();
+        ReapplyBrightness();
     }
 
     /// <summary>Re-applies the stored slider through the schedule cap; the stored value is untouched. A switched-off screen is left alone.</summary>
     public void ReapplyBrightness()
     {
-        var y70 = _store.Load().Y70;
-        if (y70.ScreenOff)
+        lock (_powerLock)
         {
-            return;
-        }
-        var shown = Shown(y70.Brightness);
-        if (SerialTransportSelected)
-        {
-            ApplySerial(true, shown);
-        }
-        else
-        {
-            DdcSetBrightnessCoalesced(shown);
+            var y70 = _store.Load().Y70;
+            if (y70.ScreenOff || _gameModeScreenOff)
+            {
+                return;
+            }
+            if (SerialTransportSelected)
+            {
+                ApplySerial(true, Shown(y70.Brightness));
+            }
+            else
+            {
+                // Resolved under the coalescer's lock so a slider tick that persisted meanwhile is not overwritten.
+                DdcSetBrightnessCoalesced(() => Shown(_store.Load().Y70.Brightness));
+            }
         }
     }
 
@@ -168,14 +203,28 @@ public sealed class Y70Provider : IY70Provider, IDisposable
 
     public void SetToggle(bool screenOff)
     {
-        DriveScreenPower(!screenOff);
-        _store.Update(s => s.Y70.ScreenOff = screenOff);
+        // Under _powerLock so a concurrent reapply never reads the old ScreenOff between the drive and the persist.
+        lock (_powerLock)
+        {
+            DriveScreenPower(!screenOff);
+            _store.Update(s => s.Y70.ScreenOff = screenOff);
+        }
     }
 
     /// <summary>Drives screen power without persisting; screenOff=false restores the stored preference, so a panel the user switched off by hand stays off.</summary>
     public void SetGameModeScreenOff(bool screenOff)
     {
-        DriveScreenPower(!screenOff && !_store.Load().Y70.ScreenOff);
+        lock (_powerLock)
+        {
+            _gameModeScreenOff = screenOff;
+            DriveScreenPower(!screenOff && !_store.Load().Y70.ScreenOff);
+            // DDC power-on sends no brightness, and a schedule cap change during the off period was skipped.
+            // Serial and Touch power-on already send the current shown value.
+            if (!screenOff && !SerialTransportSelected && !TouchVariantKnown)
+            {
+                ReapplyBrightness();
+            }
+        }
     }
 
     private void DriveScreenPower(bool screenOn)
@@ -205,7 +254,7 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                     DdcSetPower(true);
                     _touchDdcStandbyFallback = false;
                 }
-                DdcSetBrightnessCoalesced(Math.Max(Shown(_store.Load().Y70.Brightness), Y70DisplayProtocol.MinBrightnessOnPercent));
+                DdcSetBrightnessCoalesced(() => Math.Max(Shown(_store.Load().Y70.Brightness), Y70DisplayProtocol.MinBrightnessOnPercent));
             }
         }
         else if (SerialTransportSelected)
@@ -250,6 +299,64 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     private bool TouchTransportSelected =>
         _hub.IsConnected && _hub.Variant == Y70DisplayProtocol.VariantTouch;
 
+    // Deferred writes are re-applied by ApplyDeferredBrightness once the variant is known. A hub that never
+    // identifies must not leave the control dead, so the deferral ends DeferDeadlineMs after the first defer.
+    private const long DeferDeadlineMs = 15_000;
+    private long _deferStartedAt = -1;
+    private volatile bool _brightnessDeferred;
+    private bool _deferFallbackLogged;
+
+    private bool ShouldDeferRawBrightness()
+    {
+        var now = Clock();
+        if (_deferStartedAt < 0)
+        {
+            _deferStartedAt = now;
+        }
+        if (now - _deferStartedAt >= DeferDeadlineMs)
+        {
+            if (!_deferFallbackLogged)
+            {
+                _deferFallbackLogged = true;
+                LogApply("transport=ddc variant still unknown after the defer deadline; writing raw brightness");
+            }
+            _brightnessDeferred = false;
+            return false;
+        }
+        _brightnessDeferred = true;
+        return true;
+    }
+
+    public void ApplyDeferredBrightness()
+    {
+        if (!_brightnessDeferred)
+        {
+            return;
+        }
+        if (!string.IsNullOrEmpty(_hub.Variant))
+        {
+            _brightnessDeferred = false;
+            _deferStartedAt = -1;
+            ReapplySettledBrightness();
+        }
+        else if (Clock() - _deferStartedAt >= DeferDeadlineMs)
+        {
+            // Past the deadline the write falls back to raw brightness (ShouldDeferRawBrightness).
+            ReapplyBrightness();
+        }
+    }
+
+    /// <summary>
+    /// The variant is not identified yet (the hub identifies it on connect, after the first detect at boot) but
+    /// the Touch serial controller's USB id is present, so this may be a Touch. A DDC-only Truly or GT has a
+    /// different product id and an identified variant, so it is never deferred; with no presence source
+    /// (nothing to tell them apart) nothing is deferred.
+    /// </summary>
+    private bool TouchMayBePresent() =>
+        string.IsNullOrEmpty(_hub.Variant)
+        && _presence is not null
+        && _presence.UsbPresent(Y70DisplayProtocol.VendorId, Y70DisplayProtocol.Y70TouchProductId);
+
     /// <summary>
     /// True once a Touch has ever identified over serial (Variant survives a
     /// Disconnect). The DDC register-set choice keys on this, not on
@@ -284,21 +391,22 @@ public sealed class Y70Provider : IY70Provider, IDisposable
     // land out of order; each writer sends the latest pending value, so a
     // stale thread at worst duplicates the newest write.
     private readonly object _ddcRpcLock = new();
-    // TickCount64 is >= 0, so -interval keeps the first write immediate
-    // (long.MinValue would wrap the subtraction below negative).
-    private long _lastDdcBrightnessWriteAt = -DdcWriteIntervalMs;
+    // Far in the past whatever the injected clock reads, so the first write is immediate
+    // (long.MinValue itself would wrap the subtraction below negative).
+    private long _lastDdcBrightnessWriteAt = long.MinValue / 2;
     private int _pendingDdcBrightness;
     private Timer? _ddcBrightnessFlush;
     private bool _disposed;
 
-    private void DdcSetBrightnessCoalesced(int pct)
+    /// <summary>The value is resolved inside <see cref="_ddcStateLock"/>, at the moment it becomes the pending write.</summary>
+    private void DdcSetBrightnessCoalesced(Func<int> resolve)
     {
         var interval = TouchVariantKnown ? DdcRgbWriteIntervalMs : DdcWriteIntervalMs;
         lock (_ddcStateLock)
         {
             if (_disposed) return;
-            _pendingDdcBrightness = pct;
-            var now = Environment.TickCount64;
+            _pendingDdcBrightness = resolve();
+            var now = Clock();
             if (now - _lastDdcBrightnessWriteAt < interval)
             {
                 _ddcBrightnessFlush ??= new Timer(_ => WritePendingDdcBrightness(), null, Timeout.Infinite, Timeout.Infinite);
@@ -329,10 +437,21 @@ public sealed class Y70Provider : IY70Provider, IDisposable
                 lock (_ddcStateLock)
                 {
                     pct = _pendingDdcBrightness;
-                    _lastDdcBrightnessWriteAt = Environment.TickCount64;
+                    _lastDdcBrightnessWriteAt = Clock();
                 }
-                if (TouchVariantKnown) DdcWriteRgbBrightness(pct);
-                else DdcWriteBrightness(pct);
+                if (TouchVariantKnown)
+                {
+                    DdcWriteRgbBrightness(pct);
+                }
+                else if (TouchMayBePresent() && ShouldDeferRawBrightness())
+                {
+                    // Raw VCP 0x10 on a Touch lowers the scaler luminance under the gain path and nothing restores it.
+                    LogApply("transport=ddc deferred (variant unknown, Touch serial controller present)");
+                }
+                else
+                {
+                    DdcWriteBrightness(pct);
+                }
             }
         }
         catch (Exception ex)

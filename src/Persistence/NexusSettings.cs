@@ -1578,6 +1578,15 @@ public sealed class KrakenFirmwareLighting
     public List<string> Colors { get; set; } = new();
 }
 
+/// <summary>The firmware animation last written to the Galahad II LCD pump ring. An empty <see cref="Effect"/> means none was set from the device page.</summary>
+public sealed class Galahad2LcdRingEffectSettings
+{
+    public string Effect { get; set; } = "";
+    public int Speed { get; set; } = Nexus.Service.Lighting.Galahad2LcdRingEffects.DefaultSpeed;
+    public int Brightness { get; set; } = Nexus.Service.Lighting.Galahad2LcdRingEffects.MaxLevel;
+    public List<string> Colors { get; set; } = new();
+}
+
 public sealed class DevicesSettings
 {
     /// <summary>
@@ -1601,6 +1610,10 @@ public sealed class DevicesSettings
         stored <= 0 ? DefaultGlacialLcdUploadPacePercent : Math.Min(stored, 1000);
 
     public List<string> DisabledLightingDevices { get; set; } = new();
+    /// <summary>Device ids (the owning device, for example the Galleon 100 SD keyboard) whose colors are saved to the hardware rather than streamed live. Absent is off, so the default streams as before and no migration is needed.</summary>
+    public List<string> SaveToDeviceLightingDevices { get; set; } = new();
+    /// <summary>Onboard lighting state Nexus keeps per Galleon 100 SD serial while saved colors are on: the raw backup taken before the first write and the layers Nexus owns. Replaced whole on every change, never mutated in place.</summary>
+    public Dictionary<string, GalleonOnboardRecord> GalleonOnboard { get; set; } = new();
     /// <summary>Per-card sampling mode by card id ("nearest", "rows" or "columns"); only non-default entries are stored, a card absent here reads the plain spot ("led").</summary>
     public Dictionary<string, string> SamplingModes { get; set; } = new();
     /// <summary>Per-card color sampling by card id ("vivid" or "ignore-black"); only non-default entries are stored, a card absent here combines pixels with the plain mean ("standard"). Independent of <see cref="SamplingModes"/>.</summary>
@@ -1697,6 +1710,7 @@ public sealed class DevicesSettings
     public bool FlexSyncEnabled { get; set; }
     public StrimerLightingSettings StrimerLighting { get; set; } = new();
     public Galahad2LightingSettings Galahad2Lighting { get; set; } = new();
+    public Galahad2LcdRingEffectSettings Galahad2LcdRingEffect { get; set; } = new();
     /// <summary>What the ROG Crosshair X870E Glacial LCD shows. Service-side so it survives a restart; only what differs from the panel's own state is sent, and a monitor the user chose is resumed on connect.</summary>
     public GlacialLcdSettings GlacialLcd { get; set; } = new();
     /// <summary>What the DeepCool Mystique screen shows. Service-side so it survives a restart and is re-applied on connect.</summary>
@@ -2210,6 +2224,8 @@ public sealed class LianLiWirelessScreenSettings
     public string? TempUnit { get; set; }
     /// <summary>User-chosen list position (0-based) so the numbered tiles match the physical fans; -1 = not set.</summary>
     public int Order { get; set; } = -1;
+    /// <summary>Clip frame-rate cap in fps. Null = the default, 0 = Off (the clip plays at its own rate).</summary>
+    public int? FpsCap { get; set; }
 }
 
 public sealed class LianLiLightingSettings

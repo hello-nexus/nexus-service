@@ -765,6 +765,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(SetDisabledLedsBody))]
 [JsonSerializable(typeof(SetLightingDevicePowerBody))]
 [JsonSerializable(typeof(SetLightingDeviceControlledBody))]
+[JsonSerializable(typeof(SetLightingDeviceSaveToDeviceBody))]
 [JsonSerializable(typeof(SetLightingDeviceNameBody))]
 [JsonSerializable(typeof(SetDeviceGroupsBody))]
 [JsonSerializable(typeof(SetDeviceStacksBody))]
@@ -1175,6 +1176,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Panel.OpenUrlRequest))]
 // Widgets - settings
 [JsonSerializable(typeof(WidgetSettingsDocument))]
+[JsonSerializable(typeof(AppSettingsFrame))]
 [JsonSerializable(typeof(WidgetSettingsPatch))]
 [JsonSerializable(typeof(Dictionary<string, System.Text.Json.JsonElement>))]
 // Widgets - proxy
@@ -1365,6 +1367,8 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaUploadResponse))]
 [JsonSerializable(typeof(Nexus.Service.Routes.HydroShift2CurveMediaDeleteRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LightingRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LcdRingEffectResponse))]
+[JsonSerializable(typeof(Nexus.Service.Routes.Galahad2LcdRingEffectRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto))]
 [JsonSerializable(typeof(Nexus.Service.Routes.Galahad2ModeInfoDto[]))]
 // Asiahorse Umbra V2.

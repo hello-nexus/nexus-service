@@ -38,9 +38,10 @@ public static class LedLayoutResolver
             layout.LedCount = settings.Devices.ZoneLedCounts.TryGetValue(id, out var persisted)
                 ? persisted
                 : Math.Max(0, zone.LedCount);
+            // A position in the device's color buffer, where an effects-only zone holds one LED
             layout.GlobalOffset = 0;
             for (int z = 0; z < zoneIndex; z++)
-                layout.GlobalOffset += Math.Max(0, device.Zones[z].LedCount);
+                layout.GlobalOffset += Math.Max(0, device.Zones[z].BufferLedCount);
             FillLinearDefaults(layout);
             var zoneType = ZoneTypeName(zone.ZoneType);
             layout.ZoneTypes = new string[layout.LedCount];
@@ -291,7 +292,7 @@ public static class LedLayoutResolver
         foreach (var z in device.Zones)
         {
             var typeName = ZoneTypeName(z.ZoneType);
-            var count = Math.Max(0, z.LedCount);
+            var count = Math.Max(0, z.BufferLedCount);
             for (int i = 0; i < count && offset + i < result.Length; i++)
                 result[offset + i] = typeName;
             offset += count;
