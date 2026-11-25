@@ -421,6 +421,19 @@ public sealed partial class Slv3Hub : IDisposable
 
     internal Slv3DeviceWatch DeviceWatch { get; } = new();
 
+    // Window uploads that got their late passes or skipped them for the air budget, per chain since the last take.
+    private readonly Dictionary<string, (int Done, int Skipped)> _latePassCounts = new(StringComparer.OrdinalIgnoreCase);
+
+    internal (int Done, int Skipped) TakeLatePassCounts(string macHex)
+    {
+        lock (_lock)
+        {
+            var counts = _latePassCounts.GetValueOrDefault(macHex);
+            _latePassCounts.Remove(macHex);
+            return counts;
+        }
+    }
+
     // Device-list records span more than one page once enough chains are bound
     // (up to MaxSlot, plus non-fan devices), so the poll requests
     // ceil(count/RecordsPerPage) pages. Clamp so a corrupt count can't trigger
@@ -3485,14 +3498,20 @@ public sealed partial class Slv3Hub : IDisposable
             var latePasses = 0;
             lock (_lock)
             {
+                var late = _latePassCounts.GetValueOrDefault(macHex);
                 if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
                 {
+                    _latePassCounts[macHex] = (late.Done + 1, late.Skipped);
                     latePasses = WindowLatePasses;
                     var now = _nowMs();
                     for (var i = 0; i < lateCost; i++)
                     {
                         _airSendsMs.Enqueue(now);
                     }
+                }
+                else
+                {
+                    _latePassCounts[macHex] = (late.Done, late.Skipped + 1);
                 }
             }
             // Late passes release the lock between packets so the device-list poll keeps running.
@@ -3570,15 +3589,24 @@ public sealed partial class Slv3Hub : IDisposable
             {
                 return false;
             }
+        }
 
-            byte[] compressed;
-            try
+        // Compression is the long step and raw is a private copy, so it runs outside the send lock.
+        byte[] compressed;
+        try
+        {
+            compressed = TinyUz.Compress(raw);
+        }
+        catch (InvalidOperationException)
+        {
+            tooLarge = true;
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (_tx is null || !TryFindRecordLocked(mac, out var record) || !IsBoundToUsLocked(record))
             {
-                compressed = TinyUz.Compress(raw);
-            }
-            catch (InvalidOperationException)
-            {
-                tooLarge = true;
                 return false;
             }
 

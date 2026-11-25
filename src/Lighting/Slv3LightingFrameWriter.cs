@@ -349,7 +349,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     // Rolling windows. Longer loops hitched the chain's frame decoder.
     internal const int WindowFrames = 30;
-    // Plans that stretch the frame interval roll windows twice as long, so each chain takes half the uploads: a chain stalls playback while it receives one.
+    // Plans that stretch the frame interval roll longer windows, so each chain takes fewer uploads: a chain stalls playback while it receives one.
     internal const int LongWindowFrames = 60;
     internal const int WindowIntervalTicks = 53;
     private const int WindowPeriodMs = 450;
@@ -445,6 +445,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     // Frame-count divisors a chain may step down through when its window compresses past the firmware cap.
     internal const int MaxWindowDivisor = 3;
+    /// <summary>The ladder reaches the shortest loop a short-window plan can fall back to, so longer windows never fit less content.</summary>
+    internal static int MaxDivisorFor(int frames) => Math.Max(1, frames / (WindowFrames / MaxWindowDivisor));
     // A chain that cannot fit even at the floor is not retried for this long.
     private const double OversizeRetryMs = 10000;
     // A reduced chain tries one divisor lower this often, so it recovers when the content gets simpler.
@@ -476,10 +478,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     /// The latest frame any divisor an upload may step to starts its loop on, so the safety margin
     /// holds whichever divisor the upload settles on.
     /// </summary>
-    internal static long LatestLoopStart(long firstFrame)
+    internal static long LatestLoopStart(long firstFrame, int frames = WindowFrames)
     {
         var latest = firstFrame;
-        for (var d = 2; d <= MaxWindowDivisor; d++)
+        for (var d = 2; d <= MaxDivisorFor(frames); d++)
         {
             latest = Math.Max(latest, (firstFrame + d - 1) / d * d);
         }
@@ -512,7 +514,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         var result = Slv3Hub.WindowUploadResult.TooLarge;
         var used = startDivisor;
-        for (var d = startDivisor; d <= MaxWindowDivisor; d++)
+        for (var d = startDivisor; d <= MaxDivisorFor(frames); d++)
         {
             used = d;
             var payload = d == 1 ? full : ReduceWindow(full, ledCount, firstFrame, d, frames);
@@ -585,7 +587,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     internal static (int Stretch, double CycleMs, int Frames) WindowPlan(int chains, int leds)
     {
         var plan = WindowPlanFor(chains, leds, WindowFrames);
-        // A plan that stretches cannot keep every chain's uploads short and rare, so it rolls longer windows.
+        // A plan that stretches (any chain count; a lone chain does from the LED count where one round outlasts a short window) rolls longer windows so uploads stay rare.
         return plan.Stretch <= 1 ? plan : WindowPlanFor(chains, leds, LongWindowFrames);
     }
 
@@ -630,6 +632,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         ServiceLog.Info($"[lianli-wireless] plan stretch={stretch} frames={frames} cycleMs={cycleMs:F0} windowMs={frames * BaseFrameMs * stretch:F0} chains={_planChains} leds={_planLeds}");
         _windowStretch = stretch;
         _planFrames = frames;
+        // Divisors learned at the old length no longer mean the same loop.
+        _windowDivisors.Clear();
+        _oversizeLogged.Clear();
+        foreach (var chain in _rolling.Values)
+        {
+            chain.RetryAtMs = 0;
+            chain.ProbeAtMs = 0;
+        }
         _planCycleMs = cycleMs;
         DropSharedWindow();
         // Frame numbers and coverage are in units of the old interval.
@@ -656,7 +666,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _healthTickMaxMs = 0;
     }
 
-    // One line per bound chain each minute, so uploads per minute, upload time, landing margin and echo gaps of a customer session read straight from the bundle.
+    // One line per bound chain per period, so uploads per period, upload time, landing margin, late-pass use and echo counts of a customer session read straight from the bundle.
     private const double ChainDiagMs = 60_000;
     private double _chainDiagNextMs;
 
@@ -684,6 +694,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 path = chain.WindowFirstFrame != long.MinValue ? "roll" : "live";
                 var margin = n > 0 ? WindowMarginMs(_windowStretch, Frames, _planCycleMs, chain.DiagUpMsMax) : 0;
                 upload = $"leds={chain.DiagLeds} frames={Frames} stretch={_windowStretch} uploads={n} upMs avg={avg:F0} max={chain.DiagUpMsMax:F0} land min={landMin} max={landMax} late={chain.DiagLate} gapTicks={chain.DiagGapTicks} marginMs={margin:F0}";
+                var late = _hub.TakeLatePassCounts(fan.Mac);
+                upload += $" latePasses done={late.Done} skipped={late.Skipped}";
                 chain.ResetDiag();
             }
             var dev = _hub.DeviceWatch.Take(fan.Mac, hubNow) is { } w
@@ -840,7 +852,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.Failing = false;
             if (_oversizeLogged.Add(macHex))
             {
-                ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window does not fit the firmware cap even at {st.UploadFrames / MaxWindowDivisor} frames, streaming live");
+                ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window does not fit the firmware cap even at {st.UploadFrames / MaxDivisorFor(st.UploadFrames)} frames, streaming live");
             }
             return;
         }
@@ -941,7 +953,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         // One chain per render, longest-waiting first, spreads a round's uploads
         // over the air. A chain joining late skips a window that is mostly played already.
-        var loopStart = LatestLoopStart(_windowFirstFrame);
+        var loopStart = LatestLoopStart(_windowFirstFrame, Frames);
         if (st.Joinable && st.UploadedWindowId != _windowId && _windowStartedId != _windowId
             && TryCurrentFrame(nowMs, out var joinFrame)
             && joinFrame >= loopStart + WindowStartSafetyFrames

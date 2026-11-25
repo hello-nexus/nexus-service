@@ -22,7 +22,10 @@ internal sealed class Slv3DeviceWatch
 
     private const long LineWindowMs = 60_000;
     private const int GapLinesPerWindow = 20;
-    private const int EchoLinesPerWindow = 240;
+    // Anomalies only (never echoed, overtaken, slow); the rest of the echo record rolls into the per-chain minute line.
+    private const int EchoLinesPerWindow = 20;
+    /// <summary>An echo later than this gets its own line.</summary>
+    internal const long SlowEchoMs = 1_000;
 
     internal readonly record struct Summary(
         int Sent, int Confirmed, int Unconfirmed, long LatencyAvgMs, long LatencyMaxMs,
@@ -284,10 +287,11 @@ internal sealed class Slv3DeviceWatch
         }
     }
 
-    // Caller holds _gate. One line per window upload: when it was sent, and when
+    // Caller holds _gate. One line per anomalous window upload: when it was sent, and when
     // (or whether) its echo landed.
     private static void LogEcho(Chain c, string mac, string result, string idx, long sentMs, long nowMs, Action<string> log, long latencyMs = -1)
     {
+        if (result == "ok" && latencyMs < SlowEchoMs) return;
         RollLineWindow(c, nowMs);
         if (++c.EchoLines > EchoLinesPerWindow)
         {

@@ -592,6 +592,9 @@ public class Slv3LightingFrameWriterTests
 
     [Theory]
     [InlineData(1, 132, 1, 700, 30)]
+    [InlineData(1, 142, 1, 747, 30)]
+    [InlineData(1, 143, 1, 1424, 60)]
+    [InlineData(1, 174, 2, 1716, 60)]
     [InlineData(2, 264, 2, 2642, 60)]
     [InlineData(4, 528, 4, 5283, 60)]
     [InlineData(5, 702, 5, 6999, 60)]
@@ -667,6 +670,30 @@ public class Slv3LightingFrameWriterTests
         {
             var expected = (byte)Math.Clamp(group * 2 - First, 0, 59);
             Assert.Equal(expected, reduced[(int)(group % 30) * Leds * 3]);
+        }
+    }
+
+    [Theory]
+    [InlineData(30, 3)]
+    [InlineData(60, 6)]
+    public void Divisor_ladder_reaches_the_shortest_loop_a_short_window_falls_back_to(int frames, int maxDivisor)
+    {
+        Assert.Equal(maxDivisor, Slv3LightingFrameWriter.MaxDivisorFor(frames));
+        Assert.Equal(10, frames / Slv3LightingFrameWriter.MaxDivisorFor(frames));
+        for (var d = 1; d <= maxDivisor; d++)
+        {
+            Assert.Equal(0, frames % d);
+        }
+    }
+
+    [Fact]
+    public void LatestLoopStart_covers_every_divisor_of_a_long_window()
+    {
+        const long First = 101;
+        var latest = Slv3LightingFrameWriter.LatestLoopStart(First, Slv3LightingFrameWriter.LongWindowFrames);
+        for (var d = 1; d <= 6; d++)
+        {
+            Assert.True((First + d - 1) / d * d <= latest);
         }
     }
 

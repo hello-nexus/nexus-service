@@ -203,11 +203,23 @@ public class Slv3DeviceWatchTests
         var watch = new Slv3DeviceWatch();
         var log = new List<string>();
         watch.NoteSent(Mac, "01020304", 1_000);
-        watch.NoteReported(Mac, "01020304", 1_250, log.Add);
-        var echo = Assert.Single(log);
-        Assert.StartsWith("[slv3-echo]", echo);
+        watch.NoteReported(Mac, "01020304", 2_250, log.Add);
+        var echo = Assert.Single(log, l => l.StartsWith("[slv3-echo]"));
         Assert.Contains("ok idx=01020304", echo);
-        Assert.Contains("latMs=250", echo);
+        Assert.Contains("latMs=1250", echo);
+    }
+
+    [Fact]
+    public void Prompt_echo_is_counted_but_not_logged()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "01020304", 1_000);
+        watch.NoteReported(Mac, "01020304", 1_250, log.Add);
+        Assert.Empty(log);
+        var summary = watch.Take(Mac, 2_000);
+        Assert.Equal(1, summary!.Value.Confirmed);
+        Assert.Equal(250, summary.Value.LatencyMaxMs);
     }
 
     [Fact]
@@ -219,7 +231,7 @@ public class Slv3DeviceWatchTests
         watch.NoteSent(Mac, "01020302", 1_500);
         watch.NoteReported(Mac, "01020302", 1_800, log.Add);
         Assert.Contains(log, l => l.Contains("superseded idx=01020301"));
-        Assert.Contains(log, l => l.Contains("ok idx=01020302"));
+        Assert.DoesNotContain(log, l => l.Contains("ok idx=01020302"));
     }
 
     [Fact]
