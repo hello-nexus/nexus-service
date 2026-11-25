@@ -23,6 +23,9 @@ internal sealed class LhmWalkWatch
     private long _walkStartMs;
     private long _lastEndMs;
     private int _stale;
+    private long _beginSeq;
+    private long _runningSeq;
+    private long _completedSeq;
     private readonly object _transition = new();
 
     private readonly Func<Action, IOneShot> _oneShotFactory;
@@ -49,14 +52,35 @@ internal sealed class LhmWalkWatch
     internal bool IsFresh => !IsStale && (CurrentWalkAge ?? TimeSpan.Zero) < FreshLimit;
 
     /// <summary>Takes <paramref name="gate"/>. A reader that must never wait gets false at once when a walk holds it.</summary>
-    internal static bool Acquire(object gate, bool neverWait)
+    internal static bool Acquire(object gate, bool neverWait, TimeSpan? maxWait = null)
     {
         if (neverWait)
         {
             return Monitor.TryEnter(gate);
         }
+        if (maxWait is { } bound)
+        {
+            return Monitor.TryEnter(gate, bound);
+        }
         Monitor.Enter(gate);
         return true;
+    }
+
+    /// <summary>Runs <paramref name="action"/> under <paramref name="gate"/> unless another thread holds it; false means the caller serves cached readings instead of waiting.</summary>
+    internal static bool TryRunNow(object gate, Func<bool> action)
+    {
+        if (!Monitor.TryEnter(gate))
+        {
+            return false;
+        }
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            Monitor.Exit(gate);
+        }
     }
 
     /// <summary>Runs <paramref name="action"/> under <paramref name="gate"/> only if no walk releases it within <paramref name="wait"/>; false means it was skipped.</summary>
@@ -132,10 +156,18 @@ internal sealed class LhmWalkWatch
 
     internal bool SpdQuiesced => _nowMs() < Interlocked.Read(ref _spdQuiescedUntilMs);
 
-    internal void BeginWalk()
+    /// <summary>Count of walks begun so far. A caller that records it can later ask whether a walk begun after that point has completed.</summary>
+    internal long BeginSeq => Interlocked.Read(ref _beginSeq);
+
+    /// <summary>Sequence number of the newest walk that ran to completion.</summary>
+    internal long CompletedSeq => Interlocked.Read(ref _completedSeq);
+
+    /// <param name="sensorWalk">False for a rebuild that never reads the sensors (the SPD gate): it still arms the stall watch but must not count as a completed sensor walk.</param>
+    internal void BeginWalk(bool sensorWalk = true)
     {
         lock (_transition)
         {
+            Interlocked.Exchange(ref _runningSeq, sensorWalk ? Interlocked.Increment(ref _beginSeq) : 0);
             Interlocked.Exchange(ref _walkStartMs, Math.Max(1, _nowMs()));
             // One deadline per walk, created on the first walk; a walk that ends in time disarms it, so nothing wakes while readings are healthy.
             (_stallTimer ??= _oneShotFactory(OnStallDeadline)).Arm(StallLimit + DeadlineSlack);
@@ -152,6 +184,10 @@ internal sealed class LhmWalkWatch
             _stallTimer?.Disarm();
             Interlocked.Exchange(ref _lastEndMs, Math.Max(1, _nowMs()));
             Interlocked.Exchange(ref _walkStartMs, 0);
+            if (Interlocked.Read(ref _runningSeq) is var seq and > 0)
+            {
+                Interlocked.Exchange(ref _completedSeq, seq);
+            }
             return Interlocked.Exchange(ref _stale, 0) != 0;
         }
     }
@@ -195,4 +231,43 @@ internal sealed class LhmWalkWatch
 
     /// <summary>The reading to publish: null while stale. Consumers that cannot carry a null (HardwareSensor.Value) fall to zero once the hold window lapses.</summary>
     internal float? Read(float? raw) => IsStale ? null : raw;
+
+    // Copy-on-write: read on every sensor read, changed only when a drive goes overdue or recovers.
+    private string[] _staleHardware = Array.Empty<string>();
+    private readonly object _staleHardwareGate = new();
+
+    /// <summary>True for the identifier LHM gives a drive it cannot identify ("/ata/id_error", "/nvme/id_error"), which several drives can share.</summary>
+    internal static bool IsUnidentifiable(string hardwareId) => hardwareId.EndsWith("/id_error", StringComparison.Ordinal);
+
+    /// <summary>Marks a hardware item whose update is stuck, so its sensors read as missing until <see cref="MarkHardwareStale"/> clears it.</summary>
+    internal void MarkHardwareStale(string hardwareId, bool stale)
+    {
+        lock (_staleHardwareGate)
+        {
+            var list = new System.Collections.Generic.List<string>(_staleHardware);
+            list.Remove(hardwareId);
+            if (stale)
+            {
+                list.Add(hardwareId);
+            }
+            Volatile.Write(ref _staleHardware, list.ToArray());
+        }
+    }
+
+    /// <summary>Like <see cref="Read(float?)"/>, and null too when the sensor belongs to a hardware item marked stale. A sensor id is its hardware id plus a path.</summary>
+    internal float? Read(float? raw, string sensorId)
+    {
+        if (IsStale)
+        {
+            return null;
+        }
+        foreach (var hw in Volatile.Read(ref _staleHardware))
+        {
+            if (sensorId.StartsWith(hw, StringComparison.Ordinal) && (sensorId.Length == hw.Length || sensorId[hw.Length] == '/'))
+            {
+                return null;
+            }
+        }
+        return raw;
+    }
 }

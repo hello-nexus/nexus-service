@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using Nexus.Service.Cloud;
 using Nexus.Service.Tests.Cloud;
 using Nexus.Service.Devices;
 using Nexus.Service.Devices.Detection;
+using Nexus.Service.Devices.Handlers;
 using Nexus.Service.Lighting;
 using Nexus.Service.Peripherals.Hyte.Np50;
 using Nexus.Service.Peripherals.Hyte.Y70Display;
@@ -201,6 +203,201 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     }
 
     [Fact]
+    public void First_detect_reapplies_stored_brightness_once()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+
+        worker.Tick();
+        worker.Tick();
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public void Non_edge_detected_ticks_apply_deferred_brightness_but_the_edge_tick_does_not()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+
+        worker.Tick();
+        Assert.Equal(0, y70.DeferredCount);
+
+        worker.Tick();
+        worker.Tick();
+        Assert.Equal(2, y70.DeferredCount);
+    }
+
+    [Fact]
+    public void Redetect_after_sustained_disconnect_reapplies_brightness()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+
+        worker.Tick();
+        y70.Connected = false;
+        for (var i = 0; i < 5; i++) worker.Tick();
+        y70.Connected = true;
+        worker.Tick();
+
+        Assert.Equal(2, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public void Helper_connect_after_detect_reapplies_brightness_and_orientation()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var worker = Build(y70);
+        worker.Tick();
+
+        worker.OnHelperConnected();
+
+        Assert.Equal(2, y70.BrightnessCount);
+        Assert.Equal(2, y70.ApplyCount);
+    }
+
+    [Fact]
+    public void Helper_connect_with_control_gate_disabled_applies_nothing()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var gate = new DeviceControlGate(new InMemoryConfigStore());
+        var hub = new Y70DisplayHub(
+            new StubY70DisplayPortDiscovery(),
+            _ => throw new InvalidOperationException("Y70 transport is not expected in these tests"));
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), gate, y70);
+        worker.Tick();
+        var orientationBefore = y70.ApplyCount;
+        var brightnessBefore = y70.BrightnessCount;
+        gate.SetEnabled(Y70Handler.HandlerId, false);
+
+        worker.OnHelperConnected();
+
+        Assert.Equal(orientationBefore, y70.ApplyCount);
+        Assert.Equal(brightnessBefore, y70.BrightnessCount);
+    }
+
+    // Manual clock: each requested delay stays pending until Release, and observes cancellation like Task.Delay.
+    private sealed class ManualDelay
+    {
+        public readonly List<TaskCompletionSource> Pending = new();
+
+        public Task Wait(TimeSpan _, System.Threading.CancellationToken token)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            token.Register(() => tcs.TrySetCanceled(token));
+            Pending.Add(tcs);
+            return tcs.Task;
+        }
+
+        public void ReleaseAll() { foreach (var t in Pending) t.TrySetResult(); }
+    }
+
+    private static (Y70DisplayHeartbeatWorker Worker, DeviceControlGate Gate) BuildSettled(FakeY70Provider y70, ManualDelay delay)
+    {
+        var hub = new Y70DisplayHub(
+            new StubY70DisplayPortDiscovery(),
+            _ => throw new InvalidOperationException("Y70 transport is not expected in these tests"));
+        var gate = new DeviceControlGate(new InMemoryConfigStore());
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), gate, y70, delay: delay.Wait);
+        return (worker, gate);
+    }
+
+    [Fact]
+    public async Task Detect_schedules_one_delayed_brightness_reapply_after_the_delay()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+
+        worker.Tick();
+        Assert.Equal(1, y70.BrightnessCount);
+
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.SettledCount);
+    }
+
+    [Fact]
+    public async Task Two_close_edges_give_one_delayed_reapply()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+
+        worker.Tick();
+        worker.OnHelperConnected();
+        var latest = worker.PendingSettledReapply!;
+        delay.ReleaseAll();
+        await latest;
+
+        // detect (1) + helper connect (1), then a single settled reapply
+        Assert.Equal(2, y70.BrightnessCount);
+        Assert.Equal(1, y70.SettledCount);
+    }
+
+    [Fact]
+    public async Task Delayed_reapply_is_dropped_when_the_device_disappears()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+        worker.Tick();
+        y70.Connected = false;
+        for (var i = 0; i < 5; i++) worker.Tick();
+
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public async Task Delayed_reapply_is_dropped_when_the_control_gate_is_disabled()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, gate) = BuildSettled(y70, delay);
+        worker.Tick();
+        gate.SetEnabled(Y70Handler.HandlerId, false);
+
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public async Task Delayed_reapply_is_dropped_when_the_worker_stops_first()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+        worker.Tick();
+
+        await worker.StopAsync(default);
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public void Helper_connect_before_detect_applies_nothing()
+    {
+        var y70 = new FakeY70Provider { Connected = false };
+        var worker = Build(y70);
+        worker.Tick();
+
+        worker.OnHelperConnected();
+
+        Assert.Equal(0, y70.BrightnessCount);
+        Assert.Equal(0, y70.ApplyCount);
+    }
+
+    [Fact]
     public void Sustained_disconnect_then_reconnect_reapplies_orientation()
     {
         var y70 = new FakeY70Provider { Connected = true };
@@ -344,6 +541,10 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
     {
         public bool Connected;
         public int ApplyCount;
+        public int BrightnessCount;
+        public int InvalidateCount;
+        public int DeferredCount;
+        public int SettledCount;
 
         public bool IsConnected() => Connected;
         public string GetOrientation() => "PortraitFlipped";
@@ -353,6 +554,10 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
         public void ApplyEffectiveOrientation() => ApplyCount++;
         public int GetBrightness() => 0;
         public void SetBrightness(int brightness) { }
+        public void ReapplyBrightness() => BrightnessCount++;
+        public void InvalidateDisplayPrep() => InvalidateCount++;
+        public void ApplyDeferredBrightness() => DeferredCount++;
+        public void ReapplySettledBrightness() => SettledCount++;
         public bool GetToggle() => false;
         public void SetToggle(bool toggle) { }
         public void SetGameModeScreenOff(bool screenOff) { }

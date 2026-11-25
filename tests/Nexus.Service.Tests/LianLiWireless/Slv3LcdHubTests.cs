@@ -48,6 +48,19 @@ public class Slv3LcdHubTests
     }
 
     [Fact]
+    public void A_failing_ack_read_waits_longer_each_time_up_to_a_second()
+    {
+        var waits = new List<int>();
+        var ms = 0;
+        for (var i = 0; i < 10; i++)
+        {
+            ms = Slv3LcdDrainBackoff.Next(ms);
+            waits.Add(ms);
+        }
+        Assert.Equal(new[] { 10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000 }, waits);
+    }
+
+    [Fact]
     public void PushImageToSerial_hands_a_jpeg_without_a_jfif_header_to_the_wireless_screen_unchanged()
     {
         var (hub, factory, discovery) = CreateHub();

@@ -46,6 +46,12 @@ are in [`docs/network-transport.md`](docs/network-transport.md).
 Prerequisites: .NET 10 SDK. Node.js 22 if you want the embedded dashboard;
 the build pulls it in from a sibling `nexus-web` checkout.
 
+Windows builds compile LibreHardwareMonitor from the `external/LibreHardwareMonitor`
+git submodule (the [`hello-nexus/LibreHardwareMonitor`](https://github.com/hello-nexus/LibreHardwareMonitor)
+fork). Clone with `--recurse-submodules` or run `git submodule update --init`.
+macOS and Linux builds do not need it. Windows binaries must be built on a
+Windows host: the library selects its Windows backend from the host OS.
+
 ```sh
 cd ../nexus-web && npm install && cd ../nexus-service   # once, for the web UI
 
@@ -96,6 +102,7 @@ src/
   Hotkeys/             # global hotkeys: bindings, OS registration status, firing; registered with the OS only (Carbon on macOS, the user helper's RegisterHotKey on Windows), never by capturing keystrokes
   Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
   Gallery/  Media/     # shared image/video sources; media import + library
+  Calendar/            # calendar subscriptions: ICS parser and recurrence expansion (Ics/), source store, sync worker, on-disk cache
   Activity/            # screen time, app detection, audio analysis
   Games/  Fps/         # installed-game catalog, FPS capture and per-game sessions
   FocusModes/  Audio/  # focus modes; per-app volume mixer and audio playback
@@ -134,7 +141,7 @@ One AOT binary per OS. Windows targets `net10.0-windows10.0.19041.0`; macOS
 and Linux target `net10.0`.
 
 ```sh
-dotnet publish -c Release -r win-x64   -o publish-win     # cross-compiles from macOS too
+dotnet publish -c Release -r win-x64   -o publish-win     # Windows host only (LHM builds from source)
 dotnet publish -c Release -r osx-arm64 -o publish-mac     # AOT is mandatory here; never pass -p:PublishAot=false
 dotnet publish -c Release -r linux-x64 -o publish-linux
 ```

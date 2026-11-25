@@ -83,10 +83,12 @@ public sealed class StoreEntitlementsTests : IDisposable
     {
         var (ent, api, _) = Make(signedIn: true);
         var sha = new string('a', 64);
+        var clientVersion = StoreCatalogProxy.ClientVersion(null);
+        var expectedVersionQuery = clientVersion.Length > 0 ? $"&nexusVersion={Uri.EscapeDataString(clientVersion)}" : "";
         api.OnSendRaw = (method, path, _, token) =>
         {
             Assert.Equal(HttpMethod.Get, method);
-            Assert.Equal("/store/apps/com.hellonexus.aquarium/download?version=1.0.2", path);
+            Assert.Equal($"/store/apps/com.hellonexus.aquarium/download?version=1.0.2{expectedVersionQuery}", path);
             Assert.Equal("access-1", token);
             return CloudApiResult<CloudRawResponse>.Ok(new CloudRawResponse
             {
@@ -132,6 +134,20 @@ public sealed class StoreEntitlementsTests : IDisposable
 
         Assert.False(auth.Ok);
         Assert.Equal("not_yet_released", auth.Reason);
+    }
+
+    [Fact]
+    public async Task Authorize_reads_a_floor_refusal_as_unavailable_not_a_sign_in()
+    {
+        var (ent, api, _) = Make(signedIn: true);
+        api.OnSendRaw = (_, _, _, _) => CloudApiResult<CloudRawResponse>.Ok(
+            new CloudRawResponse { Body = "{\"statusCode\":403,\"message\":\"requires_newer_nexus\",\"error\":\"Forbidden\"}" },
+            403);
+
+        var auth = await ent.AuthorizeAsync("com.hellonexus.ina", "0.9.2", "3.1.9", CancellationToken.None);
+
+        Assert.False(auth.Ok);
+        Assert.Equal("version_unavailable", auth.Reason);
     }
 
     [Fact]

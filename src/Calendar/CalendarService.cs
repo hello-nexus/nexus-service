@@ -1,0 +1,789 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Nexus.Service.Calendar.Ics;
+using Nexus.Service.Models.Calendar;
+using Nexus.Service.Persistence;
+using Nexus.Service.Security;
+using Nexus.Service.Serialization;
+
+namespace Nexus.Service.Calendar;
+
+public sealed class CalendarAddResult
+{
+    public CalendarSourceDto? Source { get; init; }
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// Owns calendar sources, their cached feeds and the sync schedule. Nothing
+/// here logs titles, locations, notes, URLs or hosts: only source ids, HTTP
+/// status codes and byte counts.
+/// </summary>
+public sealed class CalendarService
+{
+    public static readonly int[] AllowedRefreshMinutes = { 5, 15, 30, 60 };
+    public static readonly TimeSpan ManualThrottle = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan MaxBackoff = TimeSpan.FromHours(2);
+    public const int MaxQuerySpanDays = 400;
+    private const int MaxSources = 50;
+
+    private sealed class SourceState
+    {
+        public CalendarSourceRecord Record = new();
+        public IcsFeed? Feed;
+        public string? ETag;
+        public string? LastModified;
+        public bool Syncing;
+        public DateTimeOffset? LastAttempt;
+        public DateTimeOffset? LastFinished;
+        public int Failures;
+        public string? Error;
+    }
+
+    private readonly object _gate = new();
+    private readonly string _dir;
+    private readonly ICalendarFetcher _fetcher;
+    private readonly TimeProvider _time;
+    private readonly List<SourceState> _sources = new();
+    private readonly List<Task> _running = new();
+    private int _refreshMinutes = 15;
+
+    /// <summary>Raised after any mutation or finished sync. Carries no data; the web layer turns it into a topic ping.</summary>
+    public event Action? Changed;
+
+    public CalendarService(string root, ICalendarFetcher fetcher, TimeProvider? time = null)
+    {
+        _dir = Path.Combine(root, "calendar");
+        _fetcher = fetcher;
+        _time = time ?? TimeProvider.System;
+        Load();
+    }
+
+    private string SourcesPath => Path.Combine(_dir, "sources.json");
+    private string CachePath(string id) => Path.Combine(_dir, "cache", id + ".json");
+
+    private void Load()
+    {
+        try
+        {
+            if (File.Exists(SourcesPath))
+            {
+                var file = JsonSerializer.Deserialize(File.ReadAllText(SourcesPath), PersistenceJsonContext.Default.CalendarSourcesFile);
+                if (file is null)
+                {
+                    MoveCorruptAside();
+                }
+                else
+                {
+                    _refreshMinutes = AllowedRefreshMinutes.Contains(file.RefreshMinutes) ? file.RefreshMinutes : 15;
+                    foreach (var rec in file.Sources)
+                    {
+                        if (string.IsNullOrEmpty(rec.Id))
+                        {
+                            continue;
+                        }
+                        var st = new SourceState { Record = rec, Error = rec.LastError };
+                        if (rec.LastSyncedAt is { } ms)
+                        {
+                            st.LastAttempt = DateTimeOffset.FromUnixTimeMilliseconds(ms);
+                        }
+                        LoadCache(st);
+                        _sources.Add(st);
+                    }
+                    DeleteOrphanCaches();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Warn($"[calendar] could not read sources ({ex.GetType().Name})");
+            MoveCorruptAside();
+        }
+    }
+
+    /// <summary>An unreadable sources file is kept for recovery rather than overwritten by the next mutation.</summary>
+    private void MoveCorruptAside()
+    {
+        try
+        {
+            File.Move(SourcesPath, SourcesPath + ".corrupt-" + _time.GetUtcNow().ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture), overwrite: true);
+        }
+        catch (Exception)
+        {
+            // Best effort; the next successful write still keeps a backup of whatever is there.
+        }
+    }
+
+    /// <summary>A cache whose source is gone (a delete racing a sync, or an edited sources file) holds personal data nothing reads.</summary>
+    private void DeleteOrphanCaches()
+    {
+        try
+        {
+            var dir = Path.Combine(_dir, "cache");
+            if (!Directory.Exists(dir))
+            {
+                return;
+            }
+            var known = new HashSet<string>(_sources.Select(s => s.Record.Id), StringComparer.Ordinal);
+            foreach (var path in Directory.GetFiles(dir, "*.json"))
+            {
+                if (!known.Contains(Path.GetFileNameWithoutExtension(path)))
+                {
+                    TryDelete(path);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Housekeeping only.
+        }
+    }
+
+    private void LoadCache(SourceState st)
+    {
+        try
+        {
+            var path = CachePath(st.Record.Id);
+            if (!File.Exists(path))
+            {
+                return;
+            }
+            var cache = JsonSerializer.Deserialize(File.ReadAllText(path), PersistenceJsonContext.Default.CalendarFeedCache);
+            if (cache is not null)
+            {
+                st.Feed = cache.Feed;
+                st.ETag = cache.ETag;
+                st.LastModified = cache.LastModified;
+            }
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {st.Record.Id} cache unreadable ({ex.GetType().Name})");
+        }
+    }
+
+    private void SaveSources()
+    {
+        // Callers hold _gate.
+        var file = new CalendarSourcesFile { RefreshMinutes = _refreshMinutes, Sources = _sources.Select(s => s.Record).ToList() };
+        try
+        {
+            Directory.CreateDirectory(_dir);
+            var path = SourcesPath;
+            RestrictToOwner(AtomicJsonFile.TempPathFor(path));
+            AtomicJsonFile.Write(path, JsonSerializer.Serialize(file, PersistenceJsonContext.Default.CalendarSourcesFile), keepBackup: true);
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Warn($"[calendar] could not write sources ({ex.GetType().Name})");
+        }
+    }
+
+    private static void RestrictToOwner(string tempPath)
+    {
+        NexusDataPaths.CreateRestricted(tempPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                if (!File.Exists(tempPath))
+                {
+                    using var _ = File.Create(tempPath);
+                }
+                File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            catch (Exception)
+            {
+                // Best effort: the secret is still no weaker than the other plain-stored ones off Windows.
+            }
+        }
+    }
+
+    private void SaveCache(SourceState st)
+    {
+        if (st.Feed is null)
+        {
+            return;
+        }
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(_dir, "cache"));
+            var cache = new CalendarFeedCache { ETag = st.ETag, LastModified = st.LastModified, Feed = st.Feed };
+            AtomicJsonFile.Write(CachePath(st.Record.Id), JsonSerializer.Serialize(cache, PersistenceJsonContext.Default.CalendarFeedCache), flushToDisk: false);
+        }
+        catch (Exception ex)
+        {
+            Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {st.Record.Id} cache not written ({ex.GetType().Name})");
+        }
+    }
+
+    // Reads
+
+    public List<CalendarSourceDto> ListSources()
+    {
+        lock (_gate)
+        {
+            return _sources.Select(ToDto).ToList();
+        }
+    }
+
+    private static CalendarSourceDto ToDto(SourceState s) => new()
+    {
+        Id = s.Record.Id,
+        Kind = s.Record.Kind,
+        Name = s.Record.Name,
+        Color = s.Record.Color,
+        Host = s.Record.Host,
+        LastSyncedAt = s.Record.LastSyncedAt,
+        Status = s.Syncing ? CalendarStatuses.Syncing : s.Error is not null ? CalendarStatuses.Error : CalendarStatuses.Ok,
+        Error = s.Syncing ? null : s.Error,
+    };
+
+    public CalendarSettingsDto GetSettings()
+    {
+        lock (_gate)
+        {
+            return new CalendarSettingsDto
+            {
+                RefreshMinutes = _refreshMinutes,
+                LastSyncedAt = _sources.Select(s => s.Record.LastSyncedAt).Max(),
+                Syncing = _sources.Any(s => s.Syncing),
+            };
+        }
+    }
+
+    /// <returns>Null when the value is not one of the allowed intervals.</returns>
+    public CalendarSettingsDto? SetRefreshMinutes(int minutes)
+    {
+        if (!AllowedRefreshMinutes.Contains(minutes))
+        {
+            return null;
+        }
+        lock (_gate)
+        {
+            _refreshMinutes = minutes;
+            SaveSources();
+        }
+        RaiseChanged();
+        return GetSettings();
+    }
+
+    /// <summary>Most events one response carries; beyond it the response is flagged truncated.</summary>
+    public const int MaxEventsPerResponse = 10_000;
+    private const long MinRangeMs = -62_135_596_800_000L;
+    private const long MaxRangeMs = 253_402_300_799_000L;
+
+    /// <returns>Null when the range is invalid (out of bounds, not increasing, or wider than the cap).</returns>
+    public CalendarEventsResponse? Query(long fromMs, long toMs, IReadOnlyCollection<string>? calendarIds)
+    {
+        // Bounds first: with both inside them the subtraction below cannot overflow.
+        if (fromMs < MinRangeMs || fromMs > MaxRangeMs || toMs < MinRangeMs || toMs > MaxRangeMs
+            || toMs <= fromMs || toMs - fromMs > MaxQuerySpanDays * 86_400_000L)
+        {
+            return null;
+        }
+        List<(string Id, IcsFeed Feed)> feeds;
+        long? syncedAt;
+        lock (_gate)
+        {
+            feeds = _sources
+                .Where(s => s.Feed is not null && (calendarIds is null || calendarIds.Count == 0 || calendarIds.Contains(s.Record.Id)))
+                .Select(s => (s.Record.Id, s.Feed!))
+                .ToList();
+            syncedAt = _sources.Select(s => s.Record.LastSyncedAt).Max();
+        }
+        var events = new List<CalendarEventDto>();
+        foreach (var (id, feed) in feeds)
+        {
+            try
+            {
+                var skipped = IcsEventExpander.Expand(feed, id, fromMs, toMs, events, MaxEventsPerResponse);
+                if (skipped > 0)
+                {
+                    Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {id} skipped {skipped} events it could not expand");
+                }
+            }
+            catch (Exception ex)
+            {
+                Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {id} could not be expanded ({ex.GetType().Name})");
+            }
+            if (events.Count > MaxEventsPerResponse)
+            {
+                break;
+            }
+        }
+        var truncated = events.Count > MaxEventsPerResponse;
+        events.Sort(static (a, b) =>
+        {
+            var c = a.Start.CompareTo(b.Start);
+            return c != 0 ? c : string.CompareOrdinal(a.Id, b.Id);
+        });
+        if (truncated)
+        {
+            events.RemoveRange(MaxEventsPerResponse, events.Count - MaxEventsPerResponse);
+        }
+        return new CalendarEventsResponse { Events = events, SyncedAt = syncedAt, Truncated = truncated };
+    }
+
+    // Mutations
+
+    public async Task<CalendarAddResult> AddAsync(string? url, string? name, string? color, CancellationToken ct)
+    {
+        if (!CalendarUrl.TryNormalize(url, out var uri))
+        {
+            return new CalendarAddResult { Error = CalendarErrors.InvalidUrl };
+        }
+        SourceState st;
+        lock (_gate)
+        {
+            if (_sources.Count >= MaxSources)
+            {
+                return new CalendarAddResult { Error = CalendarErrors.LimitReached };
+            }
+            st = new SourceState
+            {
+                // Marked busy from the start so the worker cannot fetch the same source concurrently.
+                Syncing = true,
+                Record = new CalendarSourceRecord
+                {
+                    Id = "cal_" + Guid.NewGuid().ToString("N").Substring(0, 12),
+                    Kind = CalendarKinds.Ics,
+                    Name = CleanName(name, uri.Host.ToLowerInvariant()),
+                    NameFixed = !string.IsNullOrWhiteSpace(name),
+                    Color = CleanColor(color) ?? "#4f8cff",
+                    UrlProtected = SecretProtector.Protect(uri.AbsoluteUri),
+                    Host = uri.Host.ToLowerInvariant(),
+                },
+            };
+            _sources.Add(st);
+        }
+        await RunSyncAsync(st, ct, alreadyMarked: true).ConfigureAwait(false);
+        string? failure;
+        CalendarSourceDto? created = null;
+        lock (_gate)
+        {
+            // A cancelled first fetch leaves no error and no sync time: it is a failure, not a source.
+            failure = st.Error ?? (st.Record.LastSyncedAt is null ? CalendarErrors.Unreachable : null);
+            if (failure is not null)
+            {
+                _sources.Remove(st);
+                TryDelete(CachePath(st.Record.Id));
+            }
+            else
+            {
+                created = ToDto(st);
+            }
+            SaveSources();
+        }
+        if (failure is not null)
+        {
+            ct.ThrowIfCancellationRequested();
+            RaiseChanged();
+            return new CalendarAddResult { Error = failure };
+        }
+        return new CalendarAddResult { Source = created };
+    }
+
+    public sealed class ProbeResult
+    {
+        public CalendarProbeResponse? Response { get; init; }
+        public string? Error { get; init; }
+    }
+
+    private readonly Dictionary<string, (DateTimeOffset At, ProbeResult Result)> _probes = new();
+    private static readonly TimeSpan ProbeCacheFor = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan ProbeFailureCacheFor = TimeSpan.FromSeconds(10);
+
+    /// <summary>Fetches an address as an add would and reports its name; persists nothing. Results are kept briefly (failures for less time), keyed by a hash of the URL.</summary>
+    public async Task<ProbeResult> ProbeAsync(string? url, CancellationToken ct)
+    {
+        if (!CalendarUrl.TryNormalize(url, out var uri))
+        {
+            return new ProbeResult { Error = CalendarErrors.InvalidUrl };
+        }
+        var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(uri.AbsoluteUri)));
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            if (_probes.TryGetValue(key, out var hit) && now - hit.At < (hit.Result.Error is null ? ProbeCacheFor : ProbeFailureCacheFor))
+            {
+                return hit.Result;
+            }
+        }
+        ProbeResult result;
+        try
+        {
+            var fetched = await _fetcher.FetchAsync(uri, null, null, ct).ConfigureAwait(false);
+            if (fetched.Outcome != CalendarFetchOutcome.Ok)
+            {
+                result = new ProbeResult { Error = fetched.ErrorCode ?? CalendarErrors.Unreachable };
+            }
+            else
+            {
+                var feed = IcsParser.Parse(fetched.Body ?? "");
+                result = new ProbeResult { Response = new CalendarProbeResponse { Name = feed.CalName, Host = uri.Host.ToLowerInvariant() } };
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            result = new ProbeResult { Error = CalendarErrors.NotIcs };
+        }
+        lock (_gate)
+        {
+            _probes[key] = (now, result);
+            foreach (var stale in _probes.Where(p => now - p.Value.At >= ProbeCacheFor).Select(p => p.Key).ToList())
+            {
+                _probes.Remove(stale);
+            }
+        }
+        return result;
+    }
+
+    public CalendarSourceDto? Patch(string id, string? name, string? color)
+    {
+        CalendarSourceDto dto;
+        lock (_gate)
+        {
+            var st = _sources.FirstOrDefault(s => s.Record.Id == id);
+            if (st is null)
+            {
+                return null;
+            }
+            if (name is not null)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    var feedName = st.Feed?.CalName;
+                    st.Record.Name = CleanName(feedName, st.Record.Host ?? st.Record.Name);
+                    st.Record.NameFixed = feedName is not null;
+                }
+                else
+                {
+                    st.Record.Name = CleanName(name, st.Record.Name);
+                    st.Record.NameFixed = true;
+                }
+            }
+            if (CleanColor(color) is { } c)
+            {
+                st.Record.Color = c;
+            }
+            SaveSources();
+            dto = ToDto(st);
+        }
+        RaiseChanged();
+        return dto;
+    }
+
+    public bool Remove(string id)
+    {
+        lock (_gate)
+        {
+            var st = _sources.FirstOrDefault(s => s.Record.Id == id);
+            if (st is null)
+            {
+                return false;
+            }
+            _sources.Remove(st);
+            TryDelete(CachePath(id));
+            SaveSources();
+        }
+        RaiseChanged();
+        return true;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception)
+        {
+            // A stranded cache file is harmless: it is never read without its source record.
+        }
+    }
+
+    private static string CleanName(string? name, string fallback)
+    {
+        var n = (name ?? "").Trim();
+        if (n.Length == 0)
+        {
+            n = fallback;
+        }
+        return n.Length > 80 ? n.Substring(0, 80) : n;
+    }
+
+    internal static string? CleanColor(string? color)
+    {
+        if (color is null || color.Length != 7 || color[0] != '#')
+        {
+            return null;
+        }
+        for (var i = 1; i < 7; i++)
+        {
+            if (!Uri.IsHexDigit(color[i]))
+            {
+                return null;
+            }
+        }
+        return color.ToLowerInvariant();
+    }
+
+    // Sync
+
+    /// <summary>Starts a sync of every source. False while one is running or if the last one finished within the manual throttle window.</summary>
+    public bool TryStartRefreshAll()
+    {
+        var now = _time.GetUtcNow();
+        List<SourceState> targets;
+        lock (_gate)
+        {
+            if (_sources.Count == 0 || _sources.Any(s => s.Syncing))
+            {
+                return false;
+            }
+            var last = _sources.Max(s => s.LastFinished);
+            if (last is { } l && now - l < ManualThrottle)
+            {
+                return false;
+            }
+            targets = _sources.ToList();
+            foreach (var t in targets)
+            {
+                t.Syncing = true;
+            }
+        }
+        foreach (var t in targets)
+        {
+            Launch(t);
+        }
+        return true;
+    }
+
+    /// <returns>Null when the source does not exist, otherwise whether a sync started.</returns>
+    public bool? TryStartSync(string id)
+    {
+        var now = _time.GetUtcNow();
+        SourceState? st;
+        lock (_gate)
+        {
+            st = _sources.FirstOrDefault(s => s.Record.Id == id);
+            if (st is null)
+            {
+                return null;
+            }
+            if (st.Syncing || (st.LastFinished is { } l && now - l < ManualThrottle))
+            {
+                return false;
+            }
+            st.Syncing = true;
+        }
+        Launch(st);
+        return true;
+    }
+
+    private void Launch(SourceState st)
+    {
+        var task = Task.Run(() => RunSyncAsync(st, CancellationToken.None, alreadyMarked: true));
+        lock (_gate)
+        {
+            _running.RemoveAll(t => t.IsCompleted);
+            _running.Add(task);
+        }
+    }
+
+    /// <summary>Completes when every sync started so far has finished.</summary>
+    public Task WhenIdleAsync()
+    {
+        Task[] pending;
+        lock (_gate)
+        {
+            pending = _running.ToArray();
+        }
+        return Task.WhenAll(pending);
+    }
+
+    /// <summary>Syncs every source whose schedule has come due. Called on a short tick by the worker.</summary>
+    public async Task RunDueAsync(CancellationToken ct)
+    {
+        var now = _time.GetUtcNow();
+        List<SourceState> due;
+        lock (_gate)
+        {
+            due = _sources.Where(s => !s.Syncing && IsDue(s, now)).ToList();
+            foreach (var s in due)
+            {
+                s.Syncing = true;
+            }
+        }
+        // In parallel: one slow source must not delay the others' schedules.
+        await Task.WhenAll(due.Select(s => RunSyncAsync(s, ct, alreadyMarked: true))).ConfigureAwait(false);
+    }
+
+    private bool IsDue(SourceState s, DateTimeOffset now)
+    {
+        if (s.LastAttempt is not { } last)
+        {
+            return true;
+        }
+        var interval = TimeSpan.FromMinutes(_refreshMinutes);
+        var delay = interval;
+        for (var i = 0; i < s.Failures && delay < MaxBackoff; i++)
+        {
+            delay += delay;
+        }
+        if (delay > MaxBackoff)
+        {
+            delay = MaxBackoff;
+        }
+        return now - last >= delay;
+    }
+
+    private async Task RunSyncAsync(SourceState st, CancellationToken ct, bool alreadyMarked = false)
+    {
+        if (!alreadyMarked)
+        {
+            lock (_gate)
+            {
+                st.Syncing = true;
+            }
+        }
+        string? error = null;
+        var dataChanged = false;
+        string? previousError;
+        lock (_gate)
+        {
+            previousError = st.Error;
+        }
+        try
+        {
+            if (!Uri.TryCreate(SecretProtector.Unprotect(st.Record.UrlProtected), UriKind.Absolute, out var uri))
+            {
+                error = CalendarErrors.InvalidUrl;
+            }
+            else
+            {
+                string? etag, lastMod;
+                lock (_gate)
+                {
+                    etag = st.Feed is null ? null : st.ETag;
+                    lastMod = st.Feed is null ? null : st.LastModified;
+                }
+                var result = await _fetcher.FetchAsync(uri, etag, lastMod, ct).ConfigureAwait(false);
+                switch (result.Outcome)
+                {
+                    case CalendarFetchOutcome.NotModified:
+                        break;
+                    case CalendarFetchOutcome.Ok:
+                        error = ApplyBody(st, result);
+                        dataChanged = error is null;
+                        break;
+                    default:
+                        error = result.ErrorCode ?? CalendarErrors.Unreachable;
+                        break;
+                }
+                Nexus.Service.Platform.ServiceLog.Info(FormatSyncLog(st.Record.Id, result.HttpStatus, result.Bytes, error));
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            lock (_gate)
+            {
+                st.Syncing = false;
+            }
+            return;
+        }
+        catch (Exception ex)
+        {
+            error = CalendarErrors.Unreachable;
+            Nexus.Service.Platform.ServiceLog.Warn($"[calendar] source {st.Record.Id} sync failed ({ex.GetType().Name})");
+        }
+        FinishSync(st, error);
+        if (dataChanged || error != previousError)
+        {
+            RaiseChanged();
+        }
+    }
+
+    private void FinishSync(SourceState st, string? error)
+    {
+        var finished = _time.GetUtcNow();
+        lock (_gate)
+        {
+            st.Syncing = false;
+            st.LastAttempt = finished;
+            st.LastFinished = finished;
+            st.Error = error;
+            st.Record.LastError = error;
+            if (error is null)
+            {
+                st.Failures = 0;
+                st.Record.LastSyncedAt = finished.ToUnixTimeMilliseconds();
+            }
+            else
+            {
+                st.Failures++;
+            }
+            if (_sources.Contains(st))
+            {
+                SaveSources();
+            }
+        }
+    }
+
+    /// <summary>The only line a sync logs: ids, a status code, a byte count and an error code. Never a title, location, note, URL or host.</summary>
+    internal static string FormatSyncLog(string sourceId, int httpStatus, int bytes, string? error) =>
+        $"[calendar] source {sourceId} sync status={httpStatus} bytes={bytes} error={error ?? "none"}";
+
+    private string? ApplyBody(SourceState st, CalendarFetchResult result)
+    {
+        IcsFeed feed;
+        try
+        {
+            feed = IcsParser.Parse(result.Body ?? "");
+        }
+        catch (Exception)
+        {
+            return CalendarErrors.NotIcs;
+        }
+        lock (_gate)
+        {
+            st.Feed = feed;
+            if (!st.Record.NameFixed && feed.CalName is { } calName
+                && string.Equals(st.Record.Name, st.Record.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                st.Record.Name = calName;
+                st.Record.NameFixed = true;
+            }
+            st.ETag = result.ETag;
+            st.LastModified = result.LastModified;
+            // A source deleted mid-sync must not get its cache re-created.
+            if (_sources.Contains(st))
+            {
+                SaveCache(st);
+            }
+        }
+        return null;
+    }
+
+    private void RaiseChanged()
+    {
+        try
+        {
+            Changed?.Invoke();
+        }
+        catch (Exception)
+        {
+            // A broken subscriber must not fail a sync.
+        }
+    }
+}

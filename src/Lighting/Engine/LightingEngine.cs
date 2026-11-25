@@ -171,7 +171,32 @@ public sealed partial class LightingEngine : IDisposable
     {
         _devices = devices;
         PruneAreaCaches(devices);
+        EnsureNewFramesPublish(devices);
     }
+
+    // A new frame is zeroed until published, and the SLV3 writer holds a chain whose frame was never
+    // published while an effect is active. A running loop publishes it on its next tick; a paused one
+    // needs a nudge, handled by the paused branch. With no effect there is no loop and no hold.
+    private void EnsureNewFramesPublish(DeviceFrame[] devices)
+    {
+        if (!LoopPublishing) return;
+        foreach (var dev in devices)
+        {
+            if (!dev.HasPublished)
+            {
+                Interlocked.Exchange(ref _newFramesPending, 1);
+                return;
+            }
+        }
+    }
+
+    private int _newFramesPending;
+
+    // True after a hold cleared the canvas and until the effect renders into it again.
+    private volatile bool _canvasClearedByHold;
+
+    /// <summary>True while an effect is set (running or paused); with none, writers stream every frame, black included.</summary>
+    public bool HasActiveEffect => LoopPublishing;
 
     // Devices placed in the 3D scene and the camera that sees them; null means
     // every device samples its 2D frame. Replaced wholesale, never mutated.
@@ -591,6 +616,7 @@ public sealed partial class LightingEngine : IDisposable
         if (level <= 0f || baseline is null)
         {
             _canvas.Clear();
+            _canvasClearedByHold = true;
             foreach (var dev in _devices)
             {
                 dev.Clear();
@@ -879,6 +905,7 @@ public sealed partial class LightingEngine : IDisposable
                         if (markRendered && liveBatch?.Lost != true)
                         {
                             Volatile.Write(ref _frozenRenderedEpoch, epoch);
+                            _canvasClearedByHold = false;
                         }
                         // After RenderPins, which updates pinned looks in place.
                         TrackAheadParams(effect);
@@ -913,32 +940,76 @@ public sealed partial class LightingEngine : IDisposable
                         }
                         aheadDevices = devices;
                     }
-                    else if ((_studioOverlay is not null || _resampleOnce || AnyAssignPollable()) && wakeMs <= 0)
+                    else if (wakeMs <= 0
+                        && (_studioOverlay is not null || _resampleOnce || AnyAssignPollable() || Volatile.Read(ref _newFramesPending) == 1))
                     {
-                        // Paused: the effect holds, the studio overlay keeps animating over it, and once it clears the effect's paused frame is repainted onto the devices.
-                        var devices = _devices;
-                        if (_studioOverlay is not null)
+                        // Frames built since the last publish take the held canvas as it is, with no new RenderFrame, so an
+                        // input-driven effect does not step. A hold cleared that canvas, so there a re-render is the only source.
+                        DeviceFrame[]? fresh = null;
+                        if (Interlocked.Exchange(ref _newFramesPending, 0) == 1)
                         {
-                            ApplyTestOverlays(devices);
+                            fresh = Array.FindAll(_devices, d => !d.HasPublished);
+                            if (_canvasClearedByHold)
+                            {
+                                _resampleOnce = true;
+                            }
+                            else if (fresh.Length > 0)
+                            {
+                                SampleDevicesFromCanvas(fresh);
+                                ApplyLedColorLocks(fresh);
+                            }
                         }
-                        else if (!_resampleOnce)
+                        if (_studioOverlay is null && !_resampleOnce && !AnyAssignPollable())
                         {
-                            // Only a pending static look holds this branch open: the main effect is not rendered again (input-driven
-                            // effects must not animate while paused), only the pins are polled and painted.
-                            ApplyTestOverlays(devices);
-                            ApplyLedColorLocks(devices);
+                            if (fresh is not null)
+                            {
+                                foreach (var dev in fresh)
+                                {
+                                    dev.Publish();
+                                }
+                            }
                         }
                         else
                         {
-                            _resampleOnce = false;
-                            // Repaint the effect's own frame: the canvas may be stale or cleared by a hold, and the devices may carry overlay pixels.
-                            effect.RenderFrame(_canvas, ReferenceEquals(effect, _lastRenderEffect) ? _lastRenderMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                            SampleDevicesFromCanvas(devices);
-                            ApplyLedColorLocks(devices);
-                        }
-                        foreach (var dev in devices)
-                        {
-                            dev.Publish();
+                            // Paused: the effect holds, the studio overlay keeps animating over it, and once it clears the effect's paused frame is repainted onto the devices.
+                            var devices = _devices;
+                            var skipPausedPublish = false;
+                            if (_studioOverlay is not null)
+                            {
+                                ApplyTestOverlays(devices);
+                            }
+                            else if (!_resampleOnce)
+                            {
+                                // Only a pending static look holds this branch open: the main effect is not rendered again (input-driven
+                                // effects must not animate while paused), only the pins are polled and painted.
+                                ApplyTestOverlays(devices);
+                                ApplyLedColorLocks(devices);
+                            }
+                            else
+                            {
+                                _resampleOnce = false;
+                                // Repaint the effect's own frame: the canvas may be stale or cleared by a hold, and the devices may carry overlay pixels.
+                                effect.RenderFrame(_canvas, ReferenceEquals(effect, _lastRenderEffect) ? _lastRenderMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                                if (effect is Gpu.ShaderEffect { IsRenderPending: true })
+                                {
+                                    // Nothing was drawn yet: publishing the cleared canvas would stream black. Ask again next tick.
+                                    _resampleOnce = true;
+                                    skipPausedPublish = true;
+                                }
+                                else
+                                {
+                                    _canvasClearedByHold = false;
+                                    SampleDevicesFromCanvas(devices);
+                                    ApplyLedColorLocks(devices);
+                                }
+                            }
+                            if (!skipPausedPublish)
+                            {
+                                foreach (var dev in devices)
+                                {
+                                    dev.Publish();
+                                }
+                            }
                         }
                     }
                     else if (wakeMs > 0)

@@ -43,6 +43,8 @@ public sealed class Slv3LcdScreenDto
     public string? TempUnit { get; set; }
     /// <summary>User-chosen list position (0-based); -1 when not set. The list is already sorted by it.</summary>
     public int Order { get; set; } = -1;
+    /// <summary>Clip frame-rate cap in fps the screen plays under; 0 = Off, no cap.</summary>
+    public int FpsCap { get; set; } = FanLcdClipTiming.DefaultFps;
     /// <summary>The screen's panel record while <see cref="NexusPanel"/> is on and the record exists; null otherwise.</summary>
     public string? PanelDeviceId { get; set; }
     /// <summary>Where the screen sits, e.g. "#1.2" (port 1, fan 2) on a Uni Fan TL; null when the family has no such label.</summary>
@@ -61,6 +63,8 @@ public sealed class Slv3LcdSettingsRequest
     public byte? Rotation { get; set; }
     public bool? SleepWhenLocked { get; set; }
     public bool? NexusPanel { get; set; }
+    /// <summary>Clip frame-rate cap in fps; 0 = Off, no cap. Clamped like a panel's cap.</summary>
+    public int? FpsCap { get; set; }
 }
 
 public sealed class Slv3LcdOrderRequest
@@ -166,6 +170,7 @@ public static class Slv3LcdRoutes
                     Serial = screen.Serial,
                     Position = screen.Position,
                     Order = settings.Order,
+                    FpsCap = FanLcdClipTiming.CapOf(settings.FpsCap),
                     Brightness = settings.Brightness,
                     SleepWhenLocked = settings.SleepWhenLocked,
                     Rotation = settings.Rotation,
@@ -199,6 +204,10 @@ public static class Slv3LcdRoutes
             {
                 return Results.Json(ApiResponse.Fail("rotation must be 0-3"), AppJsonContext.Default.ApiResponse);
             }
+            if (body.FpsCap is < 0)
+            {
+                return Results.Json(ApiResponse.Fail("frame rate must be 0 or more"), AppJsonContext.Default.ApiResponse);
+            }
 
             // While the lock holds this screen dark the new level is stored only; the worker
             // shows it on unlock.
@@ -218,6 +227,7 @@ public static class Slv3LcdRoutes
                 if (body.Rotation.HasValue) screen.Rotation = body.Rotation.Value;
                 if (body.SleepWhenLocked.HasValue) screen.SleepWhenLocked = body.SleepWhenLocked.Value;
                 if (body.NexusPanel is { } nexusPanel) ApplyNexusPanel(screen, nexusPanel);
+                if (body.FpsCap is { } fpsCap) screen.FpsCap = FanLcdClipTiming.ToStored(fpsCap);
                 s.Devices.LianLiWireless.Screens[body.Serial] = screen;
             });
 

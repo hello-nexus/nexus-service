@@ -34,11 +34,100 @@ public class Np50CoolingProviderHandBackTests
         var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeMotherboard, out var t);
         var provider = new Np50CoolingProvider(hub);
 
-        provider.ReleaseFan("np50:NPTEST:legacy");
+        provider.DriveFanSpeed(Fp12, 50);
+        provider.ReleaseFan(Fp12);
 
-        var frame = Assert.Single(t.Writes, IsCoolingModeFrame);
+        var frame = Assert.Single(t.Writes.Where(IsCoolingModeFrame).Skip(1));
         Assert.Equal(Np50Protocol.ModeMotherboard, frame[4]);
     }
+
+    [Fact]
+    public void Releasing_an_undriven_legacy_channel_before_the_first_fp12_write_keeps_fp12_writes_applied()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.ReleaseFan("np50:NPTEST:legacy");
+        provider.DriveFanSpeed(Fp12, 60);
+
+        Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
+        Assert.Contains(t.Writes, w => IsCoolingModeFrame(w) && w[4] == Np50Protocol.ModeSoftware);
+        var duty = Assert.Single(t.Writes, IsPortDutyFrame);
+        Assert.Equal(1, duty[3]);
+        Assert.Equal(60, duty[6]);
+    }
+
+    [Fact]
+    public void Releasing_the_last_driven_channel_hands_back()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed(Fp12, 60);
+        provider.ReleaseFan(Fp12);
+
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void Releasing_a_driven_legacy_channel_still_hands_back()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed("np50:NPTEST:legacy", 40);
+        provider.ReleaseFan("np50:NPTEST:legacy");
+
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void Releasing_a_non_last_driven_channel_does_not_hand_back()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out _);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed(Fp12, 60);
+        provider.DriveFanSpeed("np50:NPTEST:port1:dev2", 60);
+        provider.ReleaseFan(Fp12);
+
+        Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void A_release_while_the_hub_is_offline_still_hands_back_after_reconnect()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
+        var provider = new Np50CoolingProvider(hub);
+
+        provider.DriveFanSpeed(Fp12, 60);
+        t.Open = false;
+        provider.ReleaseFan(Fp12);
+        Assert.Equal(Np50Protocol.ModeSoftware, hub.DesiredCoolingMode);
+
+        t.Open = true;
+        provider.ReleaseFan(Fp12);
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+    }
+
+    [Fact]
+    public void A_user_pinned_firmware_mode_swallows_curve_writes_without_a_port_duty_frame()
+    {
+        var hub = NewConnectedHub(defaultMode: Np50Protocol.DefaultModeStatic, out var t);
+        var provider = new Np50CoolingProvider(hub);
+
+        hub.SetDesiredCoolingMode(Np50Protocol.ModeStatic);
+        provider.DriveFanSpeed(Fp12, 60);
+
+        Assert.Equal(Np50Protocol.ModeStatic, hub.DesiredCoolingMode);
+        Assert.DoesNotContain(t.Writes, IsPortDutyFrame);
+    }
+
+    // Header, port byte, then one fixed-size record per device slot.
+    private static bool IsPortDutyFrame(byte[] w) =>
+        w.Length == 4 + Np50Protocol.MaxDevicesPerPort * 9 && w[0] == 0xFF && w[1] == 0xCC && w[2] == 0x02;
+
+    private const string Fp12 = "np50:NPTEST:port1:dev1";
 
     [Fact]
     public void ReleaseAll_falls_back_to_motherboard_when_the_eeprom_read_fails()
@@ -91,7 +180,8 @@ public class Np50CoolingProviderHandBackTests
         public Func<byte[], byte[]> OnRead = _ => Array.Empty<byte>();
         private byte[] _lastWrite = Array.Empty<byte>();
 
-        public bool IsOpen => true;
+        public bool Open = true;
+        public bool IsOpen => Open;
         public string Serial => "NPTEST";
         public void DiscardInput() { }
 

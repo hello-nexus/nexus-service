@@ -31,6 +31,17 @@ public sealed class HardwarePresence
     /// <summary>True when the enumerator returned at least one device this cycle.</summary>
     public bool AnyUsbEnumerated() => _usb.Enumerate().Count > 0;
 
+    /// <summary>Number of enumerated USB devices with this exact vendor and product id.</summary>
+    public int UsbCount(int vendorId, int productId)
+    {
+        var n = 0;
+        foreach (var d in _usb.Enumerate())
+        {
+            if (d.VendorId == vendorId && d.ProductId == productId) n++;
+        }
+        return n;
+    }
+
     /// <summary>
     /// True when a USB device with <paramref name="vendorId"/> is currently
     /// enumerated. When <paramref name="productIds"/> is non-empty the product id

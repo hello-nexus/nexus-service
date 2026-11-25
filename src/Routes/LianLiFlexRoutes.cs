@@ -281,6 +281,7 @@ public static partial class LianLiFlexRoutes
                     Position = -1,
                     Label = screens.PanelName(screen.Serial),
                     Order = settings.Order,
+                    FpsCap = FanLcdClipTiming.CapOf(settings.FpsCap),
                     Brightness = settings.Brightness,
                     SleepWhenLocked = settings.SleepWhenLocked,
                     Rotation = settings.Rotation,
@@ -318,6 +319,10 @@ public static partial class LianLiFlexRoutes
             {
                 return Results.Json(ApiResponse.Fail("rotation must be 0-3"), AppJsonContext.Default.ApiResponse);
             }
+            if (body.FpsCap is < 0)
+            {
+                return Results.Json(ApiResponse.Fail("frame rate must be 0 or more"), AppJsonContext.Default.ApiResponse);
+            }
             var current = store.Load().Devices.FlexLcdScreens.TryGetValue(body.Serial, out var cur) ? cur : new LianLiWirelessScreenSettings();
             if (body.Brightness.HasValue && !lcd.Hub.IsLockSleeping(body.Serial, () => current.SleepWhenLocked))
             {
@@ -345,6 +350,10 @@ public static partial class LianLiFlexRoutes
                 if (body.NexusPanel is { } nexusPanel)
                 {
                     Slv3LcdRoutes.ApplyNexusPanel(screen, nexusPanel);
+                }
+                if (body.FpsCap is { } fpsCap)
+                {
+                    screen.FpsCap = FanLcdClipTiming.ToStored(fpsCap);
                 }
             });
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);

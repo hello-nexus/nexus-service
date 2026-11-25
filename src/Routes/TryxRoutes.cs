@@ -345,11 +345,13 @@ public static class TryxRoutes
                 {
                     label ??= TryxKanaliData.DisplayName(name);
                 }
+                var durationSec = TryxThumbnailCache.ReadDuration(name);
+                if (durationSec <= 0) hub.QueueDuration(name);
                 resp.Media.Add(new TryxMediaItem
                 {
                     Name = name,
                     Thumb = thumb,
-                    DurationSec = TryxThumbnailCache.ReadDuration(name),
+                    DurationSec = durationSec,
                     Label = label,
                 });
             }

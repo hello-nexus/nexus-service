@@ -45,6 +45,7 @@ public sealed class Slv3ConnectionWorker : BackgroundService
             {
                 if (!_gate.IsEnabled("lianli-wireless"))
                 {
+                    _hub.NoteLinkDisabled();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     continue;
                 }
@@ -90,6 +91,7 @@ public sealed class Slv3ConnectionWorker : BackgroundService
                 }
                 else
                 {
+                    _hub.NoteConnectFailed();
                     await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                 }
             }

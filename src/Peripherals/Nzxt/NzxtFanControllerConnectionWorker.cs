@@ -17,7 +17,6 @@ namespace Nexus.Service.Peripherals.Nzxt;
 public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 {
     private const int ConnectPollMs = 5000;
-    private const int MaxConsecutiveFailures = 3;
 
     // Smallest report that carries a fan command; the device's other HID collections are shorter.
     private const int MinUsableReportLength = NzxtFanControllerProtocol.ReportLength;
@@ -44,6 +43,7 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        bool connectFailureLogged = false;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -64,37 +64,67 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
 
                 _hub.Attach(device);
                 bool started = false;
+                string detachCause = "worker error";
+                bool usbAbsentWhileWaiting = false;
                 try
                 {
-                    if (_hub.Connect())
+                    var keepWaiting = ConnectGuard.Create(
+                        () => _gate.IsEnabled(NzxtFanControllerHub.DeviceId),
+                        () => _presence.UsbPresent(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductIds),
+                        () => usbAbsentWhileWaiting = true);
+                    if (_hub.Connect(stoppingToken, keepWaiting))
                     {
                         started = true;
-                        ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
-                        int failures = 0;
-                        while (!stoppingToken.IsCancellationRequested && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
+                        connectFailureLogged = false;
+                        if (_hub.LogConnectionCycle)
                         {
+                            ServiceLog.Info($"[nzxt-fan-controller] connected: {_hub.Fans.Length} fan channel(s)");
+                        }
+                        while (true)
+                        {
+                            if (stoppingToken.IsCancellationRequested)
+                            {
+                                detachCause = "service stopping";
+                                break;
+                            }
+                            if (!_gate.IsEnabled(NzxtFanControllerHub.DeviceId))
+                            {
+                                detachCause = "gate turned off";
+                                break;
+                            }
                             if (_hub.Poll())
                             {
-                                failures = 0;
                                 _cooling.ReassertControl();
                             }
-                            else if (++failures >= MaxConsecutiveFailures)
+                            else if (_hub.Lost)
                             {
+                                detachCause = DescribeLoss();
                                 break;
                             }
                         }
                     }
                     else
                     {
+                        if (usbAbsentWhileWaiting)
+                        {
+                            ServiceLog.Info("[nzxt-fan-controller] usb device absent while waiting for the first status; retrying");
+                        }
+                        else if (!connectFailureLogged
+                            && !stoppingToken.IsCancellationRequested
+                            && _gate.IsEnabled(NzxtFanControllerHub.DeviceId))
+                        {
+                            connectFailureLogged = true;
+                            ServiceLog.Warn("[nzxt-fan-controller] connect failed (init write or read error); retrying");
+                        }
                         await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
                     }
                 }
                 finally
                 {
                     _hub.Detach();
-                    if (started)
+                    if (started && _hub.LogDisconnect)
                     {
-                        ServiceLog.Info("[nzxt-fan-controller] disconnected");
+                        ServiceLog.Info($"[nzxt-fan-controller] disconnected: {detachCause}; {_hub.DescribeSilence()}");
                     }
                 }
             }
@@ -108,6 +138,15 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
                 await Task.Delay(ConnectPollMs, stoppingToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private string DescribeLoss()
+    {
+        if (!_presence.UsbPresent(NzxtFanControllerProtocol.VendorId, NzxtFanControllerProtocol.ProductIds))
+        {
+            return "usb device absent";
+        }
+        return _hub.LastReadFailed ? "hid read error" : "lost by silence";
     }
 
     private IHidDevice? FindAndOpen()
@@ -128,5 +167,32 @@ public sealed class NzxtFanControllerConnectionWorker : BackgroundService
         }
         // forInput so Read honors its timeout instead of busy-spinning on Windows.
         return best == null ? null : _hid.Open(best.Path, forInput: true);
+    }
+}
+
+/// <summary>
+/// The enabled check handed to <see cref="NzxtFanControllerHub.Connect"/>: the gate every
+/// window, USB presence every few windows so a replug during a silent wait ends it.
+/// </summary>
+internal static class ConnectGuard
+{
+    internal const int PresenceCheckEveryWindows = 4;
+
+    internal static Func<bool> Create(Func<bool> gateEnabled, Func<bool> usbPresent, Action onUsbAbsent)
+    {
+        int windows = 0;
+        return () =>
+        {
+            if (!gateEnabled())
+            {
+                return false;
+            }
+            if (windows++ % PresenceCheckEveryWindows != PresenceCheckEveryWindows - 1 || usbPresent())
+            {
+                return true;
+            }
+            onUsbAbsent();
+            return false;
+        };
     }
 }

@@ -518,6 +518,7 @@ public static class FanProfiles
     /// </summary>
     public static bool SeedDefaultPresetCurves(IFanControlProvider fans, IConfigStore store)
     {
+        MigratePriorPresetResponseTimes(store);
         if (store.Load().Cooling.CurvesSeeded) return false;
         var inputSensor = PreferredInput(fans.GetTemperatureSources());
         var seeded = false;
@@ -548,8 +549,47 @@ public static class FanProfiles
     public static bool IsPresetCurveAtDefaults(CurveDocument c)
     {
         if (c.Preset is null) return false;
-        var d = PresetDefaults.For(c.Preset);
-        if (IsFlatPreset(c.Preset))
+        // A curve still on the prior template reads as default before the migration reaches it.
+        return MatchesPresetTemplate(c, PresetDefaults.For(c.Preset)) || IsOnPriorPresetTemplate(c);
+    }
+
+    /// <summary>Response times silent and balanced shipped with before their current defaults.</summary>
+    private static readonly Dictionary<string, double> PriorPresetResponseTimes = new()
+    {
+        ["silent"] = 3.0,
+        ["balanced"] = 1.5,
+    };
+
+    /// <summary>Moves a preset curve still on its previously shipped template to the current response time; idempotent.</summary>
+    internal static bool MigratePriorPresetResponseTimes(IConfigStore store)
+    {
+        if (!store.Load().Cooling.Curves.Any(IsOnPriorPresetTemplate)) return false;
+        var changed = false;
+        store.Update(s =>
+        {
+            foreach (var curve in s.Cooling.Curves.Where(IsOnPriorPresetTemplate))
+            {
+                var prior = PriorPresetResponseTimes[curve.Preset!];
+                var current = PresetDefaults.For(curve.Preset!).ResponseTime;
+                curve.Graph!.ResponseTime = current;
+                // The Linear block is the seeded fallback for a type switch; it moves only if it still holds the prior value.
+                if (curve.Linear is { } linear && linear.ResponseTime == prior) linear.ResponseTime = current;
+                changed = true;
+            }
+        });
+        return changed;
+    }
+
+    private static bool IsOnPriorPresetTemplate(CurveDocument? c)
+    {
+        if (c?.Preset is not { } name || !PriorPresetResponseTimes.TryGetValue(name, out var prior)) return false;
+        var d = PresetDefaults.For(name);
+        return d.ResponseTime != prior && MatchesPresetTemplate(c, d with { ResponseTime = prior });
+    }
+
+    private static bool MatchesPresetTemplate(CurveDocument c, PresetCurveDefaults d)
+    {
+        if (IsFlatPreset(c.Preset!))
         {
             // A different duty, or a switch to a temperature-driven type, is an edit.
             return c.Type == "Flat" && c.Flat is not null && c.Flat.Speed == FlatPresetSpeed(d);

@@ -11,6 +11,7 @@ using Nexus.Service.Lighting.Engine;
 using Nexus.Service.Lighting.Zones;
 using Nexus.Service.Peripherals.LianLi;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 using RgbColor = Nexus.Service.Peripherals.Hyte.Np50.RgbColor;
 
 namespace Nexus.Service.Lighting;
@@ -57,6 +58,19 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             Thread.Sleep(InterWriteSettleMs);
         }
+    }
+
+    // The SL V2 ignores a command that follows the previous one too closely, so its hub spaces every write itself
+    // (fan control and the poll share the wire). 5 ms is the spacing a customer hub stopped dropping commits at.
+    // Custom streaming is left unspaced to keep its frame rate.
+    internal int FirmwareWriteGapMs { get; set; } = 5;
+
+    private void ApplyWriteGap(in LianLiFanProfile profile, bool custom)
+    {
+        var gap = profile.Family == LianLiFanFamily.SlV2 && !custom ? FirmwareWriteGapMs : 0;
+        if (_hub.MinWriteGapMs == gap) return;
+        _hub.MinWriteGapMs = gap;
+        ServiceLog.Info($"[lianli-lighting-writer] hub write gap set to {gap} ms");
     }
 
     // Hub writes are synchronous HidD_SetFeature, each taking LianLiHub._lock that
@@ -111,6 +125,22 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     private static readonly long[] ArgbReleaseRecommitMs = { 600, 1500, 3000 };
     private long _argbReleasedAtMs;
     private int _argbRecommitsDone = ArgbReleaseRecommitMs.Length;
+
+    // SL V2 only: a port misses an apply that lands right after a latch, so changes are held until still, applies keep apart, each is repeated once.
+    internal int SlV2SettleMs { get; set; } = 150;
+    internal int SlV2RepeatMs { get; set; } = 500;
+    private int _debounceSig;
+    private long _debounceSinceMs = long.MinValue;
+    private long _quietUntilMs;
+    private long _repeatAtMs;
+    private bool _repeating;
+
+    // SL V2 only. A hub just powered on takes seconds to answer, and a commit sent before that is lost without any error,
+    // so an apply made before the hub's first answer is repeated once it has answered, or when it never does.
+    private const long ReadyGiveUpMs = 30_000;
+    private long _readyWaitSinceMs;
+    private bool _appliedBeforeReady;
+    private bool _reappliedForReady;
 
     private bool _customMergeCleared;
     // The hub may be playing a merged effect; one without a merge-off command exits it by per-port commits. Unknown state counts as merged.
@@ -233,6 +263,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var ls = LianLiHubSet.LightingOf(settings.Devices, _hub.DeviceId);
         var fans = LianLiHubSet.FansOf(settings.Devices, _hub.DeviceId);
         var profile = _hub.Profile;
+        ApplyWriteGap(profile, ls.Mode == "custom");
         var argbSync = profile.PlaysArgbInput(ls.ArgbSync);
         if (_argbSyncSent != argbSync && !_argbSyncRetry.BackingOff(NowMs()))
         {
@@ -294,6 +325,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             {
                 NoteSuccess(_initRetry, "hub init");
                 _hubInitialised = true;
+                if (profile.Family == LianLiFanFamily.SlV2)
+                {
+                    ServiceLog.Info($"[lianli-lighting-writer] attach state: mode={ls.Mode} merge={ls.Merge} argbSyncSetting={ls.ArgbSync} argbSyncSentToHub={_argbSyncSent} (the hub's own sync state is never read) fans={fans.Port0Fans},{fans.Port1Fans},{fans.Port2Fans},{fans.Port3Fans}");
+                }
             }
             else
             {
@@ -304,6 +339,7 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             _retryPending = true;
         }
+        ReapplyWhenHubAnswers(profile);
         var comp = LianLiZoneSupport.ReadComposition(settings, _hub.DeviceId);
         var composed = LianLiZoneSupport.Compose(_hub.DeviceId, profile, comp, fans);
 
@@ -321,6 +357,8 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
             // and its backoff with it so a stale deadline cannot gate that switch.
             _lastFirmwareSig = null;
             _pendingFirmwareSig = null;
+            _repeatAtMs = 0;
+            _debounceSinceMs = long.MinValue;
             _commitRetry.Reset();
             // A merged firmware effect outlives per-channel custom commits too.
             if (!_customMergeCleared && profile.ExplicitMergeControl && _hub.SendStopMerge())
@@ -383,9 +421,30 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         var merged = ls.Merge && mode.MergesOn(profile) && !(ls.InnerRing is not null && ls.OuterRing is not null)
             && !AnyDeviceExcluded(composed, settings);
         var sig = ComputeFirmwareSig(ls, merged, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
+        var settling = profile.Family == LianLiFanFamily.SlV2 && SlV2SettleMs > 0;
+        if (settling && _repeatAtMs != 0 && _lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value
+            && NowMs() >= _repeatAtMs && NowMs() >= _quietUntilMs)
+        {
+            _repeatAtMs = 0;
+            _repeating = true;
+            _lastFirmwareSig = null;
+        }
         if (_lastFirmwareSig.HasValue && sig == _lastFirmwareSig.Value)
         {
+            _debounceSinceMs = long.MinValue;
             return;
+        }
+        if (settling && !_repeating)
+        {
+            if (_debounceSig != sig || _debounceSinceMs == long.MinValue)
+            {
+                _debounceSig = sig;
+                _debounceSinceMs = NowMs();
+            }
+            if (NowMs() - _debounceSinceMs < SlV2SettleMs || NowMs() < _quietUntilMs)
+            {
+                return;
+            }
         }
 
         if (_pendingFirmwareSig != sig)
@@ -404,6 +463,10 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             _mergeMaybeActive = true;
         }
+        if (profile.Family == LianLiFanFamily.SlV2)
+        {
+            _hub.Trace.BeginApply($"mode={mode.Key} merged={merged} repeat={_repeating} mergeMaybeActive={_mergeMaybeActive}");
+        }
         var committed = merged
             ? CommitMergedMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, fans, settings.Devices.LightingDevicePrefs)
             : CommitFirmwareMode(ls, mode, globalBrightness, composed, profile, settings.Devices.DisabledLightingDevices, uncontrolled, _firmwareZonesByDevice, settings.Devices.LightingDevicePrefs);
@@ -411,11 +474,46 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
         {
             NoteSuccess(_commitRetry, "firmware commit");
             _lastFirmwareSig = sig;
+            if (profile.Family == LianLiFanFamily.SlV2 && !_reappliedForReady && !_hub.State.FirmwareAnswered)
+            {
+                if (!_appliedBeforeReady)
+                {
+                    _readyWaitSinceMs = NowMs();
+                }
+                _appliedBeforeReady = true;
+            }
+            if (settling)
+            {
+                _quietUntilMs = NowMs() + SlV2SettleMs;
+                _repeatAtMs = _repeating || merged ? 0 : NowMs() + SlV2RepeatMs;
+                _debounceSinceMs = long.MinValue;
+            }
         }
         else
         {
             NoteFailure(_commitRetry, "firmware commit");
         }
+        _repeating = false;
+    }
+
+    private void ReapplyWhenHubAnswers(in LianLiFanProfile profile)
+    {
+        if (!_appliedBeforeReady || profile.Family != LianLiFanFamily.SlV2)
+        {
+            return;
+        }
+        var answered = _hub.State.FirmwareAnswered;
+        if (!answered && NowMs() - _readyWaitSinceMs < ReadyGiveUpMs)
+        {
+            return;
+        }
+        _appliedBeforeReady = false;
+        _reappliedForReady = true;
+        _lastFirmwareSig = null;
+        _customMergeCleared = false;
+        _mergeMaybeActive = profile.SupportsMerge && !profile.ExplicitMergeControl;
+        _mergeExitRetry.Reset();
+        ServiceLog.Info($"[lianli-lighting-writer] re-applying: the last apply was made before the hub answered (answered now: {answered})");
     }
 
     // The hub loses commanded LED state on USB re-enumeration and across sleep,
@@ -424,6 +522,12 @@ public sealed class LianLiLightingFrameWriter : IHostedService, IDisposable
     // re-asserts for the same reason.
     private void ForgetHubState()
     {
+        _appliedBeforeReady = false;
+        _reappliedForReady = false;
+        _repeatAtMs = 0;
+        _repeating = false;
+        _quietUntilMs = 0;
+        _debounceSinceMs = long.MinValue;
         _lastFirmwareSig = null;
         _pendingFirmwareSig = null;
         _hubInitialised = false;
