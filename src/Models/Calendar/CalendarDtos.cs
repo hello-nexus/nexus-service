@@ -138,4 +138,5 @@ public static class CalendarErrors
     public const string InvalidRefresh = "invalidRefresh";
     public const string InvalidRange = "invalidRange";
     public const string LimitReached = "limitReached";
+    public const string Duplicate = "duplicate";
 }

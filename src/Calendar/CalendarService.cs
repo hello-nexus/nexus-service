@@ -38,6 +38,7 @@ public sealed class CalendarService
         public IcsFeed? Feed;
         public string? ETag;
         public string? LastModified;
+        public string? BodyHash;
         public bool Syncing;
         public DateTimeOffset? LastAttempt;
         public DateTimeOffset? LastFinished;
@@ -159,6 +160,7 @@ public sealed class CalendarService
                 st.Feed = cache.Feed;
                 st.ETag = cache.ETag;
                 st.LastModified = cache.LastModified;
+                st.BodyHash = cache.BodyHash;
             }
         }
         catch (Exception ex)
@@ -213,7 +215,7 @@ public sealed class CalendarService
         try
         {
             Directory.CreateDirectory(Path.Combine(_dir, "cache"));
-            var cache = new CalendarFeedCache { ETag = st.ETag, LastModified = st.LastModified, Feed = st.Feed };
+            var cache = new CalendarFeedCache { ETag = st.ETag, LastModified = st.LastModified, BodyHash = st.BodyHash, Feed = st.Feed };
             AtomicJsonFile.Write(CachePath(st.Record.Id), JsonSerializer.Serialize(cache, PersistenceJsonContext.Default.CalendarFeedCache), flushToDisk: false);
         }
         catch (Exception ex)
@@ -345,6 +347,14 @@ public sealed class CalendarService
             {
                 return new CalendarAddResult { Error = CalendarErrors.LimitReached };
             }
+            var key = CalendarUrl.IdentityKey(uri);
+            foreach (var other in _sources)
+            {
+                if (other.Record.Kind == CalendarKinds.Ics && IsSameFeed(other.Record, key))
+                {
+                    return new CalendarAddResult { Error = CalendarErrors.Duplicate };
+                }
+            }
             st = new SourceState
             {
                 // Marked busy from the start so the worker cannot fetch the same source concurrently.
@@ -369,6 +379,11 @@ public sealed class CalendarService
         {
             // A cancelled first fetch leaves no error and no sync time: it is a failure, not a source.
             failure = st.Error ?? (st.Record.LastSyncedAt is null ? CalendarErrors.Unreachable : null);
+            if (failure is null && st.BodyHash is { } hash
+                && _sources.Any(o => !ReferenceEquals(o, st) && o.Record.Kind == CalendarKinds.Ics && o.BodyHash == hash))
+            {
+                failure = CalendarErrors.Duplicate;
+            }
             if (failure is not null)
             {
                 _sources.Remove(st);
@@ -388,6 +403,10 @@ public sealed class CalendarService
         }
         return new CalendarAddResult { Source = created };
     }
+
+    private static bool IsSameFeed(CalendarSourceRecord record, string key) =>
+        Uri.TryCreate(SecretProtector.Unprotect(record.UrlProtected), UriKind.Absolute, out var existing)
+        && CalendarUrl.IdentityKey(existing) == key;
 
     public sealed class ProbeResult
     {
@@ -766,6 +785,7 @@ public sealed class CalendarService
             }
             st.ETag = result.ETag;
             st.LastModified = result.LastModified;
+            st.BodyHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(result.Body ?? "")));
             // A source deleted mid-sync must not get its cache re-created.
             if (_sources.Contains(st))
             {
