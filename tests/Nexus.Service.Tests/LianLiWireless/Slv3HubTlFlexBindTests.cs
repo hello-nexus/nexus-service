@@ -127,4 +127,61 @@ public partial class Slv3HubTests
         Assert.False(tracker.TryGetActive("lianli-wireless:AA:zone2", now, out _));
         Assert.True(tracker.TryGetActive("lianli-wireless:BB", now, out _));
     }
+
+    [Fact]
+    public void Reconcile_never_sends_a_bind_frame_to_a_USB_connected_unit_nobody_asked_to_bind()
+    {
+        var (hub, net, tx, _, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254 });
+        MarkWired(hub);
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 6);
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.False(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_bind_of_a_USB_unit_that_does_not_answer_is_paced_unsaved_and_given_up_at_the_timeout()
+    {
+        var (hub, net, tx, saved, clock) = CreateOwnershipHub();
+        var fan = new SimulatedFan { Mac = FanMac, RxType = 254 };
+        net.Fans.Add(fan);
+        Ticks(hub, Slv3Hub.ChainConfirmSightings + 1);
+        MarkWired(hub);
+        Assert.True(ManualBind(hub, FanKey));
+        net.Fans.Clear();
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 10);
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.DoesNotContain(FanKey, saved.Keys);
+
+        clock.AdvanceMs(Slv3Hub.WiredBindResendMs + 1);
+        Ticks(hub, 5);
+        Assert.Equal(1, CountBindFrames(tx));
+
+        clock.AdvanceMs(Slv3Hub.PendingOpTimeoutMs);
+        tx.SentFrames.Clear();
+        Ticks(hub, 5);
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.DoesNotContain(FanKey, saved.Keys);
+    }
+
+    [Fact]
+    public void A_USB_unit_joins_the_saved_list_when_its_record_echoes_the_bind()
+    {
+        var (hub, net, _, saved, _) = CreateOwnershipHub();
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254 });
+        Ticks(hub, Slv3Hub.ChainConfirmSightings + 1);
+        MarkWired(hub);
+        Assert.True(ManualBind(hub, FanKey));
+        Assert.DoesNotContain(FanKey, saved.Keys);
+
+        Ticks(hub, 3);
+
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Contains(FanKey, saved.Keys);
+    }
 }

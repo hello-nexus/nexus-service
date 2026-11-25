@@ -35,7 +35,7 @@ public sealed partial class Slv3Hub : IDisposable
 
     internal const string PendingBinding = "binding";
     internal const string PendingUnbinding = "unbinding";
-    /// <summary>How long a user bind or unbind is reported as pending before the record speaks for itself; an RX outage has held one for about a minute.</summary>
+    /// <summary>How long a user bind or unbind is reported as pending before the record speaks for itself; an RX outage can hold one for many seconds.</summary>
     internal const long PendingOpTimeoutMs = 120_000;
 
     // A bind or unbind the user asked for, by chain MAC hex, until the chain's record echoes it or the timeout passes.
@@ -125,6 +125,11 @@ public sealed partial class Slv3Hub : IDisposable
             if (TryParseMac(key, out var mac) && TryFindRecordLocked(mac, out var record))
             {
                 echoed = op.Op == PendingBinding ? IsBoundToUsLocked(record) : !IsBoundToUsLocked(record);
+                if (echoed && op.Op == PendingBinding && !_owned.ContainsKey(key) && ValidSlot(record.RxType))
+                {
+                    _owned[key] = record.RxType;
+                    _ownedDirty = true;
+                }
                 if (echoed)
                 {
                     ServiceLog.Info($"[lianli-wireless] {(op.Op == PendingBinding ? "bind" : "unbind")} of {key} confirmed after {elapsed} ms: {DescribeBinding(record, _masterMac)}");
@@ -380,6 +385,8 @@ public sealed partial class Slv3Hub : IDisposable
     // Bind frames sent at poll cadence before resends back off, so a record the chain never corrects cannot be spammed.
     internal const int BindBurstSends = 5;
     private const long BindResendBackoffMs = 1_000;
+    /// <summary>Spacing of the manual bind frames to a USB-connected unit, which is given up on at <see cref="PendingOpTimeoutMs"/>.</summary>
+    internal const long WiredBindResendMs = 3_000;
     private const long BindResendBackoffMaxMs = 15_000;
     private int _rxBusyStreak;
     private byte[]? _firstBusyReply;
@@ -1724,6 +1731,20 @@ public sealed partial class Slv3Hub : IDisposable
                 return;
             }
         }
+        if (intent.Manual && IsWiredOwned(key))
+        {
+            if (_nowMs() - intent.StartedMs >= PendingOpTimeoutMs)
+            {
+                _intents.Remove(key);
+                ServiceLog.Warn($"[lianli-wireless] bind of {key} not confirmed, giving up (the USB-connected unit never took our master)");
+                return;
+            }
+            if (_nowMs() < intent.NextSendMs)
+            {
+                return;
+            }
+            intent.NextSendMs = _nowMs() + WiredBindResendMs;
+        }
         // Unlocked, only a manual Bind or a channel-only move of a chain already ours is carried on, never against a live foreign master.
         if (!_lockBound && (IsLiveMasterLocked(record.MasterMac)
             || !(intent.Manual || (IsBoundToUsLocked(record) && record.RxType == intent.TargetRx))))
@@ -2692,6 +2713,7 @@ public sealed partial class Slv3Hub : IDisposable
                 var dropId = Slv3LightingDeviceProvider.DeviceIdFor(key);
                 Nexus.Service.Diagnostics.DeviceIncidentLog.Shared.Disconnect(dropId, "chain dropped");
                 ReleaseIdentifyLocked(key, "chain drop");
+                _userOps.Remove(key);
                 _knownChains.Remove(key);
                 _intents.Remove(key);
                 _unboundHere.Remove(key);
@@ -3157,15 +3179,20 @@ public sealed partial class Slv3Hub : IDisposable
             _userUnbound.Remove(key);
             _unboundHere.Remove(key);
             _deferredUnbinds.Remove(key);
-            _intents[key] = new BindIntent(slot) { Manual = true };
+            var wired = IsWiredOwned(key);
+            _intents[key] = new BindIntent(slot) { Manual = true, StartedMs = _nowMs(), NextSendMs = wired ? _nowMs() + WiredBindResendMs : 0 };
             if (alreadyBound)
             {
                 return true;
             }
             _userOps[key] = (PendingBinding, _nowMs());
             ServiceLog.Info($"[lianli-wireless] bind requested for {key} on slot {slot}{(IsWiredOwned(key) ? " (unit is connected by USB)" : "")}");
-            _owned[key] = slot;
-            _ownedDirty = true;
+            if (!wired)
+            {
+                // A USB-connected unit joins the saved list only once its record echoes the bind.
+                _owned[key] = slot;
+                _ownedDirty = true;
+            }
             _lastBindMs = _nowMs();
             SendBindFrameLocked(existing, slot, unbind: false);
         }
@@ -4148,6 +4175,7 @@ public sealed partial class Slv3Hub : IDisposable
         public bool Confirmed;
         public long CountedPoll = -1;
         public long NextSendMs;
+        public long StartedMs;
     }
 
     // An unbind waiting for the chain's wireless theme switch to clear; ClearedAtMs is when the bits were seen cleared and the config save went out.

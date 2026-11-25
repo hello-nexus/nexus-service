@@ -88,7 +88,7 @@ public sealed class Slv3FanInfo
     public bool UsbPresent { get; set; }
     /// <summary>The fan is plugged in over USB and driven by its own handler, so the radio only lists it: no Bind, steering, lighting or PWM.</summary>
     public bool WiredOwned { get; set; }
-    /// <summary>"binding" or "unbinding" from the user's request until the chain's record echoes it (or two minutes pass); empty otherwise.</summary>
+    /// <summary>"binding" or "unbinding" from the user's request until the chain's record echoes it (or the pending timeout passes); empty otherwise.</summary>
     public string Pending { get; set; } = "";
     /// <summary>The fan is plugged in over USB and bound to this PC's radio: the radio drives its lighting and fan speed.</summary>
     public bool RadioDrivesUsb { get; set; }
