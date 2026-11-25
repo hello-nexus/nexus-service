@@ -93,6 +93,10 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     private readonly Func<long> _nowTicks;
     private readonly FeatureGates _gates;
+#if DEV_TOOLS
+    private readonly Slv3LabKnobSource _lab = new();
+    private int _labGridFrames = WindowFrames;
+#endif
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -176,6 +180,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
         var minPushIntervalMs = MinPushIntervalMs * Math.Max(1, structures.Count);
         var nowMs = UtcNowMs();
+#if DEV_TOOLS
+        RefreshLab(nowMs);
+#endif
         AdvanceSharedWindow(nowMs);
         _rollingIds.Clear();
         _planChains = 0;
@@ -272,6 +279,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // first) keeps later ticks inside a window's join range.
         if (pushMac is not null)
         {
+#if DEV_TOOLS
+            if (_lab.Current != Slv3LabKnobs.Default) ServiceLog.Info($"[slv3-lab] live chain={pushMac} leds={pushLeds} {LabStamp()}");
+#endif
             var pushed = _hub.SendRgbFrame(pushMac, _pushBuffer.AsSpan(0, pushLeds), PassThroughBrightnessPercent, IntervalMs, out var sentEffectIndexHex);
             // Stamped on failure too, or a failing chain stays oldest and takes every slot.
             _lastPushTicks[pushMac] = nowTicks;
@@ -384,6 +394,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public double LastUploadStartMs;
         public bool Joinable;
         public int UploadStretch;
+        public int UploadFrames;
+#if DEV_TOOLS
+        public int ExtraPending;
+        public bool UploadIsExtra;
+#endif
         public int DiagUploads;
         public double DiagUpMsSum;
         public double DiagUpMsMax;
@@ -473,6 +488,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         if (_planChains == 0) return;
         var (stretch, cycleMs) = WindowPlan(_planChains, _planLeds);
+#if DEV_TOOLS
+        if (_lab.Current.Stretch is { } forced) stretch = forced;
+#endif
         _windowRequestPeriodMs = cycleMs / _planChains;
         if (stretch >= _windowStretch) _stretchDownSinceMs = 0;
         if (stretch == _windowStretch) return;
@@ -550,11 +568,18 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     private double WindowInterval => WindowIntervalTicks * _windowStretch;
 
+    private int Frames =>
+#if DEV_TOOLS
+        _lab.Current.WindowFrames ?? WindowFrames;
+#else
+        WindowFrames;
+#endif
+
     /// <summary>Wall-clock ms at the middle of each window frame, first frame <paramref name="firstFrame"/>.</summary>
-    internal static long[] WindowTickTimes(double a, double b, long firstFrame, double intervalTicks = WindowIntervalTicks)
+    internal static long[] WindowTickTimes(double a, double b, long firstFrame, double intervalTicks = WindowIntervalTicks, int frames = WindowFrames)
     {
-        var ticks = new long[WindowFrames];
-        for (var k = 0; k < WindowFrames; k++)
+        var ticks = new long[frames];
+        for (var k = 0; k < frames; k++)
         {
             ticks[k] = (long)Math.Round(((firstFrame + k + 0.5) * intervalTicks - a) / b);
         }
@@ -562,7 +587,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     }
 
     /// <summary>The loop slot a chain plays for absolute frame <paramref name="frame"/>.</summary>
-    internal static int WindowSlot(long frame) => (int)(frame % WindowFrames);
+    internal static int WindowSlot(long frame, int frames = WindowFrames) => (int)(frame % frames);
 
     private bool TryCurrentFrame(double nowMs, out long frame)
     {
@@ -634,7 +659,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         _windowPending = null;
         if (req.Frames is null || !TryCurrentFrame(nowMs, out var current)
-            || current - _windowPendingFirstFrame > WindowFrames / 2)
+            || current - _windowPendingFirstFrame > Frames / 2)
         {
             _nextWindowRequestMs = 0;
             return;
@@ -657,7 +682,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         if (_windowPending is not null || nowMs < _nextWindowRequestMs) return;
         // A render no chain has taken yet stays up until it leaves its join range.
         if (_windowFrames is not null && _windowStartedId != _windowId
-            && TryCurrentFrame(nowMs, out var playing) && playing < _windowFirstFrame + WindowFrames / 2)
+            && TryCurrentFrame(nowMs, out var playing) && playing < _windowFirstFrame + Frames / 2)
         {
             return;
         }
@@ -669,7 +694,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _nextWindowRequestMs = nowMs + _windowRequestPeriodMs;
         var ids = new string[_rollingIds.Count];
         _rollingIds.CopyTo(ids);
-        _windowPending = _engine.RequestAhead(ids, WindowTickTimes(a, b, _windowPendingFirstFrame, WindowInterval));
+        _windowPending = _engine.RequestAhead(ids, WindowTickTimes(a, b, _windowPendingFirstFrame, WindowInterval, Frames));
     }
 
     private void DropSharedWindow()
@@ -688,6 +713,18 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         if (st.Upload is not { IsCompleted: true } upload) return;
         st.Upload = null;
+#if DEV_TOOLS
+        if (st.UploadIsExtra)
+        {
+            st.UploadIsExtra = false;
+            st.UploadIsResend = false;
+            if (upload.IsCompletedSuccessfully && upload.Result && st.UploadFrames == Frames)
+            {
+                st.WindowIdxHex = _hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var extraLanded) ? extraLanded.IdxHex : st.WindowIdxHex;
+            }
+            return;
+        }
+#endif
         if (st.UploadIsResend)
         {
             st.UploadIsResend = false;
@@ -707,19 +744,23 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             st.DiagUploads++;
             st.DiagUpMsSum += upMs;
             st.DiagUpMsMax = Math.Max(st.DiagUpMsMax, upMs);
-            if (st.UploadStretch == _windowStretch && TryCurrentFrame(doneMs, out var landedAt))
+            var sameGrid = st.UploadStretch == _windowStretch && st.UploadFrames == Frames;
+            if (sameGrid && TryCurrentFrame(doneMs, out var landedAt))
             {
                 var land = st.UploadFirstFrame - landedAt;
                 st.DiagLandMin = Math.Min(st.DiagLandMin, land);
                 st.DiagLandMax = Math.Max(st.DiagLandMax, land);
                 if (land < 0) st.DiagLate++;
             }
-            st.WindowFirstFrame = st.UploadStretch == _windowStretch ? st.UploadFirstFrame : long.MinValue;
+            st.WindowFirstFrame = sameGrid ? st.UploadFirstFrame : long.MinValue;
             st.WindowPayload = st.UploadPayload;
             st.WindowLedCount = st.UploadLedCount;
             st.WindowIdxHex = _hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var landed) ? landed.IdxHex : "";
             // The chain now plays the window, so the next live frame must go out even if it matches the last one sent.
             _lastSent.Remove(macHex);
+#if DEV_TOOLS
+            st.ExtraPending = _lab.Current.Targets(macHex) ? _lab.Current.ForcedExtraUploads : 0;
+#endif
         }
         else
         {
@@ -752,6 +793,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         }
         st.Visited = true;
         CollectUpload(macHex, st);
+#if DEV_TOOLS
+        if (_lab.Current.LivePath && _lab.Current.Targets(macHex))
+        {
+            st.WindowFirstFrame = long.MinValue;
+            st.Joinable = false;
+            return false;
+        }
+#endif
         var ids = new List<string>(zones.Count);
         foreach (var z in zones)
         {
@@ -790,7 +839,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && MayJoinWindow(ResendInFlight())
             && TryCurrentFrame(nowMs, out var joinFrame)
             && joinFrame >= _windowFirstFrame + WindowStartSafetyFrames
-            && joinFrame < _windowFirstFrame + WindowFrames / 2
+            && joinFrame < _windowFirstFrame + Frames / 2
             && IsNextToUpload(st))
         {
             st.UploadedWindowId = _windowId;
@@ -805,16 +854,17 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
                 st.UploadStretch = _windowStretch;
                 var interval = WindowInterval;
                 // Off the writer thread, so other chains keep streaming while the upload runs.
-                st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent));
+                st.UploadFrames = Frames;
+                st.Upload = StartUpload(macHex, "fresh", st.UploadFirstFrame, payload, ledCount, interval, null);
                 return true;
             }
         }
         var covered = st.WindowFirstFrame != long.MinValue
             && TryCurrentFrame(nowMs, out var current)
             && current >= st.WindowFirstFrame
-            && current < st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames;
+            && current < st.WindowFirstFrame + Frames - WindowWrapMarginFrames;
         if (!covered) st.DiagGapTicks++;
-        else TryResend(macHex, st, nowMs);
+        else if (!TryExtraUpload(macHex, st, nowMs)) TryResend(macHex, st, nowMs);
         return covered;
     }
 
@@ -824,7 +874,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && _hub.DeviceWatch.TryGetWindow(macHex, _hub.NowMs, out var w)
             && w.IdxHex == st.WindowIdxHex
             && TryCurrentFrame(nowMs, out var current)
-            && Slv3DeviceWatch.ResendDue(w, current, st.WindowFirstFrame, WindowFrames);
+            && Slv3DeviceWatch.ResendDue(w, current, st.WindowFirstFrame, Frames);
     }
 
     private bool ResendInFlight()
@@ -846,6 +896,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // At most two re-sends per window and each starts only when the air is otherwise idle, so fresh uploads are delayed by one upload at most.
     private void TryResend(string macHex, ChainRolling st, double nowMs)
     {
+#if DEV_TOOLS
+        if (!_lab.Current.Resend) return;
+#endif
         if (!ResendDue(macHex, st, nowMs)) return;
         var fresh = _windowFrames is not null && _windowStartedId != _windowId;
         var otherBusy = false;
@@ -867,8 +920,83 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _hub.DeviceWatch.NoteResent(macHex, _hub.NowMs);
         st.UploadIsResend = true;
         _healthResends++;
-        st.Upload = Task.Run(() => _hub.SendRgbWindowAsync(macHex, payload, ledCount, WindowFrames, interval, PassThroughBrightnessPercent, idx));
+        st.Upload = StartUpload(macHex, "resend", st.WindowFirstFrame, payload, ledCount, interval, idx);
     }
+
+    private Task<bool> StartUpload(string macHex, string kind, long firstFrame, byte[] payload, int ledCount, double interval, string? reuseIndexHex)
+    {
+        var frames = Frames;
+        // Off the writer thread, so other chains keep streaming while the upload runs.
+        return Task.Run(async () =>
+        {
+#if DEV_TOOLS
+            var t0 = Environment.TickCount64;
+            ServiceLog.Info($"[slv3-lab] up start chain={macHex} kind={kind} win={firstFrame} frames={frames} stretch={_windowStretch} leds={ledCount} {LabStamp()}");
+            var ok = false;
+            try
+            {
+                ok = await _hub.SendRgbWindowAsync(macHex, payload, ledCount, frames, interval, PassThroughBrightnessPercent, reuseIndexHex).ConfigureAwait(false);
+            }
+            finally
+            {
+                ServiceLog.Info($"[slv3-lab] up end chain={macHex} kind={kind} ok={ok} durMs={Environment.TickCount64 - t0} {LabStamp()}");
+            }
+            return ok;
+#else
+            return await _hub.SendRgbWindowAsync(macHex, payload, ledCount, frames, interval, PassThroughBrightnessPercent, reuseIndexHex).ConfigureAwait(false);
+#endif
+        });
+    }
+
+#if DEV_TOOLS
+    private static string LabStamp()
+    {
+        var utc = DateTime.UtcNow;
+        return $"utc={utc:HH:mm:ss.fff} local={utc.ToLocalTime():HH:mm:ss.fff}";
+    }
+
+    private void RefreshLab(double nowMs)
+    {
+        if (!_lab.Refresh(nowMs, out var invalid))
+        {
+            if (invalid) ServiceLog.Warn($"[slv3-lab] knobs file invalid, keeping previous path={_lab.FilePath} {LabStamp()}");
+            return;
+        }
+        var k = _lab.Current;
+        ServiceLog.Info($"[slv3-lab] knobs {k} {LabStamp()}");
+        var frames = k.WindowFrames ?? WindowFrames;
+        if (frames != _labGridFrames)
+        {
+            // Frame numbers and slots are in units of the old window length.
+            _labGridFrames = frames;
+            DropSharedWindow();
+            foreach (var st in _rolling.Values) st.WindowFirstFrame = long.MinValue;
+        }
+    }
+
+    // Sends the current window again to a chain that already has it, to see whether receiving alone disturbs playback.
+    private bool TryExtraUpload(string macHex, ChainRolling st, double nowMs)
+    {
+        if (st.ExtraPending <= 0) return false;
+        if (st.Upload is not null || st.WindowPayload is null || st.WindowFirstFrame == long.MinValue) return false;
+        var fresh = _windowFrames is not null && _windowStartedId != _windowId;
+        var otherBusy = false;
+        foreach (var other in _rolling.Values)
+        {
+            if (!ReferenceEquals(other, st)) otherBusy |= other.Upload is { IsCompleted: false };
+        }
+        if (!MayStartResend(fresh, otherBusy, false)) return false;
+        st.ExtraPending--;
+        st.UploadIsResend = true;
+        st.UploadIsExtra = true;
+        st.UploadFrames = Frames;
+        var idx = _lab.Current.ExtraSameIndex ? st.WindowIdxHex : null;
+        st.Upload = StartUpload(macHex, "extra", st.WindowFirstFrame, st.WindowPayload, st.WindowLedCount, WindowInterval, idx);
+        return true;
+    }
+#else
+    private static bool TryExtraUpload(string macHex, ChainRolling st, double nowMs) => false;
+#endif
 
     private bool IsNextToUpload(ChainRolling chain)
     {
@@ -906,12 +1034,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // Outside its window's coverage the chain was already streaming live frames.
         if (st.WindowFirstFrame == long.MinValue || st.WindowPayload is not { } payload
             || !TryCurrentFrame(UtcNowMs(), out var current)
-            || current < st.WindowFirstFrame || current >= st.WindowFirstFrame + WindowFrames - WindowWrapMarginFrames)
+            || current < st.WindowFirstFrame || current >= st.WindowFirstFrame + Frames - WindowWrapMarginFrames)
         {
             return;
         }
         var colors = new RgbColor[st.WindowLedCount];
-        var o = WindowSlot(current) * st.WindowLedCount * 3;
+        var o = WindowSlot(current, Frames) * st.WindowLedCount * 3;
         for (var i = 0; i < colors.Length; i++, o += 3)
         {
             colors[i] = new RgbColor(payload[o], payload[o + 1], payload[o + 2]);
@@ -939,7 +1067,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     {
         payload = Array.Empty<byte>();
         ledCount = 0;
-        for (var k = 0; k < WindowFrames; k++)
+        for (var k = 0; k < Frames; k++)
         {
             SegmentFrameComposer.EnsureBuffers(structure, ref _segmentBuffers);
             SegmentFrameComposer.Compose(
@@ -949,9 +1077,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             if (payload.Length == 0)
             {
                 ledCount = total;
-                payload = new byte[WindowFrames * total * 3];
+                payload = new byte[Frames * total * 3];
             }
-            var slot = WindowSlot(_windowFirstFrame + k);
+            var slot = WindowSlot(_windowFirstFrame + k, Frames);
             for (var i = 0; i < total; i++)
             {
                 var o = (slot * total + i) * 3;
