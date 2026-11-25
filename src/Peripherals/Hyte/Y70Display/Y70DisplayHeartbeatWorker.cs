@@ -28,7 +28,17 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private bool _caseHandled;
     private int _caseAbsentTicks;
 
+    // The helper holds display writes for a settle window after it starts and may keep one for retry, only
+    // re-sending it on the next write. One delayed reapply after the boot applies is that next write.
+    private static readonly TimeSpan DefaultSettleDelay = TimeSpan.FromSeconds(8);
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly object _settleLock = new();
+    private CancellationTokenSource? _settleCts;
+    private bool _stopped;
     private volatile bool _detected;
+
+    /// <summary>The delayed brightness reapply scheduled by the latest detect or helper-connect edge; completes when it ran or was dropped.</summary>
+    public Task? PendingSettledReapply { get; private set; }
     // Serializes the detect-edge applies with OnHelperConnected, which runs on a pool thread.
     private readonly object _applyLock = new();
 
@@ -43,8 +53,9 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
     private int _absentTicks;
     private const int DetectDropTicks = 3;
 
-    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null, Nexus.Service.Lighting.Y70GtLightingDeviceProvider? lighting = null)
+    public Y70DisplayHeartbeatWorker(Y70DisplayHub hub, HardwarePresence presence, DeviceControlGate gate, IY70Provider y70, Y70CaseAssigner? caseAssigner = null, Nexus.Service.Lighting.Y70GtLightingDeviceProvider? lighting = null, Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
+        _delay = delay ?? Task.Delay;
         _lighting = lighting;
         _caseAssigner = caseAssigner;
         _hub = hub;
@@ -84,11 +95,66 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
                 _y70.ApplyEffectiveOrientation();
                 _y70.ReapplyBrightness();
             }
+            ScheduleSettledReapply();
         }
         catch (Exception ex)
         {
             ServiceLog.Error($"[y70-display-heartbeat] helper-connect reapply failed: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    // At most one reapply is pending: each edge cancels the previous one and restarts the delay.
+    private void ScheduleSettledReapply()
+    {
+        CancellationToken token;
+        lock (_settleLock)
+        {
+            if (_stopped)
+            {
+                return;
+            }
+            _settleCts?.Cancel();
+            _settleCts = new CancellationTokenSource();
+            token = _settleCts.Token;
+        }
+        PendingSettledReapply = RunSettledReapplyAsync(token);
+    }
+
+    private async Task RunSettledReapplyAsync(CancellationToken token)
+    {
+        try
+        {
+            await _delay(DefaultSettleDelay, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        if (token.IsCancellationRequested || !Detected || !_gate.IsEnabled(Y70Handler.HandlerId))
+        {
+            return;
+        }
+        try
+        {
+            lock (_applyLock)
+            {
+                _y70.ReapplyBrightness();
+            }
+        }
+        catch (Exception ex)
+        {
+            ServiceLog.Error($"[y70-display-heartbeat] settled reapply failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    public override Task StopAsync(CancellationToken cancellationToken)
+    {
+        lock (_settleLock)
+        {
+            _stopped = true;
+            _settleCts?.Cancel();
+        }
+        return base.StopAsync(cancellationToken);
     }
 
     // Once per detection event, independent of the control gate: assigning the case is not device control.
@@ -151,6 +217,7 @@ public sealed class Y70DisplayHeartbeatWorker : BackgroundService
                     _y70.ApplyEffectiveOrientation();
                     _y70.ReapplyBrightness();
                 }
+                ScheduleSettledReapply();
                 ServiceLog.Info("[y70-display-heartbeat] newly detected; orientation and brightness re-applied");
             }
         }

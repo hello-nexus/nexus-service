@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using Nexus.Service.Cloud;
 using Nexus.Service.Tests.Cloud;
 using Nexus.Service.Devices;
@@ -260,6 +261,113 @@ public class Y70DisplayHeartbeatWorkerTests : IDisposable
 
         Assert.Equal(orientationBefore, y70.ApplyCount);
         Assert.Equal(brightnessBefore, y70.BrightnessCount);
+    }
+
+    // Manual clock: each requested delay stays pending until Release, and observes cancellation like Task.Delay.
+    private sealed class ManualDelay
+    {
+        public readonly List<TaskCompletionSource> Pending = new();
+
+        public Task Wait(TimeSpan _, System.Threading.CancellationToken token)
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            token.Register(() => tcs.TrySetCanceled(token));
+            Pending.Add(tcs);
+            return tcs.Task;
+        }
+
+        public void ReleaseAll() { foreach (var t in Pending) t.TrySetResult(); }
+    }
+
+    private static (Y70DisplayHeartbeatWorker Worker, DeviceControlGate Gate) BuildSettled(FakeY70Provider y70, ManualDelay delay)
+    {
+        var hub = new Y70DisplayHub(
+            new StubY70DisplayPortDiscovery(),
+            _ => throw new InvalidOperationException("Y70 transport is not expected in these tests"));
+        var gate = new DeviceControlGate(new InMemoryConfigStore());
+        var worker = new Y70DisplayHeartbeatWorker(
+            hub, new HardwarePresence(new EmptyUsbEnumerator()), gate, y70, delay: delay.Wait);
+        return (worker, gate);
+    }
+
+    [Fact]
+    public async Task Detect_schedules_one_delayed_brightness_reapply_after_the_delay()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+
+        worker.Tick();
+        Assert.Equal(1, y70.BrightnessCount);
+
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(2, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public async Task Two_close_edges_give_one_delayed_reapply()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+
+        worker.Tick();
+        worker.OnHelperConnected();
+        var latest = worker.PendingSettledReapply!;
+        delay.ReleaseAll();
+        await latest;
+        await Task.Yield();
+
+        // detect (1) + helper connect (1) + a single delayed reapply (1)
+        Assert.Equal(3, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public async Task Delayed_reapply_is_dropped_when_the_device_disappears()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+        worker.Tick();
+        y70.Connected = false;
+        for (var i = 0; i < 5; i++) worker.Tick();
+
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public async Task Delayed_reapply_is_dropped_when_the_control_gate_is_disabled()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, gate) = BuildSettled(y70, delay);
+        worker.Tick();
+        gate.SetEnabled(Y70Handler.HandlerId, false);
+
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.BrightnessCount);
+    }
+
+    [Fact]
+    public async Task Delayed_reapply_is_dropped_when_the_worker_stops_first()
+    {
+        var y70 = new FakeY70Provider { Connected = true };
+        var delay = new ManualDelay();
+        var (worker, _) = BuildSettled(y70, delay);
+        worker.Tick();
+
+        await worker.StopAsync(default);
+        delay.ReleaseAll();
+        await worker.PendingSettledReapply!;
+
+        Assert.Equal(1, y70.BrightnessCount);
     }
 
     [Fact]
