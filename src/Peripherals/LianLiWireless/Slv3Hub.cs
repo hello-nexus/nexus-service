@@ -44,6 +44,12 @@ public sealed partial class Slv3Hub : IDisposable
     // USB-connected units the user asked to bind, until unbound or dropped: a bind that echoes late, after the pending timeout, is still saved.
     private readonly HashSet<string> _userBoundWired = new(StringComparer.Ordinal);
 
+    // Units seen bound to us in this session, so a USB unit that loses its binding to a receiver reset is told apart from one that was never ours.
+    private readonly HashSet<string> _boundSeen = new(StringComparer.Ordinal);
+
+    // USB units whose automatic rebind ran out of time; cleared when the unit is bound, the user binds or unbinds it, or the hub resets.
+    private readonly HashSet<string> _rebindGaveUp = new(StringComparer.Ordinal);
+
     // USB-owned units seen not bound to us, so the switch to USB ownership is noted once.
     private readonly HashSet<string> _wiredNoted = new(StringComparer.Ordinal);
 
@@ -194,18 +200,58 @@ public sealed partial class Slv3Hub : IDisposable
                 _owned[key] = record.RxType;
                 _ownedDirty = true;
             }
+            if (IsBoundToUsLocked(record))
+            {
+                _boundSeen.Add(key);
+                _rebindGaveUp.Remove(key);
+            }
             if (IsWiredOwned(key) && !IsBoundToUsLocked(record))
             {
                 if (_wiredNoted.Add(key))
                 {
                     ReleaseIdentifyLocked(key, "USB ownership");
                 }
+                RebindWiredLocked(key, record);
             }
             else
             {
                 _wiredNoted.Remove(key);
             }
         }
+    }
+
+    /// <summary>
+    /// A USB unit that was bound to us in this session and now reports no master, as after its receiver was reset or replugged, is
+    /// bound again like a manual bind (resent at the wired pace, given up at the pending timeout). A unit that reports another master was
+    /// bound there on purpose and is left alone, as is one the user unbound or one this session never saw bound to us.
+    /// </summary>
+    private void RebindWiredLocked(string key, Slv3DeviceRecord record)
+    {
+        if (!_boundSeen.Contains(key) || !(_owned.ContainsKey(key) || _userBoundWired.Contains(key))
+            || !Slv3Protocol.MacIsZero(record.MasterMac) || _userUnbound.Contains(key)
+            || _rebindGaveUp.Contains(key) || _deferredUnbinds.ContainsKey(key)
+            || (_intents.TryGetValue(key, out var pending) && (pending.Unbinding || pending.Manual)))
+        {
+            return;
+        }
+        if (BindCapReachedLocked(key, record) is { } capError)
+        {
+            _rebindGaveUp.Add(key);
+            ServiceLog.Warn($"[lianli-wireless] not rebinding {key} after its USB receiver reset: {capError}");
+            return;
+        }
+        var slot = OwnedSlotOrUnusedLocked(key);
+        if (!ValidSlot(slot))
+        {
+            _rebindGaveUp.Add(key);
+            ServiceLog.Warn($"[lianli-wireless] not rebinding {key} after its USB receiver reset: no free slot");
+            return;
+        }
+        _unboundHere.Remove(key);
+        _intents[key] = new BindIntent(slot) { Manual = true, StartedMs = _nowMs() };
+        _userOps[key] = (PendingBinding, _nowMs());
+        _userBoundWired.Add(key);
+        ServiceLog.Info($"[lianli-wireless] rebinding {key} to slot {slot}: the USB unit reports no master after a receiver reset");
     }
 
     /// <summary>A wired fan that is being released from the radio: the only thing reconcile does for it.</summary>
@@ -790,6 +836,8 @@ public sealed partial class Slv3Hub : IDisposable
         _deferredUnbinds.Clear();
         _userOps.Clear();
         _userBoundWired.Clear();
+        _boundSeen.Clear();
+        _rebindGaveUp.Clear();
         _wiredNoted.Clear();
         _lastIssuedSeq.Clear();
         _rxAbsentSinceMs = 0;
@@ -1741,6 +1789,7 @@ public sealed partial class Slv3Hub : IDisposable
             if (_nowMs() - intent.StartedMs >= PendingOpTimeoutMs)
             {
                 _intents.Remove(key);
+                _rebindGaveUp.Add(key);
                 ServiceLog.Warn($"[lianli-wireless] bind of {key} not confirmed, giving up (the USB-connected unit never took our master)");
                 return;
             }
@@ -3185,6 +3234,7 @@ public sealed partial class Slv3Hub : IDisposable
             _userUnbound.Remove(key);
             _unboundHere.Remove(key);
             _deferredUnbinds.Remove(key);
+            _rebindGaveUp.Remove(key);
             var wired = IsWiredOwned(key);
             _intents[key] = new BindIntent(slot) { Manual = true, StartedMs = _nowMs(), NextSendMs = wired ? _nowMs() + WiredBindResendMs : 0 };
             if (alreadyBound)
@@ -3312,6 +3362,8 @@ public sealed partial class Slv3Hub : IDisposable
     private void PerformUnbindLocked(string key, string macHex, Slv3DeviceRecord? existing)
     {
         _userBoundWired.Remove(key);
+        _boundSeen.Remove(key);
+        _rebindGaveUp.Remove(key);
         _userOps[key] = (PendingUnbinding, _userOps.TryGetValue(key, out var begun) && begun.Op == PendingUnbinding ? begun.StartedMs : _nowMs());
         ReleaseIdentifyLocked(key, "unbind");
         _userUnbound.Add(key);
