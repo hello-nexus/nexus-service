@@ -12,6 +12,8 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
     {
         private int _pushes;
         public System.Collections.Concurrent.ConcurrentBag<int> PushedAddresses { get; } = new();
+        public System.Collections.Concurrent.ConcurrentBag<int> ModeSetAddresses { get; } = new();
+        public System.Collections.Concurrent.ConcurrentBag<int> ResizedAddresses { get; } = new();
 
         public bool Connected { get; set; } = true;
         public bool IsConnected => Connected;
@@ -28,10 +30,10 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
             (await GetDevicesAsync(ct)).Select(d => d.Address).ToList();
         public Task<bool> RescanAsync(CancellationToken ct = default) => Task.FromResult(true);
         public Task<bool> SetSettingsAsync(string key, string valueJson, CancellationToken ct = default) => Task.FromResult(true);
-        public Task<bool> TryConnectAsync(CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> TryConnectAsync(CancellationToken ct = default) { Connected = true; return Task.FromResult(true); }
         public Task DisconnectAsync() => Task.CompletedTask;
         public Task<IReadOnlyList<RgbDevice>> GetDevicesAsync(CancellationToken ct = default) => Task.FromResult(Devices);
-        public Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default) => Task.CompletedTask;
+        public Task SetDirectModeAsync(RgbDevice device, CancellationToken ct = default) { ModeSetAddresses.Add(device.Address); return Task.CompletedTask; }
 
         public Task PushFrameAsync(int address, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default)
         {
@@ -42,7 +44,7 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
 
         public Task SetOffAsync(int address, int ledCount, CancellationToken ct = default) => Task.CompletedTask;
         public Task PushZoneFrameAsync(int address, int zoneIndex, ReadOnlyMemory<RgbColor> colors, CancellationToken ct = default) => Task.CompletedTask;
-        public Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default) => Task.CompletedTask;
+        public Task ResizeZoneAsync(int address, int zoneIndex, int newSize, CancellationToken ct = default) { ResizedAddresses.Add(address); return Task.CompletedTask; }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -196,6 +198,93 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
         var written = _controller.PushedAddresses.Distinct().ToArray();
         Assert.Equal(new[] { DramAddress }, written);
         Assert.True(_controller.PushedAddresses.Count(a => a == DramAddress) >= 3);
+    }
+
+    private SleepBlackoutCoordinator NewCoordinator(bool sleepBlackout)
+    {
+        var store = new TestableConfigStore(Path.Combine(_tempDir, "coordinator-settings.json"));
+        store.Update(s => s.Lighting.SleepBlackout = sleepBlackout);
+        return new SleepBlackoutCoordinator(_engine, store, _bridge);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Host_shutdown_alone_starts_the_skip_even_with_sleep_blackout_off(bool sleepBlackout)
+    {
+        await ActivateAsync();
+        var coordinator = NewCoordinator(sleepBlackout);
+
+        coordinator.OnHostShutdown();
+        while (_controller.PushedAddresses.TryTake(out _)) { }
+        PaintAndPush(80);
+        PaintAndPush(40);
+
+        Assert.Equal(new[] { DramAddress }, _controller.PushedAddresses.Distinct().ToArray());
+    }
+
+    [Fact]
+    public async Task A_reordered_device_list_moves_the_skip_with_the_gigabyte_devices()
+    {
+        await ActivateAsync();
+        _bridge.BeginShutdownBlank();
+
+        // The daemon re-detects and numbers the same hardware differently.
+        var d = _controller.Devices;
+        _controller.Devices = new[]
+        {
+            Clone(d[2], 10),
+            Clone(d[0], 11),
+            Clone(d[1], 12),
+        };
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTime.UtcNow < deadline && !(_bridge.Devices.Count == 3 && _bridge.Devices[0].Name == "DRAM"))
+        {
+            await Task.Delay(50);
+        }
+        Assert.Equal("DRAM", _bridge.Devices[0].Name);
+        while (_engine.Devices.Length < 3 || _bridge.PhysicalBufferCount < 3)
+        {
+            await Task.Delay(20);
+        }
+        while (_controller.PushedAddresses.TryTake(out _)) { }
+
+        PaintAndPush(90);
+        PaintAndPush(20);
+        var report = await _bridge.BlackoutSettledAsync(Until(5));
+
+        Assert.Equal(new[] { 10 }, _controller.PushedAddresses.Distinct().ToArray());
+        Assert.Equal("pushed 1/1", report.ToString());
+    }
+
+    private static RgbDevice Clone(RgbDevice d, int address) => new()
+    {
+        Index = address, Address = address, Name = d.Name, LedCount = d.LedCount, Vendor = d.Vendor, Location = d.Location,
+    };
+
+    [Fact]
+    public async Task A_reconnect_after_the_shutdown_blank_sends_no_mode_set_or_resize_to_the_gigabyte_devices()
+    {
+        await ActivateAsync();
+        _bridge.BeginShutdownBlank();
+        while (_controller.ModeSetAddresses.TryTake(out _)) { }
+
+        _bridge.RequestZoneResize(MotherboardAddress, 0, 10);
+        _bridge.RequestZoneResize(GpuAddress, 0, 10);
+        _bridge.RequestZoneResize(DramAddress, 0, 10);
+        _controller.Connected = false;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTime.UtcNow < deadline && !_controller.ModeSetAddresses.Contains(DramAddress))
+        {
+            _bridge.OnFrame(Wire(_engine.Devices));
+            await Task.Delay(100);
+        }
+
+        Assert.Contains(DramAddress, _controller.ModeSetAddresses);
+        Assert.DoesNotContain(MotherboardAddress, _controller.ModeSetAddresses);
+        Assert.DoesNotContain(GpuAddress, _controller.ModeSetAddresses);
+        Assert.DoesNotContain(MotherboardAddress, _controller.ResizedAddresses);
+        Assert.DoesNotContain(GpuAddress, _controller.ResizedAddresses);
     }
 
     [Fact]

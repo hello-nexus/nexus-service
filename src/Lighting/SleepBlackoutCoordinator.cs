@@ -178,7 +178,11 @@ public sealed class SleepBlackoutCoordinator
     /// stop (tray quit, /service/stop, an OTA install, a GPU-change restart)
     /// leaves lighting alone - the service comes back and repaints.
     /// </summary>
-    public void OnHostShutdown() => BlankOut(ShutdownBudget, "shutdown", settleFirst: true);
+    public void OnHostShutdown()
+    {
+        _bridge?.BeginShutdownBlank();
+        BlankOut(ShutdownBudget, "shutdown", settleFirst: true);
+    }
 
     /// <summary>
     /// Call when the session locks. Unlike every other path here nothing is
@@ -385,10 +389,6 @@ public sealed class SleepBlackoutCoordinator
                 }
             }
 
-            if (reason == "shutdown")
-            {
-                _bridge?.BeginShutdownBlank();
-            }
             var deadline = DateTime.UtcNow + budget;
             // A hold already engaged (a second suspend notification, or a
             // shutdown that follows one) is dark or on its way there; re-running
