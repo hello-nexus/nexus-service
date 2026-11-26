@@ -379,11 +379,31 @@ public sealed partial class Slv3Hub : IDisposable
     private long _nextRxRecoveryMs;
 
     // A reply opening with 0 is the RX's "no device list this cycle". It does
-    // this on its own every ~17 s for a few seconds and recovers without help,
-    // so only a busy spell this long is treated as a wedge. A wedge gets a fresh
-    // RX handle, never UsbResetAnother: the reset re-enumerates the RX, a Windows
-    // device sound each time.
+    // this on its own every ~17 s for a few seconds and recovers without help.
+    // Longer spells grow over a session and a fresh RX handle never ended one,
+    // while the TX kept working, so a spell is answered by easing the TX (see
+    // TxThrottled) and the handle is reopened only as a last resort once the
+    // spell has run both this many polls and this long. A reopen is never
+    // UsbResetAnother: the reset re-enumerates the RX, a Windows device sound each time.
     private const int RxBusyPollsBeforeReset = 60;
+    internal const long RxBusyResetAfterMs = 600_000;
+    // A busy spell this long eases the TX: shorter ones are the RX's own periodic gap.
+    internal const long RxBusyThrottleAfterMs = 3_000;
+    // Spells shorter than this are not logged, and the busy-poll count line is at most once per this period.
+    private const long RxBusyLogAfterMs = 10_000;
+    private const long RxBusyCountLogPeriodMs = 60_000;
+    private long _rxBusySinceMs;
+    private bool _rxBusySpellLogged;
+    private int _rxBusyPollsInSpell;
+    private int _rxBusyPollsInPeriod;
+    private long _rxBusyCountPeriodStartMs;
+    private int _rxBusyTx5sAtStart;
+    private int _rxBusyTx30sAtStart;
+    private int _rxBusyUploadsAtStart;
+    private int _rxBusyThrottledUploads;
+    /// <summary>Where the busy-spell diagnostics go; tests replace it.</summary>
+    internal Action<string> BusyLog { get; set; } = message => ServiceLog.Info(message);
+    private readonly TxPayloadHistory _txPayloads = new();
     // A chain that matched its target and then reports a mismatch must keep reporting it this many polls before a bind goes out, so a one-poll misread never steers it.
     internal const int BindMismatchPollsBeforeSend = 3;
     // Bind frames sent at poll cadence before resends back off, so a record the chain never corrects cannot be spammed.
@@ -394,6 +414,10 @@ public sealed partial class Slv3Hub : IDisposable
     private const long BindResendBackoffMaxMs = 15_000;
     private int _rxBusyStreak;
     private byte[]? _firstBusyReply;
+
+    /// <summary>True while the RX has reported busy for long enough that the TX should ease off: window uploads drop their late passes and send fewer header repeats, and the writer defers uploads a chain does not yet need.</summary>
+    internal bool TxThrottled =>
+        Volatile.Read(ref _rxBusyStreak) > 0 && _nowMs() - Volatile.Read(ref _rxBusySinceMs) >= RxBusyThrottleAfterMs;
 
     // L-Connect MasterDevice.ResetTx: consecutive TX failures (a reopen or a
     // connect attempt that gets no master MAC) -> UsbResetAnother written on the
@@ -522,6 +546,8 @@ public sealed partial class Slv3Hub : IDisposable
     // part goes out twice in the upload and again in data-only late passes; a
     // late header would re-pause playback.
     private const int WindowHeaderRepeats = 8;
+    // While the RX reports busy the header goes out as often as a plain animation upload does.
+    private const int WindowHeaderRepeatsThrottled = RgbHeaderRepeats;
     private const int WindowDataPasses = 2;
     private const int WindowLatePasses = 2;
     private const int WindowLateGapMs = 60;
@@ -532,6 +558,40 @@ public sealed partial class Slv3Hub : IDisposable
     // 2026-10-04).
     private const int LatePassAirBudgetPerSecond = 180;
     private const int AirRateWindowMs = 1000;
+
+    /// <summary>RF payloads handed to the TX per second over the last minute, for the busy-spell diagnostics.</summary>
+    internal sealed class TxPayloadHistory
+    {
+        private const int Buckets = 64;
+        private readonly long[] _second = new long[Buckets];
+        private readonly int[] _count = new int[Buckets];
+
+        public void Add(long nowMs)
+        {
+            var s = nowMs / 1000;
+            var i = (int)(s % Buckets);
+            if (_second[i] != s)
+            {
+                _second[i] = s;
+                _count[i] = 0;
+            }
+            _count[i]++;
+        }
+
+        /// <summary>Payloads in the last <paramref name="seconds"/> whole seconds, this one included.</summary>
+        public int Sum(long nowMs, int seconds)
+        {
+            var now = nowMs / 1000;
+            var total = 0;
+            for (var k = 0; k < seconds && k < Buckets; k++)
+            {
+                var s = now - k;
+                var i = (int)(s % Buckets);
+                if (_second[i] == s) total += _count[i];
+            }
+            return total;
+        }
+    }
     private readonly Queue<long> _airSendsMs = new();
 
     // Seeded so a restart does not replay the index a chain last reported.
@@ -541,6 +601,13 @@ public sealed partial class Slv3Hub : IDisposable
 
     // Window uploads that got their late passes or skipped them for the air budget, per chain since the last take.
     private readonly Dictionary<string, (int Done, int Skipped)> _latePassCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _windowCompressedBytes = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Compressed size of the last window prepared for the chain, 0 when none.</summary>
+    internal int WindowCompressedBytes(string macHex)
+    {
+        lock (_lock) return _windowCompressedBytes.GetValueOrDefault(macHex);
+    }
 
     internal (int Done, int Skipped) TakeLatePassCounts(string macHex)
     {
@@ -2571,7 +2638,7 @@ public sealed partial class Slv3Hub : IDisposable
             return HandleGetDevFailureLocked();
         }
         _rxFailStreak = 0;
-        _rxBusyStreak = 0;
+        EndRxBusySpellLocked();
         _rxRecoveries = 0;
         _nextRxRecoveryMs = 0;
         if (State.LinkStatus == Slv3LinkStatus.Recovering && _tx is { IsOpen: true })
@@ -2822,20 +2889,76 @@ public sealed partial class Slv3Hub : IDisposable
         return keys;
     }
 
-    // The RX answered but has no list: keep the last-known one.
+    // The RX answered but has no list: keep the last-known one. A spell eases the TX
+    // (TxThrottled) and reopens the RX only after it has run RxBusyResetAfterMs.
     private bool HandleRxBusyLocked(byte[] reply)
     {
-        AgeChainsLocked(_nowMs());
-        if (++_rxBusyStreak == 1)
+        var nowMs = _nowMs();
+        AgeChainsLocked(nowMs);
+        if (_rxBusyStreak == 0)
         {
-            _firstBusyReply = reply;
+            BeginRxBusySpellLocked(nowMs, reply);
         }
-        if (_rxBusyStreak < RxBusyPollsBeforeReset)
+        _rxBusyStreak++;
+        _rxBusyPollsInSpell++;
+        _rxBusyPollsInPeriod++;
+        LogRxBusyProgressLocked(nowMs);
+        if (_rxBusyStreak < RxBusyPollsBeforeReset || nowMs - _rxBusySinceMs < RxBusyResetAfterMs)
         {
             return true;
         }
         var first = _firstBusyReply is { } b ? Convert.ToHexString(b, 0, Math.Min(b.Length, Slv3Protocol.UsbPacketSize)) : "";
-        return BeginRxRecoveryLocked($"{RxBusyPollsBeforeReset} consecutive busy GetDev replies (first {first})", resetViaTx: false);
+        return BeginRxRecoveryLocked($"busy GetDev replies for {nowMs - _rxBusySinceMs} ms (first {first})", resetViaTx: false);
+    }
+
+    private void BeginRxBusySpellLocked(long nowMs, byte[] reply)
+    {
+        _firstBusyReply = reply;
+        Volatile.Write(ref _rxBusySinceMs, nowMs);
+        _rxBusySpellLogged = false;
+        _rxBusyPollsInSpell = 0;
+        _rxBusyThrottledUploads = 0;
+        _rxBusyTx5sAtStart = _txPayloads.Sum(nowMs, 5);
+        _rxBusyTx30sAtStart = _txPayloads.Sum(nowMs, 30);
+        _rxBusyUploadsAtStart = _uploadsInFlight;
+        if (_rxBusyCountPeriodStartMs == 0)
+        {
+            _rxBusyCountPeriodStartMs = nowMs;
+        }
+    }
+
+    // The start line waits until the spell outlasts the RX's own periodic gap, and the poll count goes out at most once per period, so a bundle stays readable.
+    private void LogRxBusyProgressLocked(long nowMs)
+    {
+        if (!_rxBusySpellLogged && nowMs - _rxBusySinceMs >= RxBusyLogAfterMs)
+        {
+            _rxBusySpellLogged = true;
+            BusyLog($"[lianli-wireless] rx busy spell start: began {nowMs - _rxBusySinceMs} ms ago, polls={_rxBusyPollsInSpell}, tx payloads in the 5 s / 30 s before it={_rxBusyTx5sAtStart} / {_rxBusyTx30sAtStart}, uploads in flight at start={_rxBusyUploadsAtStart}, now={_uploadsInFlight}");
+        }
+        if (nowMs - _rxBusyCountPeriodStartMs >= RxBusyCountLogPeriodMs)
+        {
+            BusyLog($"[lianli-wireless] rx busy polls={_rxBusyPollsInPeriod} in {nowMs - _rxBusyCountPeriodStartMs} ms, spell ms={nowMs - _rxBusySinceMs}, tx payloads 5 s / 30 s={_txPayloads.Sum(nowMs, 5)} / {_txPayloads.Sum(nowMs, 30)}, uploads in flight={_uploadsInFlight}, throttled uploads={_rxBusyThrottledUploads}");
+            _rxBusyPollsInPeriod = 0;
+            _rxBusyCountPeriodStartMs = nowMs;
+        }
+    }
+
+    // A good reply ends the spell; a spell that was logged at its start gets its end line.
+    private void EndRxBusySpellLocked()
+    {
+        if (_rxBusyStreak == 0)
+        {
+            return;
+        }
+        var nowMs = _nowMs();
+        if (_rxBusySpellLogged)
+        {
+            BusyLog($"[lianli-wireless] rx busy spell end: lasted {nowMs - _rxBusySinceMs} ms, polls={_rxBusyPollsInSpell}, tx payloads 5 s / 30 s={_txPayloads.Sum(nowMs, 5)} / {_txPayloads.Sum(nowMs, 30)}, uploads in flight={_uploadsInFlight}, throttled uploads={_rxBusyThrottledUploads}");
+        }
+        _rxBusyStreak = 0;
+        _rxBusySpellLogged = false;
+        _rxBusyCountPeriodStartMs = 0;
+        _rxBusyPollsInPeriod = 0;
     }
 
     // Only a good reply clears the busy and failure streaks, so an RX that
@@ -3609,7 +3732,11 @@ public sealed partial class Slv3Hub : IDisposable
         finally
         {
             var ok = result == WindowUploadResult.Sent;
-            Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
+            // A size refusal happens before any radio traffic and is the ladder working, not an upload failure.
+            if (result != WindowUploadResult.TooLarge)
+            {
+                Diag.OnUpload(macHex, _nowMs(), Slv3UploadKind.Window, ok, ElapsedMs(startedAt), windowId, ok ? Slv3UploadReason.Ok : outcome.Reason);
+            }
         }
     }
 
@@ -3631,6 +3758,9 @@ public sealed partial class Slv3Hub : IDisposable
             return tooLarge ? WindowUploadResult.TooLarge : WindowUploadResult.Failed;
         }
         var firstPassesWritten = false;
+        // Read once, so one upload is eased or not as a whole.
+        var throttled = TxThrottled;
+        var headerRepeats = throttled ? WindowHeaderRepeatsThrottled : WindowHeaderRepeats;
         BeginUpload();
         try
         {
@@ -3641,7 +3771,7 @@ public sealed partial class Slv3Hub : IDisposable
                     outcome.Reason = SendFailReasonLocked();
                     return WindowUploadResult.Failed;
                 }
-                for (var i = 0; i < WindowHeaderRepeats; i++)
+                for (var i = 0; i < headerRepeats; i++)
                 {
                     if (!SendRfPayloadLocked(channel, rxType, packets[0]))
                     {
@@ -3671,7 +3801,12 @@ public sealed partial class Slv3Hub : IDisposable
             lock (_lock)
             {
                 var late = _latePassCounts.GetValueOrDefault(macHex);
-                if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
+                if (throttled)
+                {
+                    _rxBusyThrottledUploads++;
+                    _latePassCounts[macHex] = (late.Done, late.Skipped + 1);
+                }
+                else if (RecentAirSendsLocked() + lateCost <= LatePassAirBudgetPerSecond)
                 {
                     _latePassCounts[macHex] = (late.Done + 1, late.Skipped);
                     latePasses = WindowLatePasses;
@@ -3782,6 +3917,10 @@ public sealed partial class Slv3Hub : IDisposable
                 return false;
             }
 
+            if (window)
+            {
+                _windowCompressedBytes[macHex] = compressed.Length;
+            }
             effectIndex = window
                 ? NextSafeEffectIndexLocked(record)
                 : Slv3RgbFrame.BuildEffectIndex(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -3928,6 +4067,7 @@ public sealed partial class Slv3Hub : IDisposable
         {
             return false;
         }
+        _txPayloads.Add(_nowMs());
         var sent = true;
         foreach (var frame in Slv3Protocol.BuildUsbSendRf(channel, rxType, payload))
         {
