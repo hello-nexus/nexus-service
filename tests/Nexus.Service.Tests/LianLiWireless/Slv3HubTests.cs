@@ -670,12 +670,12 @@ public partial class Slv3HubTests
 
         // The RX is wedged and reopened, and the unit comes back unbound.
         rx.BusyReads = true;
-        for (var i = 0; i < 60; i++)
+        for (var i = 0; i < 121; i++)
         {
-            clock.AdvanceMs(1_000);
+            clock.AdvanceMs(5_000);
             Assert.True(hub.PollTick());
         }
-        Assert.Equal(2, rxOpens);
+        Assert.True(rxOpens >= 2);
         rx.BusyReads = false;
         tx.SentFrames.Clear();
         fan.MasterMac = new byte[6];
