@@ -2822,6 +2822,12 @@ public partial class Slv3HubTests
         Assert.True(hub.PollTick());
         Assert.True(hub.TxThrottled);
 
+        // Past the pause the TX is on again while the spell goes on: uploads are eased, not refused.
+        clock.AdvanceMs(Slv3BusyPause.PauseMs);
+        Assert.True(hub.PollTick());
+        Assert.True(hub.TxThrottled);
+        Assert.False(hub.TxPaused);
+
         tx.SentFrames.Clear();
         Assert.True(await hub.SendRgbWindowAsync(mac, frames, 40, 30, 53, 100));
         var eased = tx.SentFrames.FindAll(IsRgbPart);
@@ -2844,7 +2850,7 @@ public partial class Slv3HubTests
 
         // The RX's own gap: no lines at all.
         rx.BusyReads = true;
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 3; i++)
         {
             clock.AdvanceMs(1_000);
             Assert.True(hub.PollTick());
@@ -2868,7 +2874,7 @@ public partial class Slv3HubTests
         Assert.True(hub.PollTick());
         Assert.Single(lines, l => l.Contains("rx busy spell end"));
         Assert.Contains("polls=130", lines.Single(l => l.Contains("spell end")));
-        Assert.Equal(4, lines.Count);
+        Assert.Equal(4, lines.Count(l => !l.Contains("rx busy pause")));
 
         // A later short spell stays quiet again.
         rx.BusyReads = true;
@@ -2876,7 +2882,7 @@ public partial class Slv3HubTests
         Assert.True(hub.PollTick());
         rx.BusyReads = false;
         Assert.True(hub.PollTick());
-        Assert.Equal(4, lines.Count);
+        Assert.Equal(4, lines.Count(l => !l.Contains("rx busy pause")));
     }
 
     [Fact]
@@ -2897,6 +2903,119 @@ public partial class Slv3HubTests
         Assert.Equal(2, rxOpens());
         Assert.Single(lines, l => l.Contains("rx busy spell end"));
         Assert.False(hub.TxThrottled);
+    }
+
+    [Fact]
+    public void The_busy_pause_alternates_twenty_seconds_off_and_on_until_the_spell_ends()
+    {
+        var pause = new Slv3BusyPause();
+        long now = 0;
+        Slv3BusyPause.Change Poll(long age) => pause.Update(now, age);
+
+        // Too young a spell: nothing.
+        Assert.Equal(Slv3BusyPause.Change.None, Poll(Slv3BusyPause.PauseAfterSpellMs - 1));
+        Assert.False(pause.IsPaused(now));
+
+        now = 10_000;
+        Assert.Equal(Slv3BusyPause.Change.Started, Poll(Slv3BusyPause.PauseAfterSpellMs));
+        Assert.True(pause.IsPaused(now));
+        now += Slv3BusyPause.PauseMs - 1;
+        Assert.Equal(Slv3BusyPause.Change.None, Poll(30_000));
+        Assert.True(pause.IsPaused(now));
+
+        now += 1;
+        Assert.Equal(Slv3BusyPause.Change.Ended, Poll(30_000));
+        Assert.Equal(Slv3BusyPause.PauseMs, pause.LastPhaseMs);
+        Assert.False(pause.IsPaused(now));
+
+        // TX stays on for its own twenty seconds before the next pause.
+        now += Slv3BusyPause.TxOnMs - 1;
+        Assert.Equal(Slv3BusyPause.Change.None, Poll(50_000));
+        Assert.False(pause.IsPaused(now));
+        now += 1;
+        Assert.Equal(Slv3BusyPause.Change.Started, Poll(50_000));
+        Assert.True(pause.IsPaused(now));
+
+        // The spell ends in the second pause, 5 s after it began.
+        now += 5_000;
+        var ended = pause.EndSpell(now);
+        Assert.True(ended.EverPaused);
+        Assert.Equal("pause", ended.EndedIn);
+        Assert.Equal(5_000, ended.SincePauseStartMs);
+        Assert.False(pause.IsPaused(now));
+        Assert.Equal(Slv3BusyPause.Change.None, Poll(0));
+    }
+
+    [Fact]
+    public void A_pause_expires_on_the_clock_even_when_no_poll_arrives_to_end_it()
+    {
+        var pause = new Slv3BusyPause();
+        Assert.Equal(Slv3BusyPause.Change.Started, pause.Update(1_000, 5_000));
+        Assert.True(pause.IsPaused(1_000 + Slv3BusyPause.PauseMs - 1));
+        Assert.False(pause.IsPaused(1_000 + Slv3BusyPause.PauseMs));
+    }
+
+    [Fact]
+    public void A_spell_that_ends_while_tx_is_on_or_before_any_pause_says_so()
+    {
+        var pause = new Slv3BusyPause();
+        pause.Update(0, 5_000);
+        pause.Update(Slv3BusyPause.PauseMs, 30_000);
+        var inTx = pause.EndSpell(Slv3BusyPause.PauseMs + 4_000);
+        Assert.Equal("TX", inTx.EndedIn);
+        Assert.Equal(Slv3BusyPause.PauseMs + 4_000, inTx.SincePauseStartMs);
+
+        var never = pause.EndSpell(99_000);
+        Assert.False(never.EverPaused);
+        Assert.Equal("TX (never paused)", never.EndedIn);
+    }
+
+    [Fact]
+    public async Task A_paused_hub_refuses_window_uploads_and_live_frames_without_sending_and_resumes_whole_uploads()
+    {
+        var (hub, net, tx, rx, _, clock) = CreateClockedHubCountingRxOpens();
+        var lines = new List<string>();
+        hub.BusyLog = lines.Add;
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 3 });
+        Assert.True(hub.DriveTick());
+        var mac = Convert.ToHexString(FanMac);
+        var frames = new byte[30 * 40 * 3];
+        new Random(7).NextBytes(frames);
+
+        rx.BusyReads = true;
+        Assert.True(hub.PollTick());
+        clock.AdvanceMs(Slv3BusyPause.PauseAfterSpellMs);
+        Assert.True(hub.PollTick());
+        Assert.True(hub.TxPaused);
+        Assert.Contains(lines, l => l.Contains("rx busy pause start"));
+
+        bool IsRgbPart(byte[] f) => f.Length >= 24 && f[1] == 0 && f[4] == Slv3Protocol.RfFrameType && f[5] == Slv3Protocol.RfRgbSync;
+        tx.SentFrames.Clear();
+        Assert.Equal(Slv3Hub.WindowUploadResult.Paused, await hub.SendRgbWindowResultAsync(mac, frames, 40, 30, 53, 100));
+        Assert.False(hub.SendRgbFrame(mac, new RgbColor[40], 100, 30, out _));
+        Assert.DoesNotContain(tx.SentFrames, IsRgbPart);
+
+        // After the pause the next upload goes out whole: every header and data part.
+        clock.AdvanceMs(Slv3BusyPause.PauseMs);
+        Assert.True(hub.PollTick());
+        Assert.False(hub.TxPaused);
+        Assert.Contains(lines, l => l.Contains("rx busy pause end"));
+        Assert.Equal(Slv3Hub.WindowUploadResult.Sent, await hub.SendRgbWindowResultAsync(mac, frames, 40, 30, 53, 100));
+        var sent = tx.SentFrames.FindAll(IsRgbPart);
+        Assert.Equal(4, sent.Count(f => f[22] == 0));
+        var total = sent[0][23];
+        for (var p = 1; p < total; p++)
+        {
+            Assert.Equal(2, sent.Count(f => f[22] == p));
+        }
+
+        // The spell ends during TX: the end line says so and how long after the pause began.
+        rx.BusyReads = false;
+        clock.AdvanceMs(1_000);
+        Assert.True(hub.PollTick());
+        var end = lines.Single(l => l.Contains("rx busy spell end"));
+        Assert.Contains("ended during TX", end);
+        Assert.Contains("ms since the last pause began", end);
     }
 
     [Fact]

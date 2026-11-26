@@ -1331,6 +1331,21 @@ public static class NexusServiceCollectionExtensions
             wirelessHub.ChainReleased = mac => sp.GetService<Nexus.Service.Lighting.Np50IdentifyTracker>()?.ClearPrefix(Nexus.Service.Lighting.Slv3LightingDeviceProvider.DeviceIdFor(mac));
 #if WINDOWS
             wirelessHub.Diag.StartWriter(Nexus.Service.Platform.ServiceLog.LogsDirectory, Nexus.Service.Peripherals.LianLiWireless.Slv3UsbParent.Resolve);
+            // Which hub or controller the dongle and the HydroShift II sit behind, once, so a shared one shows in the log.
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    foreach (var line in Nexus.Service.Peripherals.LianLiWireless.Slv3UsbParent.DescribeTopology())
+                    {
+                        Nexus.Service.Platform.ServiceLog.Info($"[lianli-wireless] usb topology: {line}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Nexus.Service.Platform.ServiceLog.Info($"[lianli-wireless] usb topology unavailable: {ex.Message}");
+                }
+            });
 #else
             wirelessHub.Diag.StartWriter(Nexus.Service.Platform.ServiceLog.LogsDirectory);
 #endif
