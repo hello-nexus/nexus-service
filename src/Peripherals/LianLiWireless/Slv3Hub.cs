@@ -769,7 +769,7 @@ public sealed partial class Slv3Hub : IDisposable
             control.SwitchSeq = 0;
         }
         _rxFailStreak = 0;
-        _rxBusyStreak = 0;
+        EndRxBusySpellLocked();
         _rxRecoveries = 0;
         _nextRxRecoveryMs = 0;
         _txMissedProbes = 0;
@@ -2846,7 +2846,7 @@ public sealed partial class Slv3Hub : IDisposable
             return true;
         }
         _rxFailStreak = 0;
-        _rxBusyStreak = 0;
+        EndRxBusySpellLocked();
         _rxRecoveries++;
         _nextRxRecoveryMs = nowMs + RecoveryBackoffFor(_rxRecoveries);
         State.LinkStatus = Slv3LinkStatus.Recovering;

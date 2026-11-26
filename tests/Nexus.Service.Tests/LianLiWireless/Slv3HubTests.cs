@@ -2586,6 +2586,26 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void An_rx_reopen_ends_the_busy_spell_with_its_end_line_and_a_fresh_counter()
+    {
+        var (hub, net, _, rx, rxOpens, clock) = CreateClockedHubCountingRxOpens();
+        var lines = new List<string>();
+        hub.BusyLog = lines.Add;
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+
+        rx.BusyReads = true;
+        for (var i = 0; i < 121; i++)
+        {
+            clock.AdvanceMs(5_000);
+            Assert.True(hub.PollTick());
+        }
+        Assert.Equal(2, rxOpens());
+        Assert.Single(lines, l => l.Contains("rx busy spell end"));
+        Assert.False(hub.TxThrottled);
+    }
+
+    [Fact]
     public void The_tx_payload_history_sums_whole_seconds_and_forgets_old_ones()
     {
         var history = new Slv3Hub.TxPayloadHistory();
