@@ -98,7 +98,38 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
         }
         Assert.Equal(3, _bridge.PhysicalBufferCount);
         _controller.RaiseDetecting(false);
-        await Task.Delay(600);
+        var settled = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTime.UtcNow < settled && (_bridge.DeviceListIsSettling || _engine.Devices.Length < 3))
+        {
+            await Task.Delay(20);
+        }
+        Assert.False(_bridge.DeviceListIsSettling);
+    }
+
+    private static ReadOnlyMemory<byte> Wire(DeviceFrame[] devices)
+    {
+        var bytes = new List<byte> { 0x03, 1, 0, 1, 0, 0, 0, 0, (byte)devices.Length };
+        foreach (var d in devices)
+        {
+            bytes.Add(DeviceFrameIndex.WireByte(d));
+            bytes.Add((byte)(d.LedCount & 0xFF));
+            bytes.Add((byte)(d.LedCount >> 8));
+            bytes.AddRange(d.LedBytes.ToArray());
+        }
+        return bytes.ToArray();
+    }
+
+    private void PaintAndPush(byte level)
+    {
+        foreach (var f in _engine.Devices)
+        {
+            for (var i = 0; i < f.LedCount; i++)
+            {
+                f.SetLed(i, (byte)(level + i), level, 10);
+            }
+            f.Publish();
+        }
+        _bridge.OnFrame(Wire(_engine.Devices));
     }
 
     private static DateTime Until(double seconds) => DateTime.UtcNow + TimeSpan.FromSeconds(seconds);
@@ -120,11 +151,14 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
     public async Task Os_shutdown_blackout_skips_the_gigabyte_controllers_and_pushes_the_rest()
     {
         await ActivateAsync();
+        _bridge.BeginShutdownBlank();
 
-        var report = await _bridge.BlackoutSettledAsync(Until(5), forOsShutdown: true);
+        var report = await _bridge.BlackoutSettledAsync(Until(5));
 
         Assert.Equal(BlackoutSkip.None, report.Skipped);
         Assert.Equal(1, report.Pushed);
+        Assert.Equal(1, report.Known);
+        Assert.Equal("pushed 1/1", report.ToString());
         Assert.Equal(new[] { DramAddress }, _controller.PushedAddresses.Distinct().ToArray());
     }
 
@@ -140,18 +174,41 @@ public class RgbBridgeShutdownBlackoutSkipTests : IDisposable
     }
 
     [Fact]
-    public async Task Coordinator_skips_on_host_shutdown_but_not_on_suspend()
+    public async Task Engine_driven_fade_and_black_never_write_the_gigabyte_controllers_once_shutdown_starts()
+    {
+        await ActivateAsync();
+        var coordinator = new SleepBlackoutCoordinator(
+            _engine, new TestableConfigStore(Path.Combine(_tempDir, "coordinator-settings.json")), _bridge);
+
+        PaintAndPush(100);
+        Assert.Contains(GpuAddress, _controller.PushedAddresses);
+        Assert.Contains(MotherboardAddress, _controller.PushedAddresses);
+        while (_controller.PushedAddresses.TryTake(out _)) { }
+
+        _bridge.BeginShutdownBlank();
+        PaintAndPush(60);
+        PaintAndPush(30);
+        _engine.SetBlackout(true);
+        PaintAndPush(0);
+        coordinator.OnHostShutdown();
+        PaintAndPush(1);
+
+        var written = _controller.PushedAddresses.Distinct().ToArray();
+        Assert.Equal(new[] { DramAddress }, written);
+        Assert.True(_controller.PushedAddresses.Count(a => a == DramAddress) >= 3);
+    }
+
+    [Fact]
+    public async Task Suspend_blank_drives_the_gigabyte_controllers_as_before()
     {
         await ActivateAsync();
         var coordinator = new SleepBlackoutCoordinator(
             _engine, new TestableConfigStore(Path.Combine(_tempDir, "coordinator-settings.json")), _bridge);
 
         coordinator.OnSuspending();
+        PaintAndPush(100);
+
         Assert.Contains(GpuAddress, _controller.PushedAddresses);
         Assert.Contains(MotherboardAddress, _controller.PushedAddresses);
-
-        while (_controller.PushedAddresses.TryTake(out _)) { }
-        coordinator.OnHostShutdown();
-        Assert.Equal(new[] { DramAddress }, _controller.PushedAddresses.Distinct().ToArray());
     }
 }

@@ -385,6 +385,10 @@ public sealed class SleepBlackoutCoordinator
                 }
             }
 
+            if (reason == "shutdown")
+            {
+                _bridge?.BeginShutdownBlank();
+            }
             var deadline = DateTime.UtcNow + budget;
             // A hold already engaged (a second suspend notification, or a
             // shutdown that follows one) is dark or on its way there; re-running
@@ -401,7 +405,7 @@ public sealed class SleepBlackoutCoordinator
             // what hands them the blank frame to push.
             var published = _engine.WaitForBlackout(Clamp(EnginePublishBudget, deadline));
 
-            var pushed = PushBridgeBlackout(deadline, settleFirst, forOsShutdown: reason == "shutdown");
+            var pushed = PushBridgeBlackout(deadline, settleFirst);
             ServiceLog.Info(
                 $"[lighting-sleep] blanked for {reason} (fade={fade}, engine={(published ? "published" : "timeout")}, openrgb={pushed})");
         }
@@ -520,7 +524,7 @@ public sealed class SleepBlackoutCoordinator
     /// Returns what was written out of what is known, for the log line - the
     /// caller has no recovery to perform either way.
     /// </summary>
-    private string PushBridgeBlackout(DateTime deadline, bool settleFirst = false, bool forOsShutdown = false)
+    private string PushBridgeBlackout(DateTime deadline, bool settleFirst = false)
     {
         if (_bridge is null)
         {
@@ -537,7 +541,7 @@ public sealed class SleepBlackoutCoordinator
             // Blocking on purpose: the machine stops when this returns, so
             // there is no later to continue on.
             DateTime? settleUntil = settleFirst ? deadline - PushReserve : null;
-            return _bridge.BlackoutSettledAsync(settleUntil, cts.Token, forOsShutdown).GetAwaiter().GetResult().ToString();
+            return _bridge.BlackoutSettledAsync(settleUntil, cts.Token).GetAwaiter().GetResult().ToString();
         }
         catch (OperationCanceledException)
         {
