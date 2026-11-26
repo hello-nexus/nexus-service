@@ -303,7 +303,7 @@ public static class NexusServiceCollectionExtensions
         {
             var lhm = sp.GetService<LhmComputer>();
             return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
-                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
+                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(), sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()),
                 () => lhm is null || lhm.OpenTask.IsCompleted,
                 psuTemperatures: () => lhm?.PsuTemperatures() ?? System.Array.Empty<Nexus.Service.Cooling.PsuTemperature>());
         });
