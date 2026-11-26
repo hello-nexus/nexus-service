@@ -358,6 +358,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const double WindowAirPerSecond = 200;
     // Share of the air budget a round of uploads may fill; the rest is left for chains to report in, or the receiver stops hearing them.
     private const double WindowAirUtilization = 0.5;
+    // Long windows may fill this share of WindowAirPerSecond on average, which keeps the round's average under the late-pass budget. A higher share shortens the frame step but runs the average at the budget, where dongle-wide RX busy spells grew.
+    private const double LongWindowAirUtilization = 0.7;
     // Air cost of one upload: header repeats plus two data passes, parts per LED measured on neonrain.
     private const double WindowHeaderCost = 8;
     private const double WindowPartsPerLed = 0.47;
@@ -365,6 +367,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     // A round of uploads must finish within this much of one window's playback.
     private const double WindowCycleMs = 750;
     private const int MaxWindowStretch = 6;
+    // Upload time a plan assumes, and the least a long window may keep playing after its replacement lands.
+    private const double PlanUploadMs = 200;
+    private const double MinPlanMarginMs = 1000;
     private const int HealthLogPeriodMs = 60_000;
     private const int HealthAirSampleMs = 250;
     // A lower plan must hold this long, so a chain missing from one poll does not reset every chain.
@@ -440,8 +445,27 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public int UploadDivisor = 1;
         public double RetryAtMs;
         public double ProbeAtMs;
+        // Set while the upload being started is a divisor probe, so its outcome can back the next probe off.
+        public bool Probing;
+        public int ProbeFailures;
+        // Set while the hub eases the TX and this chain's window has time left, so its turn goes to chains that need it more.
+        public bool BusyDeferred;
+        // Compressed size of the last window this chain fit, to tell a hopeless probe before compressing for it.
+        public int LastCompressedBytes;
         public int WindowDivisor = 1;
     }
+
+    // While the RX reports busy a chain skips its upload turn until its window has no more than this much left,
+    // which leaves room for the upload and for a render to join. Shorter windows are never deferred.
+    private const double BusyUploadDeadlineMs = 1200;
+
+    /// <summary>Whether the chain's upload can wait while the hub throttles the TX: its window still plays past the deadline.</summary>
+    internal bool ShouldDeferForBusy(ChainRolling st, double nowMs) =>
+        _hub.TxThrottled && st.WindowFirstFrame != long.MinValue && TryCurrentFrame(nowMs, out var current)
+        && WindowOutlastsBusyDeadline(st.WindowFirstFrame, current, Frames, _windowStretch);
+
+    internal static bool WindowOutlastsBusyDeadline(long windowFirstFrame, long currentFrame, int frames, int stretch) =>
+        (windowFirstFrame + frames - WindowWrapMarginFrames - currentFrame) * BaseFrameMs * stretch > BusyUploadDeadlineMs;
 
     // Frame-count divisors a chain may step down through when its window compresses past the firmware cap.
     internal const int MaxWindowDivisor = 3;
@@ -451,6 +475,13 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const double OversizeRetryMs = 10000;
     // A reduced chain tries one divisor lower this often, so it recovers when the content gets simpler.
     private const double DivisorProbeMs = 60000;
+    // Chains probe at offsets within this span, so the larger uploads of a probe do not all land in the same seconds.
+    private const double DivisorProbeStaggerMs = 7500;
+    private const int DivisorProbeStaggerSlots = 8;
+    // A failed probe doubles the wait, up to this many doublings.
+    private const int MaxProbeBackoffDoublings = 3;
+    // A probe is skipped when the size at one divisor lower, scaled from the last fit, exceeds the cap by more than this factor.
+    private const double ProbeHopelessFactor = 1.25;
     private readonly Dictionary<string, int> _windowDivisors = new();
     private readonly HashSet<string> _oversizeLogged = new();
 
@@ -495,15 +526,38 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         _oversizeLogged.Remove(macHex);
         st.RetryAtMs = 0;
         st.ProbeAtMs = 0;
+        st.Probing = false;
+        st.ProbeFailures = 0;
+        st.LastCompressedBytes = 0;
     }
+
+    /// <summary>A stable slot per chain, so periodic per-chain work spreads over a period instead of firing together.</summary>
+    internal static int StaggerSlot(string macHex, int slots)
+    {
+        var sum = 0;
+        foreach (var c in macHex) sum = sum * 31 + c;
+        return (int)((uint)sum % (uint)slots);
+    }
+
+    private static double ProbePeriodMs(string macHex, ChainRolling st) =>
+        (DivisorProbeMs + StaggerSlot(macHex, DivisorProbeStaggerSlots) * DivisorProbeStaggerMs) * (1 << Math.Min(st.ProbeFailures, MaxProbeBackoffDoublings));
+
+    /// <summary>One divisor lower holds about d/(d-1) times the slots, so a chain whose last fit was already near the cap cannot fit there.</summary>
+    internal static bool ProbeCannotFit(ChainRolling st, int divisor) =>
+        divisor > 1 && st.LastCompressedBytes > 0
+        && (double)st.LastCompressedBytes * divisor / (divisor - 1) > TinyUz.MaxCompressedLength * ProbeHopelessFactor;
 
     /// <summary>The divisor an upload starts at: the remembered one, or one lower when the periodic probe is due.</summary>
     internal int StartDivisor(string macHex, ChainRolling st, double nowMs)
     {
         var divisor = Math.Min(_windowDivisors.GetValueOrDefault(macHex, 1), MaxDivisorFor(Frames));
+        st.Probing = false;
         if (divisor > 1 && nowMs >= st.ProbeAtMs)
         {
-            st.ProbeAtMs = nowMs + DivisorProbeMs;
+            st.ProbeAtMs = nowMs + ProbePeriodMs(macHex, st);
+            // A probe that cannot fit would compress a full window only to be refused.
+            if (ProbeCannotFit(st, divisor)) return divisor;
+            st.Probing = true;
             return divisor - 1;
         }
         return divisor;
@@ -595,9 +649,16 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private static (int Stretch, double CycleMs, int Frames) WindowPlanFor(int chains, int leds, int frames)
     {
         var scale = frames / (double)WindowFrames;
-        var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * scale * leds) * 1000 / WindowAirPerSecond / WindowAirUtilization;
+        var utilization = frames > WindowFrames ? LongWindowAirUtilization : WindowAirUtilization;
+        var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * scale * leds) * 1000 / WindowAirPerSecond / utilization;
         var cycleMs = Math.Max(Math.Max(WindowPeriodMs, airMs), MinRenderPeriodMs * chains);
-        return (Math.Clamp((int)Math.Ceiling(cycleMs / (WindowCycleMs * scale)), 1, MaxWindowStretch), cycleMs, frames);
+        var stretch = Math.Clamp((int)Math.Ceiling(cycleMs / (WindowCycleMs * scale)), 1, MaxWindowStretch);
+        // A long window must keep playing a while after its replacement lands, or one slow upload lets it run out.
+        while (frames > WindowFrames && stretch < MaxWindowStretch && WindowMarginMs(stretch, frames, cycleMs, PlanUploadMs) < MinPlanMarginMs)
+        {
+            stretch++;
+        }
+        return (stretch, cycleMs, frames);
     }
 
     /// <summary>
@@ -639,6 +700,9 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             chain.RetryAtMs = 0;
             chain.ProbeAtMs = 0;
+            chain.Probing = false;
+            chain.ProbeFailures = 0;
+            chain.LastCompressedBytes = 0;
         }
         _planCycleMs = cycleMs;
         DropSharedWindow();
@@ -668,21 +732,23 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
 
     // One line per bound chain per period, so uploads per period, upload time, landing margin, late-pass use and echo counts of a customer session read straight from the bundle.
     private const double ChainDiagMs = 60_000;
-    private double _chainDiagNextMs;
+    private const int ChainDiagStaggerSlots = 8;
+    // Per chain, offset by a stable slot, so the lines and their reads do not all fire in one tick.
+    private readonly Dictionary<string, double> _chainDiagNextMs = new();
 
     private void LogChainDiag(double nowMs)
     {
-        if (_chainDiagNextMs == 0)
-        {
-            _chainDiagNextMs = nowMs + ChainDiagMs;
-            return;
-        }
-        if (nowMs < _chainDiagNextMs) return;
-        _chainDiagNextMs = nowMs + ChainDiagMs;
         var hubNow = Environment.TickCount64;
         foreach (var fan in _hub.State.Fans)
         {
             if (!fan.BoundToUs) continue;
+            if (!_chainDiagNextMs.TryGetValue(fan.Mac, out var due))
+            {
+                _chainDiagNextMs[fan.Mac] = nowMs + ChainDiagMs + StaggerSlot(fan.Mac, ChainDiagStaggerSlots) * (ChainDiagMs / ChainDiagStaggerSlots);
+                continue;
+            }
+            if (nowMs < due) continue;
+            _chainDiagNextMs[fan.Mac] = nowMs + ChainDiagMs;
             var path = "live";
             var upload = "uploads=0";
             if (_rolling.TryGetValue(fan.Mac, out var chain))
@@ -857,10 +923,17 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             return;
         }
         // A divisor learned under another plan means a different loop length, so only the current plan's uploads teach it.
-        if (ok && st.UploadStretch == _windowStretch && st.UploadFrames == Frames && st.UploadDivisor != _windowDivisors.GetValueOrDefault(macHex, 1))
+        var current = _windowDivisors.GetValueOrDefault(macHex, 1);
+        if (ok && st.Probing)
+        {
+            st.Probing = false;
+            st.ProbeFailures = st.UploadDivisor >= current ? Math.Min(st.ProbeFailures + 1, MaxProbeBackoffDoublings) : 0;
+        }
+        if (ok) st.LastCompressedBytes = _hub.WindowCompressedBytes(macHex);
+        if (ok && st.UploadStretch == _windowStretch && st.UploadFrames == Frames && st.UploadDivisor != current)
         {
             _windowDivisors[macHex] = st.UploadDivisor;
-            st.ProbeAtMs = UtcNowMs() + DivisorProbeMs;
+            st.ProbeAtMs = UtcNowMs() + ProbePeriodMs(macHex, st);
             if (st.UploadDivisor == 1) _windowDivisors.Remove(macHex);
             ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window set to {st.UploadFrames / st.UploadDivisor} frames to fit the firmware cap");
         }
@@ -944,9 +1017,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             ResetWindowDivisor(macHex, st);
             st.WindowFirstFrame = long.MinValue;
             st.Joinable = false;
+            st.BusyDeferred = false;
             return false;
         }
         st.Joinable = _windowFrames is not null && CoversChain(ids);
+        st.BusyDeferred = ShouldDeferForBusy(st, nowMs);
         foreach (var id in ids)
         {
             _rollingIds.Add(id);
@@ -960,6 +1035,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && joinFrame >= loopStart + WindowStartSafetyFrames
             && joinFrame < _windowFirstFrame + Frames / 2
             && nowMs >= st.RetryAtMs
+            && !st.BusyDeferred
             && IsNextToUpload(st, nowMs))
         {
             st.UploadedWindowId = _windowId;
@@ -996,7 +1072,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         foreach (var other in _rolling.Values)
         {
             // A chain waiting out an oversize refusal cannot take the turn, so it must not hold it.
-            if (other.Joinable && nowMs >= other.RetryAtMs && other.Upload is not { IsCompleted: false } && other.LastUploadStartMs < chain.LastUploadStartMs)
+            // A chain that is deferring while the RX is busy must not hold the turn either.
+            if (other.Joinable && !other.BusyDeferred && nowMs >= other.RetryAtMs && other.Upload is not { IsCompleted: false } && other.LastUploadStartMs < chain.LastUploadStartMs)
             {
                 return false;
             }

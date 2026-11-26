@@ -593,14 +593,15 @@ public class Slv3LightingFrameWriterTests
     [Theory]
     [InlineData(1, 132, 1, 700, 30)]
     [InlineData(1, 142, 1, 747, 30)]
-    [InlineData(1, 143, 1, 1424, 60)]
-    [InlineData(1, 174, 2, 1716, 60)]
-    [InlineData(2, 264, 2, 2642, 60)]
-    [InlineData(4, 528, 4, 5283, 60)]
-    [InlineData(5, 702, 5, 6999, 60)]
-    [InlineData(7, 720, 5, 7328, 60)]
-    [InlineData(8, 798, 6, 8141, 60)]
-    public void WindowPlan_sizes_the_round_to_half_the_air_budget(int chains, int leds, int stretch, int cycleMs, int frames)
+    [InlineData(1, 143, 2, 1017, 60)]
+    [InlineData(1, 174, 2, 1225, 60)]
+    [InlineData(2, 264, 2, 1887, 60)]
+    [InlineData(4, 528, 3, 3774, 60)]
+    [InlineData(5, 702, 4, 4999, 60)]
+    [InlineData(6, 600, 3, 4371, 60)]
+    [InlineData(7, 720, 4, 5234, 60)]
+    [InlineData(8, 798, 4, 5815, 60)]
+    public void WindowPlan_fills_seven_tenths_of_the_air_budget_with_long_windows_and_half_with_short_ones(int chains, int leds, int stretch, int cycleMs, int frames)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
         Assert.Equal(stretch, plan.Stretch);
@@ -633,6 +634,45 @@ public class Slv3LightingFrameWriterTests
         // A window holds more than the round it must outlast, whatever the chain count.
         var windowMs = plan.Frames * Slv3LightingFrameWriter.WindowIntervalTicks / 1.6 * plan.Stretch;
         Assert.True(windowMs > plan.CycleMs * 4 / 3);
+    }
+
+    [Theory]
+    [InlineData(1, 143)]
+    [InlineData(1, 174)]
+    [InlineData(2, 264)]
+    [InlineData(4, 528)]
+    [InlineData(5, 702)]
+    [InlineData(6, 600)]
+    [InlineData(7, 720)]
+    [InlineData(8, 798)]
+    public void WindowPlan_long_windows_pick_the_smallest_stretch_that_keeps_average_air_under_the_bound_and_a_margin(int chains, int leds)
+    {
+        var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
+        Assert.Equal(Slv3LightingFrameWriter.LongWindowFrames, plan.Frames);
+        // Payloads per round (headers plus both data passes) over the round: 70 percent of the 200 per second budget, under the late-pass budget of 180.
+        var payloads = 8 * chains + 0.47 * 2 * leds;
+        var averageAir = payloads / (plan.CycleMs / 1000);
+        Assert.True(averageAir <= 140.5, $"average air {averageAir:F0}/s");
+        // The margin a window keeps after its replacement lands.
+        Assert.True(Slv3LightingFrameWriter.WindowMarginMs(plan.Stretch, plan.Frames, plan.CycleMs, 200) >= 1000);
+        // One step lower would not fit the round into 75 percent of the window, or would leave less margin.
+        if (plan.Stretch > 1)
+        {
+            var lower = plan.Stretch - 1;
+            var fits = plan.CycleMs <= 750 * 2 * lower
+                && Slv3LightingFrameWriter.WindowMarginMs(lower, plan.Frames, plan.CycleMs, 200) >= 1000;
+            Assert.False(fits);
+        }
+    }
+
+    [Fact]
+    public void WindowPlan_for_the_zaldlum_setup_steps_at_about_130_ms_where_the_first_long_plan_stepped_at_200()
+    {
+        var plan = Slv3LightingFrameWriter.WindowPlan(8, 798);
+        var stepMs = Slv3LightingFrameWriter.WindowIntervalTicks / 1.6 * plan.Stretch;
+        Assert.InRange(stepMs, 130, 135);
+        Assert.Equal(4, plan.Stretch);
+        Assert.Equal(60, plan.Frames);
     }
 
     [Fact]
@@ -1007,6 +1047,8 @@ public class Slv3LightingFrameWriterTests
         await st.Upload;
         st.UploadStretch = 1;
         writer.CollectUpload(mac, st);
+        // This content sits near the cap, which the size check would call hopeless; it is covered on its own.
+        st.LastCompressedBytes = 0;
         Assert.Equal(2, writer.StartDivisor(mac, st, 0));
 
         // Within the probe period the remembered divisor is used; once due, one step lower is tried once.
@@ -1046,6 +1088,7 @@ public class Slv3LightingFrameWriterTests
         await st.Upload;
         st.UploadStretch = 1;
         writer.CollectUpload(mac, st);
+        st.LastCompressedBytes = 0;
 
         var probeStart = writer.StartDivisor(mac, st, st.ProbeAtMs);
         Assert.Equal(1, probeStart);
@@ -1054,5 +1097,117 @@ public class Slv3LightingFrameWriterTests
         Assert.Equal(2, st.UploadDivisor);
         writer.CollectUpload(mac, st);
         Assert.Equal(2, writer.StartDivisor(mac, st, 0));
+    }
+
+    private async Task<(Slv3LightingFrameWriter Writer, string Mac, Slv3LightingFrameWriter.ChainRolling St)> ChainReducedToTwo()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var mac = Convert.ToHexString(FanMac);
+        var st = new Slv3LightingFrameWriter.ChainRolling();
+        st.Upload = writer.UploadWindowAsync(mac, st, NoisyGradientWindow(174), 174, 1001, 1, 53);
+        await st.Upload;
+        st.UploadStretch = 1;
+        writer.CollectUpload(mac, st);
+        Assert.Equal(2, st.UploadDivisor);
+        return (writer, mac, st);
+    }
+
+    [Fact]
+    public async Task A_probe_that_cannot_fit_is_skipped_without_compressing_a_window()
+    {
+        var (writer, mac, st) = await ChainReducedToTwo();
+        // The last fit sat at the cap, so one divisor lower holds twice the bytes.
+        st.LastCompressedBytes = TinyUz.MaxCompressedLength;
+        var probeAt = st.ProbeAtMs;
+        Assert.Equal(2, writer.StartDivisor(mac, st, probeAt));
+        Assert.False(st.Probing);
+        Assert.True(st.ProbeAtMs > probeAt);
+        Assert.True(Slv3LightingFrameWriter.ProbeCannotFit(st, 2));
+    }
+
+    [Fact]
+    public async Task A_probe_with_room_under_the_cap_is_tried()
+    {
+        var (writer, mac, st) = await ChainReducedToTwo();
+        st.LastCompressedBytes = 4000;
+        Assert.Equal(1, writer.StartDivisor(mac, st, st.ProbeAtMs));
+        Assert.True(st.Probing);
+    }
+
+    [Fact]
+    public async Task A_probe_that_falls_back_doubles_the_wait_and_one_that_lands_lower_clears_it()
+    {
+        var (writer, mac, st) = await ChainReducedToTwo();
+        st.LastCompressedBytes = 4000;
+        double now = st.ProbeAtMs;
+        Assert.Equal(1, writer.StartDivisor(mac, st, now));
+        var firstGap = st.ProbeAtMs - now;
+
+        // The probe came back at the remembered divisor.
+        st.Upload = Task.FromResult(true);
+        st.UploadResult = Slv3Hub.WindowUploadResult.Sent;
+        st.UploadStretch = 1;
+        st.UploadDivisor = 2;
+        writer.CollectUpload(mac, st);
+        Assert.Equal(1, st.ProbeFailures);
+
+        now = st.ProbeAtMs;
+        st.LastCompressedBytes = 4000;
+        Assert.Equal(1, writer.StartDivisor(mac, st, now));
+        Assert.Equal(2 * firstGap, st.ProbeAtMs - now);
+
+        // This probe fit one divisor lower.
+        st.Upload = Task.FromResult(true);
+        st.UploadResult = Slv3Hub.WindowUploadResult.Sent;
+        st.UploadStretch = 1;
+        st.UploadDivisor = 1;
+        writer.CollectUpload(mac, st);
+        Assert.Equal(0, st.ProbeFailures);
+    }
+
+    [Fact]
+    public void Per_chain_periodic_work_spreads_over_stable_slots()
+    {
+        var macs = new[] { "04EF71E566E1", "4ED271E566E1", "D716CCE566E1", "1150D8E566E1", "7F9987E566E1", "884713506CE1", "E300CCE566E1", "F7C806F517E1" };
+        var slots = new HashSet<int>();
+        foreach (var mac in macs)
+        {
+            var slot = Slv3LightingFrameWriter.StaggerSlot(mac, 8);
+            Assert.InRange(slot, 0, 7);
+            Assert.Equal(slot, Slv3LightingFrameWriter.StaggerSlot(mac, 8));
+            slots.Add(slot);
+        }
+        Assert.True(slots.Count >= 4, $"only {slots.Count} distinct slots");
+    }
+
+    [Theory]
+    // A long window just landed: plenty left, so the turn can wait.
+    [InlineData(1000, 1010, 60, 4, true)]
+    // About 2 s left at the stretch 4 step (15 frames): still beyond the deadline.
+    [InlineData(1000, 1043, 60, 4, true)]
+    // Under the deadline: the turn is due.
+    [InlineData(1000, 1051, 60, 4, false)]
+    // A window that is already past its wrap margin is never deferred.
+    [InlineData(1000, 1058, 60, 4, false)]
+    // A short window never holds more than the deadline.
+    [InlineData(1000, 1000, 30, 1, false)]
+    public void A_busy_rx_defers_a_turn_only_while_the_window_has_time_beyond_the_upload_deadline(long first, long current, int frames, int stretch, bool defer)
+    {
+        Assert.Equal(defer, Slv3LightingFrameWriter.WindowOutlastsBusyDeadline(first, current, frames, stretch));
+    }
+
+    [Fact]
+    public void A_deferring_chain_does_not_hold_the_upload_turn()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var deferring = Joinable(0);
+        deferring.BusyDeferred = true;
+        var waiting = Joinable(100);
+        writer._rolling["a"] = deferring;
+        writer._rolling["b"] = waiting;
+
+        Assert.True(writer.IsNextToUpload(waiting, 1000));
+        deferring.BusyDeferred = false;
+        Assert.False(writer.IsNextToUpload(waiting, 1000));
     }
 }
