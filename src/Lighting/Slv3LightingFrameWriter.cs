@@ -448,6 +448,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         // Set while the upload being started is a divisor probe, so its outcome can back the next probe off.
         public bool Probing;
         public int ProbeFailures;
+        public double ProbeStartedMs;
         // Set while the hub eases the TX and this chain's window has time left, so its turn goes to chains that need it more.
         public bool BusyDeferred;
         // Compressed size of the last window this chain fit, to tell a hopeless probe before compressing for it.
@@ -455,17 +456,21 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public int WindowDivisor = 1;
     }
 
-    // While the RX reports busy a chain skips its upload turn until its window has no more than this much left,
-    // which leaves room for the upload and for a render to join. Shorter windows are never deferred.
-    private const double BusyUploadDeadlineMs = 1200;
+    // While the RX reports busy a chain skips its upload turn until its window has no more than the deadline left. The
+    // deadline leaves one full retry: a render to join (its period plus lead), the upload itself (the larger of the
+    // observed worst and the plan's assumption), one turn behind another chain, and the plan's minimum margin. A window too short
+    // to leave any room beyond that is never deferred.
+    internal static double BusyDeferDeadlineMs(double renderPeriodMs, double uploadMs, double turnMs) =>
+        renderPeriodMs + WindowLeadMs + Math.Max(uploadMs, PlanUploadMs) + turnMs + MinPlanMarginMs;
 
     /// <summary>Whether the chain's upload can wait while the hub throttles the TX: its window still plays past the deadline.</summary>
     internal bool ShouldDeferForBusy(ChainRolling st, double nowMs) =>
         _hub.TxThrottled && st.WindowFirstFrame != long.MinValue && TryCurrentFrame(nowMs, out var current)
-        && WindowOutlastsBusyDeadline(st.WindowFirstFrame, current, Frames, _windowStretch);
+        && WindowOutlastsBusyDeadline(st.WindowFirstFrame, current, Frames, _windowStretch,
+            BusyDeferDeadlineMs(_windowRequestPeriodMs, st.DiagUpMsMax, _planChains > 0 ? _planCycleMs / _planChains : _planCycleMs));
 
-    internal static bool WindowOutlastsBusyDeadline(long windowFirstFrame, long currentFrame, int frames, int stretch) =>
-        (windowFirstFrame + frames - WindowWrapMarginFrames - currentFrame) * BaseFrameMs * stretch > BusyUploadDeadlineMs;
+    internal static bool WindowOutlastsBusyDeadline(long windowFirstFrame, long currentFrame, int frames, int stretch, double deadlineMs) =>
+        (windowFirstFrame + frames - WindowWrapMarginFrames - currentFrame) * BaseFrameMs * stretch > deadlineMs;
 
     // Frame-count divisors a chain may step down through when its window compresses past the firmware cap.
     internal const int MaxWindowDivisor = 3;
@@ -539,8 +544,11 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         return (int)((uint)sum % (uint)slots);
     }
 
-    private static double ProbePeriodMs(string macHex, ChainRolling st) =>
-        (DivisorProbeMs + StaggerSlot(macHex, DivisorProbeStaggerSlots) * DivisorProbeStaggerMs) * (1 << Math.Min(st.ProbeFailures, MaxProbeBackoffDoublings));
+    private static double ProbePeriodMs(ChainRolling st) =>
+        DivisorProbeMs * (1 << Math.Min(st.ProbeFailures, MaxProbeBackoffDoublings));
+
+    // Same period for every chain, a fixed phase per chain, applied when a chain first schedules a probe.
+    private static double ProbePhaseMs(string macHex) => StaggerSlot(macHex, DivisorProbeStaggerSlots) * DivisorProbeStaggerMs;
 
     /// <summary>One divisor lower holds about d/(d-1) times the slots, so a chain whose last fit was already near the cap cannot fit there.</summary>
     internal static bool ProbeCannotFit(ChainRolling st, int divisor) =>
@@ -554,7 +562,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         st.Probing = false;
         if (divisor > 1 && nowMs >= st.ProbeAtMs)
         {
-            st.ProbeAtMs = nowMs + ProbePeriodMs(macHex, st);
+            st.ProbeStartedMs = nowMs;
+            st.ProbeAtMs = nowMs + ProbePeriodMs(st);
             // A probe that cannot fit would compress a full window only to be refused.
             if (ProbeCannotFit(st, divisor)) return divisor;
             st.Probing = true;
@@ -928,12 +937,14 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         {
             st.Probing = false;
             st.ProbeFailures = st.UploadDivisor >= current ? Math.Min(st.ProbeFailures + 1, MaxProbeBackoffDoublings) : 0;
+            // The wait after a failed probe counts from when it started, so the backoff applies to the next probe, not the one after.
+            if (st.UploadDivisor >= current) st.ProbeAtMs = st.ProbeStartedMs + ProbePeriodMs(st);
         }
         if (ok) st.LastCompressedBytes = _hub.WindowCompressedBytes(macHex);
         if (ok && st.UploadStretch == _windowStretch && st.UploadFrames == Frames && st.UploadDivisor != current)
         {
             _windowDivisors[macHex] = st.UploadDivisor;
-            st.ProbeAtMs = UtcNowMs() + ProbePeriodMs(macHex, st);
+            st.ProbeAtMs = UtcNowMs() + ProbePeriodMs(st) + ProbePhaseMs(macHex);
             if (st.UploadDivisor == 1) _windowDivisors.Remove(macHex);
             ServiceLog.Info($"[lianli-wireless-lighting-writer] {macHex} window set to {st.UploadFrames / st.UploadDivisor} frames to fit the firmware cap");
         }

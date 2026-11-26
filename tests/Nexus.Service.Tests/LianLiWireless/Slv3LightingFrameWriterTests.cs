@@ -1135,34 +1135,59 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
-    public async Task A_probe_that_falls_back_doubles_the_wait_and_one_that_lands_lower_clears_it()
+    public async Task A_probe_that_falls_back_doubles_the_wait_at_once_and_one_that_lands_lower_clears_it()
     {
         var (writer, mac, st) = await ChainReducedToTwo();
         st.LastCompressedBytes = 4000;
-        double now = st.ProbeAtMs;
-        Assert.Equal(1, writer.StartDivisor(mac, st, now));
-        var firstGap = st.ProbeAtMs - now;
+        double start = st.ProbeAtMs;
+        Assert.Equal(1, writer.StartDivisor(mac, st, start));
+        var period = st.ProbeAtMs - start;
 
-        // The probe came back at the remembered divisor.
+        // The probe came back at the remembered divisor: the very next wait is already doubled.
         st.Upload = Task.FromResult(true);
         st.UploadResult = Slv3Hub.WindowUploadResult.Sent;
         st.UploadStretch = 1;
         st.UploadDivisor = 2;
         writer.CollectUpload(mac, st);
         Assert.Equal(1, st.ProbeFailures);
+        Assert.Equal(2 * period, st.ProbeAtMs - start);
 
-        now = st.ProbeAtMs;
+        start = st.ProbeAtMs;
         st.LastCompressedBytes = 4000;
-        Assert.Equal(1, writer.StartDivisor(mac, st, now));
-        Assert.Equal(2 * firstGap, st.ProbeAtMs - now);
+        Assert.Equal(1, writer.StartDivisor(mac, st, start));
+        st.Upload = Task.FromResult(true);
+        st.UploadResult = Slv3Hub.WindowUploadResult.Sent;
+        st.UploadStretch = 1;
+        st.UploadDivisor = 2;
+        writer.CollectUpload(mac, st);
+        Assert.Equal(4 * period, st.ProbeAtMs - start);
 
         // This probe fit one divisor lower.
+        start = st.ProbeAtMs;
+        st.LastCompressedBytes = 4000;
+        Assert.Equal(1, writer.StartDivisor(mac, st, start));
         st.Upload = Task.FromResult(true);
         st.UploadResult = Slv3Hub.WindowUploadResult.Sent;
         st.UploadStretch = 1;
         st.UploadDivisor = 1;
         writer.CollectUpload(mac, st);
         Assert.Equal(0, st.ProbeFailures);
+    }
+
+    [Fact]
+    public void The_busy_defer_deadline_leaves_a_render_wait_an_upload_a_turn_and_the_plan_margin()
+    {
+        // 8 chains / 798 LEDs: a 727 ms turn, a 100 ms render lead and a 200 ms upload.
+        var deadline = Slv3LightingFrameWriter.BusyDeferDeadlineMs(727, 150, 727);
+        Assert.Equal(727 + 100 + 200 + 727 + 1000, deadline);
+        // A slower observed upload raises it.
+        Assert.Equal(deadline + 300, Slv3LightingFrameWriter.BusyDeferDeadlineMs(727, 500, 727));
+        // At the stretch 4 plan a turn arrives with about 1.9 s left, which is under the deadline: no deferral, so no window is risked.
+        var plan = Slv3LightingFrameWriter.WindowPlan(8, 798);
+        var turnWindowRemainingMs = Slv3LightingFrameWriter.WindowMarginMs(plan.Stretch, plan.Frames, plan.CycleMs, 200) + 400;
+        Assert.True(turnWindowRemainingMs < deadline);
+        // A released chain keeps a full retry: the deadline is at least what one retry takes.
+        Assert.True(deadline >= 727 + 100 + 200 + 727);
     }
 
     [Fact]
@@ -1182,7 +1207,7 @@ public class Slv3LightingFrameWriterTests
 
     [Theory]
     // A long window just landed: plenty left, so the turn can wait.
-    [InlineData(1000, 1010, 60, 4, true)]
+    [InlineData(1000, 1000, 60, 4, true)]
     // About 2 s left at the stretch 4 step (15 frames): still beyond the deadline.
     [InlineData(1000, 1043, 60, 4, true)]
     // Under the deadline: the turn is due.
@@ -1193,7 +1218,7 @@ public class Slv3LightingFrameWriterTests
     [InlineData(1000, 1000, 30, 1, false)]
     public void A_busy_rx_defers_a_turn_only_while_the_window_has_time_beyond_the_upload_deadline(long first, long current, int frames, int stretch, bool defer)
     {
-        Assert.Equal(defer, Slv3LightingFrameWriter.WindowOutlastsBusyDeadline(first, current, frames, stretch));
+        Assert.Equal(defer, Slv3LightingFrameWriter.WindowOutlastsBusyDeadline(first, current, frames, stretch, 1200));
     }
 
     [Fact]
