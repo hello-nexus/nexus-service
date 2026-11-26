@@ -42,6 +42,14 @@ public static class CalendarUrl
         return true;
     }
 
+    /// <summary>Same-feed identity of a normalized address: scheme and host case-insensitive, default port and a trailing slash dropped, query kept as-is.</summary>
+    public static string IdentityKey(Uri uri)
+    {
+        var port = uri.IsDefaultPort ? "" : ":" + uri.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var path = uri.AbsolutePath.TrimEnd('/');
+        return uri.Scheme.ToLowerInvariant() + "://" + uri.Host.ToLowerInvariant() + port + path + uri.Query;
+    }
+
     internal static bool IsPublicHostName(string host)
     {
         if (host.Length == 0)

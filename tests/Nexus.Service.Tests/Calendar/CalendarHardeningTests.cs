@@ -135,6 +135,7 @@ public sealed class CalendarHardeningTests : IDisposable
     public async Task Source_cap_reports_limitReached()
     {
         var svc = New();
+        _fetcher.Handler = (u, _) => FakeCalendarFetcher.Ok(IcsFixtures.Google + "\n# " + u.Host);
         for (var i = 0; i < 50; i++)
         {
             Assert.NotNull((await svc.AddAsync($"https://c{i}.example.com/a.ics", "X", "#000000", CancellationToken.None)).Source);
@@ -188,6 +189,7 @@ public sealed class CalendarHardeningTests : IDisposable
     {
         var slow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var svc = New();
+        _fetcher.Handler = (u, _) => FakeCalendarFetcher.Ok(IcsFixtures.Google + "\n# " + u.Host);
         await svc.AddAsync("https://slow.example.com/a.ics", "Slow", "#000000", CancellationToken.None);
         await svc.AddAsync("https://fast.example.com/a.ics", "Fast", "#000000", CancellationToken.None);
         var finished = new List<string>();
