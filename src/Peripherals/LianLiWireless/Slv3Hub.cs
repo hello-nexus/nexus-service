@@ -47,15 +47,14 @@ public sealed partial class Slv3Hub : IDisposable
     // Units seen bound to us in this session, so a USB unit that loses its binding to a receiver reset is told apart from one that was never ours.
     private readonly HashSet<string> _boundSeen = new(StringComparer.Ordinal);
 
-    // Per USB unit: whether it was USB-owned at the last poll, and when it last became so. An arrival or an RX reopen
-    // is the only reset signal a rebind trusts; a unit unbound from L-Connect over USB shows neither.
+    // Per USB unit: whether it was USB-owned at the last poll, and when it last arrived on USB. An arrival (from the
+    // USB side, or a record seen going to USB-owned) is the only reset signal a rebind trusts; a unit unbound from L-Connect over USB shows none.
     private readonly Dictionary<string, bool> _wiredLast = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _wiredArrivedMs = new(StringComparer.Ordinal);
-    private long _rxRecoveryMs;
     // Rebind starts per unit, newest last, so a unit that keeps losing its binding stops being steered back.
     private readonly Dictionary<string, List<long>> _rebindStarts = new(StringComparer.Ordinal);
 
-    /// <summary>How long after a USB arrival or an RX reopen an unbound report still counts as the reset's doing.</summary>
+    /// <summary>How long after a USB arrival an unbound report still counts as the reset's doing.</summary>
     internal const long RebindResetWindowMs = 60_000;
     internal const int RebindsPerHour = 3;
     private const long RebindCapWindowMs = 3_600_000;
@@ -201,14 +200,27 @@ public sealed partial class Slv3Hub : IDisposable
         }
     }
 
+    /// <summary>The USB side saw a receiver for this unit arrive (removed and plugged back, or reset): the signal a rebind needs. Safe to call from any thread.</summary>
+    public void NoteWiredArrival(string macHex)
+    {
+        lock (_lock)
+        {
+            _wiredArrivedMs[macHex.ToUpperInvariant()] = _nowMs();
+        }
+    }
+
     // A unit that turns USB-owned while not bound to us is released from identify once, as an unbind does.
     private void NoteWiredHandoversLocked()
     {
+        var present = new HashSet<string>(StringComparer.Ordinal);
         foreach (var record in _lastFanRecords)
         {
             var key = Convert.ToHexString(record.Mac);
+            present.Add(key);
             var wired = IsWiredOwned(key);
-            if (_wiredLast.TryGetValue(key, out var wasWired) && !wasWired && wired)
+            // A record that left the list during a replug is back with no history: a unit we had bound that returns USB-owned is an arrival.
+            var wasWired = _wiredLast.TryGetValue(key, out var last) ? last : !_boundSeen.Contains(key);
+            if (!wasWired && wired)
             {
                 _wiredArrivedMs[key] = _nowMs();
             }
@@ -237,12 +249,16 @@ public sealed partial class Slv3Hub : IDisposable
                 _wiredNoted.Remove(key);
             }
         }
+        // Departed units forget their last state, so a return counts afresh; old arrivals age out.
+        _wiredLast.Keys.Where(k => !present.Contains(k)).ToList().ForEach(k => _wiredLast.Remove(k));
+        var now = _nowMs();
+        _wiredArrivedMs.Where(kv => now - kv.Value > RebindResetWindowMs).Select(kv => kv.Key).ToList().ForEach(k => _wiredArrivedMs.Remove(k));
     }
 
     /// <summary>
     /// A USB unit seen bound to us in this session, that is in the saved list or was bound by the user, and now reports no master is
     /// bound again like a manual bind (resent at the wired pace, given up at the pending timeout), but only when a reset explains
-    /// it: the unit became USB-owned, or the RX was reopened, within <see cref="RebindResetWindowMs"/>. At most <see cref="RebindsPerHour"/>
+    /// it: the unit arrived on USB (reported by the USB side, or seen going USB-owned) within <see cref="RebindResetWindowMs"/>. At most <see cref="RebindsPerHour"/>
     /// rebinds per unit per hour. A unit reporting another master, one the user or this hub unbound, one never seen bound to us this
     /// session, and one unbound from L-Connect with no reset (no arrival, no reopen) are left alone. The saved slot is rewritten only when it changed.
     /// </summary>
@@ -256,7 +272,7 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         var nowMs = _nowMs();
-        var resetMs = Math.Max(_wiredArrivedMs.GetValueOrDefault(key), _rxRecoveryMs);
+        var resetMs = _wiredArrivedMs.GetValueOrDefault(key);
         if (resetMs == 0 || nowMs - resetMs > RebindResetWindowMs)
         {
             return;
@@ -2932,7 +2948,6 @@ public sealed partial class Slv3Hub : IDisposable
         }
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
-        _rxRecoveryMs = nowMs;
         _rxRecoveries++;
         _nextRxRecoveryMs = nowMs + RecoveryBackoffFor(_rxRecoveries);
         State.LinkStatus = Slv3LinkStatus.Recovering;

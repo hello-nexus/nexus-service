@@ -646,7 +646,7 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void An_rx_reopen_just_before_an_unbound_report_counts_as_a_reset()
+    public void An_rx_reopen_from_a_busy_spell_is_not_a_reset_for_a_usb_unit_that_reports_unbound()
     {
         var mac = Convert.ToHexString(FanMac);
         var clock = new ManualClock();
@@ -666,9 +666,7 @@ public partial class Slv3HubTests
         var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
         net.Fans.Add(fan);
         Ticks(hub, 2);
-        Assert.True(hub.State.Fans[0].BoundToUs);
 
-        // The RX is wedged and reopened, and the unit comes back unbound.
         rx.BusyReads = true;
         for (var i = 0; i < 121; i++)
         {
@@ -681,6 +679,56 @@ public partial class Slv3HubTests
         fan.MasterMac = new byte[6];
         fan.RxType = 254;
         Ticks(hub, 3);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_receiver_arrival_reported_from_the_usb_side_ties_an_unbound_report_to_a_reset()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        tx.SentFrames.Clear();
+
+        // Steadily USB-owned, so no record transition: only the USB side saw the replug.
+        hub.NoteWiredArrival(mac);
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        Ticks(hub, 3);
+
+        Assert.True(CountBindFrames(tx) >= 1);
+    }
+
+    [Fact]
+    public void A_unit_whose_record_left_the_list_during_a_replug_and_returns_unbound_is_an_arrival()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 4 });
+        var wired = false;
+        hub.WiredOwned = m => wired && string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        wired = true;
+        Ticks(hub, 2);
+
+        // The unit vanishes long enough for its record to expire, then returns unbound, USB-owned throughout.
+        net.Fans.Clear();
+        for (var i = 0; i < 60; i++)
+        {
+            clock.AdvanceMs(1_000);
+            Assert.True(hub.DriveTick());
+        }
+        Assert.Empty(hub.State.Fans);
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        net.Fans.Add(fan);
+        tx.SentFrames.Clear();
+        Ticks(hub, 4);
 
         Assert.True(CountBindFrames(tx) >= 1);
     }
