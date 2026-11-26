@@ -1,5 +1,5 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 using Nexus.Service.Devices.Detection;
 using Nexus.Service.Peripherals.Hid;
 
@@ -24,8 +24,6 @@ public sealed class HidCorsairPsuTransport : ICorsairPsuTransport
 {
     private const int ReplyTimeoutMs = 1000;
 
-    private static readonly int[] ProductIds = CorsairPsuProtocol.Models.Keys.Distinct().ToArray();
-
     private readonly IHidEnumerator _hid;
     private readonly HardwarePresence _presence;
 
@@ -40,11 +38,16 @@ public sealed class HidCorsairPsuTransport : ICorsairPsuTransport
         // Presence reads the PnP-invalidated cache and never touches a device, so a PC with no
         // Corsair PSU opens no HID interface at all. The lookups are vid/pid filtered so a
         // present PSU never causes another vendor's device (a headset dongle) to be opened.
-        if (!_presence.UsbPresent(CorsairPsuProtocol.VendorId, ProductIds))
+        // Look up only the PSU pids the bus reports (normally one), so the per-pid scans stay minimal.
+        var present = new List<int>();
+        foreach (var entry in _presence.UsbEntriesFor(CorsairPsuProtocol.VendorId))
         {
-            return null;
+            if (CorsairPsuProtocol.IsSupported(entry.VendorId, entry.ProductId) && !present.Contains(entry.ProductId))
+            {
+                present.Add(entry.ProductId);
+            }
         }
-        foreach (var pid in ProductIds)
+        foreach (var pid in present)
         {
             foreach (var info in _hid.Find(CorsairPsuProtocol.VendorId, pid))
             {

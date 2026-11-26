@@ -64,7 +64,18 @@ public class CorsairPsuTransportTests
 
         Assert.Equal(new CorsairPsuInfo(0x1C1F, "psu", "S1"), found);
         Assert.Equal(0, hid.FindAllCalls);
-        Assert.DoesNotContain(hid.FindCalls, c => c.Pid == 0x0A3E);
+        Assert.Equal(new[] { (0x1B1C, 0x1C1F) }, hid.FindCalls);
+    }
+
+    [Fact]
+    public void Find_with_a_psu_on_the_bus_but_no_hid_match_returns_null()
+    {
+        var hid = new RecordingEnumerator();
+        var usb = new FakeUsb();
+        usb.Entries.Add(Usb(0x1B1C, 0x1C1F));
+
+        Assert.Null(new HidCorsairPsuTransport(hid, new HardwarePresence(usb)).Find());
+        Assert.Equal(new[] { (0x1B1C, 0x1C1F) }, hid.FindCalls);
     }
 
     [Fact]
