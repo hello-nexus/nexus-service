@@ -238,6 +238,61 @@ public class AsusSlc4LcdTests
         Assert.Empty(device.Writes);
     }
 
+    // The panel's own reply shape from a support log: no command, no SeqNumber, AckNumber one above the request's.
+    private static string PanelReply(int status, int sequence) =>
+        $"1 {status}\r\nAckNumber={sequence + 1}\r\n\r\n";
+
+    [Fact]
+    public void Replies_keyed_by_ack_number_match_without_waiting_out_the_timeout()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        var device = new RecordingHidDevice { Responder = (c, n) => PanelReply(200, n) };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        Assert.True(handshake.OnAttach(device, 1025));
+
+        Assert.True(clock.ElapsedMilliseconds < 5000, $"attach took {clock.ElapsedMilliseconds} ms");
+        Assert.Equal(5, device.Writes.Count);
+        device.Writes.Clear();
+        Assert.True(handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 60_000));
+        Assert.Empty(device.Writes);
+    }
+
+    [Fact]
+    public void An_ack_number_reply_confirms_the_enable_only_for_the_message_it_answers()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        // Only the enable goes unanswered during attach, then its reply lands late.
+        var device = new RecordingHidDevice { Responder = (c, n) => c == "realtimeDisplay" ? null : PanelReply(200, n) };
+        Assert.True(handshake.OnAttach(device, 1025));
+        device.Responder = null;
+        device.Writes.Clear();
+
+        device.Replies.Enqueue(Framed(PanelReply(200, 3)));
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 6_000);
+        Assert.Single(device.Writes);
+
+        device.Writes.Clear();
+        device.Replies.Enqueue(Framed(PanelReply(200, 4)));
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 12_000);
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 60_000);
+        Assert.Empty(device.Writes);
+    }
+
+    [Fact]
+    public void An_ack_number_error_status_does_not_confirm_the_enable()
+    {
+        var handshake = new AsusSlc4LcdHandshake();
+        var device = new RecordingHidDevice { Responder = (c, n) => PanelReply(c == "realtimeDisplay" ? 500 : 200, n) };
+        Assert.True(handshake.OnAttach(device, 1025));
+        device.Responder = null;
+        device.Writes.Clear();
+
+        handshake.BeforeFrame(device, 1025, Environment.TickCount64 + 6_000);
+
+        Assert.Single(device.Writes);
+    }
+
     private static string Reply(int status, int sequence) =>
         $"HTTP/1.1 {status} OK\r\nSeqNumber={sequence}\r\n\r\n";
 

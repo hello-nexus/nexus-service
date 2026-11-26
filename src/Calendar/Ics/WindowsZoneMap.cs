@@ -156,11 +156,18 @@ internal static class WindowsZoneMap
         "Line Islands Standard Time|Pacific/Kiritimati,Etc/GMT-14",
     };
 
-    private static readonly Lazy<(Dictionary<string, string> WindowsToIana, Dictionary<string, string> IanaToWindows)> Tables = new(Build);
+    private static readonly Lazy<(Dictionary<string, string[]> WindowsToIana, Dictionary<string, string> IanaToWindows)> Tables = new(Build);
 
     /// <summary>Primary IANA id for a Windows zone id, or null.</summary>
     public static string? ToIana(string windowsId) =>
-        Tables.Value.WindowsToIana.TryGetValue(windowsId, out var v) ? v : null;
+        Tables.Value.WindowsToIana.TryGetValue(windowsId, out var v) ? v[0] : null;
+
+    /// <summary>
+    /// Every IANA id listed for a Windows zone id, primary first. Hosts ship different
+    /// tzdata generations, so a legacy alias may be absent where its renamed twin exists.
+    /// </summary>
+    public static IReadOnlyList<string> ToIanaCandidates(string windowsId) =>
+        Tables.Value.WindowsToIana.TryGetValue(windowsId, out var v) ? v : [];
 
     /// <summary>Windows zone id for an IANA id, or null.</summary>
     public static string? ToWindows(string ianaId) =>
@@ -168,16 +175,16 @@ internal static class WindowsZoneMap
 
     internal static IEnumerable<string> WindowsIds => Tables.Value.WindowsToIana.Keys;
 
-    private static (Dictionary<string, string>, Dictionary<string, string>) Build()
+    private static (Dictionary<string, string[]>, Dictionary<string, string>) Build()
     {
-        var w2i = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var w2i = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         var i2w = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in Rows)
         {
             var bar = row.IndexOf('|');
             var win = row.Substring(0, bar);
             var ianas = row.Substring(bar + 1).Split(',');
-            w2i[win] = ianas[0];
+            w2i[win] = ianas;
             foreach (var iana in ianas)
             {
                 i2w.TryAdd(iana, win);

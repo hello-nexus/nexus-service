@@ -248,9 +248,8 @@ internal sealed class IcsZoneResolver
         {
             return new TimeZoneInfoZone(direct);
         }
-        var mapped = WindowsZoneMap.ToIana(tzid) is { } iana && TryNative(iana) is { } viaIana
-            ? viaIana
-            : WindowsZoneMap.ToWindows(tzid) is { } win ? TryNative(win) : null;
+        var mapped = WindowsZoneMap.ToIanaCandidates(tzid).Select(TryNative).FirstOrDefault(z => z is not null)
+            ?? (WindowsZoneMap.ToWindows(tzid) is { } win ? TryNative(win) : null);
         if (mapped is not null)
         {
             return new TimeZoneInfoZone(mapped);
