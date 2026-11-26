@@ -542,6 +542,120 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_usb_unit_that_was_ours_and_reports_no_master_after_a_receiver_reset_is_bound_again()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, saved, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        tx.SentFrames.Clear();
+
+        // The Flex receiver is removed and arrives again: the unit comes back with no master.
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        Ticks(hub, 3);
+
+        Assert.True(CountBindFrames(tx) >= 1);
+        Assert.True(hub.State.Fans[0].BoundToUs);
+        Assert.Equal(4, hub.State.Fans[0].Slot);
+        Assert.Equal(4, saved[mac]);
+    }
+
+    [Fact]
+    public void A_usb_unit_that_reports_another_master_after_a_reset_is_left_alone()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        tx.SentFrames.Clear();
+
+        fan.MasterMac = OtherMasterMac;
+        fan.RxType = 2;
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+        Assert.False(hub.State.Fans[0].BoundToUs);
+    }
+
+    [Fact]
+    public void A_usb_unit_the_user_unbound_is_not_bound_again_by_a_reset()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        hub.SetLockBoundDevices(false);
+        Assert.True(hub.Unbind(mac, out var error), error);
+        Ticks(hub, 4);
+        Assert.False(hub.State.Fans[0].BoundToUs);
+        tx.SentFrames.Clear();
+
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_rebind_a_usb_unit_never_takes_is_resent_every_three_seconds_and_given_up_after_the_pending_timeout()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        tx.SentFrames.Clear();
+
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        fan.IgnoresBind = true;
+        var elapsed = 0L;
+        void Run(long ms)
+        {
+            for (var end = elapsed + ms; elapsed < end; elapsed += 1_000)
+            {
+                clock.AdvanceMs(1_000);
+                Assert.True(hub.DriveTick());
+            }
+        }
+
+        Run(10_000);
+        var early = CountBindFrames(tx);
+        // The first frame goes out at once, then one per resend period.
+        Assert.InRange(early, 3, 5);
+
+        Run(Slv3Hub.PendingOpTimeoutMs + 5_000);
+        var atGiveUp = CountBindFrames(tx);
+        Assert.True(atGiveUp > early);
+        Run(60_000);
+        Assert.Equal(atGiveUp, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_usb_unit_not_seen_bound_to_us_in_this_session_is_not_rebound_from_the_saved_list_alone()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
+        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        net.Fans.Add(new SimulatedFan { Mac = FanMac, RxType = 254 });
+        tx.SentFrames.Clear();
+
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
     public void Uploads_and_sequenced_commands_reach_a_wired_fan_bound_to_us_and_never_one_that_is_not()
     {
         var (hub, net, _, _) = CreateConnectedHub();
