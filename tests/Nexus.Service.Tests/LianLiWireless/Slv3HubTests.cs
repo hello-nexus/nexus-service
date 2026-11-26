@@ -541,40 +541,44 @@ public partial class Slv3HubTests
         Assert.Equal(11, hub.State.Fans[0].Channel);
     }
 
-    [Fact]
-    public void A_usb_unit_that_was_ours_and_reports_no_master_after_a_receiver_reset_is_bound_again()
+    // A unit that was on the radio, then arrives on USB: the receiver reset the tests model.
+    private static (Slv3Hub Hub, FakeSlv3Network Net, FakeTxTransport Tx, Dictionary<string, int> Saved, ManualClock Clock, SimulatedFan Fan, Action Arrive) BoundUnitThatCanArriveOnUsb()
     {
         var mac = Convert.ToHexString(FanMac);
-        var (hub, net, tx, saved, _) = CreateOwnershipHub(new() { [mac] = 4 });
-        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var (hub, net, tx, saved, clock) = CreateOwnershipHub(new() { [mac] = 4 });
+        var wired = false;
+        hub.WiredOwned = m => wired && string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
         var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
         net.Fans.Add(fan);
         Ticks(hub, 2);
         Assert.True(hub.State.Fans[0].BoundToUs);
         tx.SentFrames.Clear();
+        return (hub, net, tx, saved, clock, fan, () =>
+        {
+            wired = true;
+            fan.MasterMac = new byte[6];
+            fan.RxType = 254;
+        });
+    }
 
-        // The Flex receiver is removed and arrives again: the unit comes back with no master.
-        fan.MasterMac = new byte[6];
-        fan.RxType = 254;
+    [Fact]
+    public void A_usb_unit_that_was_ours_and_reports_no_master_after_a_receiver_reset_is_bound_again()
+    {
+        var (hub, net, tx, saved, _, _, arrive) = BoundUnitThatCanArriveOnUsb();
+        arrive();
         Ticks(hub, 3);
 
         Assert.True(CountBindFrames(tx) >= 1);
         Assert.True(hub.State.Fans[0].BoundToUs);
         Assert.Equal(4, hub.State.Fans[0].Slot);
-        Assert.Equal(4, saved[mac]);
+        Assert.Equal(4, saved[Convert.ToHexString(FanMac)]);
     }
 
     [Fact]
     public void A_usb_unit_that_reports_another_master_after_a_reset_is_left_alone()
     {
-        var mac = Convert.ToHexString(FanMac);
-        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
-        hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
-        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
-        net.Fans.Add(fan);
-        Ticks(hub, 2);
-        tx.SentFrames.Clear();
-
+        var (hub, net, tx, _, _, fan, arrive) = BoundUnitThatCanArriveOnUsb();
+        arrive();
         fan.MasterMac = OtherMasterMac;
         fan.RxType = 2;
         Ticks(hub, 5);
@@ -587,15 +591,29 @@ public partial class Slv3HubTests
     public void A_usb_unit_the_user_unbound_is_not_bound_again_by_a_reset()
     {
         var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, _, fan, arrive) = BoundUnitThatCanArriveOnUsb();
+        hub.SetLockBoundDevices(false);
+        Assert.True(hub.Unbind(mac, out var error), error);
+        Ticks(hub, 4);
+        Assert.False(hub.State.Fans[0].BoundToUs);
+        tx.SentFrames.Clear();
+
+        arrive();
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_usb_unit_unbound_from_lconnect_with_no_arrival_or_rx_reopen_is_not_bound_again()
+    {
+        var mac = Convert.ToHexString(FanMac);
         var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [mac] = 4 });
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
         var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
         net.Fans.Add(fan);
         Ticks(hub, 2);
-        hub.SetLockBoundDevices(false);
-        Assert.True(hub.Unbind(mac, out var error), error);
-        Ticks(hub, 4);
-        Assert.False(hub.State.Fans[0].BoundToUs);
+        Assert.True(hub.State.Fans[0].BoundToUs);
         tx.SentFrames.Clear();
 
         fan.MasterMac = new byte[6];
@@ -606,18 +624,134 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_rebind_a_usb_unit_never_takes_is_resent_every_three_seconds_and_given_up_after_the_pending_timeout()
+    public void An_unbound_report_long_after_the_usb_arrival_is_not_tied_to_it()
     {
         var mac = Convert.ToHexString(FanMac);
         var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 4 });
+        var wired = false;
+        hub.WiredOwned = m => wired && string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+        // The unit arrives on USB still bound; the unbind comes well after the reset window.
+        wired = true;
+        Ticks(hub, 2);
+        clock.AdvanceMs(Slv3Hub.RebindResetWindowMs + 1_000);
+        tx.SentFrames.Clear();
+        fan.MasterMac = new byte[6];
+        fan.RxType = 254;
+        Ticks(hub, 5);
+
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void An_rx_reopen_just_before_an_unbound_report_counts_as_a_reset()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var clock = new ManualClock();
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var rxOpens = 0;
+        var hub = new Slv3Hub(new FakeDiscovery(), port =>
+        {
+            if (port.Role == Slv3DongleRole.Tx) return tx;
+            rxOpens++;
+            return rx;
+        }, clock.NowMs) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
+        hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [mac] = 4 };
         hub.WiredOwned = m => string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
         var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
         net.Fans.Add(fan);
         Ticks(hub, 2);
-        tx.SentFrames.Clear();
+        Assert.True(hub.State.Fans[0].BoundToUs);
 
+        // The RX is wedged and reopened, and the unit comes back unbound.
+        rx.BusyReads = true;
+        for (var i = 0; i < 60; i++)
+        {
+            clock.AdvanceMs(1_000);
+            Assert.True(hub.PollTick());
+        }
+        Assert.Equal(2, rxOpens);
+        rx.BusyReads = false;
+        tx.SentFrames.Clear();
         fan.MasterMac = new byte[6];
         fan.RxType = 254;
+        Ticks(hub, 3);
+
+        Assert.True(CountBindFrames(tx) >= 1);
+    }
+
+    [Fact]
+    public void A_usb_unit_that_keeps_losing_its_binding_is_rebound_three_times_an_hour_then_left_alone()
+    {
+        var mac = Convert.ToHexString(FanMac);
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [mac] = 4 });
+        var wired = false;
+        hub.WiredOwned = m => wired && string.Equals(m, mac, StringComparison.OrdinalIgnoreCase);
+        var fan = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(fan);
+        Ticks(hub, 2);
+
+        for (var cycle = 1; cycle <= 4; cycle++)
+        {
+            wired = false;
+            Ticks(hub, 1);
+            tx.SentFrames.Clear();
+            wired = true;
+            fan.MasterMac = new byte[6];
+            fan.RxType = 254;
+            Ticks(hub, 3);
+            Assert.Equal(cycle <= 3, CountBindFrames(tx) >= 1);
+            Assert.Equal(cycle <= 3, hub.State.Fans[0].BoundToUs);
+            if (cycle > 3)
+            {
+                break;
+            }
+            clock.AdvanceMs(30_000);
+        }
+    }
+
+    [Fact]
+    public void A_usb_unit_this_hub_unbound_itself_is_not_bound_again_by_a_reset()
+    {
+        // Two wired units on one slot with the lock off: the hub unbinds the loser for the conflict.
+        var macA = Convert.ToHexString(FanMac);
+        var otherMac = Convert.FromHexString("A1A2A3A4A5A6");
+        var macB = Convert.ToHexString(otherMac);
+        var (hub, net, tx, _, _) = CreateOwnershipHub();
+        var wired = false;
+        hub.WiredOwned = m => wired;
+        var a = new SimulatedFan { Mac = FanMac, MasterMac = net.MasterMac, RxType = 4 };
+        var b = new SimulatedFan { Mac = otherMac, MasterMac = net.MasterMac, RxType = 4 };
+        net.Fans.Add(a);
+        net.Fans.Add(b);
+        hub.SetLockBoundDevices(false);
+        Ticks(hub, 2);
+        wired = true;
+        Ticks(hub, 12);
+        var unbound = net.Fans.Find(f => Slv3Protocol.MacIsZero(f.MasterMac));
+        Assert.NotNull(unbound);
+        tx.SentFrames.Clear();
+
+        // A reset arrives for the unbound one; it must stay unbound.
+        wired = false;
+        Ticks(hub, 1);
+        wired = true;
+        Ticks(hub, 5);
+
+        Assert.True(Slv3Protocol.MacIsZero(unbound!.MasterMac));
+        Assert.Equal(0, CountBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_rebind_a_usb_unit_never_takes_is_resent_every_three_seconds_and_given_up_after_the_pending_timeout()
+    {
+        var (hub, net, tx, _, clock, fan, arrive) = BoundUnitThatCanArriveOnUsb();
+        arrive();
         fan.IgnoresBind = true;
         var elapsed = 0L;
         void Run(long ms)

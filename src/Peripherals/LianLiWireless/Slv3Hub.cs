@@ -47,6 +47,19 @@ public sealed partial class Slv3Hub : IDisposable
     // Units seen bound to us in this session, so a USB unit that loses its binding to a receiver reset is told apart from one that was never ours.
     private readonly HashSet<string> _boundSeen = new(StringComparer.Ordinal);
 
+    // Per USB unit: whether it was USB-owned at the last poll, and when it last became so. An arrival or an RX reopen
+    // is the only reset signal a rebind trusts; a unit unbound from L-Connect over USB shows neither.
+    private readonly Dictionary<string, bool> _wiredLast = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _wiredArrivedMs = new(StringComparer.Ordinal);
+    private long _rxRecoveryMs;
+    // Rebind starts per unit, newest last, so a unit that keeps losing its binding stops being steered back.
+    private readonly Dictionary<string, List<long>> _rebindStarts = new(StringComparer.Ordinal);
+
+    /// <summary>How long after a USB arrival or an RX reopen an unbound report still counts as the reset's doing.</summary>
+    internal const long RebindResetWindowMs = 60_000;
+    internal const int RebindsPerHour = 3;
+    private const long RebindCapWindowMs = 3_600_000;
+
     // USB units whose automatic rebind ran out of time; cleared when the unit is bound, the user binds or unbinds it, or the hub resets.
     private readonly HashSet<string> _rebindGaveUp = new(StringComparer.Ordinal);
 
@@ -194,6 +207,12 @@ public sealed partial class Slv3Hub : IDisposable
         foreach (var record in _lastFanRecords)
         {
             var key = Convert.ToHexString(record.Mac);
+            var wired = IsWiredOwned(key);
+            if (_wiredLast.TryGetValue(key, out var wasWired) && !wasWired && wired)
+            {
+                _wiredArrivedMs[key] = _nowMs();
+            }
+            _wiredLast[key] = wired;
             if (_userBoundWired.Contains(key) && IsBoundToUsLocked(record) && ValidSlot(record.RxType)
                 && (!_owned.TryGetValue(key, out var savedSlot) || savedSlot != record.RxType))
             {
@@ -205,7 +224,7 @@ public sealed partial class Slv3Hub : IDisposable
                 _boundSeen.Add(key);
                 _rebindGaveUp.Remove(key);
             }
-            if (IsWiredOwned(key) && !IsBoundToUsLocked(record))
+            if (wired && !IsBoundToUsLocked(record))
             {
                 if (_wiredNoted.Add(key))
                 {
@@ -221,17 +240,33 @@ public sealed partial class Slv3Hub : IDisposable
     }
 
     /// <summary>
-    /// A USB unit that was bound to us in this session and now reports no master, as after its receiver was reset or replugged, is
-    /// bound again like a manual bind (resent at the wired pace, given up at the pending timeout). A unit that reports another master was
-    /// bound there on purpose and is left alone, as is one the user unbound or one this session never saw bound to us.
+    /// A USB unit seen bound to us in this session, that is in the saved list or was bound by the user, and now reports no master is
+    /// bound again like a manual bind (resent at the wired pace, given up at the pending timeout), but only when a reset explains
+    /// it: the unit became USB-owned, or the RX was reopened, within <see cref="RebindResetWindowMs"/>. At most <see cref="RebindsPerHour"/>
+    /// rebinds per unit per hour. A unit reporting another master, one the user or this hub unbound, one never seen bound to us this
+    /// session, and one unbound from L-Connect with no reset (no arrival, no reopen) are left alone. The saved slot is rewritten only when it changed.
     /// </summary>
     private void RebindWiredLocked(string key, Slv3DeviceRecord record)
     {
         if (!_boundSeen.Contains(key) || !(_owned.ContainsKey(key) || _userBoundWired.Contains(key))
-            || !Slv3Protocol.MacIsZero(record.MasterMac) || _userUnbound.Contains(key)
+            || !Slv3Protocol.MacIsZero(record.MasterMac) || _userUnbound.Contains(key) || _unboundHere.Contains(key)
             || _rebindGaveUp.Contains(key) || _deferredUnbinds.ContainsKey(key)
             || (_intents.TryGetValue(key, out var pending) && (pending.Unbinding || pending.Manual)))
         {
+            return;
+        }
+        var nowMs = _nowMs();
+        var resetMs = Math.Max(_wiredArrivedMs.GetValueOrDefault(key), _rxRecoveryMs);
+        if (resetMs == 0 || nowMs - resetMs > RebindResetWindowMs)
+        {
+            return;
+        }
+        var starts = _rebindStarts.TryGetValue(key, out var list) ? list : _rebindStarts[key] = new List<long>();
+        starts.RemoveAll(t => nowMs - t > RebindCapWindowMs);
+        if (starts.Count >= RebindsPerHour)
+        {
+            _rebindGaveUp.Add(key);
+            ServiceLog.Warn($"[lianli-wireless] not rebinding {key}: it lost its binding {starts.Count} times in the last hour");
             return;
         }
         if (BindCapReachedLocked(key, record) is { } capError)
@@ -247,11 +282,11 @@ public sealed partial class Slv3Hub : IDisposable
             ServiceLog.Warn($"[lianli-wireless] not rebinding {key} after its USB receiver reset: no free slot");
             return;
         }
-        _unboundHere.Remove(key);
-        _intents[key] = new BindIntent(slot) { Manual = true, StartedMs = _nowMs() };
-        _userOps[key] = (PendingBinding, _nowMs());
+        starts.Add(nowMs);
+        _intents[key] = new BindIntent(slot) { Manual = true, StartedMs = nowMs };
+        _userOps[key] = (PendingBinding, nowMs);
         _userBoundWired.Add(key);
-        ServiceLog.Info($"[lianli-wireless] rebinding {key} to slot {slot}: the USB unit reports no master after a receiver reset");
+        ServiceLog.Info($"[lianli-wireless] rebinding {key} to slot {slot}: the USB unit reports no master after a receiver reset ({starts.Count} of {RebindsPerHour} this hour)");
     }
 
     /// <summary>A wired fan that is being released from the radio: the only thing reconcile does for it.</summary>
@@ -837,6 +872,9 @@ public sealed partial class Slv3Hub : IDisposable
         _userOps.Clear();
         _userBoundWired.Clear();
         _boundSeen.Clear();
+        _wiredLast.Clear();
+        _wiredArrivedMs.Clear();
+        _rebindStarts.Clear();
         _rebindGaveUp.Clear();
         _wiredNoted.Clear();
         _lastIssuedSeq.Clear();
@@ -2894,6 +2932,7 @@ public sealed partial class Slv3Hub : IDisposable
         }
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
+        _rxRecoveryMs = nowMs;
         _rxRecoveries++;
         _nextRxRecoveryMs = nowMs + RecoveryBackoffFor(_rxRecoveries);
         State.LinkStatus = Slv3LinkStatus.Recovering;
