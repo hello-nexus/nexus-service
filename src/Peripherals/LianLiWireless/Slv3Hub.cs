@@ -285,6 +285,10 @@ public sealed partial class Slv3Hub : IDisposable
     private int _rxBusyTx30sAtStart;
     private int _rxBusyUploadsAtStart;
     private int _rxBusyThrottledUploads;
+    private readonly Slv3BusyPause _busyPause = new();
+
+    /// <summary>True while a busy spell has the RGB TX held silent: window uploads and live frames are refused, the poll's clock heartbeat still goes out.</summary>
+    internal bool TxPaused => _busyPause.IsPaused(_nowMs());
     /// <summary>Where the busy-spell diagnostics go; tests replace it.</summary>
     internal Action<string> BusyLog { get; set; } = message => ServiceLog.Info(message);
     private readonly TxPayloadHistory _txPayloads = new();
@@ -2763,6 +2767,15 @@ public sealed partial class Slv3Hub : IDisposable
         _rxBusyPollsInSpell++;
         _rxBusyPollsInPeriod++;
         LogRxBusyProgressLocked(nowMs);
+        switch (_busyPause.Update(nowMs, nowMs - _rxBusySinceMs))
+        {
+            case Slv3BusyPause.Change.Started:
+                BusyLog($"[lianli-wireless] rx busy pause start: spell age {nowMs - _rxBusySinceMs} ms, tx payloads 5 s / 30 s={_txPayloads.Sum(nowMs, 5)} / {_txPayloads.Sum(nowMs, 30)}, uploads in flight={_uploadsInFlight}");
+                break;
+            case Slv3BusyPause.Change.Ended:
+                BusyLog($"[lianli-wireless] rx busy pause end: paused {_busyPause.LastPhaseMs} ms, spell age {nowMs - _rxBusySinceMs} ms, TX resumes");
+                break;
+        }
         if (_rxBusyStreak < RxBusyPollsBeforeReset || nowMs - _rxBusySinceMs < RxBusyResetAfterMs)
         {
             return true;
@@ -2811,9 +2824,11 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         var nowMs = _nowMs();
-        if (_rxBusySpellLogged)
+        var pause = _busyPause.EndSpell(nowMs);
+        if (_rxBusySpellLogged || pause.EverPaused)
         {
-            BusyLog($"[lianli-wireless] rx busy spell end: lasted {nowMs - _rxBusySinceMs} ms, polls={_rxBusyPollsInSpell}, tx payloads 5 s / 30 s={_txPayloads.Sum(nowMs, 5)} / {_txPayloads.Sum(nowMs, 30)}, uploads in flight={_uploadsInFlight}, throttled uploads={_rxBusyThrottledUploads}");
+            var pauseText = pause.EverPaused ? $", ended during {pause.EndedIn}, {pause.SincePauseStartMs} ms since the last pause began" : "";
+            BusyLog($"[lianli-wireless] rx busy spell end: lasted {nowMs - _rxBusySinceMs} ms, polls={_rxBusyPollsInSpell}, tx payloads 5 s / 30 s={_txPayloads.Sum(nowMs, 5)} / {_txPayloads.Sum(nowMs, 30)}, uploads in flight={_uploadsInFlight}, throttled uploads={_rxBusyThrottledUploads}{pauseText}");
         }
         _rxBusyStreak = 0;
         _rxBusySpellLogged = false;
@@ -3544,11 +3559,17 @@ public sealed partial class Slv3Hub : IDisposable
         Sent,
         Failed,
         TooLarge,
+        /// <summary>Refused before any radio traffic while a busy spell holds the TX silent.</summary>
+        Paused,
     }
 
     public async Task<WindowUploadResult> SendRgbWindowResultAsync(
         string macHex, byte[] frames, int ledCount, int frameCount, double intervalTicks, int brightnessPercent, long windowId = -1)
     {
+        if (TxPaused)
+        {
+            return WindowUploadResult.Paused;
+        }
         var startedAt = Stopwatch.GetTimestamp();
         var outcome = new UploadOutcome();
         var result = WindowUploadResult.Failed;
@@ -3765,6 +3786,11 @@ public sealed partial class Slv3Hub : IDisposable
     private bool SendRgbData(
         string macHex, byte[] raw, int ledCount, int frameCount, double intervalMs, int dataPasses, out string effectIndexHex, Slv3UploadKind kind)
     {
+        if (TxPaused)
+        {
+            effectIndexHex = "";
+            return false;
+        }
         var startedAt = Stopwatch.GetTimestamp();
         var outcome = new UploadOutcome();
         var ok = SendRgbDataCore(macHex, raw, ledCount, frameCount, intervalMs, dataPasses, out effectIndexHex, outcome);

@@ -593,15 +593,15 @@ public class Slv3LightingFrameWriterTests
     [Theory]
     [InlineData(1, 132, 1, 700, 30)]
     [InlineData(1, 142, 1, 747, 30)]
-    [InlineData(1, 143, 2, 1017, 60)]
-    [InlineData(1, 174, 2, 1225, 60)]
-    [InlineData(2, 264, 2, 1887, 60)]
-    [InlineData(4, 528, 3, 3774, 60)]
-    [InlineData(5, 702, 4, 4999, 60)]
-    [InlineData(6, 600, 3, 4371, 60)]
-    [InlineData(7, 720, 4, 5234, 60)]
-    [InlineData(8, 798, 4, 5815, 60)]
-    public void WindowPlan_fills_seven_tenths_of_the_air_budget_with_long_windows_and_half_with_short_ones(int chains, int leds, int stretch, int cycleMs, int frames)
+    [InlineData(1, 143, 2, 1424, 60)]
+    [InlineData(1, 174, 2, 1716, 60)]
+    [InlineData(2, 264, 3, 2642, 60)]
+    [InlineData(4, 528, 4, 5283, 60)]
+    [InlineData(5, 702, 5, 6999, 60)]
+    [InlineData(6, 600, 5, 6120, 60)]
+    [InlineData(7, 720, 5, 7328, 60)]
+    [InlineData(8, 798, 6, 8141, 60)]
+    public void WindowPlan_sizes_the_round_to_half_the_air_budget(int chains, int leds, int stretch, int cycleMs, int frames)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
         Assert.Equal(stretch, plan.Stretch);
@@ -630,7 +630,8 @@ public class Slv3LightingFrameWriterTests
         var shortStretch = (int)Math.Ceiling(Math.Max(Math.Max(450, (8 * chains + 0.47 * leds) * 10), 150 * chains) / 750);
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
         Assert.Equal(Slv3LightingFrameWriter.LongWindowFrames, plan.Frames);
-        Assert.True(plan.Stretch <= Math.Min(6, shortStretch));
+        // The margin guard may add one step over the short plan.
+        Assert.True(plan.Stretch <= Math.Min(6, shortStretch + 1));
         // A window holds more than the round it must outlast, whatever the chain count.
         var windowMs = plan.Frames * Slv3LightingFrameWriter.WindowIntervalTicks / 1.6 * plan.Stretch;
         Assert.True(windowMs > plan.CycleMs * 4 / 3);
@@ -645,14 +646,14 @@ public class Slv3LightingFrameWriterTests
     [InlineData(6, 600)]
     [InlineData(7, 720)]
     [InlineData(8, 798)]
-    public void WindowPlan_long_windows_pick_the_smallest_stretch_that_keeps_average_air_under_the_bound_and_a_margin(int chains, int leds)
+    public void WindowPlan_long_windows_pick_the_smallest_stretch_that_keeps_average_air_at_half_the_budget_and_a_margin(int chains, int leds)
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(chains, leds);
         Assert.Equal(Slv3LightingFrameWriter.LongWindowFrames, plan.Frames);
-        // Payloads per round (headers plus both data passes) over the round: 70 percent of the 200 per second budget, under the late-pass budget of 180.
+        // Payloads per round (headers plus both data passes) over the round: half the per-second budget.
         var payloads = 8 * chains + 0.47 * 2 * leds;
         var averageAir = payloads / (plan.CycleMs / 1000);
-        Assert.True(averageAir <= 140.5, $"average air {averageAir:F0}/s");
+        Assert.True(averageAir <= 100.5, $"average air {averageAir:F0}/s");
         // The margin a window keeps after its replacement lands.
         Assert.True(Slv3LightingFrameWriter.WindowMarginMs(plan.Stretch, plan.Frames, plan.CycleMs, 200) >= 1000);
         // One step lower would not fit the round into 75 percent of the window, or would leave less margin.
@@ -666,12 +667,10 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
-    public void WindowPlan_for_the_zaldlum_setup_steps_at_about_130_ms_where_the_first_long_plan_stepped_at_200()
+    public void WindowPlan_for_the_zaldlum_setup_is_the_first_long_plan_again()
     {
         var plan = Slv3LightingFrameWriter.WindowPlan(8, 798);
-        var stepMs = Slv3LightingFrameWriter.WindowIntervalTicks / 1.6 * plan.Stretch;
-        Assert.InRange(stepMs, 130, 135);
-        Assert.Equal(4, plan.Stretch);
+        Assert.Equal(6, plan.Stretch);
         Assert.Equal(60, plan.Frames);
     }
 
@@ -1182,10 +1181,10 @@ public class Slv3LightingFrameWriterTests
         Assert.Equal(727 + 100 + 200 + 727 + 1000, deadline);
         // A slower observed upload raises it.
         Assert.Equal(deadline + 300, Slv3LightingFrameWriter.BusyDeferDeadlineMs(727, 500, 727));
-        // At the 8-chain plan a turn arrives with less window left than the deadline: no deferral, so no window is risked.
+        // At the 8-chain plan a turn arrives with more window left than the deadline, so a deferral has room and still leaves a retry.
         var plan = Slv3LightingFrameWriter.WindowPlan(8, 798);
         var turnWindowRemainingMs = Slv3LightingFrameWriter.WindowMarginMs(plan.Stretch, plan.Frames, plan.CycleMs, 200) + 400;
-        Assert.True(turnWindowRemainingMs < deadline);
+        Assert.True(turnWindowRemainingMs > deadline);
         // A released chain keeps a full retry: the deadline is at least what one retry takes.
         Assert.True(deadline >= 727 + 100 + 200 + 727);
     }

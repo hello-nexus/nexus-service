@@ -358,8 +358,6 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private const double WindowAirPerSecond = 200;
     // Share of the air budget a round of uploads may fill; the rest is left for chains to report in, or the receiver stops hearing them.
     private const double WindowAirUtilization = 0.5;
-    // Long windows may fill this share of WindowAirPerSecond on average, which keeps the round's average under the late-pass budget. A higher share shortens the frame step but runs the average at the budget, where dongle-wide RX busy spells grew.
-    private const double LongWindowAirUtilization = 0.7;
     // Air cost of one upload: header repeats plus two data passes, parts per LED measured on neonrain.
     private const double WindowHeaderCost = 8;
     private const double WindowPartsPerLed = 0.47;
@@ -658,8 +656,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
     private static (int Stretch, double CycleMs, int Frames) WindowPlanFor(int chains, int leds, int frames)
     {
         var scale = frames / (double)WindowFrames;
-        var utilization = frames > WindowFrames ? LongWindowAirUtilization : WindowAirUtilization;
-        var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * scale * leds) * 1000 / WindowAirPerSecond / utilization;
+        var airMs = (WindowHeaderCost * chains + WindowPartsPerLed * scale * leds) * 1000 / WindowAirPerSecond / WindowAirUtilization;
         var cycleMs = Math.Max(Math.Max(WindowPeriodMs, airMs), MinRenderPeriodMs * chains);
         var stretch = Math.Clamp((int)Math.Ceiling(cycleMs / (WindowCycleMs * scale)), 1, MaxWindowStretch);
         // A long window must keep playing a while after its replacement lands, or one slow upload lets it run out.
@@ -920,6 +917,12 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         st.Upload = null;
         var ok = upload.IsCompletedSuccessfully && upload.Result;
         var result = !upload.IsCompletedSuccessfully ? Slv3Hub.WindowUploadResult.Failed : st.UploadResult;
+        if (result == Slv3Hub.WindowUploadResult.Paused)
+        {
+            // Refused before any radio traffic while the hub holds the TX silent: not a failure, the next render is used.
+            st.Failing = false;
+            return;
+        }
         if (result == Slv3Hub.WindowUploadResult.TooLarge)
         {
             // The firmware's size cap is a property of the content, not a link fault: live frames carry the chain.
@@ -1047,6 +1050,7 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && joinFrame < _windowFirstFrame + Frames / 2
             && nowMs >= st.RetryAtMs
             && !st.BusyDeferred
+            && !_hub.TxPaused
             && IsNextToUpload(st, nowMs))
         {
             st.UploadedWindowId = _windowId;
