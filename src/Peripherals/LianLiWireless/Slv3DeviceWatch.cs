@@ -54,7 +54,11 @@ internal sealed class Slv3DeviceWatch
         public int GapSent, GapReports, GapFails;
         public long LineWindowStartMs;
         public int GapLines, GapSuppressed, EchoLines, EchoSuppressed;
+        public long RevertWindowStartMs;
+        public int RevertLines;
     }
+
+    private const int RevertLinesPerWindow = 10;
 
     private readonly Dictionary<string, Chain> _chains = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
@@ -144,8 +148,10 @@ internal sealed class Slv3DeviceWatch
             {
                 return;
             }
+            var previous = c.Reported;
             c.Reported = idxHex;
             c.IdxChanges++;
+            LogRevert(c, mac, previous, idxHex, nowMs, log);
             var slot = -1;
             for (var i = 0; i < SentRingSize; i++)
             {
@@ -291,6 +297,36 @@ internal sealed class Slv3DeviceWatch
 
     // Caller holds _gate. One line per anomalous window upload: when it was sent, and when
     // (or whether) its echo landed.
+    // A chain that held a real effect index and now reports a bare small value (0, 1) lost the effect on its own
+    // side. Names how long after our last upload and last echo it happened, so a reset that follows our writes
+    // reads differently from one that follows nothing.
+    private static void LogRevert(Chain c, string mac, string previous, string current, long nowMs, Action<string> log)
+    {
+        if (previous.Length == 0 || IsBareIdx(previous) || !IsBareIdx(current))
+        {
+            return;
+        }
+        if (nowMs - c.RevertWindowStartMs >= LineWindowMs)
+        {
+            c.RevertWindowStartMs = nowMs;
+            c.RevertLines = 0;
+        }
+        if (++c.RevertLines > RevertLinesPerWindow)
+        {
+            return;
+        }
+        var lastSend = 0L;
+        for (var i = 0; i < SentRingSize; i++)
+        {
+            lastSend = Math.Max(lastSend, c.RingMs[i]);
+        }
+        var sinceSend = lastSend == 0 ? "none" : $"{nowMs - lastSend} ms";
+        var sinceConfirm = c.LastConfirmMs == 0 ? "never" : $"{nowMs - c.LastConfirmMs} ms";
+        log($"[slv3-revert] chain {mac} idx {previous} -> {current} at {Stamp()}: last upload {sinceSend} ago, last echo {sinceConfirm} ago, uploads={c.Sent} echoes={c.Confirmed}");
+    }
+
+    private static bool IsBareIdx(string idxHex) => idxHex.StartsWith("000000", StringComparison.Ordinal);
+
     private static void LogEcho(Chain c, string mac, string result, string idx, long sentMs, long nowMs, Action<string> log, long latencyMs = -1)
     {
         if (result == "ok" && latencyMs < SlowEchoMs) return;

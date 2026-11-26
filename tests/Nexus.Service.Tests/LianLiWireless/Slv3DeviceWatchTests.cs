@@ -27,6 +27,22 @@ public class Slv3DeviceWatchTests
     }
 
     [Fact]
+    public void Revert_to_bare_idx_is_logged_once_with_upload_and_echo_ages()
+    {
+        var watch = new Slv3DeviceWatch();
+        var log = new List<string>();
+        watch.NoteSent(Mac, "02080801", 1_000);
+        watch.NoteReported(Mac, "02080801", 1_400, log.Add);
+        watch.NoteReported(Mac, "00000000", 6_000, log.Add);
+        watch.NoteReported(Mac, "00000000", 6_400, log.Add);
+        watch.NoteReported(Mac, "00000001", 7_000, log.Add);
+        var revert = Assert.Single(log, l => l.StartsWith("[slv3-revert]"));
+        Assert.Contains("02080801 -> 00000000", revert);
+        Assert.Contains("last upload 5000 ms ago", revert);
+        Assert.Contains("last echo 4600 ms ago", revert);
+    }
+
+    [Fact]
     public void Missing_echo_is_stuck_after_threshold_and_logged_once()
     {
         var watch = new Slv3DeviceWatch();
