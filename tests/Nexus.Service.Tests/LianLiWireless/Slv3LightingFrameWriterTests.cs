@@ -1177,12 +1177,12 @@ public class Slv3LightingFrameWriterTests
     [Fact]
     public void The_busy_defer_deadline_leaves_a_render_wait_an_upload_a_turn_and_the_plan_margin()
     {
-        // 8 chains / 798 LEDs: a 727 ms turn, a 100 ms render lead and a 200 ms upload.
+        // The 8-chain plan's turn, the render lead and the assumed upload.
         var deadline = Slv3LightingFrameWriter.BusyDeferDeadlineMs(727, 150, 727);
         Assert.Equal(727 + 100 + 200 + 727 + 1000, deadline);
         // A slower observed upload raises it.
         Assert.Equal(deadline + 300, Slv3LightingFrameWriter.BusyDeferDeadlineMs(727, 500, 727));
-        // At the stretch 4 plan a turn arrives with about 1.9 s left, which is under the deadline: no deferral, so no window is risked.
+        // At the 8-chain plan a turn arrives with less window left than the deadline: no deferral, so no window is risked.
         var plan = Slv3LightingFrameWriter.WindowPlan(8, 798);
         var turnWindowRemainingMs = Slv3LightingFrameWriter.WindowMarginMs(plan.Stretch, plan.Frames, plan.CycleMs, 200) + 400;
         Assert.True(turnWindowRemainingMs < deadline);
