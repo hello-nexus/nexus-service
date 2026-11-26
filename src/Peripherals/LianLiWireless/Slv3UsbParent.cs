@@ -23,7 +23,7 @@ internal static partial class Slv3UsbParent
         return parent is not null && parts[1].Contains("&MI_", StringComparison.OrdinalIgnoreCase) ? ParentOf(parent) ?? parent : parent;
     }
 
-    // Devices whose USB paths are worth comparing: the SL wireless dongle halves, the HydroShift II board and its glass.
+    // Devices whose USB paths are worth comparing: the SL wireless dongle halves, the HydroShift II board and its display.
     private static readonly string[] TopologyTargets = { "VID_0416&PID_8040", "VID_0416&PID_8041", "VID_0416&PID_8051", "VID_1CBE&PID_A068" };
 
     /// <summary>One line per present target device: its hub chain up to the root, serials left out, so shared hubs or controllers stand out.</summary>
@@ -32,23 +32,40 @@ internal static partial class Slv3UsbParent
         var lines = new List<string>();
         const uint FilterEnumerator = 0x1;
         const uint FilterPresent = 0x100;
-        if (CM_Get_Device_ID_List_Size(out var chars, "USB", FilterEnumerator | FilterPresent) != 0 || chars < 2)
+        const uint BufferSmall = 0x1A;
+        char[]? buffer = null;
+        // A device may arrive between the size query and the read, which reports a small buffer: ask again once.
+        for (var attempt = 0; attempt < 2 && buffer is null; attempt++)
         {
-            return lines;
-        }
-        var buffer = new char[chars];
-        fixed (char* p = buffer)
-        {
-            if (CM_Get_Device_ID_List("USB", p, chars, FilterEnumerator | FilterPresent) != 0)
+            if (CM_Get_Device_ID_List_Size(out var chars, "USB", FilterEnumerator | FilterPresent) != 0 || chars < 2)
             {
                 return lines;
             }
+            var candidate = new char[chars];
+            uint result;
+            fixed (char* p = candidate)
+            {
+                result = CM_Get_Device_ID_List("USB", p, chars, FilterEnumerator | FilterPresent);
+            }
+            if (result == 0)
+            {
+                buffer = candidate;
+            }
+            else if (result != BufferSmall)
+            {
+                return lines;
+            }
+        }
+        if (buffer is null)
+        {
+            return lines;
         }
         foreach (var id in new string(buffer).Split('\0', StringSplitOptions.RemoveEmptyEntries))
         {
             foreach (var target in TopologyTargets)
             {
-                if (!id.Contains(target, StringComparison.OrdinalIgnoreCase))
+                // A composite device lists once per interface (&MI_xx) as well; the parent device is the one line wanted.
+                if (!id.Contains(target, StringComparison.OrdinalIgnoreCase) || id.Contains("&MI_", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -56,8 +73,18 @@ internal static partial class Slv3UsbParent
                 var current = id;
                 for (var hop = 0; hop < 8 && ParentOf(current) is { } parent; hop++)
                 {
-                    chain.Add(WithoutSerial(parent));
+                    // Hubs keep their full instance id, so two hubs of one model stay distinguishable.
+                    chain.Add(parent);
                     current = parent;
+                    // The chain ends at the root hub, plus the one PCI controller above it, so controllers tell apart without the ACPI path.
+                    if (parent.StartsWith("USB\\ROOT_HUB", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (ParentOf(parent) is { } controller)
+                        {
+                            chain.Add(controller);
+                        }
+                        break;
+                    }
                 }
                 lines.Add(string.Join(" > ", chain));
             }
@@ -65,11 +92,11 @@ internal static partial class Slv3UsbParent
         return lines;
     }
 
-    // The serial is the instance id's last part on a leaf device; a hub's last part is a system-generated path, kept.
+    // Only the leaf device's instance id ends in its serial; that part is dropped and everything above it is kept whole.
     private static string WithoutSerial(string instanceId)
     {
         var parts = instanceId.Split('\\');
-        return parts.Length >= 3 && parts[1].StartsWith("VID_", StringComparison.OrdinalIgnoreCase) ? parts[0] + "\\" + parts[1] : instanceId;
+        return parts.Length >= 3 ? parts[0] + "\\" + parts[1] : instanceId;
     }
 
     private static unsafe string? ParentOf(string instanceId)

@@ -44,9 +44,8 @@ internal sealed class Slv3BusyPause
             Enter(Phase.Paused, nowMs, 0);
             return Change.Started;
         }
-        if (_phase == Phase.Paused && nowMs - _phaseStartMs >= PauseMs)
+        if (SettleExpiredPause(nowMs))
         {
-            Enter(Phase.TxOn, nowMs, nowMs - _phaseStartMs);
             return Change.Ended;
         }
         if (_phase == Phase.TxOn && nowMs - _phaseStartMs >= TxOnMs)
@@ -55,6 +54,17 @@ internal sealed class Slv3BusyPause
             return Change.Started;
         }
         return Change.None;
+    }
+
+    // A pause that ran out on the clock is over from its full length on, whenever the next poll notices.
+    private bool SettleExpiredPause(long nowMs)
+    {
+        if (_phase != Phase.Paused || nowMs - _phaseStartMs < PauseMs)
+        {
+            return false;
+        }
+        Enter(Phase.TxOn, _phaseStartMs + PauseMs, PauseMs);
+        return true;
     }
 
     private void Enter(Phase phase, long nowMs, long previousPhaseMs)
@@ -73,6 +83,7 @@ internal sealed class Slv3BusyPause
     /// <summary>The spell ended: where it ended and how long after the last pause began, then back to idle.</summary>
     public (bool EverPaused, string EndedIn, long SincePauseStartMs) EndSpell(long nowMs)
     {
+        SettleExpiredPause(nowMs);
         var endedIn = _phase switch
         {
             Phase.Paused => "pause",

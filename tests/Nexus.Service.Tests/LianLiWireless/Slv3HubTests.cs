@@ -2662,6 +2662,23 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void A_pause_that_ran_out_on_the_clock_is_reported_with_its_full_length_and_ends_in_tx()
+    {
+        var pause = new Slv3BusyPause();
+        pause.Update(0, 5_000);
+        // The next poll comes late: the pause still ended at its full length, not at the poll.
+        Assert.Equal(Slv3BusyPause.Change.Ended, pause.Update(Slv3BusyPause.PauseMs + 3_000, 30_000));
+        Assert.Equal(Slv3BusyPause.PauseMs, pause.LastPhaseMs);
+        Assert.Equal(Slv3BusyPause.PauseMs, pause.PhaseStartMs);
+
+        var other = new Slv3BusyPause();
+        other.Update(0, 5_000);
+        var ended = other.EndSpell(Slv3BusyPause.PauseMs + 1_000);
+        Assert.Equal("TX", ended.EndedIn);
+        Assert.Equal(Slv3BusyPause.PauseMs + 1_000, ended.SincePauseStartMs);
+    }
+
+    [Fact]
     public void A_spell_that_ends_while_tx_is_on_or_before_any_pause_says_so()
     {
         var pause = new Slv3BusyPause();

@@ -1234,4 +1234,27 @@ public class Slv3LightingFrameWriterTests
         deferring.BusyDeferred = false;
         Assert.False(writer.IsNextToUpload(waiting, 1000));
     }
+
+    [Fact]
+    public void A_pause_refusal_gives_the_turn_back_so_the_window_is_retried()
+    {
+        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
+        var st = new Slv3LightingFrameWriter.ChainRolling
+        {
+            UploadedWindowId = 7,
+            LastUploadStartMs = 900,
+            PrevUploadedWindowId = 3,
+            PrevLastUploadStartMs = 100,
+            UploadWindowId = 7,
+            UploadResult = Slv3Hub.WindowUploadResult.Paused,
+            Upload = Task.FromResult(false),
+            Failing = true,
+        };
+
+        writer.CollectUpload(Convert.ToHexString(FanMac), st);
+
+        Assert.Equal(3, st.UploadedWindowId);
+        Assert.Equal(100, st.LastUploadStartMs);
+        Assert.False(st.Failing);
+    }
 }
