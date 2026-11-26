@@ -401,7 +401,7 @@ public sealed class SleepBlackoutCoordinator
             // what hands them the blank frame to push.
             var published = _engine.WaitForBlackout(Clamp(EnginePublishBudget, deadline));
 
-            var pushed = PushBridgeBlackout(deadline, settleFirst);
+            var pushed = PushBridgeBlackout(deadline, settleFirst, forOsShutdown: reason == "shutdown");
             ServiceLog.Info(
                 $"[lighting-sleep] blanked for {reason} (fade={fade}, engine={(published ? "published" : "timeout")}, openrgb={pushed})");
         }
@@ -520,7 +520,7 @@ public sealed class SleepBlackoutCoordinator
     /// Returns what was written out of what is known, for the log line - the
     /// caller has no recovery to perform either way.
     /// </summary>
-    private string PushBridgeBlackout(DateTime deadline, bool settleFirst = false)
+    private string PushBridgeBlackout(DateTime deadline, bool settleFirst = false, bool forOsShutdown = false)
     {
         if (_bridge is null)
         {
@@ -537,7 +537,7 @@ public sealed class SleepBlackoutCoordinator
             // Blocking on purpose: the machine stops when this returns, so
             // there is no later to continue on.
             DateTime? settleUntil = settleFirst ? deadline - PushReserve : null;
-            return _bridge.BlackoutSettledAsync(settleUntil, cts.Token).GetAwaiter().GetResult().ToString();
+            return _bridge.BlackoutSettledAsync(settleUntil, cts.Token, forOsShutdown).GetAwaiter().GetResult().ToString();
         }
         catch (OperationCanceledException)
         {

@@ -658,8 +658,24 @@ public sealed class RgbBridge : IDisposable
     /// of the partial one a rescan leaves, and reports what it wrote. A wait that
     /// runs out, or a null deadline, still pushes to the devices known by then.
     /// </summary>
-    internal Task<BlackoutReport> BlackoutSettledAsync(DateTime? settleUntilUtc, CancellationToken ct = default)
-        => BlackoutCoreAsync(settleUntilUtc, ct);
+    internal Task<BlackoutReport> BlackoutSettledAsync(DateTime? settleUntilUtc, CancellationToken ct = default, bool forOsShutdown = false)
+        => BlackoutCoreAsync(settleUntilUtc, ct, forOsShutdown);
+
+    /// <summary>
+    /// Controllers whose last-moment write races the power-off and leaves some boards failing POST:
+    /// the Fusion 2 USB motherboard controller (048D:5711) and the Fusion 2 Blackwell GPU controller,
+    /// which is the only Gigabyte I2C GPU controller at address 0x75.
+    /// </summary>
+    internal static bool SkipsBlackoutOnOsShutdown(RgbDevice d)
+    {
+        if (!string.Equals(d.Vendor, "Gigabyte", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        return d.Location.Contains("VID_048D&PID_5711", StringComparison.OrdinalIgnoreCase)
+            || (d.Location.StartsWith("I2C:", StringComparison.Ordinal)
+                && d.Location.EndsWith(", address 0x75", StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>True while a detection pass or the refresh that commits its device list is outstanding; a rescan with no COMPLETE past the stall limit no longer counts.</summary>
     private bool DeviceListSettling()
@@ -672,7 +688,7 @@ public sealed class RgbBridge : IDisposable
             || _refreshSemaphore.CurrentCount == 0;
     }
 
-    private async Task<BlackoutReport> BlackoutCoreAsync(DateTime? settleUntilUtc, CancellationToken ct)
+    private async Task<BlackoutReport> BlackoutCoreAsync(DateTime? settleUntilUtc, CancellationToken ct, bool forOsShutdown = false)
     {
         if (!IsActive)
         {
@@ -710,6 +726,22 @@ public sealed class RgbBridge : IDisposable
         }
         var pushed = 0;
         var known = _physBuffers.Count;
+        var shutdownSkips = new HashSet<int>();
+        if (forOsShutdown)
+        {
+            var skipped = new List<string>();
+            foreach (var d in Devices)
+            {
+                if (SkipsBlackoutOnOsShutdown(d) && shutdownSkips.Add(d.Address))
+                {
+                    skipped.Add(d.Name);
+                }
+            }
+            if (skipped.Count > 0)
+            {
+                ServiceLog.Info($"[rgb-bridge] shutdown blackout skips {string.Join(", ", skipped)}");
+            }
+        }
         // Local scratch, not the _physFullyUncontrolled field OnFrame owns:
         // this runs on the power-event thread while the engine may still tick.
         var fullyUncontrolled = new Dictionary<int, bool>();
@@ -727,6 +759,10 @@ public sealed class RgbBridge : IDisposable
                 return new BlackoutReport(pushed, known, BlackoutSkip.Disconnected);
             }
             if (fullyUncontrolled.TryGetValue(kv.Key, out var skip) && skip)
+            {
+                continue;
+            }
+            if (shutdownSkips.Contains(kv.Key))
             {
                 continue;
             }
