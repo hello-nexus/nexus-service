@@ -16,7 +16,7 @@ namespace Nexus.Service.Lighting.Smart.Drivers.Govee;
 /// the realtime segment count comes from a per-SKU table captured at pair
 /// time and degrades to averaged single-color for unknown bulb-class models.
 /// </summary>
-public sealed class GoveeDriver : ILightDriver
+public sealed class GoveeDriver : ILightDriver, IDisposable
 {
     // DreamView streaming cadence; the strips' own LED refresh is ~20 ms, so
     // pushing faster than ~30 fps buys nothing and risks flooding.
@@ -25,7 +25,7 @@ public sealed class GoveeDriver : ILightDriver
     private const int ProbeTimeoutMs = 2000;
     private const int ScanTimeoutMs = 2500;
     private const int PingTimeoutMs = 1500;
-    // Must stay well under the strip's own realtime timeout (about a minute) so a
+    // Must stay well under the strip's own realtime timeout so a
     // paused stream re-enters before the strip has already left.
     private const int RazerFrameGapMs = 30_000;
     // Driver-owned probe while armed; the provider's reachability poll runs only with a dashboard open.
@@ -61,13 +61,14 @@ public sealed class GoveeDriver : ILightDriver
     // frame, a frame gap, or repeated status misses / an off status (power cycle,
     // Wi-Fi drop), so the next zone frame re-enters with the full turn-on,
     // brightness, enable sequence.
-    private readonly ConcurrentDictionary<string, RazerEntry> _razerArmedAt = new();
+    private readonly ConcurrentDictionary<string, RazerEntry> _razerEntries = new();
 
     // One instance per entry into realtime mode. Clears compare the instance, so a
     // stale probe or ping result cannot remove an entry armed after it started.
     private sealed class RazerEntry
     {
         public long LastFrameAt;
+        public readonly CancellationTokenSource Stop = new();
         public long NextConfirmAt;
         public int ConfirmsLeft = RazerConfirmCount;
         public int Misses;
@@ -201,7 +202,7 @@ public sealed class GoveeDriver : ILightDriver
         if (frame.Zones is { } zones && frame.On && extra?.Razer == true)
         {
             var now = Environment.TickCount64;
-            if (_razerArmedAt.TryGetValue(dev.Id, out var entry) && now - entry.LastFrameAt > _frameGapMs)
+            if (_razerEntries.TryGetValue(dev.Id, out var entry) && now - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
             {
                 // Paused, disabled or asleep long enough for the strip to have left
                 // realtime mode on its own.
@@ -222,7 +223,7 @@ public sealed class GoveeDriver : ILightDriver
                 await Task.Delay(300, ct).ConfigureAwait(false);
                 await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
                 entry = new RazerEntry { NextConfirmAt = Environment.TickCount64 + _confirmGapMs };
-                _razerArmedAt[dev.Id] = entry;
+                _razerEntries[dev.Id] = entry;
                 _ = ProbeWhileArmedAsync(dev, entry);
             }
             else if (entry.ConfirmsLeft > 0 && now >= entry.NextConfirmAt)
@@ -231,7 +232,7 @@ public sealed class GoveeDriver : ILightDriver
                 entry.NextConfirmAt = now + _confirmGapMs;
                 await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
             }
-            entry.LastFrameAt = now;
+            Volatile.Write(ref entry.LastFrameAt, now);
             var count = Math.Min(zones.Length / 3, Math.Max(1, extra.Segments));
             await _client.RazerAsync(dev.Host,
                 GoveePackets.RazerFrameBase64(zones, count, frame.Brightness01, gradient: true), ct).ConfigureAwait(false);
@@ -239,8 +240,11 @@ public sealed class GoveeDriver : ILightDriver
         }
 
         // Static path - leave realtime mode first so colorwc shows again.
-        if (_razerArmedAt.TryRemove(dev.Id, out _))
+        if (_razerEntries.TryRemove(dev.Id, out var left))
+        {
+            left.Stop.Cancel();
             await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: false), ct).ConfigureAwait(false);
+        }
 
         if (!frame.On)
         {
@@ -271,12 +275,13 @@ public sealed class GoveeDriver : ILightDriver
 
     public async Task<bool> PingAsync(SmartLight dev, CancellationToken ct)
     {
-        _razerArmedAt.TryGetValue(dev.Id, out var entry);
+        _razerEntries.TryGetValue(dev.Id, out var entry);
         return await ObserveStatusAsync(dev, entry, _pingTimeoutMs, ct).ConfigureAwait(false);
     }
 
-    // One status query. Two consecutive misses, or a reply saying the strip is off,
-    // disarm the entry it was started against (never a newer one).
+    // One status query against the entry it started with (never a newer one). A
+    // reply saying the strip is off, or any reply after a miss (a reboot shorter
+    // than the probe spacing), or two consecutive misses disarm it.
     private async Task<bool> ObserveStatusAsync(SmartLight dev, RazerEntry? entry, int timeoutMs, CancellationToken ct)
     {
         GoveeReplyData? reply;
@@ -290,36 +295,49 @@ public sealed class GoveeDriver : ILightDriver
                 if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm)
                     Disarm(dev.Id, entry);
             }
-            else
+            else if (reply.OnOff == 0 || Interlocked.Exchange(ref entry.Misses, 0) > 0)
             {
-                Volatile.Write(ref entry.Misses, 0);
-                if (reply.OnOff == 0)
-                    Disarm(dev.Id, entry);
+                Disarm(dev.Id, entry);
             }
         }
         return reply is not null;
     }
 
     private void Disarm(string id, RazerEntry entry)
-        => ((ICollection<KeyValuePair<string, RazerEntry>>)_razerArmedAt).Remove(new(id, entry));
+    {
+        if (((ICollection<KeyValuePair<string, RazerEntry>>)_razerEntries).Remove(new(id, entry)))
+            entry.Stop.Cancel();
+    }
+
+    private bool IsCurrent(string id, RazerEntry entry)
+        => _razerEntries.TryGetValue(id, out var cur) && ReferenceEquals(cur, entry);
 
     private async Task ProbeWhileArmedAsync(SmartLight dev, RazerEntry entry)
     {
+        var ct = entry.Stop.Token;
         try
         {
-            while (_razerArmedAt.TryGetValue(dev.Id, out var cur) && ReferenceEquals(cur, entry))
+            while (IsCurrent(dev.Id, entry))
             {
-                await Task.Delay(_probeMs).ConfigureAwait(false);
+                await Task.Delay(_probeMs, ct).ConfigureAwait(false);
+                if (!IsCurrent(dev.Id, entry)) return;
                 // Frames stopped without a static frame: the gap rule owns re-entry.
-                if (Environment.TickCount64 - entry.LastFrameAt > _frameGapMs)
+                if (Environment.TickCount64 - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
                 {
                     Disarm(dev.Id, entry);
                     return;
                 }
-                await ObserveStatusAsync(dev, entry, _pingTimeoutMs, CancellationToken.None).ConfigureAwait(false);
+                await ObserveStatusAsync(dev, entry, _pingTimeoutMs, ct).ConfigureAwait(false);
             }
         }
+        catch (OperationCanceledException) { }
         catch { Disarm(dev.Id, entry); }
+    }
+
+    public void Dispose()
+    {
+        foreach (var kv in _razerEntries)
+            Disarm(kv.Key, kv.Value);
     }
 
     private GoveeExtra? GetExtra(SmartLight dev)
