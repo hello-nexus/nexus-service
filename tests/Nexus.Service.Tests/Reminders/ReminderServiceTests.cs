@@ -192,19 +192,23 @@ public sealed class ReminderServiceTests : IDisposable
     }
 
     [Fact]
-    public void A_missing_main_prefers_the_staged_tmp_file()
+    public void A_missing_main_prefers_the_acknowledged_backup_over_an_unacknowledged_tmp()
     {
         var first = new ReminderService(_root);
         var listId = first.GetAll().Lists[0].Id;
         first.CreateItem(J($$"""{"listId":"{{listId}}","title":"one"}"""));
-        File.Copy(StorePath, AtomicJsonFile.TempPathFor(StorePath));
         first.CreateItem(J($$"""{"listId":"{{listId}}","title":"two"}"""));
-        File.Copy(StorePath, AtomicJsonFile.TempPathFor(StorePath), overwrite: true);
-        File.Delete(StorePath);
+        var bakBefore = File.ReadAllText(AtomicJsonFile.BackupPathFor(StorePath));
+        // A failed File.Replace: main renamed to bak, the new content still staged in tmp.
+        File.WriteAllText(AtomicJsonFile.TempPathFor(StorePath), File.ReadAllText(StorePath).Replace("two", "unacknowledged"));
+        File.Move(StorePath, AtomicJsonFile.BackupPathFor(StorePath), overwrite: true);
+        Assert.NotEqual(bakBefore, File.ReadAllText(AtomicJsonFile.BackupPathFor(StorePath)));
 
         var svc = new ReminderService(_root);
 
+        Assert.DoesNotContain(svc.GetAll().Items, i => i.Title == "unacknowledged");
         Assert.Equal(2, svc.GetAll().Items.Count);
+        Assert.True(File.Exists(AtomicJsonFile.TempPathFor(StorePath)));
     }
 
     [Theory]
@@ -259,13 +263,13 @@ public sealed class ReminderServiceTests : IDisposable
     }
 
     [Fact]
-    public void Recovering_from_the_tmp_moves_it_instead_of_rewriting_and_keeps_the_backup()
+    public void With_no_usable_backup_the_tmp_is_promoted_by_a_move_not_rewritten()
     {
         var first = new ReminderService(_root);
         var listId = first.GetAll().Lists[0].Id;
         first.CreateItem(J($$"""{"listId":"{{listId}}","title":"one"}"""));
         first.CreateItem(J($$"""{"listId":"{{listId}}","title":"two"}"""));
-        var bakBefore = File.ReadAllText(AtomicJsonFile.BackupPathFor(StorePath));
+        File.Delete(AtomicJsonFile.BackupPathFor(StorePath));
         File.Move(StorePath, AtomicJsonFile.TempPathFor(StorePath));
         var tmpBefore = File.ReadAllText(AtomicJsonFile.TempPathFor(StorePath));
 
@@ -274,7 +278,6 @@ public sealed class ReminderServiceTests : IDisposable
         Assert.Equal(2, svc.GetAll().Items.Count);
         Assert.Equal(tmpBefore, File.ReadAllText(StorePath));
         Assert.False(File.Exists(AtomicJsonFile.TempPathFor(StorePath)));
-        Assert.Equal(bakBefore, File.ReadAllText(AtomicJsonFile.BackupPathFor(StorePath)));
     }
 
     [Fact]

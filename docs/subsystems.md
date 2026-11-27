@@ -257,10 +257,12 @@ support-bundle ZIP export.
   deleted). One invariant governs loading: a file that exists is never
   overwritten or seeded over unless it parsed into a usable store (at least one
   list) or was moved aside as `.corrupt-*` first. A missing or unusable main
-  file is replaced by promoting, with a move, the newest usable sibling: the
-  staged `.tmp` (what a crash between File.Replace's renames leaves), else the
-  `.bak`. Unusable siblings are moved aside too. The seed is written only when
-  main, `.tmp` and `.bak` are all absent. A file that cannot be read (a lock,
+  file is replaced by promoting, with a move, the `.bak` (the last acknowledged
+  state), else the staged `.tmp` (an unacknowledged attempt, used only when no
+  usable `.bak` exists; a failed File.Replace can leave one after the client got
+  `saveFailed`). The other sibling stays in place. Unusable
+  siblings are moved aside too. The seed is written only when main, `.tmp` and
+  `.bak` are all absent. A file that cannot be read (a lock,
   access denied) or cannot be moved aside is left untouched and the routes
   answer 503 `unavailable` for reads and writes until a later load succeeds; the
   load is retried lazily on requests, at most once per 10 s by monotonic time,

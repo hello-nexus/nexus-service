@@ -160,8 +160,10 @@ public sealed class ReminderService
             return;
         }
 
-        // The newest usable file wins: a crash between File.Replace's renames leaves the staged tmp.
-        var (sourcePath, source) = tmp == ReadOutcome.Ok ? (tmpPath, tmpFile) : bak == ReadOutcome.Ok ? (bakPath, bakFile) : (null, null);
+        // The bak is the last acknowledged state. The tmp is an unacknowledged attempt (a failed File.Replace can
+        // leave main renamed to bak with the new content still in tmp after the client got saveFailed), so it
+        // is used only when no usable bak exists.
+        var (sourcePath, source) = bak == ReadOutcome.Ok ? (bakPath, bakFile) : tmp == ReadOutcome.Ok ? (tmpPath, tmpFile) : (null, null);
         if ((main == ReadOutcome.Corrupt && !MoveAside(_path))
             || (tmp == ReadOutcome.Corrupt && !MoveAside(tmpPath))
             || (bak == ReadOutcome.Corrupt && !MoveAside(bakPath)))
