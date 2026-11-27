@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Diagnostics.Cooling;
@@ -134,6 +135,15 @@ public sealed class CoolingStallDetector
             {
                 EvaluateFan(st, nowUtc, effectiveRpm, duty);
             }
+        }
+    }
+
+    /// <summary>Drops a channel's state, so a stall already held for it leaves the snapshot at once.</summary>
+    public void Forget(string deviceId)
+    {
+        lock (_gate)
+        {
+            _channels.Remove(deviceId);
         }
     }
 
@@ -269,12 +279,14 @@ public sealed class CoolingStallFeeder : BackgroundService
     private readonly IFanControlProvider _fans;
     private readonly CoolingStallDetector _detector;
     private readonly FeatureGates _gates;
+    private readonly IConfigStore? _store;
 
-    public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null)
+    public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null, IConfigStore? store = null)
     {
         _fans = fans;
         _detector = detector;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _store = store;
     }
 
     public CoolingStallSnapshot Snapshot() => _detector.Snapshot();
@@ -311,8 +323,16 @@ public sealed class CoolingStallFeeder : BackgroundService
             return;
         }
 
+        // One settings snapshot per tick. A channel the user took off Nexus Control is not monitored: it is neither
+        // observed nor kept, so an empty header never raises a stall and a stall already held clears at once.
+        var settings = _store?.Load();
         foreach (var ch in channels)
         {
+            if (settings is not null && !FanControlledState.IsControlled(ch.Id, settings))
+            {
+                _detector.Forget(ch.Id);
+                continue;
+            }
             // A port that cannot read its tach right now (MiniHub between
             // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
             // leave it unobserved so it ages out instead of reading as a stall.

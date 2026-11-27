@@ -277,7 +277,7 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         });
 
-        app.MapPost("/cooling/fan/{id}/controlled", (string id, SetFanControlledBody body, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
+        app.MapPost("/cooling/fan/{id}/controlled", (string id, SetFanControlledBody body, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, FeatureGates gates, Nexus.Service.Diagnostics.Alerts.SensorAlertEngine? alerts = null) =>
         {
             if (!gates.Cooling)
             {
@@ -290,20 +290,9 @@ public static class CoolingRoutes
             {
                 return Results.BadRequest(new ApiResponse { Error = true, Msg = "Unknown fan channel" });
             }
-            // Turning control off is the BIOS release plus a persisted marker:
-            // without the release the fan would hold its last duty forever, and
-            // without the marker the next preset apply would reclaim it. Order
-            // matters - the flag goes on last so the release itself is not
-            // swallowed by the write gate it installs.
-            if (!body.Controlled)
-            {
-                FanProfiles.DetachFanFromCurves(id, store);
-                f.ReleaseFan(id);
-                store.Update(s => s.Cooling.ManualSpeeds.Remove(id));
-            }
-            FanControlledState.SetControlled(id, body.Controlled, store);
-            var derived = FanProfiles.DerivePresetFromCurves(store, f);
-            store.Update(s => s.Cooling.ActivePreset = derived);
+            FanControlledState.Apply(id, body.Controlled, f, store);
+            // The watchlist's fan entry reads its on/off from this flag, so its topic refires.
+            alerts?.Reconcile();
             PanelTopics.BroadcastCooling(hub);
             return Results.Ok(ApiResponse.Ok());
         });

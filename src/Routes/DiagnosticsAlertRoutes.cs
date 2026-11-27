@@ -10,6 +10,7 @@ using Nexus.Service.Monitoring.History;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
+using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
 
@@ -78,7 +79,7 @@ public static class DiagnosticsAlertRoutes
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
         }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
-        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
+        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, Nexus.Service.Cooling.IFanControlProvider fans, MultiplexHub hub) =>
         {
             if (body is null)
             {
@@ -115,6 +116,7 @@ public static class DiagnosticsAlertRoutes
             SensorAlertRule? tracker = null;
             var found = false;
             var sensorChanged = false;
+            string? controlChannel = null;
             store.Update(s =>
             {
                 var list = s.Diagnostics.SensorAlerts;
@@ -137,9 +139,22 @@ public static class DiagnosticsAlertRoutes
                 found = true;
                 if (body.BuiltIn == BuiltInSensorRules.FanSpeed && engine.BuiltInDevices().FirstOrDefault(d => BuiltInSensorRules.RuleId(d.SeriesId) == id) is { } fan)
                 {
-                    BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, body.Enabled);
+                    // A fan entry's on/off is its Nexus Control flag, so a real flip is handed to the Cooling toggle's path below.
+                    // The legacy ignore entry is cleared on any flip: control alone decides from here on.
+                    var channel = BuiltInSensorRules.FanChannelId(fan);
+                    var enabledNow = BuiltInSensorRules.FanEnabled(fan, s.Diagnostics, Nexus.Service.Cooling.FanControlledState.IsControlled(channel, s));
+                    if (body.Enabled != enabledNow)
+                    {
+                        BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, true);
+                        controlChannel = channel;
+                    }
                 }
             });
+            if (controlChannel is not null)
+            {
+                Nexus.Service.Cooling.FanControlledState.Apply(controlChannel, body.Enabled, fans, store);
+                PanelTopics.BroadcastCooling(hub);
+            }
             if (tracker is not null)
             {
                 return Results.Conflict(SensorAlertRules.AlreadyTracked(tracker));
@@ -193,7 +208,9 @@ public static class DiagnosticsAlertRoutes
                         list[index] = BuiltInSensorRules.Defaults(device);
                         if (device.Kind == BuiltInSensorRules.FanSpeed)
                         {
+                            // Factory state is on: monitored and under Nexus Control.
                             BuiltInSensorRules.SetFanEnabled(s.Diagnostics, device, true);
+                            Nexus.Service.Cooling.FanControlledState.SetControlledIn(s, BuiltInSensorRules.FanChannelId(device), true);
                         }
                     }
                 }

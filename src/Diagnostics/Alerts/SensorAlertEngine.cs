@@ -538,7 +538,6 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         _store.Read(s =>
         {
             fanNames = Nexus.Service.Cooling.CoolingSnapshots.FanNames(s.Cooling);
-            var ignored = s.Diagnostics.IgnoredComponents;
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
@@ -553,10 +552,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         var copy = rule.Clone();
                         copy.Sensor.Name = device.Name;
                         copy.Source = device.Source;
-                        // A fan's on/off is the Cooling page's stall-monitoring toggle, so the ignore list decides, not the stored flag.
+                        // A fan's on/off is its Nexus Control flag (stall monitoring follows it) unless the legacy ignore entry suppresses it, not the stored flag.
                         if (device.Kind == BuiltInSensorRules.FanSpeed)
                         {
-                            copy.Enabled = ignored?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+                            copy.Enabled = BuiltInSensorRules.FanEnabled(device, s.Diagnostics, Nexus.Service.Cooling.FanControlledState.IsControlled(BuiltInSensorRules.FanChannelId(device), s));
                         }
                         builtInRules.Add(copy);
                     }
@@ -890,7 +889,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     var existing = list.FirstOrDefault(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId));
                     if (existing is null)
                     {
-                        list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics));
+                        list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics,
+                            device.Kind != BuiltInSensorRules.FanSpeed || Nexus.Service.Cooling.FanControlledState.IsControlled(BuiltInSensorRules.FanChannelId(device), s)));
                     }
                     else if (BuiltInSensorRules.CpuDefaultStale(existing, device))
                     {
@@ -1006,13 +1006,48 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     : boardTachs ??= _sensors.GetMotherboardSensorsCached();
                 tach = list.FirstOrDefault(x => x.Id == ch.RpmSensorId);
             }
-            source = tach is null
-                ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware }
-                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
+            if (tach is null)
+            {
+                source = new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware };
+            }
+            else
+            {
+                // The device the entry reads under: the Cooling page groups a board's headers (no device of their own)
+                // under the board name, not the SuperIO chip the tach sensor sits on; a graphics card keeps its own name.
+                if (ch.DeviceName is null)
+                {
+                    hardware = !ch.IsGpu && ch.DeviceId is null && BoardName() is { Length: > 0 } board ? board : tach.Parent.Name;
+                }
+                source = new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
+            }
             var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, ch.Name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
             // A channel with no readable tach has no value, as in the history.
             Add(devices, sensors, device, ch.RpmUnavailable ? float.NaN : ch.Rpm, ch.RpmUnavailable);
         }
+    }
+
+    // Read once: the model never changes while the service runs, and the provider call can poll hardware.
+    private string? _boardName;
+
+    private string BoardName()
+    {
+        if (_boardName is { Length: > 0 } cached)
+        {
+            return cached;
+        }
+        try
+        {
+            var model = _sensors.GetMotherboardModel();
+            if (!string.IsNullOrWhiteSpace(model))
+            {
+                _boardName = model.Trim();
+            }
+        }
+        catch (Exception ex)
+        {
+            Warn("board-name", $"[sensor-alerts] board name read failed: {ex.Message}", Mono());
+        }
+        return _boardName ?? "";
     }
 
     private static SensorRef Ref(string category, HardwareSensor s) => new()
