@@ -48,6 +48,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
     private readonly Lazy<IDeckSurfaceControl> _deckSurface;
     private readonly AudioFilePlayer _audioPlayer;
     private readonly MediaLibrary _mediaLibrary;
+    private readonly Nexus.Service.Panel.PanelDeviceRegistry _panels;
     // The three ActivateLayoutPreset needs beyond what this class already
     // holds. RgbBridge is registered on the desktop platforms only, so it is
     // nullable here exactly as it is at the route and in AppPresetSwitcher.
@@ -82,6 +83,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         Nexus.Service.Lighting.Rgb.RgbBridge? bridge,
         Nexus.Service.Lighting.Smart.SmartLightProvider smart,
         Nexus.Service.Lighting.Engine.LightingEngine engine,
+        Nexus.Service.Panel.PanelDeviceRegistry panels,
         FeatureGates? gates = null)
     {
         _system = system;
@@ -99,6 +101,7 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
         _bridge = bridge;
         _smart = smart;
         _engine = engine;
+        _panels = panels;
         _gates = gates ?? FeatureGates.AllEnabled;
     }
 
@@ -544,6 +547,20 @@ public sealed class DeckActionExecutor : IDeckActionExecutor
                     else
                     {
                         ServiceLog.Warn($"[streamdeck] cooling preset not found: {na.PresetId}");
+                    }
+                }
+                return;
+            case "displayPreset":
+                if (!string.IsNullOrEmpty(na.DeviceId) && !string.IsNullOrEmpty(na.PresetId))
+                {
+                    // Same call as POST /panel/devices/{id}/presets/{presetId}/activate.
+                    if (_panels.ActivatePreset(na.DeviceId, na.PresetId) is not null)
+                    {
+                        PanelTopics.BroadcastPanelDevice(_hub, na.DeviceId);
+                    }
+                    else
+                    {
+                        ServiceLog.Warn($"[streamdeck] display preset not found: {na.DeviceId}/{na.PresetId}");
                     }
                 }
                 return;

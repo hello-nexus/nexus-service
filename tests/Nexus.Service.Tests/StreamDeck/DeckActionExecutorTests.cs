@@ -252,7 +252,7 @@ public sealed class DeckActionExecutorTests : IDisposable
             system, _lightingDevices, _lighting, _fans, _store, _y70, displayBrightness, _media, hub,
             new Lazy<Nexus.Service.Deck.IDeckSurfaceControl>(() => _deckSurface),
             new Nexus.Service.Audio.AudioFilePlayer(),
-            _mediaLibrary, bridge: null, _smart, _engine);
+            _mediaLibrary, bridge: null, _smart, _engine, new Nexus.Service.Panel.PanelDeviceRegistry(_store));
     }
 
     public void Dispose()
@@ -598,6 +598,34 @@ public sealed class DeckActionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Nexus_DisplayPreset_ActivatesThatPanelsPreset()
+    {
+        var registry = new Nexus.Service.Panel.PanelDeviceRegistry(_store);
+        var record = registry.Allocate("Wireless LCD", null);
+        var first = registry.CreatePreset(record.Id, "frieren", out _)!.ActiveId!;
+        registry.CreatePreset(record.Id, "other", out _);
+        Assert.NotEqual(first, registry.ListPresets(record.Id)!.ActiveId);
+
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "displayPreset", DeviceId = record.Id, PresetId = first } });
+
+        Assert.Equal(first, registry.ListPresets(record.Id)!.ActiveId);
+    }
+
+    [Fact]
+    public async Task Nexus_DisplayPreset_MissingPresetOrDevice_LogsAndDoesNotThrow()
+    {
+        var registry = new Nexus.Service.Panel.PanelDeviceRegistry(_store);
+        var record = registry.Allocate("Wireless LCD", null);
+        var only = registry.CreatePreset(record.Id, "frieren", out _)!.ActiveId!;
+
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "displayPreset", DeviceId = record.Id, PresetId = "gone" } });
+        await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "displayPreset", DeviceId = "nope", PresetId = only } });
+
+        Assert.Equal(("ok", null), _executor.LastOutcome);
+        Assert.Equal(only, registry.ListPresets(record.Id)!.ActiveId);
+    }
+
+    [Fact]
     public async Task Nexus_FanProfile_AppliesThePreset()
     {
         await Run(new DeckAction { Type = "nexus", NexusAction = new DeckNexusAction { Op = "fanProfile", Profile = "silent" } });
@@ -647,6 +675,7 @@ public sealed class DeckActionExecutorTests : IDisposable
             new Lazy<Nexus.Service.Deck.IDeckSurfaceControl>(() => _deckSurface),
             new Nexus.Service.Audio.AudioFilePlayer(),
             _mediaLibrary, bridge: null, _smart, _engine,
+            new Nexus.Service.Panel.PanelDeviceRegistry(_store),
             new Nexus.Service.Lifecycle.FeatureGates(_store));
     }
 

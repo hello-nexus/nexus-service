@@ -1144,6 +1144,7 @@ public static class NexusServiceCollectionExtensions
             sp.GetService<Nexus.Service.Lighting.Rgb.RgbBridge>(),
             sp.GetRequiredService<Nexus.Service.Lighting.Smart.SmartLightProvider>(),
             sp.GetRequiredService<Nexus.Service.Lighting.Engine.LightingEngine>(),
+            sp.GetRequiredService<Nexus.Service.Panel.PanelDeviceRegistry>(),
             sp.GetRequiredService<Nexus.Service.Lifecycle.FeatureGates>()));
         services.AddSingleton<Nexus.Service.Deck.IDeckActionExecutor>(sp =>
             sp.GetRequiredService<Nexus.Service.Deck.DeckActionExecutor>());

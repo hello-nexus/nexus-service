@@ -125,7 +125,7 @@ public sealed class DeckNexusAction
     /// <summary>
     /// rgbEffect | lightingBrightness | lightingPreset | fanProfile |
     /// coolingPreset | y70Power | y70Brightness | y70Rotation | toggleWindow |
-    /// lightingPowerToggle | lightingBrightnessStep.
+    /// lightingPowerToggle | lightingBrightnessStep | displayPreset.
     /// Op ids are the stored wire contract; nexus-web labels rgbEffect
     /// "Lighting effect" and fanProfile "Cooling mode".
     /// </summary>
@@ -135,12 +135,14 @@ public sealed class DeckNexusAction
     public string? Mode { get; set; }
     /// <summary>rgbEffect, mode animate.</summary>
     public string? Effect { get; set; }
-    /// <summary>lightingPreset (layout preset id), coolingPreset (saved preset id).</summary>
+    /// <summary>lightingPreset (layout preset id), coolingPreset (saved preset id), displayPreset (that display's saved preset id).</summary>
     public string? PresetId { get; set; }
     /// <summary>fanProfile: off | silent | balanced | turbo | max | custom.</summary>
     public string? Profile { get; set; }
     /// <summary>lightingBrightness (0..1), y70Brightness (0..100), lightingBrightnessStep (signed fraction of full scale added to the master level).</summary>
     public double? Value { get; set; }
+    /// <summary>displayPreset: the panel device record id whose preset is activated.</summary>
+    public string? DeviceId { get; set; }
     /// <summary>y70Power.</summary>
     public bool? On { get; set; }
     /// <summary>y70Rotation.</summary>
