@@ -542,6 +542,12 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     /// </summary>
     public byte? DesiredControlMode => _desiredControlMode;
 
+    /// <summary>Runs <paramref name="action"/> holding the hub lock (re-entrant with the hub's own writes).</summary>
+    public void RunLocked(Action action)
+    {
+        lock (_lock) action();
+    }
+
     /// <summary>Record the pinned mode without re-issuing a control write (the duty setters assert software live).</summary>
     public void MarkDesiredControlMode(byte? mode)
     {
@@ -555,11 +561,10 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     /// the full per-slot frame - callers resend all slots on every call since the wire
     /// frame has no "leave unchanged" option.
     /// </summary>
-    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties, Func<bool>? shouldWrite = null)
+    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties)
     {
         lock (_lock)
         {
-            if (shouldWrite is not null && !shouldWrite()) return false;
             if (!EnsureConnected()) return false;
             var t = _transport;
             if (t is null) return false;

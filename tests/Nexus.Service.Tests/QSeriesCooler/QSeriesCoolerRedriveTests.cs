@@ -106,13 +106,15 @@ public class QSeriesCoolerRedriveTests
         t.ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
         hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
         var before = t.Writes.Count;
+        var fanBefore = FanFrames(t).Count;
 
         p.RedriveIfControlDropped();
 
         var pumpFrames = t.Writes.Skip(before).Where(w => w.Length >= 6 && w[1] == 0xCC && w[2] == 0x02 && w[3] == 0).ToList();
         Assert.Equal(QSeriesCoolerProtocol.ControlModeSoftware, pumpFrames[0][4]);
+        Assert.Equal(2, pumpFrames.Count);
         Assert.All(pumpFrames, f => Assert.Equal(QSeriesCoolerProtocol.MapPumpDutyToWire(100, true), f[5]));
-        Assert.Single(FanFrames(t).Skip(1));
+        Assert.Equal(fanBefore + 1, FanFrames(t).Count);
     }
 
     [Fact]
@@ -134,6 +136,75 @@ public class QSeriesCoolerRedriveTests
         p2.OnHubConnected();
 
         Assert.Equal(n + 1, FanFrames(t).Count);
+    }
+
+    [Fact]
+    public void Reconnect_with_a_non_software_pin_does_not_flip_to_software()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.ManualSpeeds[FanId] = 45);
+        var (hub, t, _, _) = New();
+        var p = new QSeriesCoolerCoolingProvider(hub, store);
+        p.SetFanSpeed(FanId, 45);
+        hub.SetControlMode(QSeriesCoolerProtocol.ControlModeFirmware);
+        t.ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
+        var before = t.Writes.Count;
+
+        p.OnHubConnected();
+        hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
+        p.RedriveIfControlDropped();
+
+        Assert.DoesNotContain(t.Writes.Skip(before), w => w.Length >= 6 && w[1] == 0xCC && w[2] == 0x02
+            && (w[3] == QSeriesCoolerProtocol.FanChannel || w[4] == QSeriesCoolerProtocol.ControlModeSoftware));
+    }
+
+    [Fact]
+    public void No_replay_after_every_channel_was_released()
+    {
+        var (hub, t, p, _) = New();
+        p.SetFanSpeed(FanId, 45);
+        p.ReleaseAll();
+        t.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+        hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+        var before = t.Writes.Count;
+
+        p.RedriveIfControlDropped();
+
+        Assert.Equal(before, t.Writes.Count);
+    }
+
+    [Fact]
+    public void A_device_that_keeps_flipping_is_replayed_on_a_doubling_interval()
+    {
+        var (hub, t, p, clock) = New();
+        p.SetFanSpeed(FanId, 45);
+
+        int Flip()
+        {
+            var n = FanFrames(t).Count;
+            t.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+            hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+            p.RedriveIfControlDropped();
+            return FanFrames(t).Count - n;
+        }
+        Assert.Equal(1, Flip());          // first replay
+        clock.Now += 10_500;
+        Assert.Equal(1, Flip());          // second, interval now 20 s
+        clock.Now += 10_500;
+        Assert.Equal(0, Flip());          // inside the doubled interval
+        clock.Now += 10_000;
+        Assert.Equal(1, Flip());
+
+        // Software mode holding long enough resets the interval.
+        hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
+        p.RedriveIfControlDropped();
+        clock.Now += 61_000;
+        p.RedriveIfControlDropped();
+        Assert.Equal(1, Flip());
+        clock.Now += 10_500;
+        Assert.Equal(1, Flip());
+        clock.Now += 10_500;
+        Assert.Equal(0, Flip());
     }
 
     private sealed class Clock { public long Now = 100_000; }
@@ -180,6 +251,7 @@ public class QSeriesCoolerRedriveTests
         {
             Writes.Add(data.ToArray());
             var isHeader = data.Length >= 4 && data[0] == 0xFF && data[1] == 0xCC;
+            if (isHeader && data.Length >= 5 && data[2] == 0x02 && data[3] == 0 && data[4] != 0) ControlMode = data[4];
             if (isHeader && data[2] == 0x01 && data[3] == 0x00) _pending = BuildPort0();
             else if (isHeader && data[2] == 0x04 && Curve is not null)
                 _pending = QSeriesCoolerProtocol.BuildSetFirmwareMode(QSeriesCoolerProtocol.FwDefaultModeMix, Curve)

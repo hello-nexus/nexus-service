@@ -90,16 +90,18 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
         }
         // Refresh pump RPM so the cooling page's fan card shows live telemetry.
         _hub.PollTelemetry();
-        _cooling?.RedriveIfControlDropped();
-        _cooling?.RefreshStoredCurvePump();
         // Once the version is known: the hand-back mode depends on whether this
         // firmware has an onboard curve, and the poll is retried each tick. The
-        // flag clears after the call, so a throw here retries next tick.
+        // flag clears after the call, so a throw here retries next tick. Runs
+        // before the re-drive and the pump refresh so neither replays against the
+        // previous connection's cached curve, and a reconnect replays only once.
         if (_handBackPending && !string.IsNullOrEmpty(_hub.State.FirmwareVersion))
         {
             _cooling?.OnHubConnected();
             _handBackPending = false;
         }
+        _cooling?.RedriveIfControlDropped();
+        _cooling?.RefreshStoredCurvePump();
         // Nudge the lighting provider so RgbBridge rebuilds its frame map on
         // (re)connect. Debounced inside the provider via a signature compare.
         _lighting?.OnHubStateUpdated();
