@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Cooling;
 using Nexus.Service.Diagnostics.Cooling;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.Diagnostics;
@@ -29,6 +30,56 @@ public class CoolingStallFeederTests
         feeder.Tick();
         // Not observed: the last reading the detector holds is still the agreed one.
         Assert.Equal(872, detector.Snapshot().Devices.Single().Rpm);
+    }
+
+    // Control comes from settings: the provider's channel keeps Controlled at its default.
+    [Theory]
+    [InlineData(false, null, 60)]
+    [InlineData(true, "Unresponsive", 0)]
+    public void Tick_skips_fans_the_cooling_page_keeps_out(bool control, string? classification, int rpm)
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s =>
+        {
+            s.FeaturesOnboardingCompleted = true;
+            if (!control) s.Cooling.UncontrolledFanChannels.Add("f1");
+        });
+        var fans = new ScriptedFans { Channel = new FanChannel { Id = "f1", Name = "Rear", Rpm = rpm, DutyPercent = 60, Classification = classification } };
+        var detector = new CoolingStallDetector();
+        new CoolingStallFeeder(fans, detector, store: store).Tick();
+
+        Assert.Empty(detector.Snapshot().Devices);
+    }
+
+    [Fact]
+    public void A_stalled_fan_that_becomes_excluded_leaves_the_snapshot_on_the_next_tick()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.FeaturesOnboardingCompleted = true);
+        var fans = new ScriptedFans { Channel = new FanChannel { Id = "f1", Name = "Rear", Rpm = 0, DutyPercent = 60 } };
+        var detector = new CoolingStallDetector();
+        var start = DateTime.UtcNow - TimeSpan.FromSeconds(200);
+        detector.Observe("f1", "Rear", "fan", 900, 60, start);
+        detector.Observe("f1", "Rear", "fan", 0, 60, start + TimeSpan.FromSeconds(10));
+        detector.Observe("f1", "Rear", "fan", 0, 60, start + TimeSpan.FromSeconds(150));
+        Assert.Equal(CoolingStallStatuses.Stalled, detector.Snapshot().Devices.Single().Status);
+
+        store.Update(s => s.Cooling.UncontrolledFanChannels.Add("f1"));
+        new CoolingStallFeeder(fans, detector, store: store).Tick();
+
+        Assert.Empty(detector.Snapshot().Devices);
+    }
+
+    [Fact]
+    public void Tick_observes_every_fan_while_the_cooling_feature_is_off()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => { s.FeaturesOnboardingCompleted = true; s.Features.Cooling = false; s.Cooling.UncontrolledFanChannels.Add("f1"); });
+        var fans = new ScriptedFans { Channel = new FanChannel { Id = "f1", Name = "Rear", Rpm = 60, DutyPercent = 60 } };
+        var detector = new CoolingStallDetector();
+        new CoolingStallFeeder(fans, detector, store: store).Tick();
+
+        Assert.Single(detector.Snapshot().Devices);
     }
 
     private sealed class ScriptedFans : IFanControlProvider

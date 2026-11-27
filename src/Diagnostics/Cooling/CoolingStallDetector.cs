@@ -77,6 +77,15 @@ public sealed class CoolingStallDetector
     private readonly object _gate = new();
     private readonly Dictionary<string, ChannelState> _channels = new(StringComparer.Ordinal);
 
+    /// <summary>Drops a channel and any status it held, so it stops reporting at once instead of aging out.</summary>
+    public void Forget(string deviceId)
+    {
+        lock (_gate)
+        {
+            _channels.Remove(deviceId);
+        }
+    }
+
     /// <summary>Feed one observation for a channel. Safe to call at any cadence;
     /// the sustain windows above are measured from real elapsed time between calls
     /// (via <paramref name="nowUtc"/>), not call count.</summary>
@@ -283,6 +292,7 @@ public sealed class CoolingStallFeeder : BackgroundService
 
     public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null, IConfigStore? store = null)
     {
+        _store = store;
         _fans = fans;
         _detector = detector;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -325,13 +335,10 @@ public sealed class CoolingStallFeeder : BackgroundService
             return;
         }
 
-        // One settings read per pass. A fan the user took off Nexus Control is not monitored: it is neither observed
-        // nor kept, so an empty header never raises a stall and a stall already held clears. A pump is not tied to the flag.
-        // With the Cooling feature off the flag cannot be changed, so it is not consulted.
-        var settings = _gates.Cooling ? _store?.Load() : null;
+        var excluded = _store is null ? null : CoolingFanExclusion.ExcludedIds(channels, _store.Load());
         foreach (var ch in channels)
         {
-            if (settings is not null && !IsPump(ch) && !FanControlledState.IsControlled(ch.Id, settings))
+            if (excluded?.Contains(ch.Id) == true)
             {
                 _detector.Forget(ch.Id);
                 continue;
