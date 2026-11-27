@@ -133,6 +133,255 @@ public class WidgetSettingsServiceTests : IDisposable
         Assert.Equal("#222222", strip.Layout.Pages.Single().Widgets.Single().Config!["color"].GetString());
     }
 
+    [Fact]
+    public void Patch_broadcasts_the_full_settings_on_the_instance_topic()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""), ("scale", "1"));
+        var hub = new Nexus.Service.Sockets.MultiplexHub();
+        WidgetSettingsServiceWiring.Wire(svc, hub);
+        var captured = new List<(string Topic, byte[] Payload)>();
+        hub.OnBroadcastForTest += (topic, payload) => captured.Add((topic, payload.ToArray()));
+        using var sub = hub.AddTestSubscription("app-settings/" + InstanceId);
+
+        Set(svc, InstanceId, "#111111");
+
+        var frame = Assert.Single(captured);
+        Assert.Equal("app-settings/" + InstanceId, frame.Topic);
+        var json = System.Text.Encoding.UTF8.GetString(frame.Payload);
+        Assert.Contains("\"values\":{", json);
+        Assert.Contains("\"revision\":", json);
+        Assert.Contains("\"color\":\"#111111\"", json);
+        Assert.Contains("\"scale\":1", json);
+    }
+
+    [Fact]
+    public void Patch_for_an_unknown_instance_does_not_broadcast()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(_ => { });
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+
+        Set(svc, "no-such-instance", "#111111");
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void Revision_increases_per_write_and_get_never_reports_less()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var seen = new List<long>();
+        svc.SettingsChanged += (_, d) => seen.Add(d.Revision);
+
+        Set(svc, InstanceId, "#111111");
+        Set(svc, InstanceId, "#222222");
+
+        Assert.Equal(2, seen.Count);
+        Assert.True(seen[1] > seen[0]);
+        Assert.True(svc.Get(InstanceId).Revision >= seen[1]);
+    }
+
+    [Fact]
+    public void Placement_removed_before_the_patch_applies_yields_no_frame()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Clear());
+        raised = 0;
+
+        Set(svc, InstanceId, "#111111");
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void A_layout_write_that_changes_an_instances_config_broadcasts_it()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        using var v = JsonDocument.Parse("\"#abcdef\"");
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Config =
+            new Dictionary<string, JsonElement> { ["color"] = v.RootElement.Clone() });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal(InstanceId, frame.AppId);
+        Assert.Equal("#abcdef", frame.Values["color"].GetString());
+        Assert.True(frame.Revision > 0);
+    }
+
+    [Fact]
+    public void After_priming_an_unrelated_store_write_broadcasts_nothing()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(_ => { });
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Size = "4x4");
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void Revision_stays_within_the_range_a_js_number_holds_exactly()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+
+        Set(svc, InstanceId, "#111111");
+
+        Assert.InRange(svc.Get(InstanceId).Revision, 1L, 9007199254740991L);
+    }
+
+    [Fact]
+    public void Writes_are_not_scanned_while_nobody_listens()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        svc.HasListeners = () => false;
+        var raised = 0;
+        svc.SettingsChanged += (_, _) => raised++;
+
+        using var v = JsonDocument.Parse("\"#abcdef\"");
+        _store.Update(s => s.Panel.DashboardLayout!.Pages.Single().Widgets.Single(w => w.Id == InstanceId).Config =
+            new Dictionary<string, JsonElement> { ["color"] = v.RootElement.Clone() });
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void A_write_to_a_playlist_stand_ins_remembered_config_broadcasts_it()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        _store.Update(s =>
+        {
+            s.PanelDevices["q60dev"] = new PanelDeviceRecord
+            {
+                Id = "q60dev",
+                Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480 },
+                Layout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg" } } },
+            };
+        });
+        var standIn = "playlist:q60dev:" + MarketplaceType;
+        using var first = JsonDocument.Parse("\"#123456\"");
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs =
+            new Dictionary<string, Dictionary<string, JsonElement>> { [MarketplaceType] = new() { ["color"] = first.RootElement.Clone() } });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        using var second = JsonDocument.Parse("\"#654321\"");
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs![MarketplaceType] =
+            new Dictionary<string, JsonElement> { ["color"] = second.RootElement.Clone() });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal(standIn, frame.AppId);
+        Assert.Equal("#654321", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void The_first_scan_after_a_listener_appears_emits_current_values()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(_ => { });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal(InstanceId, frame.AppId);
+        Assert.Equal("#ff8800", frame.Values["color"].GetString());
+    }
+
+    private void SeedStandInDevice(bool withConfig)
+    {
+        _store.Update(s =>
+        {
+            var device = new PanelDeviceRecord
+            {
+                Id = "q60dev",
+                Capabilities = new PanelDeviceCapabilities { Surface = PanelSurfaces.Monitor, CssWidth = 1920, CssHeight = 480, SupportsPortrait = true },
+                Layout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg" } } },
+                PortraitLayout = new PanelLayoutDto { Pages = { new PanelPageDto { Id = "pg2" } } },
+            };
+            if (withConfig)
+            {
+                using var v = JsonDocument.Parse("\"#123456\"");
+                device.Layout.SingleWidgetConfigs = new Dictionary<string, Dictionary<string, JsonElement>> { [MarketplaceType] = new() { ["color"] = v.RootElement.Clone() } };
+            }
+            s.PanelDevices["q60dev"] = device;
+        });
+    }
+
+    [Fact]
+    public void A_stand_in_that_gains_a_remembered_config_after_priming_broadcasts()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: false);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        using var v = JsonDocument.Parse("\"#abcdef\"");
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs =
+            new Dictionary<string, Dictionary<string, JsonElement>> { [MarketplaceType] = new() { ["color"] = v.RootElement.Clone() } });
+
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+        Assert.Equal("#abcdef", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void A_stand_in_whose_remembered_config_is_removed_broadcasts_its_defaults()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: true);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(s => s.PanelDevices["q60dev"].Layout!.SingleWidgetConfigs = null);
+
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+        Assert.Equal("#ff8800", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void Switching_the_active_slot_broadcasts_the_stand_ins_new_effective_values()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: true);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(s => s.PanelDevices["q60dev"].Rotation = 90);
+
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+        Assert.Equal("#ff8800", frame.Values["color"].GetString());
+    }
+
+    [Fact]
+    public void A_stand_in_is_pruned_without_a_frame_when_its_device_is_removed()
+    {
+        var svc = SetupWidget(("color", "\"#ff8800\""));
+        SeedStandInDevice(withConfig: true);
+        _store.Update(_ => { });
+        var frames = new List<WidgetSettingsDocument>();
+        svc.SettingsChanged += (_, d) => frames.Add(d);
+
+        _store.Update(s => s.PanelDevices.Remove("q60dev"));
+        Assert.Empty(frames);
+
+        SeedStandInDevice(withConfig: true);
+        var frame = Assert.Single(frames);
+        Assert.Equal("playlist:q60dev:" + MarketplaceType, frame.AppId);
+    }
+
     private static void Set(WidgetSettingsService svc, string instanceId, string color)
     {
         using var doc = JsonDocument.Parse(JsonSerializer.Serialize(color));

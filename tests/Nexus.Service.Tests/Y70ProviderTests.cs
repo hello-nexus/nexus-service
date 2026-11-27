@@ -294,6 +294,96 @@ public class Y70ProviderTests
     }
 
     [Fact]
+    public void ReapplyBrightness_on_touch_pushes_stored_value_without_changing_it()
+    {
+        var (provider, _, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+
+        var gain = Y70DisplayProtocol.TouchRgbGainForPercent(40);
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
+        Assert.Equal(40, store.Load().Y70.Brightness);
+    }
+
+    [Fact]
+    public void ReapplyBrightness_on_serial_variant_leaves_a_game_mode_off_screen_dark_then_restores_it()
+    {
+        var (provider, serial, _, store) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
+        store.Load().Y70.Brightness = 40;
+        provider.SetGameModeScreenOff(true);
+        var before = serial.Writes.Count;
+
+        provider.ReapplyBrightness();
+
+        Assert.Equal(before, serial.Writes.Count);
+
+        provider.SetGameModeScreenOff(false);
+        provider.ReapplyBrightness();
+
+        Assert.Equal(Y70DisplayProtocol.BuildSetBrightnessPower(true, 40), serial.Writes[^1]);
+    }
+
+    [Fact]
+    public void GameMode_end_on_truly_rewrites_brightness_after_power_on()
+    {
+        var (provider, _, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTruly);
+        store.Load().Y70.Brightness = 40;
+        provider.SetGameModeScreenOff(true);
+        var before = ddc.VcpWrites.Count;
+
+        provider.SetGameModeScreenOff(false);
+
+        var after = ddc.VcpWrites.Skip(before).ToList();
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpPower, Y70DisplayProtocol.VcpPowerOn), after);
+        Assert.Equal((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), after[^1]);
+    }
+
+    [Fact]
+    public void A_slider_set_between_the_reapply_store_read_and_its_write_is_not_overwritten()
+    {
+        var (provider, _, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTruly);
+        store.Load().Y70.Brightness = 40;
+        // The hook fires on the reapply's first store read; the slider then persists and writes before the
+        // reapply reaches the coalescer.
+        store.OnLoad = () => provider.SetBrightness(70);
+
+        provider.ReapplyBrightness();
+
+        WaitFor(() => ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpBrightness) >= 2);
+        var brightness = ddc.VcpWrites.Where(w => w.Code == Y70DisplayProtocol.VcpBrightness).ToList();
+        Assert.Equal(70, brightness[^1].Value);
+        Assert.DoesNotContain(brightness, w => w.Value == 40);
+    }
+
+    [Fact]
+    public void ReapplyBrightness_on_serial_variant_leaves_a_switched_off_screen_dark()
+    {
+        var (provider, serial, _, store) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
+        store.Load().Y70.Brightness = 40;
+        store.Load().Y70.ScreenOff = true;
+        var before = serial.Writes.Count;
+
+        provider.ReapplyBrightness();
+
+        Assert.Equal(before, serial.Writes.Count);
+    }
+
+    [Fact]
+    public void ReapplyBrightness_leaves_a_switched_off_screen_dark()
+    {
+        var (provider, serial, ddc, store) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        store.Load().Y70.Brightness = 40;
+        store.Load().Y70.ScreenOff = true;
+        var serialBefore = serial.Writes.Count;
+
+        provider.ReapplyBrightness();
+
+        Assert.Empty(ddc.VcpWrites);
+        Assert.Equal(serialBefore, serial.Writes.Count);
+    }
+
+    [Fact]
     public void SetBrightness_on_serial_variant_writes_serial_frame_only()
     {
         var (provider, serial, ddc, _) = BuildConnected(Y70DisplayProtocol.VariantInfinite);
@@ -498,6 +588,177 @@ public class Y70ProviderTests
         Assert.False(provider.GetToggle());
     }
 
+    private sealed class PresentUsb : IUsbEnumerator
+    {
+        private readonly int _pid;
+        public PresentUsb(int pid) => _pid = pid;
+        public List<UsbDeviceEntry> Enumerate() => new() { new UsbDeviceEntry { VendorId = Y70DisplayProtocol.VendorId, ProductId = _pid } };
+    }
+
+    private static void WaitFor(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline && !condition())
+        {
+            System.Threading.Thread.Sleep(10);
+        }
+    }
+
+    private static (Y70Provider Provider, FakeDdcBrightnessProvider Ddc, Y70DisplayHub Hub, FakeY70PortDiscovery Discovery, InMemoryY70ConfigStore Store) BuildUnidentified(int usbPid, Func<long>? clock = null)
+    {
+        var discovery = new FakeY70PortDiscovery(Y70DisplayProtocol.VariantTouch) { PortAvailable = false };
+        var hub = new Y70DisplayHub(discovery, _ => new FakeNp50Transport());
+        var ddc = new FakeDdcBrightnessProvider();
+        var store = new InMemoryY70ConfigStore();
+        var provider = new Y70Provider(hub, store, new FakeY70OrientationProvider(), ddc, new HardwarePresence(new PresentUsb(usbPid)))
+        { Clock = clock ?? (() => Environment.TickCount64) };
+        return (provider, ddc, hub, discovery, store);
+    }
+
+    [Fact]
+    public void Unknown_variant_with_touch_serial_present_sends_no_raw_brightness_then_settled_reapply_writes_gains()
+    {
+        var (provider, ddc, hub, discovery, store) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+
+        Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+        provider.ReapplySettledBrightness();
+
+        var gain = Y70DisplayProtocol.TouchRgbGainForPercent(40);
+        WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpVideoGainRed && w.Value == gain));
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
+        Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+    }
+
+    [Fact]
+    public void Deferred_slider_write_is_applied_once_the_variant_becomes_known()
+    {
+        var (provider, ddc, hub, discovery, _) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+
+        provider.SetBrightness(40);
+        Assert.Empty(ddc.VcpWrites);
+
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+        provider.ApplyDeferredBrightness();
+
+        var gain = Y70DisplayProtocol.TouchRgbGainForPercent(40);
+        WaitFor(() => ddc.VcpWrites.Any(w => w.Code == Y70DisplayProtocol.VcpVideoGainRed && w.Value == gain));
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpVideoGainRed, gain), ddc.VcpWrites);
+        Assert.DoesNotContain(ddc.VcpWrites, w => w.Code == Y70DisplayProtocol.VcpBrightness);
+    }
+
+    [Fact]
+    public void Apply_deferred_brightness_writes_nothing_when_nothing_was_deferred()
+    {
+        var (provider, ddc, hub, discovery, _) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId);
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+
+        provider.ApplyDeferredBrightness();
+
+        // Nothing was deferred, so ApplyDeferredBrightness issues no write.
+        Assert.Empty(ddc.VcpWrites);
+    }
+
+    [Fact]
+    public void Deferred_write_falls_back_to_raw_brightness_past_the_deadline()
+    {
+        long now = 1_000;
+        var (provider, ddc, _, _, store) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId, () => now);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+        Assert.Empty(ddc.VcpWrites);
+
+        now += 16_000;
+        provider.ApplyDeferredBrightness();
+
+        // The injected clock is past the coalescing window, so the write goes out immediately.
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), ddc.VcpWrites);
+    }
+
+    [Fact]
+    public void Deadline_fallback_writes_raw_brightness_once_across_repeated_calls()
+    {
+        long now = 1_000;
+        var (provider, ddc, _, _, store) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId, () => now);
+        store.Load().Y70.Brightness = 40;
+        provider.ReapplyBrightness();
+        now += 16_000;
+
+        provider.ApplyDeferredBrightness();
+        now += 1_000;
+        provider.ApplyDeferredBrightness();
+        now += 1_000;
+        provider.ApplyDeferredBrightness();
+
+        Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpBrightness));
+    }
+
+    [Fact]
+    public void Deferral_resolving_during_game_mode_screen_off_does_not_relight_the_screen()
+    {
+        long now = 1_000;
+        var (provider, ddc, hub, discovery, _) = BuildUnidentified(Y70DisplayProtocol.Y70TouchProductId, () => now);
+        provider.SetBrightness(40);
+        provider.SetGameModeScreenOff(true);
+        var before = ddc.VcpWrites.Count;
+        discovery.PortAvailable = true;
+        Assert.True(hub.EnsureConnected());
+        now += 1_000;
+
+        provider.ApplyDeferredBrightness();
+
+        Assert.DoesNotContain(ddc.VcpWrites.Skip(before), w => w.Code == Y70DisplayProtocol.VcpVideoGainRed);
+    }
+
+    [Fact]
+    public void Unknown_variant_without_touch_serial_still_writes_raw_brightness()
+    {
+        var (provider, ddc, _, _, store) = BuildUnidentified(Y70DisplayProtocol.Y70TrulyProductId);
+        store.Load().Y70.Brightness = 40;
+
+        provider.ReapplyBrightness();
+
+        Assert.Contains((FakeDdcBrightnessProvider.Id, Y70DisplayProtocol.VcpBrightness, 40), ddc.VcpWrites);
+    }
+
+    [Fact]
+    public void Settled_reapply_resends_the_touch_preset_before_the_gains()
+    {
+        var (provider, _, ddc, _) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        provider.SetBrightness(30);
+        Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode));
+        var before = ddc.VcpWrites.Count;
+
+        provider.ReapplySettledBrightness();
+
+        WaitFor(() => ddc.VcpWrites.Count >= before + 4);
+        var after = ddc.VcpWrites.Skip(before).ToList();
+        Assert.Equal(Y70DisplayProtocol.VcpColorPresetMode, after[0].Code);
+        Assert.Equal(Y70DisplayProtocol.VcpVideoGainRed, after[1].Code);
+    }
+
+    [Fact]
+    public void Invalidate_display_prep_makes_the_next_write_resend_the_touch_preset()
+    {
+        var (provider, _, ddc, _) = BuildConnected(Y70DisplayProtocol.VariantTouch);
+        provider.SetBrightness(30);
+        Assert.Equal(1, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode));
+
+        provider.InvalidateDisplayPrep();
+        provider.ReapplyBrightness();
+
+        WaitFor(() => ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode) >= 2);
+        Assert.Equal(2, ddc.VcpWrites.Count(w => w.Code == Y70DisplayProtocol.VcpColorPresetMode));
+    }
+
     [Fact]
     public void Touch_brightness_with_serial_down_writes_gains_never_vcp_brightness()
     {
@@ -651,7 +912,25 @@ public class Y70ProviderTests
         private readonly NexusSettings _settings = new();
 
         public string SettingsPath => ":memory:";
-        public NexusSettings Load() => _settings;
+        /// <summary>
+        /// One-shot hook run during the next <see cref="Load"/>, to interleave another caller. That Load returns the
+        /// values as they were before the hook ran, like a snapshot read that a concurrent writer then outdates.
+        /// </summary>
+        public Action? OnLoad;
+        public NexusSettings Load()
+        {
+            var hook = OnLoad;
+            if (hook is null)
+            {
+                return _settings;
+            }
+            OnLoad = null;
+            var snapshot = new NexusSettings();
+            snapshot.Y70.Brightness = _settings.Y70.Brightness;
+            snapshot.Y70.ScreenOff = _settings.Y70.ScreenOff;
+            hook();
+            return snapshot;
+        }
         public void Update(Action<NexusSettings> mutator) { mutator(_settings); OnChanged?.Invoke(); }
         public void Reload() { }
         public void FlushNow() { }

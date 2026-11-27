@@ -1822,6 +1822,41 @@ public partial class Slv3HubTests
     }
 
     [Fact]
+    public void Time_the_link_was_down_is_blind_time_so_a_recovered_hub_keeps_its_chains()
+    {
+        var clock = new ManualClock();
+        var net = new FakeSlv3Network();
+        var tx = new FakeTxTransport(net);
+        var rx = new FakeRxTransport(net);
+        var discovery = new ToggleDiscovery();
+        var hub = new Slv3Hub(discovery, port => port.Role == Slv3DongleRole.Tx ? tx : rx, clock.NowMs) { ConfirmNewChains = false };
+        Assert.True(hub.EnsureConnected());
+        net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Assert.True(hub.DriveTick());
+        tx.Dead = true;
+        discovery.TxPresent = false;
+        discovery.RxPresent = false;
+
+        // The poll stops entirely once both dongles have been absent past the disconnect limit.
+        var failed = false;
+        for (var i = 0; i < 40; i++)
+        {
+            clock.AdvanceMs(1_000);
+            failed |= !hub.PollTick();
+        }
+        Assert.True(failed);
+
+        net.Fans.Clear();
+        tx.Dead = false;
+        discovery.TxPresent = true;
+        discovery.RxPresent = true;
+        clock.AdvanceMs(1_000);
+        Assert.True(hub.PollTick());
+
+        Assert.Single(hub.State.Fans);
+    }
+
+    [Fact]
     public void Chain_seen_every_poll_never_goes_stale_despite_slow_clock_advance()
     {
         var clock = new ManualClock();
@@ -2743,7 +2778,7 @@ public partial class Slv3HubTests
     [Fact]
     public void The_bind_save_waits_for_every_owned_chain_to_reach_its_target()
     {
-        var (hub, net, tx, _, _) = CreateRebindHub();
+        var (hub, net, tx, clock, _) = CreateRebindHub();
         var second = new SimulatedFan { Mac = SecondFanMac, IgnoresBind = true };
         net.Fans.Add(second);
         hub.OwnedDevicesLoad = () => new Dictionary<string, int> { [Convert.ToHexString(FanMac)] = 4, [Convert.ToHexString(SecondFanMac)] = 5 };
@@ -2752,6 +2787,7 @@ public partial class Slv3HubTests
         Assert.Empty(SaveCfgFrames(tx));
 
         second.IgnoresBind = false;
+        clock.AdvanceMs(15_000);
         Ticks(hub, BindSaveTicks * 2);
         Assert.Single(SaveCfgFrames(tx));
     }

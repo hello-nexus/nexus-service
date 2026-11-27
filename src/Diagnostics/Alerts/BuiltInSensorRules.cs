@@ -250,12 +250,12 @@ public static class BuiltInSensorRules
     /// The rule a device gets the first time it is seen: the kind's template when an upgrade left one (its limits, toggle,
     /// severity, hold and notify choice), else the defaults. A drive on the ignore list starts disabled.
     /// </summary>
-    public static SensorAlertRule Seed(BuiltInDevice device, DiagnosticsSettings diagnostics)
+    public static SensorAlertRule Seed(BuiltInDevice device, DiagnosticsSettings diagnostics, bool controlled = true)
     {
         var rule = Defaults(device);
         if (device.Kind == FanSpeed)
         {
-            rule.Enabled = diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+            rule.Enabled = FanEnabled(device, diagnostics, controlled);
             return rule;
         }
         var spec = Specs.First(s => s.Kind == device.Kind);
@@ -286,6 +286,25 @@ public static class BuiltInSensorRules
         }
         return rule;
     }
+
+    /// <summary>The channel id behind a fan entry (its component id without the "cooling:" prefix).</summary>
+    public static string FanChannelId(BuiltInDevice device) =>
+        device.ComponentId.StartsWith(FanComponentPrefix, StringComparison.Ordinal) ? device.ComponentId[FanComponentPrefix.Length..] : device.ComponentId;
+
+    /// <summary>
+    /// A fan entry reads on only while its channel is under Nexus Control and the legacy ignore entry (the old per-fan
+    /// off switch, still honored as a suppressor) is absent. One setting for control and monitoring. A pump entry
+    /// (no control channel on its source) is the ignore list alone.
+    /// </summary>
+    public static bool FanEnabled(BuiltInDevice device, DiagnosticsSettings diagnostics, bool controlled) =>
+        (controlled || device.Source?.ControlChannel is null) && diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+
+    /// <summary>
+    /// The Controlled input to <see cref="FanEnabled"/>. While the Cooling feature is off nothing can change the flag
+    /// (the controlled route refuses), so it is not consulted and a fan released earlier is monitored by the ignore list alone.
+    /// </summary>
+    public static bool FanControlled(string channelId, NexusSettings settings) =>
+        !Nexus.Service.Lifecycle.FeatureGates.CoolingOf(settings) || Nexus.Service.Cooling.FanControlledState.IsControlled(channelId, settings);
 
     /// <summary>Writes a fan entry's on/off into the ignore list the Cooling page's stall toggle uses, so the two never disagree.</summary>
     public static void SetFanEnabled(DiagnosticsSettings diagnostics, BuiltInDevice device, bool enabled)

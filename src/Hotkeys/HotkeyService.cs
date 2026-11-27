@@ -486,6 +486,14 @@ public sealed class HotkeyService : IHostedService, IDisposable
         return wanted;
     }
 
+    /// <summary>False when the key has no code on this OS (it can never register), as opposed to a combo the OS refused.</summary>
+    private bool KeyHasCode(string key) => _registrar.Platform switch
+    {
+        "macos" => HotkeyCombo.MacKeyCode(key) is not null,
+        "windows" => HotkeyCombo.WindowsVirtualKey(key) is not null,
+        _ => true,
+    };
+
     private string StatusOf(HotkeyBinding b, Analysis analysis, IReadOnlyDictionary<string, bool> results)
     {
         if (!_registrar.Supported)
@@ -503,6 +511,10 @@ public sealed class HotkeyService : IHostedService, IDisposable
         if (analysis.Orphaned.Contains(b.Id))
         {
             return HotkeyStatus.Orphaned;
+        }
+        if (!KeyHasCode(combo.Key))
+        {
+            return HotkeyStatus.Unsupported;
         }
         if (analysis.ComboCounts.GetValueOrDefault(combo.ToString()) > 1)
         {

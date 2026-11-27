@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Threading;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
@@ -231,9 +232,12 @@ public sealed class JpegPanelHub : IDisposable
                     NoteFailureLocked($"frame of {jpeg.Length} bytes does not fit the panel's chunk counter");
                     return false;
                 }
+                long writeStart = Stopwatch.GetTimestamp();
                 if (!_device.Write(_report))
                 {
-                    NoteFailureLocked($"report write rejected at chunk {chunkIndex} ({offset} of {jpeg.Length} bytes sent)");
+                    long writeMs = (long)Stopwatch.GetElapsedTime(writeStart).TotalMilliseconds;
+                    NoteFailureLocked(JpegPanelDiagnostics.FormatWriteFailure(
+                        chunkIndex, written, offset, jpeg.Length, writeMs, _device.LastWriteError));
                     return false;
                 }
                 offset += written;

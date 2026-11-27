@@ -30,42 +30,64 @@ public static class FanControlledState
     }
 
     /// <summary>
+    /// The full Nexus Control toggle shared by the Cooling page and the monitoring
+    /// watchlist's fan entry. Turning control off is the BIOS release plus a
+    /// persisted marker: without the release the fan would hold its last duty
+    /// forever, and without the marker the next preset apply would reclaim it.
+    /// Order matters - the flag goes on last so the release itself is not
+    /// swallowed by the write gate it installs.
+    /// </summary>
+    public static void Apply(string id, bool controlled, IFanControlProvider fans, IConfigStore store)
+    {
+        if (!controlled)
+        {
+            FanProfiles.DetachFanFromCurves(id, store);
+            fans.ReleaseFan(id);
+            store.Update(s => s.Cooling.ManualSpeeds.Remove(id));
+        }
+        SetControlled(id, controlled, store);
+        var derived = FanProfiles.DerivePresetFromCurves(store, fans);
+        store.Update(s => s.Cooling.ActivePreset = derived);
+    }
+
+    /// <summary>
     /// Write id's controlled state, replacing the list reference rather than
     /// mutating in place so the curve worker reading it lock-free never
     /// observes a torn state.
     /// </summary>
     public static void SetControlled(string id, bool controlled, IConfigStore store)
+        => store.Update(s => SetControlledIn(s, id, controlled));
+
+    /// <summary>The same write for a caller already inside <see cref="IConfigStore.Update"/>, which cannot nest.</summary>
+    public static void SetControlledIn(NexusSettings s, string id, bool controlled)
     {
-        store.Update(s =>
+        var current = s.Cooling.UncontrolledFanChannels;
+        if (controlled)
         {
-            var current = s.Cooling.UncontrolledFanChannels;
-            if (controlled)
+            if (!current.Contains(id))
             {
-                if (!current.Contains(id))
-                {
-                    return;
-                }
-                var next = new List<string>(current.Count);
-                foreach (var x in current)
-                {
-                    if (x != id)
-                    {
-                        next.Add(x);
-                    }
-                }
-                s.Cooling.UncontrolledFanChannels = next;
+                return;
             }
-            else
+            var next = new List<string>(current.Count);
+            foreach (var x in current)
             {
-                if (current.Contains(id))
+                if (x != id)
                 {
-                    return;
+                    next.Add(x);
                 }
-                var next = new List<string>(current.Count + 1);
-                next.AddRange(current);
-                next.Add(id);
-                s.Cooling.UncontrolledFanChannels = next;
             }
-        });
+            s.Cooling.UncontrolledFanChannels = next;
+        }
+        else
+        {
+            if (current.Contains(id))
+            {
+                return;
+            }
+            var next = new List<string>(current.Count + 1);
+            next.AddRange(current);
+            next.Add(id);
+            s.Cooling.UncontrolledFanChannels = next;
+        }
     }
 }

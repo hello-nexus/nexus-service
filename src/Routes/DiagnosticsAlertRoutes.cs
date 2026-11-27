@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Auth;
 using Nexus.Service.Diagnostics.Alerts;
+using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
 using Nexus.Service.Monitoring.History;
 using Nexus.Service.Persistence;
@@ -78,7 +79,7 @@ public static class DiagnosticsAlertRoutes
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
         }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
-        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer) =>
+        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, FeatureGates gates) =>
         {
             if (body is null)
             {
@@ -137,7 +138,13 @@ public static class DiagnosticsAlertRoutes
                 found = true;
                 if (body.BuiltIn == BuiltInSensorRules.FanSpeed && engine.BuiltInDevices().FirstOrDefault(d => BuiltInSensorRules.RuleId(d.SeriesId) == id) is { } fan)
                 {
-                    BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, body.Enabled);
+                    // A fan entry's on/off is its Nexus Control flag, written only through POST /cooling/fan/{id}/controlled
+                    // (gate, unknown-id guard, stall forget, refresh). This save leaves it alone, so a stale threshold edit cannot
+                    // take control back. A pump, or any fan while the Cooling gate is off, keeps the plain ignore-list switch.
+                    if (fan.Source?.ControlChannel is null || !gates.Cooling)
+                    {
+                        BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, body.Enabled);
+                    }
                 }
             });
             if (tracker is not null)
@@ -154,7 +161,13 @@ public static class DiagnosticsAlertRoutes
             }
             engine.Reconcile();
             // The stored copy has no source; the response carries the one feeding the rule now.
-            body.Source = engine.Rules().FirstOrDefault(r => r.Id == id)?.Source;
+            // A fan entry's on/off is computed (control and mute), so the response carries the engine's value, not the client's echo.
+            var live = engine.Rules().FirstOrDefault(r => r.Id == id);
+            body.Source = live?.Source;
+            if (live is not null && body.BuiltIn == BuiltInSensorRules.FanSpeed)
+            {
+                body.Enabled = live.Enabled;
+            }
             return Results.Ok(body);
         }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
@@ -193,6 +206,7 @@ public static class DiagnosticsAlertRoutes
                         list[index] = BuiltInSensorRules.Defaults(device);
                         if (device.Kind == BuiltInSensorRules.FanSpeed)
                         {
+                            // Only the legacy mute is cleared: a reset never changes Nexus Control, so it cannot take back a fan the user released.
                             BuiltInSensorRules.SetFanEnabled(s.Diagnostics, device, true);
                         }
                     }

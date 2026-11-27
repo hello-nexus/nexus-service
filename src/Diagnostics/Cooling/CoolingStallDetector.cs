@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Diagnostics.Cooling;
@@ -75,6 +76,15 @@ public sealed class CoolingStallDetector
 
     private readonly object _gate = new();
     private readonly Dictionary<string, ChannelState> _channels = new(StringComparer.Ordinal);
+
+    /// <summary>Drops a channel and any status it held, so it stops reporting at once instead of aging out.</summary>
+    public void Forget(string deviceId)
+    {
+        lock (_gate)
+        {
+            _channels.Remove(deviceId);
+        }
+    }
 
     /// <summary>Feed one observation for a channel. Safe to call at any cadence;
     /// the sustain windows above are measured from real elapsed time between calls
@@ -269,12 +279,14 @@ public sealed class CoolingStallFeeder : BackgroundService
     private readonly IFanControlProvider _fans;
     private readonly CoolingStallDetector _detector;
     private readonly FeatureGates _gates;
+    private readonly IConfigStore? _store;
 
-    public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null)
+    public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null, IConfigStore? store = null)
     {
         _fans = fans;
         _detector = detector;
         _gates = gates ?? FeatureGates.AllEnabled;
+        _store = store;
     }
 
     public CoolingStallSnapshot Snapshot() => _detector.Snapshot();
@@ -296,6 +308,8 @@ public sealed class CoolingStallFeeder : BackgroundService
         catch (OperationCanceledException) { return false; }
     }
 
+    private static bool IsPump(FanChannel ch) => string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal);
+
     internal void Tick()
     {
         if (!_gates.Diagnostics)
@@ -311,13 +325,19 @@ public sealed class CoolingStallFeeder : BackgroundService
             return;
         }
 
+        var excluded = _store is null ? null : CoolingFanExclusion.ExcludedIds(channels, _store.Load());
         foreach (var ch in channels)
         {
+            if (excluded?.Contains(ch.Id) == true)
+            {
+                _detector.Forget(ch.Id);
+                continue;
+            }
             // A port that cannot read its tach right now (MiniHub between
             // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
             // leave it unobserved so it ages out instead of reading as a stall.
             if (ch.RpmUnavailable) continue;
-            var type = string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal) ? "pump" : "fan";
+            var type = IsPump(ch) ? "pump" : "fan";
             _detector.Observe(ch.Id, ch.Name, type, ch.Rpm, ch.DutyPercent, now);
         }
     }

@@ -13,7 +13,7 @@ public class StrimerLightingDeviceProviderTests
 
     public StrimerLightingDeviceProviderTests()
     {
-        _provider = new StrimerLightingDeviceProvider(_hub, _store, new Np50IdentifyTracker());
+        _provider = new StrimerLightingDeviceProvider(new StrimerUnits(_hub), _store, new Np50IdentifyTracker());
     }
 
     private void Connect() => _hub.State.IsConnected = true;

@@ -19,8 +19,14 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
     private const int ERROR_IO_PENDING = 997;
     private const uint WAIT_OBJECT_0 = 0x0;
     private const uint WAIT_TIMEOUT = 0x102;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+    private const int WaitAbandonedCode = -3;
 
     private const int WriteTimeoutMs = 1000;
+    private const int ERROR_TIMEOUT = 1460;
+
+    private int _lastWriteError;
+    public int LastWriteError => Volatile.Read(ref _lastWriteError);
 
     private IntPtr _handle;
     // Every call into the handle runs inside the gate; Dispose cancels pending I/O and waits the gate empty before
@@ -169,18 +175,28 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
 
     public bool Write(ReadOnlySpan<byte> report)
     {
-        if (!_gate.TryEnter()) return false;
+        if (!_gate.TryEnter())
+        {
+            Volatile.Write(ref _lastWriteError, -1);
+            return false;
+        }
         try { return WriteCore(report); }
         finally { _gate.Exit(); }
     }
 
     private bool WriteCore(ReadOnlySpan<byte> report)
     {
-        if (_handle == IntPtr.Zero) return false;
+        if (_handle == IntPtr.Zero)
+        {
+            Volatile.Write(ref _lastWriteError, -1);
+            return false;
+        }
         var buf = HidReportPadding.Pad(report, _outputReportLen);
         if (!_overlapped)
         {
-            return NativeApi.WriteFile(_handle, buf, (uint)buf.Length, out _, IntPtr.Zero);
+            var okSync = NativeApi.WriteFile(_handle, buf, (uint)buf.Length, out _, IntPtr.Zero);
+            Volatile.Write(ref _lastWriteError, okSync ? 0 : Marshal.GetLastWin32Error());
+            return okSync;
         }
         return WriteOverlapped(buf);
     }
@@ -198,18 +214,34 @@ public sealed class WindowsHidDevice : IHidDevice, IHidFeatureCaps
             if (!NativeApi.WriteFileOverlapped(_handle, pbuf, (uint)buf.Length, IntPtr.Zero, &ov))
             {
                 var err = Marshal.GetLastWin32Error();
-                if (err != ERROR_IO_PENDING) return false;
+                if (err != ERROR_IO_PENDING)
+                {
+                    Volatile.Write(ref _lastWriteError, err);
+                    return false;
+                }
 
                 var wait = NativeApi.WaitForSingleObject(_writeEvent, WriteTimeoutMs);
+                var waitError = wait == WAIT_FAILED ? Marshal.GetLastWin32Error() : 0;
                 if (wait != WAIT_OBJECT_0)
                 {
                     NativeApi.CancelIo(_handle);
                     NativeApi.GetOverlappedResult(_handle, &ov, out _, true);
+                    Volatile.Write(ref _lastWriteError, wait switch
+                    {
+                        WAIT_TIMEOUT => ERROR_TIMEOUT,
+                        WAIT_FAILED => waitError,
+                        _ => WaitAbandonedCode,
+                    });
                     return false;
                 }
             }
 
-            if (!NativeApi.GetOverlappedResult(_handle, &ov, out var transferred, false)) return false;
+            if (!NativeApi.GetOverlappedResult(_handle, &ov, out var transferred, false))
+            {
+                Volatile.Write(ref _lastWriteError, Marshal.GetLastWin32Error());
+                return false;
+            }
+            Volatile.Write(ref _lastWriteError, transferred > 0 ? 0 : -2);
             return transferred > 0;
         }
     }

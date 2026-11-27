@@ -147,6 +147,31 @@ public static class HydroShift2Protocol
     public static int PumpRpmForDuty(int dutyPercent, bool round = false) =>
         PumpMinRpm + ((PumpMaxRpmFor(round) - PumpMinRpm) * Math.Clamp(dutyPercent, 0, 100) / 100);
 
+    private const int DrainTimeoutMs = 30;
+    private const int DrainMaxReads = 16;
+
+    /// <summary>
+    /// Discards replies a previous session left queued on the IN pipe (Disconnect never reads
+    /// StopPlay's reply), so a new session starts on an empty pipe. Never throws.
+    /// </summary>
+    public static void DrainStaleReplies(IBulkUsbPipe pipe, Span<byte> scratch)
+    {
+        try
+        {
+            for (int i = 0; i < DrainMaxReads; i++)
+            {
+                if (pipe.Read(scratch, DrainTimeoutMs) <= 0)
+                {
+                    return;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // A drain must never fail the open.
+        }
+    }
+
     /// <summary>Firmware string from a GetVersion reply (ASCII at [8..40]), or null.</summary>
     public static string? DecodeVersion(ReadOnlySpan<byte> reply) => UniversalScreen88Protocol.DecodeVersion(reply);
 

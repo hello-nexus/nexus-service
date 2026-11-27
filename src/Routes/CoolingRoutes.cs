@@ -277,7 +277,7 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         });
 
-        app.MapPost("/cooling/fan/{id}/controlled", (string id, SetFanControlledBody body, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, FeatureGates gates) =>
+        app.MapPost("/cooling/fan/{id}/controlled", (string id, SetFanControlledBody body, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, FeatureGates gates, Nexus.Service.Diagnostics.Alerts.SensorAlertEngine? alerts = null, Nexus.Service.Diagnostics.Cooling.CoolingStallDetector? stalls = null) =>
         {
             if (!gates.Cooling)
             {
@@ -286,24 +286,33 @@ public static class CoolingRoutes
             id = Uri.UnescapeDataString(id);
             // Same guard as /pin: nothing prunes this list, so an id that was
             // never a channel would sit in it with no UI affordance to clear it.
-            if (!f.GetFanChannels().Any(c => c.Id == id))
+            var channel = f.GetFanChannels().FirstOrDefault(c => c.Id == id);
+            if (channel is null)
             {
                 return Results.BadRequest(new ApiResponse { Error = true, Msg = "Unknown fan channel" });
             }
-            // Turning control off is the BIOS release plus a persisted marker:
-            // without the release the fan would hold its last duty forever, and
-            // without the marker the next preset apply would reclaim it. Order
-            // matters - the flag goes on last so the release itself is not
-            // swallowed by the write gate it installs.
-            if (!body.Controlled)
+            var wasControlled = FanControlledState.IsControlled(id, store.Load());
+            FanControlledState.Apply(id, body.Controlled, f, store);
+            if (!string.Equals(channel.Kind, FanKinds.Pump, StringComparison.Ordinal))
             {
-                FanProfiles.DetachFanFromCurves(id, store);
-                f.ReleaseFan(id);
-                store.Update(s => s.Cooling.ManualSpeeds.Remove(id));
+                if (body.Controlled)
+                {
+                    // Only a real off-to-on flip (or the watchlist's own switch) unmutes, so a no-op "controlled" from a
+                    // group action never unmutes fans that were already controlled. The legacy per-fan mute would otherwise keep the watchlist entry off.
+                    if (!wasControlled || body.Unmute)
+                    {
+                        var muted = Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.FanComponentPrefix + id;
+                        store.Update(s => s.Diagnostics.IgnoredComponents?.RemoveAll(x => x == muted));
+                    }
+                }
+                else
+                {
+                    // Without waiting for the feeder's next pass, so a held stall leaves the health read at once.
+                    stalls?.Forget(id);
+                }
             }
-            FanControlledState.SetControlled(id, body.Controlled, store);
-            var derived = FanProfiles.DerivePresetFromCurves(store, f);
-            store.Update(s => s.Cooling.ActivePreset = derived);
+            // The watchlist's fan entry reads its on/off from this flag, so its topic refires.
+            alerts?.Reconcile();
             PanelTopics.BroadcastCooling(hub);
             return Results.Ok(ApiResponse.Ok());
         });

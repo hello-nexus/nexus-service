@@ -37,6 +37,11 @@ public static class PanelTopics
     /// /gallery/items, which carries both.
     /// </summary>
     public const string Gallery = "gallery";
+    /// <summary>
+    /// Calendar sources, settings or synced events changed. A revision ping only;
+    /// subscribers refetch the calendar routes (no event data on the wire).
+    /// </summary>
+    public const string Calendar = "calendar";
     public const string CoolingWarnings = "cooling/warnings";
     /// <summary>Restricted mode (active while Windows is in OOBE), payload <c>{ "restricted": bool }</c>; snapshot on subscribe, broadcast on change.</summary>
     public const string SystemSession = "system/session";
@@ -273,6 +278,15 @@ public static class PanelTopics
         var frame = new GalleryChangedFrame { Revision = Now() };
         var env = WsEnvelope.Build(Gallery, frame, AppJsonContext.Default.GalleryChangedFrame);
         _ = hub.BroadcastTopicAsync(Gallery, env);
+    }
+
+    public static void BroadcastCalendar(MultiplexHub hub)
+    {
+        if (!hub.TopicHasSubscribers(Calendar))
+            return;
+        var frame = new Models.Calendar.CalendarChangedFrame { Revision = Now() };
+        var env = WsEnvelope.Build(Calendar, frame, AppJsonContext.Default.CalendarChangedFrame);
+        _ = hub.BroadcastTopicAsync(Calendar, env);
     }
 
     /// <summary>

@@ -60,6 +60,7 @@ public static class TlLcdRoutes
                     Width = FanLcdContent.Size,
                     Height = FanLcdContent.Size,
                     Order = settings.Order,
+                    FpsCap = FanLcdClipTiming.CapOf(settings.FpsCap),
                     Brightness = 0,
                     SleepWhenLocked = false,
                     Rotation = settings.Rotation,
@@ -94,6 +95,10 @@ public static class TlLcdRoutes
             {
                 return Results.Json(ApiResponse.Fail("rotation must be 0-3"), AppJsonContext.Default.ApiResponse);
             }
+            if (body.FpsCap is < 0)
+            {
+                return Results.Json(ApiResponse.Fail("frame rate must be 0 or more"), AppJsonContext.Default.ApiResponse);
+            }
             store.Update(s =>
             {
                 var screen = ScreenOf(s.Devices, body.Serial);
@@ -104,6 +109,10 @@ public static class TlLcdRoutes
                 if (body.NexusPanel is { } nexusPanel)
                 {
                     Slv3LcdRoutes.ApplyNexusPanel(screen, nexusPanel);
+                }
+                if (body.FpsCap is { } fpsCap)
+                {
+                    screen.FpsCap = FanLcdClipTiming.ToStored(fpsCap);
                 }
             });
             return Results.Json(ApiResponse.Ok(), AppJsonContext.Default.ApiResponse);

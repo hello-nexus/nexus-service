@@ -31,6 +31,9 @@ public interface IHidDevice : IDisposable
     /// <summary>Writes an output report (interrupt OUT). Byte 0 is report ID.</summary>
     bool Write(ReadOnlySpan<byte> report);
 
+    /// <summary>OS error code of the most recent failed <see cref="Write"/> (Win32 on Windows); 0 when none is recorded; -1 handle closing, -2 zero bytes transferred, -3 wait abandoned.</summary>
+    int LastWriteError => 0;
+
     /// <summary>
     /// Sends an output report via the control path (HidD_SetOutputReport /
     /// SET_REPORT(Output)), not the interrupt OUT pipe. Byte 0 is report ID.

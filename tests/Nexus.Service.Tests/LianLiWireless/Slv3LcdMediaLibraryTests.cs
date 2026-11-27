@@ -1,7 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
+using Nexus.Service.Media;
 using Nexus.Service.Peripherals.LianLiWireless;
 using Nexus.Service.Platform;
 
@@ -47,6 +49,9 @@ public class Slv3LcdMediaLibraryTests
         var frames = fixture.Library.LoadFrames(result.Item.Id);
         Assert.NotNull(frames);
         Assert.Equal(result.Item.Frames, frames.Frames.Length);
+        // One delay per frame, the GIF's own delay.
+        Assert.Equal(result.Item.Frames, result.Item.Delays.Length);
+        Assert.All(result.Item.Delays, d => Assert.Equal(100, d));
     }
 
     [Fact]
@@ -63,7 +68,71 @@ public class Slv3LcdMediaLibraryTests
         Assert.Equal("video", result.Item!.Kind);
         Assert.True(result.Item.Frames > 1, $"expected >1 frame, got {result.Item.Frames}");
         Assert.Equal(result.Item.Frames, result.Item.Delays.Length);
-        Assert.All(result.Item.Delays, d => Assert.Equal(result.Item.Delays[0], d));
+        // The source's own rate, so a fall back to the fallback rate fails here.
+        Assert.All(result.Item.Delays, d => Assert.Equal(100, d));
+    }
+
+    [Theory]
+    [InlineData(60, 60)]
+    [InlineData(120, 60)]
+    public async Task ImportAsync_keeps_a_videos_frame_rate_up_to_60(int sourceFps, int keptFps)
+    {
+        if (FfmpegResolver.Path is null) return;
+
+        using var fixture = new LibraryFixture();
+        var mp4Path = await fixture.GenerateVideoAsync(sourceFps);
+
+        var result = await fixture.Library.ImportAsync(mp4Path, "clip.mp4");
+
+        Assert.True(result.Ok, result.Error);
+        // A one second clip; ffmpeg's resampling can add a frame or two at a rate conversion.
+        Assert.InRange(result.Item!.Frames, keptFps, keptFps + 2);
+        Assert.All(result.Item.Delays, d => Assert.InRange(d, 16, 17));
+    }
+
+    [Theory]
+    [InlineData("  Stream #0:0(und): Video: h264 (High) (avc1 / 0x31637661), yuv420p, 1920x1080, 4987 kb/s, 29.97 fps, 29.97 tbr, 30k tbn", 30)]
+    [InlineData("  Stream #0:0: Video: vp9 (Profile 0), yuv420p(tv), 400x400, SAR 1:1 DAR 1:1, 60 fps, 60 tbr, 1k tbn (default)", 60)]
+    [InlineData("  Stream #0:0: Video: gif, bgra, 200x200, 25 tbr, 100 tbn", null)]
+    [InlineData("  Stream #0:1: Audio: aac (LC), 48000 Hz, stereo, fltp, 128 kb/s", null)]
+    public void SourceFps_reads_the_video_streams_rate(string line, int? fps)
+    {
+        Assert.Equal(fps, Slv3LcdMediaLibrary.SourceFps("Input #0, mov,mp4\n" + line + "\n"));
+    }
+
+    private const string VideoLine = "  Stream #0:0: Video: h264 (High), yuv420p, 320x240, 24 fps, 24 tbr, 12288 tbn";
+
+    [Fact]
+    public async Task The_fps_probe_reads_the_rate_of_a_run_that_exited_non_zero_after_printing_the_stream_line()
+    {
+        // The bundled ffmpeg has no encoder for a null output without a stream copy and exits non-zero.
+        var fps = await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() =>
+            throw new FfmpegExitException("ffmpeg exit 1: Encoder not found", "Input #0, mov\n" + VideoLine + "\nAutomatic encoder selection failed\n"));
+
+        Assert.Equal(24, fps);
+    }
+
+    [Fact]
+    public async Task The_fps_probe_gives_null_when_the_output_names_no_rate_or_the_run_fails_otherwise()
+    {
+        Assert.Null(await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() => Task.FromResult("  Stream #0:0: Video: gif, bgra, 200x200, 25 tbr\n")));
+        Assert.Null(await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() =>
+            throw new FfmpegExitException("ffmpeg exit 1: Invalid data", "Invalid data found\n")));
+        Assert.Null(await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() => throw new InvalidOperationException("ffmpeg not found")));
+    }
+
+    [Fact]
+    public async Task The_fps_probe_reads_the_rate_of_a_run_that_succeeded()
+    {
+        Assert.Equal(24, await Slv3LcdMediaLibrary.ProbeSourceFpsAsync(() => Task.FromResult(VideoLine + "\n")));
+    }
+
+    [Fact]
+    public void UniformDelays_keep_the_clip_length_at_60_fps()
+    {
+        var delays = Slv3LcdMediaLibrary.UniformDelays(60, 60);
+        Assert.Equal(1000, delays.Sum());
+        Assert.All(delays, d => Assert.InRange(d, 16, 17));
     }
 
     [Fact]
@@ -137,11 +206,11 @@ public class Slv3LcdMediaLibraryTests
             return path;
         }
 
-        public async Task<string> GenerateVideoAsync()
+        public async Task<string> GenerateVideoAsync(int fps = 10)
         {
             var path = Path.Combine(_root, "source.mp4");
             await RunFfmpegAsync(
-                "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=1",
+                "-y", "-f", "lavfi", "-i", $"testsrc=size=320x240:rate={fps}:duration=1",
                 "-pix_fmt", "yuv420p", path);
             return path;
         }

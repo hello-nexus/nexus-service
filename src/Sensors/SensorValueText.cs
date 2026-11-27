@@ -21,7 +21,7 @@ internal static class SensorValueText
         _ => $"{value:F1}",
     };
 
-    private static string FormatThroughput(float bytesPerSec)
+    internal static string FormatThroughput(float bytesPerSec)
     {
         if (bytesPerSec <= 0)
             return "0 B/s";

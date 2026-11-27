@@ -1,0 +1,16 @@
+{
+ "Device": {
+  "Model": "GRETSCH",
+  "UUID": "00000000-0000-0000-0000-000000000000"
+ },
+ "Name": "Profile 1",
+ "Pages": {
+  "Current": "00000000-0000-0000-0000-000000000000",
+  "Default": "page-default",
+  "Pages": [
+   "page-one",
+   "page-two"
+  ]
+ },
+ "Version": "3.0"
+}
