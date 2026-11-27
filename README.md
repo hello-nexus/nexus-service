@@ -103,6 +103,7 @@ src/
   Widgets/  Store/     # nexus.app/1 app host and installer; cloud app-store proxy, entitlements
   Gallery/  Media/     # shared image/video sources; media import + library
   Calendar/            # calendar subscriptions: ICS parser and recurrence expansion (Ics/), source store, sync worker, on-disk cache
+  Reminders/           # reminder lists and items: local store (<NexusRoot>/reminders/reminders.json), atomic write-through
   Activity/            # screen time, app detection, audio analysis
   Games/  Fps/         # installed-game catalog, FPS capture and per-game sessions
   FocusModes/  Audio/  # focus modes; per-app volume mixer and audio playback

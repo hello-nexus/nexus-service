@@ -105,6 +105,10 @@ public class NexusAppFactory : WebApplicationFactory<Program>
             services.AddSingleton<Nexus.Service.Calendar.ICalendarFetcher>(sp => sp.GetRequiredService<Calendar.FakeCalendarFetcher>());
             services.AddSingleton(sp => new Nexus.Service.Calendar.CalendarService(_configDir, sp.GetRequiredService<Nexus.Service.Calendar.ICalendarFetcher>()));
 
+            // Reminders persist under the data root.
+            services.RemoveAll<Nexus.Service.Reminders.ReminderService>();
+            services.AddSingleton(_ => new Nexus.Service.Reminders.ReminderService(_configDir));
+
             // Isolate config (the auth token + all settings) to a per-factory
             // temp file so integration tests never read or mutate the
             // developer's real settings.json.

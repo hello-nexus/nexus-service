@@ -248,6 +248,15 @@ support-bundle ZIP export.
   written parser (`Calendar/Ics/`) resolves TZIDs through the host database,
   a Windows/IANA name map, then the feed's own VTIMEZONE, because invariant
   globalization drops the ICU id conversion on Windows.
+- Reminders (`Reminders/`, `/api/reminders/*`, live on the `reminders` topic, a
+  revision ping with no data): local lists and items, no external sync. The
+  store lives in `<NexusRoot>/reminders/reminders.json` (not `NexusSettings`)
+  and is written atomically on every mutation under a single lock, so an
+  acknowledged write survives shutdown. A fresh store seeds one list named
+  Reminders. All routes are panel reachable so phones and panels can tick items
+  off. Caps: 100 lists, 5000 items, 500 char titles, 10000 char notes, 100 char
+  list names; the last list cannot be deleted. Titles, notes and URLs are
+  never logged.
 - Volume mixer (`Audio/AudioMixerService.cs`, `/system/audio/mixer/*`, live on
   `audio/mixer`): per-application levels on the default output, one strip per
   process. Windows only: the Core Audio session walk runs in the user-session

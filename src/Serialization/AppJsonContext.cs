@@ -404,6 +404,14 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarProbeRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarProbeResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarChangedFrame))]
+
+// Reminders
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderListDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderStoreResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderClearResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderErrorResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderChangedFrame))]
 // Weather
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSnapshot))]
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherHourlyForecast))]

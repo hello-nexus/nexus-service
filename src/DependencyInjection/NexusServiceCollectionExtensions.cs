@@ -2328,6 +2328,18 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddNexusReminders(this IServiceCollection services)
+    {
+        services.AddSingleton(sp =>
+        {
+            var reminders = new Nexus.Service.Reminders.ReminderService(Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            reminders.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastReminders(hub);
+            return reminders;
+        });
+        return services;
+    }
+
     public static IServiceCollection AddNexusStocks(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Platform.Stocks.IStockQuoteProvider, Nexus.Service.Platform.Stocks.YahooStockQuoteProvider>();
