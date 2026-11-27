@@ -2129,8 +2129,14 @@ public static class NexusServiceCollectionExtensions
         // Registered as the concrete type too: UsbDeviceChangeNotifier drives
         // Invalidate/SetTtl on the cache when PnP notifications are available.
         services.AddSingleton<Nexus.Service.Devices.Detection.CachingUsbEnumerator>(sp =>
-            new Nexus.Service.Devices.Detection.CachingUsbEnumerator(
-                sp.GetRequiredService<Nexus.Service.Devices.Detection.WindowsUsbEnumerator>()));
+        {
+            var cache = new Nexus.Service.Devices.Detection.CachingUsbEnumerator(
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.WindowsUsbEnumerator>());
+            // The Dynamic Lighting LampArray count re-walks HID only when this bus signature changes.
+            Nexus.Service.Conflicts.WindowsDynamicLighting.BusSignature =
+                () => Nexus.Service.Conflicts.WindowsDynamicLighting.UsbBusSignature(cache.Enumerate());
+            return cache;
+        });
         services.AddSingleton<Nexus.Service.Devices.Detection.IUsbEnumerator>(sp =>
             sp.GetRequiredService<Nexus.Service.Devices.Detection.CachingUsbEnumerator>());
         services.AddHostedService(sp =>

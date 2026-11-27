@@ -165,7 +165,7 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
             // Every present HID collection, not just a recognized family - the
             // usage-page/usage/report-length detail an unsupported device's
             // OpenRGB driver needs, which the usb block above does not carry.
-            var hid = _hid.FindAll().OrderBy(d => d.VendorId).ThenBy(d => d.ProductId).ToList();
+            var hid = ((_hid as IHidWholeBusEnumerator)?.FindAllForDiagnostics() ?? Array.Empty<HidDeviceInfo>()).OrderBy(d => d.VendorId).ThenBy(d => d.ProductId).ToList();
             Emit($"hid ({hid.Count} device(s)):");
             foreach (var d in hid)
             {

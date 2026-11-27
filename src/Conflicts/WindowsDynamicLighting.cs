@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.Versioning;
 using Microsoft.Win32;
 using Nexus.Service.Models.Conflicts;
@@ -25,6 +26,21 @@ public static class WindowsDynamicLighting
     /// <summary>HID Lighting And Illumination page, LampArray usage - what Windows itself selects on.</summary>
     private const int LampArrayUsagePage = 0x59;
     private const int LampArrayUsage = 0x01;
+
+    /// <summary>
+    /// Wired at startup to the PnP-invalidated USB presence cache. The LampArray count re-walks HID only when
+    /// this value changes, so no timer ever opens every HID interface.
+    /// </summary>
+    public static System.Func<string?>? BusSignature { get; set; }
+
+    /// <summary>Order-independent identity of the USB devnodes on the bus.</summary>
+    public static string UsbBusSignature(IEnumerable<Nexus.Service.Devices.UsbDeviceEntry> entries)
+    {
+        var keys = new List<string>();
+        foreach (var e in entries) keys.Add($"{e.VendorId:X4}:{e.ProductId:X4}:{e.Serial}:{e.Location}");
+        keys.Sort(StringComparer.Ordinal);
+        return string.Join('|', keys);
+    }
 
     /// <summary>Whether this platform can carry the setting at all.</summary>
     public static bool IsSupported() => OperatingSystem.IsWindows();
@@ -76,7 +92,7 @@ public static class WindowsDynamicLighting
 
     /// <summary>
     /// For the conflict watcher's poll: the registry value is read live, but the
-    /// HID walk behind the device count is reused for <see cref="DeviceCountTtl"/>
+    /// HID walk behind the device count is repeated only on a USB bus change
     /// and skipped entirely while the setting is off (DeviceCount stays 0).
     /// </summary>
     [SupportedOSPlatform("windows")]
@@ -86,23 +102,10 @@ public static class WindowsDynamicLighting
     [SupportedOSPlatform("windows")]
     public static WindowsDynamicLightingState ReadEnabled() => ReadState(cachedCount: false, countDevices: false);
 
-    internal static readonly TimeSpan DeviceCountTtl = TimeSpan.FromSeconds(30);
-    private static readonly object CountLock = new();
-    private static long _countAtMs = long.MinValue / 2;
-    private static int _countCached;
+    private static readonly BusGatedCount LampArrayCount = new();
 
     [SupportedOSPlatform("windows")]
-    private static int LampArrayCountCached()
-    {
-        lock (CountLock)
-        {
-            var now = Environment.TickCount64;
-            if (now - _countAtMs < (long)DeviceCountTtl.TotalMilliseconds) return _countCached;
-            _countCached = PresentLampArrayCount();
-            _countAtMs = now;
-            return _countCached;
-        }
-    }
+    private static int LampArrayCountCached() => LampArrayCount.Get(BusSignature?.Invoke(), PresentLampArrayCount);
 
     [SupportedOSPlatform("windows")]
     private static WindowsDynamicLightingState ReadState(bool cachedCount, bool countDevices = true)
@@ -144,7 +147,7 @@ public static class WindowsDynamicLighting
 
     private static void InvalidateDeviceCount()
     {
-        lock (CountLock) _countAtMs = long.MinValue / 2;
+        LampArrayCount.Invalidate();
     }
 
     /// <summary>

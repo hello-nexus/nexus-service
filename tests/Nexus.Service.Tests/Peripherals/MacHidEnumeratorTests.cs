@@ -24,7 +24,7 @@ public class MacHidEnumeratorTests
     [MacOnlyFact]
     public void FindAll_ListsIoKitPaths()
     {
-        var all = new MacHidEnumerator().FindAll();
+        var all = new MacHidEnumerator().FindAllForDiagnostics();
 
         // Any Mac has HID services in the IORegistry, but a headless one has none with a non-zero vendor/product id, so only the path contract is asserted.
         Assert.NotEmpty(all);

@@ -12,13 +12,13 @@ namespace Nexus.Service.Peripherals.Hid;
 /// creates a fresh IOHIDDeviceRef from that service each time, so a control
 /// handle and an input-reader handle on the same deck are independent.
 /// </summary>
-public sealed unsafe class MacHidEnumerator : IHidEnumerator
+public sealed unsafe class MacHidEnumerator : IHidEnumerator, IHidWholeBusEnumerator
 {
     private const string PathPrefix = "iokit:";
 
     public IReadOnlyList<HidDeviceInfo> Find(int vendorId, int productId)
     {
-        var all = FindAll();
+        var all = FindAllForDiagnostics();
         var matches = new List<HidDeviceInfo>();
         foreach (var info in all)
         {
@@ -30,7 +30,7 @@ public sealed unsafe class MacHidEnumerator : IHidEnumerator
         return matches;
     }
 
-    public IReadOnlyList<HidDeviceInfo> FindAll()
+    public IReadOnlyList<HidDeviceInfo> FindAllForDiagnostics()
     {
         if (!OperatingSystem.IsMacOS())
         {
