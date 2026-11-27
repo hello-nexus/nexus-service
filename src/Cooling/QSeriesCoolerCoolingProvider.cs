@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hyte.QSeriesCooler;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Cooling;
 
@@ -68,8 +70,11 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     // never race the underlying set's internals.
     private readonly ConcurrentDictionary<string, byte> _legacyMigratedSerials = new(StringComparer.Ordinal);
 
-    public QSeriesCoolerCoolingProvider(QSeriesCoolerHub hub, IConfigStore store, FeatureGates? gates = null)
+    private readonly Func<long> _clock;
+
+    public QSeriesCoolerCoolingProvider(QSeriesCoolerHub hub, IConfigStore store, FeatureGates? gates = null, Func<long>? clock = null)
     {
+        _clock = clock ?? (() => Environment.TickCount64);
         _hub = hub;
         _store = store;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -314,8 +319,68 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             _curveRetryAtMs = 0;
         }
         if (!_gates.Cooling) return;
-        if (HasPersistedAssignments()) return;
+        if (HasPersistedAssignments())
+        {
+            // The engine skips writes whose duty is unchanged, so a reconnect would leave
+            // the fans where the cooler booted. Replay what Nexus was driving.
+            if (HasDrivenChannels()) Redrive("hub connected");
+            return;
+        }
         HandBack(dropUserPin: false);
+    }
+
+    private const long RedriveMinIntervalMs = 10_000;
+    private long _nextRedriveAtMs;
+
+    /// <summary>
+    /// Heartbeat hook: when Nexus drives a channel but the polled control mode is no longer
+    /// software (and the user pinned nothing else), the cooler left software control on its
+    /// own. The engine dedupes unchanged duties, so replay the stored frames here, at most
+    /// once per interval.
+    /// </summary>
+    public void RedriveIfControlDropped()
+    {
+        if (!_hub.IsConnected || !_gates.Cooling) return;
+        if (_hub.DesiredControlMode is byte pinned && pinned != QSeriesCoolerProtocol.ControlModeSoftware) return;
+        var observed = _hub.State.ControlMode;
+        if (observed == QSeriesCoolerProtocol.ControlModeSoftware) return;
+        if (!HasDrivenChannels()) return;
+        var now = _clock();
+        if (now < _nextRedriveAtMs) return;
+        _nextRedriveAtMs = now + RedriveMinIntervalMs;
+        Redrive($"control mode left software (raw 0x{observed:X2})");
+    }
+
+    private bool HasDrivenChannels()
+    {
+        lock (_ctrlLock) return _softwareControlled.Count > 0;
+    }
+
+    private void Redrive(string reason)
+    {
+        bool pumpDriven; int pumpDuty;
+        var channels = new SortedSet<int>();
+        var duties = new List<string>();
+        lock (_ctrlLock)
+        {
+            pumpDriven = _softwareControlled.Contains(PumpId(_hub.State.Serial, "pump"));
+            pumpDuty = _pumpDuty;
+            foreach (var id in _softwareControlled)
+            {
+                if (TryParseFanId(id, out var ch, out _, out _))
+                {
+                    channels.Add(ch);
+                    duties.Add($"{id}={_fanDuty.GetValueOrDefault(id)}%");
+                }
+            }
+        }
+        var rpms = string.Join(",", _hub.State.Channel1Devices.Concat(_hub.State.Channel2Devices)
+            .SelectMany(d => d.FanRpm));
+        ServiceLog.Info($"[qseries-cooler] re-drive ({reason}): pump={(pumpDriven ? pumpDuty + "%" : "curve")} fans=[{string.Join(" ", duties)}] rpm=[{rpms}]");
+        // A pump the user drives is replayed first; the fan frame then finds the hub in software.
+        if (pumpDriven) _hub.SetPumpSpeed(pumpDuty);
+        foreach (var ch in channels) SendChannelFrame(ch, HasDrivenChannels);
+        HoldPumpOnStoredCurve();
     }
 
     private bool HasPersistedAssignments()
@@ -464,11 +529,15 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             return;
         }
 
+        bool changed;
         lock (_ctrlLock)
         {
-            _softwareControlled.Add(channelId);
+            var added = _softwareControlled.Add(channelId);
+            var prev = isPump ? _pumpDuty : _fanDuty.GetValueOrDefault(channelId, -1);
+            changed = added || prev != duty;
             if (isPump) _pumpDuty = duty; else _fanDuty[channelId] = duty;
         }
+        if (changed) ServiceLog.Info($"[qseries-cooler] duty {channelId} -> {duty}%");
         // Driving implies software control; latch it so a sibling channel's write
         // (or this one's next tick) isn't swallowed.
         _hub.MarkDesiredControlMode(QSeriesCoolerProtocol.ControlModeSoftware);
@@ -479,6 +548,12 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         }
         HoldPumpOnStoredCurve();
 
+        SendChannelFrame(channel, null);
+    }
+
+    // Builds and sends one channel's full per-slot duty frame from the stored duties.
+    private bool SendChannelFrame(int channel, Func<bool>? shouldWrite)
+    {
         // Snapshot once: reading the property twice in this method could observe two
         // different published lists if PollTelemetry runs concurrently.
         var devices = channel == 1 ? _hub.State.Channel1Devices : _hub.State.Channel2Devices;
@@ -502,7 +577,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 dev.FanCount >= 2 ? DutyOf(serial, channel, dev, 2) : 0,
                 dev.FanCount >= 3 ? DutyOf(serial, channel, dev, 3) : 0);
         }
-        _hub.SetChannelFanSpeeds((byte)channel, slots);
+        return _hub.SetChannelFanSpeeds((byte)channel, slots, shouldWrite);
     }
 
     // Called before a fan frame (the first one switches the hub to software), on each heartbeat and

@@ -430,6 +430,10 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
         return true;
     }
 
+    // Caller holds _lock. Logs only real mode transitions (callers write when the mode differs).
+    private static void LogModeWrite(byte[] port0, byte to) =>
+        ServiceLog.Info($"[qseries-cooler] control mode 0x{QSeriesCoolerProtocol.ControlModeOf(port0):X2} -> 0x{to:X2}");
+
     // Caller holds _lock. Reads the 20-byte Port-0 status into buf; false on a
     // short / mis-framed reply. A control write echoes buf's fw-animation bytes.
     private bool ReadPort0(byte[] buf)
@@ -467,7 +471,10 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 // mode in the speed frame resets the pump, so only switch when the
                 // hub isn't already in software control.
                 if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
+                {
+                    LogModeWrite(port0, QSeriesCoolerProtocol.ControlModeSoftware);
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, wire, turboByte, port0));
+                }
                 t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, wire, turboByte, port0));
                 _lastPumpDuty = Math.Clamp(dutyPercent, 0, 100);
                 _curvePumpWire = null;
@@ -510,7 +517,10 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 var sent = PumpWireFor(turboOn);
                 var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                 if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
+                {
+                    LogModeWrite(port0, QSeriesCoolerProtocol.ControlModeSoftware);
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, sent, turboByte, port0));
+                }
                 t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, sent, turboByte, port0));
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
                 return true;
@@ -545,10 +555,11 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     /// the full per-slot frame - callers resend all slots on every call since the wire
     /// frame has no "leave unchanged" option.
     /// </summary>
-    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties)
+    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties, Func<bool>? shouldWrite = null)
     {
         lock (_lock)
         {
+            if (shouldWrite is not null && !shouldWrite()) return false;
             if (!EnsureConnected()) return false;
             var t = _transport;
             if (t is null) return false;
@@ -573,6 +584,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 {
                     var pumpWire = PumpWireFor(turboOn);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
+                    LogModeWrite(port0, QSeriesCoolerProtocol.ControlModeSoftware);
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeSoftware, pumpWire, turboByte, port0));
                     // The pump speed only takes effect in a second frame with the mode byte cleared.
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(QSeriesCoolerProtocol.ControlModeKeep, pumpWire, turboByte, port0));
@@ -615,6 +627,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                     var turboOn = QSeriesCoolerProtocol.TurboOnOf(port0);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                     var software = mode == QSeriesCoolerProtocol.ControlModeSoftware;
+                    LogModeWrite(port0, mode);
                     var pumpWire = software ? PumpWireFor(turboOn) : (byte)0;
                     t.Write(QSeriesCoolerProtocol.BuildSetControl(mode, pumpWire, turboByte, port0));
                     // Software mode takes the pump speed from a second frame with the mode byte cleared.
