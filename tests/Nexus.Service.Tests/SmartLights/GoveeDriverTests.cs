@@ -377,7 +377,29 @@ public class GoveeDriverTests : IDisposable
     }
 
     [Fact]
-    public async Task Ping_offStatus_reArmsAtOnce()
+    public async Task Ping_offStatus_suppressesFramesAndNeverTurnsItOn()
+    {
+        var driver = FastDriver(frameGapMs: 1_500, confirmGapMs: 60_000);
+        var dev = PairedDevice(RazerExtra);
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        await TestWait.ForAsync(() => _device.RazerPackets.Count >= 2);
+
+        _device.OnOff = false;
+        Assert.True(await driver.PingAsync(dev, CancellationToken.None));
+        var packets = _device.RazerPackets.Count;
+        // Frames past the gap threshold still do not turn it on.
+        for (var i = 0; i < 3; i++)
+        {
+            await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+            await PassTimeAsync(600);
+        }
+        Assert.Single(_device.Turns);
+        Assert.Equal(1, EnableCount());
+        Assert.Equal(packets, _device.RazerPackets.Count);
+    }
+
+    [Fact]
+    public async Task Ping_onStatusWhileSuppressed_resumesWithAColdEntry()
     {
         var driver = FastDriver(confirmGapMs: 60_000);
         var dev = PairedDevice(RazerExtra);
@@ -386,8 +408,50 @@ public class GoveeDriverTests : IDisposable
         _device.OnOff = false;
         Assert.True(await driver.PingAsync(dev, CancellationToken.None));
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        Assert.Single(_device.Turns);
+
+        _device.OnOff = true;
+        Assert.True(await driver.PingAsync(dev, CancellationToken.None));
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
         await TestWait.ForAsync(() => EnableCount() == 2 && _device.Turns.Count == 2);
-        Assert.True(_device.Turns.Last());
+    }
+
+    [Fact]
+    public async Task Ping_missThenOffReply_suppressesInsteadOfReArming()
+    {
+        var driver = FastDriver(confirmGapMs: 60_000);
+        var dev = PairedDevice(RazerExtra);
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+
+        _device.LanEnabled = false;
+        Assert.False(await driver.PingAsync(dev, CancellationToken.None));
+        _device.LanEnabled = true;
+        _device.OnOff = false;
+        Assert.True(await driver.PingAsync(dev, CancellationToken.None));
+        var packets = _device.RazerPackets.Count;
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        await PassTimeAsync(300);
+        Assert.Single(_device.Turns);
+        Assert.Equal(packets, _device.RazerPackets.Count);
+    }
+
+    [Fact]
+    public async Task DriverProbe_noticesTheStripComingBackOn()
+    {
+        var driver = FastDriver(probeMs: 100, confirmGapMs: 60_000);
+        var dev = PairedDevice(RazerExtra);
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+
+        _device.OnOff = false;
+        await PassTimeAsync(500);   // probes see off
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        Assert.Single(_device.Turns);
+
+        _device.OnOff = true;
+        var deadline = Environment.TickCount64 + 5_000;
+        while (_device.Turns.Count < 2 && Environment.TickCount64 < deadline)
+            await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        await TestWait.ForAsync(() => _device.Turns.Count == 2 && EnableCount() == 2);
     }
 
     [Fact]

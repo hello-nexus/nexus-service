@@ -68,6 +68,8 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private sealed class RazerEntry
     {
         public long LastFrameAt;
+        // The strip reported itself off; frames are dropped until a status reply says on.
+        public bool Suppressed;
         public readonly CancellationTokenSource Stop = new();
         public long NextConfirmAt;
         public int ConfirmsLeft = RazerConfirmCount;
@@ -202,7 +204,14 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         if (frame.Zones is { } zones && frame.On && extra?.Razer == true)
         {
             var now = Environment.TickCount64;
-            if (_razerEntries.TryGetValue(dev.Id, out var entry) && now - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
+            _razerEntries.TryGetValue(dev.Id, out var entry);
+            if (entry is not null && Volatile.Read(ref entry.Suppressed))
+            {
+                // The gap rule is skipped so a pause cannot end the suppression and turn the strip back on.
+                Volatile.Write(ref entry.LastFrameAt, now);
+                return;
+            }
+            if (entry is not null && now - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
             {
                 // Paused, disabled or asleep long enough for the strip to have left
                 // realtime mode on its own.
@@ -279,9 +288,10 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         return await ObserveStatusAsync(dev, entry, _pingTimeoutMs, ct).ConfigureAwait(false);
     }
 
-    // One status query against the entry it started with (never a newer one). A
-    // reply saying the strip is off, or any reply after a miss (a reboot shorter
-    // than the probe spacing), or two consecutive misses disarm it.
+    // One status query against the entry it started with (never a newer one).
+    // Two consecutive misses, or an on reply after a miss (a reboot shorter than
+    // the probe spacing), or an on reply while suppressed disarm it. An off reply
+    // suppresses it: the strip was turned off outside Nexus and stays off.
     private async Task<bool> ObserveStatusAsync(SmartLight dev, RazerEntry? entry, int timeoutMs, CancellationToken ct)
     {
         GoveeReplyData? reply;
@@ -295,9 +305,13 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
                 if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm)
                     Disarm(dev.Id, entry);
             }
-            else if (reply.OnOff == 0 || Interlocked.Exchange(ref entry.Misses, 0) > 0)
+            else
             {
-                Disarm(dev.Id, entry);
+                var hadMiss = Interlocked.Exchange(ref entry.Misses, 0) > 0;
+                if (reply.OnOff == 0)
+                    Volatile.Write(ref entry.Suppressed, true);
+                else if (hadMiss || Volatile.Read(ref entry.Suppressed))
+                    Disarm(dev.Id, entry);
             }
         }
         return reply is not null;
@@ -322,7 +336,7 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
                 await Task.Delay(_probeMs, ct).ConfigureAwait(false);
                 if (!IsCurrent(dev.Id, entry)) return;
                 // Frames stopped without a static frame: the gap rule owns re-entry.
-                if (Environment.TickCount64 - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
+                if (!Volatile.Read(ref entry.Suppressed) && Environment.TickCount64 - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
                 {
                     Disarm(dev.Id, entry);
                     return;
