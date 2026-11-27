@@ -270,7 +270,9 @@ support-bundle ZIP export.
   named Reminders. All routes are panel reachable so phones and panels can tick
   items off. Caps: 100 lists, 5000 items, 500 char titles, 10000 char notes,
   100 char list names, 2048 char URLs, `order` 0 to 1000000. URLs must be
-  http or https; list icons are 1 to 64 letters, digits, `-` or `_`; the last
+  http or https; a list icon is a Lucide-style name (letters, digits, `-`, `_`) or
+  `emoji:<glyph>` (glyph 1 to 32 UTF-16 code units, ZWJ and variation selectors
+  allowed, no control characters or whitespace), 64 characters in all; the last
   list cannot be deleted. A reorder must name exactly the list's current items
   or it fails `stale`. Titles, notes and URLs are never logged.
 - Volume mixer (`Audio/AudioMixerService.cs`, `/system/audio/mixer/*`, live on

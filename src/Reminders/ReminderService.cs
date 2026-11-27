@@ -36,6 +36,8 @@ public sealed class ReminderService
     public const int MaxNotes = 10000;
     public const int MaxName = 100;
     public const int MaxIcon = 64;
+    public const int MaxEmojiGlyph = 32;
+    public const string EmojiPrefix = "emoji:";
     public const int MaxUrl = 2048;
     public const int MaxOrder = 1_000_000;
     public const string SeedName = "Reminders";
@@ -325,8 +327,32 @@ public sealed class ReminderService
     private static bool IsColor(string s) =>
         s.Length == 7 && s[0] == '#' && s.Skip(1).All(Uri.IsHexDigit);
 
-    private static bool IsIcon(string s) =>
-        s.Length is > 0 and <= MaxIcon && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+    /// <summary>A Lucide-style name, or <c>emoji:&lt;glyph&gt;</c> with a glyph of 1 to 32 UTF-16 code units. ZWJ and variation selectors are fine inside a glyph; control characters, whitespace and unpaired surrogates are not.</summary>
+    private static bool IsIcon(string s)
+    {
+        if (s.Length is 0 or > MaxIcon)
+        {
+            return false;
+        }
+        if (!s.StartsWith(EmojiPrefix, StringComparison.Ordinal))
+        {
+            return s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+        }
+        var glyphLength = s.Length - EmojiPrefix.Length;
+        if (glyphLength is 0 or > MaxEmojiGlyph)
+        {
+            return false;
+        }
+        for (var i = EmojiPrefix.Length; i < s.Length;)
+        {
+            if (!System.Text.Rune.TryGetRuneAt(s, i, out var rune) || System.Text.Rune.IsControl(rune) || System.Text.Rune.IsWhiteSpace(rune))
+            {
+                return false;
+            }
+            i += rune.Utf16SequenceLength;
+        }
+        return true;
+    }
 
     private static bool IsDate(string s) =>
         DateOnly.TryParseExact(s, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
@@ -355,7 +381,15 @@ public sealed class ReminderService
         {
             return false;
         }
-        value = el.GetString();
+        try
+        {
+            value = el.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            // An unpaired surrogate escape cannot be read as a string.
+            return false;
+        }
         return true;
     }
 

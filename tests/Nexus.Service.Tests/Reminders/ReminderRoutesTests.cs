@@ -121,6 +121,12 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
     [InlineData("""{"name":"","color":"#000000","icon":"list"}""", "invalid")]
     [InlineData("""{"name":"x","color":"red","icon":"list"}""", "invalid")]
     [InlineData("""{"name":"x","color":"#000000","icon":"has space"}""", "invalid")]
+    [InlineData("""{"name":"x","color":"#000000","icon":"emoji:"}""", "invalid")]
+    [InlineData("""{"name":"x","color":"#000000","icon":"emoji:a b"}""", "invalid")]
+    [InlineData("""{"name":"x","color":"#000000","icon":"emoji:\n"}""", "invalid")]
+    [InlineData("""{"name":"x","color":"#000000","icon":"emoji:\ud83d"}""", "invalid")]
+    [InlineData("""{"name":"x","color":"#000000","icon":"emoji:\u00a0"}""", "invalid")]
+    [InlineData("""{"name":"x","color":"#000000","icon":"emoji:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}""", "invalid")]
     [InlineData("""{"name":"x"}""", "invalid")]
     [InlineData("not json", "invalid")]
     public async Task List_create_with_a_bad_body_is_400_with_a_code(string body, string code)
@@ -129,6 +135,50 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
 
         Assert.Equal(code, err.GetProperty("code").GetString());
         Assert.Equal(code, err.GetProperty("error").GetString());
+    }
+
+    [Theory]
+    [InlineData("emoji:\ud83d\ude00")] // grinning face
+    [InlineData("emoji:\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66")] // family, ZWJ sequence
+    [InlineData("emoji:\ud83c\uddfa\ud83c\uddf8")] // flag, regional indicators
+    [InlineData("emoji:\u2764\ufe0f")] // heart with variation selector
+    [InlineData("cart-shopping_2")]
+    public async Task List_icon_accepts_emoji_and_names_and_round_trips_byte_exact(string icon)
+    {
+        var decoded = JsonDocument.Parse($"\"{icon}\"").RootElement.GetString()!;
+        var created = await SendAsync(HttpMethod.Post, "/api/reminders/lists", $$"""{"name":"E","color":"#000000","icon":"{{icon}}"}""", HttpStatusCode.Created);
+        Assert.Equal(decoded, created.GetProperty("icon").GetString());
+
+        var all = await SendAsync(HttpMethod.Get, "/api/reminders", null, HttpStatusCode.OK);
+        Assert.Contains(all.GetProperty("lists").EnumerateArray(), l => l.GetProperty("icon").GetString() == decoded);
+
+        // A restart reads the persisted file back to the same glyph.
+        var svc = _factory.Services.GetRequiredService<ReminderService>();
+        var reloaded = new ReminderService(Path.Combine(_factory.ConfigDir), null);
+        Assert.Contains(reloaded.GetAll().Lists, l => l.Icon == decoded);
+        Assert.Contains(svc.GetAll().Lists, l => l.Icon == decoded);
+    }
+
+    [Fact]
+    public async Task An_unpaired_surrogate_anywhere_is_400_not_500()
+    {
+        var listId = await ListIdAsync();
+
+        await SendAsync(HttpMethod.Post, "/api/reminders/items", $$"""{"listId":"{{listId}}","title":"\ud83d"}""", HttpStatusCode.BadRequest);
+        await SendAsync(HttpMethod.Post, "/api/reminders/items/clear-completed", """{"listId":"\ud83d"}""", HttpStatusCode.BadRequest);
+        await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"{{listId}}","itemIds":["\ud83d"]}""", HttpStatusCode.BadRequest);
+        await SendAsync(HttpMethod.Post, "/api/reminders/reorder", """{"listId":"\ud83d","itemIds":[]}""", HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task List_patch_accepts_an_emoji_icon_and_rejects_a_bad_one()
+    {
+        var listId = await ListIdAsync();
+
+        var ok = await SendAsync(HttpMethod.Put, $"/api/reminders/lists/{listId}", """{"icon":"emoji:\ud83d\ude00"}""", HttpStatusCode.OK);
+        await SendAsync(HttpMethod.Put, $"/api/reminders/lists/{listId}", """{"icon":"emoji:\u0007"}""", HttpStatusCode.BadRequest);
+
+        Assert.Equal("\ud83d\ude00", ok.GetProperty("icon").GetString()!["emoji:".Length..]);
     }
 
     [Fact]

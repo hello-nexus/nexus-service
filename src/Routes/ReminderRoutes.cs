@@ -89,7 +89,10 @@ public static class ReminderRoutes
                 {
                     return Error(ReminderErrors.Invalid);
                 }
-                listId = el.GetString();
+                if (!TryText(el, out listId))
+                {
+                    return Error(ReminderErrors.Invalid);
+                }
             }
             var r = reminders.ClearCompleted(listId);
             return r.Error is { } error
@@ -113,10 +116,33 @@ public static class ReminderRoutes
                 {
                     return Error(ReminderErrors.Invalid);
                 }
-                ids.Add(e.GetString()!);
+                if (!TryText(e, out var id) || id is null)
+                {
+                    return Error(ReminderErrors.Invalid);
+                }
+                ids.Add(id);
             }
-            return reminders.Reorder(listEl.GetString()!, ids) is { Error: { } error } ? Error(error) : Results.NoContent();
+            if (!TryText(listEl, out var reorderListId) || reorderListId is null)
+            {
+                return Error(ReminderErrors.Invalid);
+            }
+            return reminders.Reorder(reorderListId, ids) is { Error: { } error } ? Error(error) : Results.NoContent();
         }).AllowPanel();
+    }
+
+    /// <summary>GetString throws on an unpaired surrogate escape; that is a bad request, not a 500.</summary>
+    private static bool TryText(JsonElement el, out string? value)
+    {
+        try
+        {
+            value = el.GetString();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            value = null;
+            return false;
+        }
     }
 
     private static IResult Error(string code)
