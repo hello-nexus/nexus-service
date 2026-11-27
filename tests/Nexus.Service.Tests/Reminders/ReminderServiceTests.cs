@@ -119,9 +119,11 @@ public sealed class ReminderServiceTests : IDisposable
 
     private sealed class ManualTime : TimeProvider
     {
-        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        public override DateTimeOffset GetUtcNow() => _now;
-        public void Advance(TimeSpan by) => _now += by;
+        private long _ms;
+        public override long TimestampFrequency => 1000;
+        public override DateTimeOffset GetUtcNow() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddMilliseconds(_ms);
+        public override long GetTimestamp() => _ms;
+        public void Advance(TimeSpan by) => _ms += (long)by.TotalMilliseconds;
     }
 
     [Fact]
@@ -210,7 +212,10 @@ public sealed class ReminderServiceTests : IDisposable
     [InlineData("""{"lists":[null],"items":[]}""")]
     [InlineData("""{"lists":[],"items":null}""")]
     [InlineData("""{"lists":[],"items":[null]}""")]
-    public void Null_collections_or_entries_are_corrupt_not_a_crash(string json)
+    [InlineData("{}")]
+    [InlineData("""{"lists":[],"items":[]}""")]
+    [InlineData("""{"version":2}""")]
+    public void Null_collections_wrong_schema_or_no_lists_are_corrupt_not_an_empty_store(string json)
     {
         Directory.CreateDirectory(Path.Combine(_root, "reminders"));
         File.WriteAllText(StorePath, json);
@@ -222,15 +227,54 @@ public sealed class ReminderServiceTests : IDisposable
     }
 
     [Fact]
-    public void Null_entries_in_the_backup_are_skipped_in_favor_of_seeding()
+    public void Corrupt_siblings_are_moved_aside_not_overwritten_before_seeding()
     {
         Directory.CreateDirectory(Path.Combine(_root, "reminders"));
         File.WriteAllText(StorePath, "{ truncated");
+        File.WriteAllText(AtomicJsonFile.TempPathFor(StorePath), "{ half");
         File.WriteAllText(AtomicJsonFile.BackupPathFor(StorePath), """{"lists":[null],"items":[]}""");
 
         var svc = new ReminderService(_root);
 
         Assert.Equal("Reminders", Assert.Single(svc.GetAll().Lists).Name);
+        var dir = Path.Combine(_root, "reminders");
+        Assert.Single(Directory.GetFiles(dir, "reminders.json.corrupt-*"));
+        Assert.Single(Directory.GetFiles(dir, "reminders.json.tmp.corrupt-*"));
+        Assert.Single(Directory.GetFiles(dir, "reminders.json.bak.corrupt-*"));
+        Assert.False(File.Exists(AtomicJsonFile.TempPathFor(StorePath)));
+    }
+
+    [Fact]
+    public void Access_denied_is_unavailable_and_never_seeded_over_the_file()
+    {
+        var first = new ReminderService(_root);
+        first.CreateItem(J($$"""{"listId":"{{first.GetAll().Lists[0].Id}}","title":"keep"}"""));
+        var before = File.ReadAllText(StorePath);
+
+        var svc = new ReminderService(_root, null, _ => throw new UnauthorizedAccessException(), TimeSpan.Zero);
+
+        Assert.Equal("unavailable", svc.Read().Error);
+        Assert.Equal(before, File.ReadAllText(StorePath));
+        Assert.Empty(Directory.GetFiles(Path.Combine(_root, "reminders"), "*.corrupt-*"));
+    }
+
+    [Fact]
+    public void Recovering_from_the_tmp_moves_it_instead_of_rewriting_and_keeps_the_backup()
+    {
+        var first = new ReminderService(_root);
+        var listId = first.GetAll().Lists[0].Id;
+        first.CreateItem(J($$"""{"listId":"{{listId}}","title":"one"}"""));
+        first.CreateItem(J($$"""{"listId":"{{listId}}","title":"two"}"""));
+        var bakBefore = File.ReadAllText(AtomicJsonFile.BackupPathFor(StorePath));
+        File.Move(StorePath, AtomicJsonFile.TempPathFor(StorePath));
+        var tmpBefore = File.ReadAllText(AtomicJsonFile.TempPathFor(StorePath));
+
+        var svc = new ReminderService(_root);
+
+        Assert.Equal(2, svc.GetAll().Items.Count);
+        Assert.Equal(tmpBefore, File.ReadAllText(StorePath));
+        Assert.False(File.Exists(AtomicJsonFile.TempPathFor(StorePath)));
+        Assert.Equal(bakBefore, File.ReadAllText(AtomicJsonFile.BackupPathFor(StorePath)));
     }
 
     [Fact]
@@ -249,6 +293,62 @@ public sealed class ReminderServiceTests : IDisposable
         var all = svc.GetAll().Items;
         Assert.Equal(new[] { "first", "second" }, all.Select(i => i.Title));
         Assert.Equal(new[] { 0, 1 }, all.Select(i => i.Order));
+    }
+
+    [Fact]
+    public void A_hand_edited_max_int_order_renumbers_instead_of_overflowing()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "reminders"));
+        var file = new ReminderStoreFile
+        {
+            Lists = { new ReminderListDto { Id = "l", Name = "L", Order = int.MaxValue } },
+            Items = { new ReminderDto { Id = "i", ListId = "l", Title = "t", Order = int.MaxValue } },
+        };
+        File.WriteAllText(StorePath, System.Text.Json.JsonSerializer.Serialize(file, PersistenceJsonContext.Default.ReminderStoreFile));
+        var svc = new ReminderService(_root);
+
+        var item = svc.CreateItem(J("""{"listId":"l","title":"new"}""")).Value!;
+        var list = svc.CreateList(J("""{"name":"B","color":"#000000","icon":"list"}""")).Value!;
+
+        Assert.Equal(1, item.Order);
+        Assert.Equal(1, list.Order);
+        Assert.Equal(0, svc.GetAll().Items.Single(i => i.Id == "i").Order);
+        Assert.Equal(0, svc.GetAll().Lists.Single(l => l.Id == "l").Order);
+    }
+
+    [Fact]
+    public void A_renumber_followed_by_a_failed_save_rolls_the_renumber_back()
+    {
+        var svc = new ReminderService(_root);
+        var listId = svc.GetAll().Lists[0].Id;
+        var first = svc.CreateItem(J($$"""{"listId":"{{listId}}","title":"first"}""")).Value!;
+        svc.PatchItem(first.Id, J($$"""{"order":{{ReminderService.MaxOrder}}}"""));
+        svc.PatchList(listId, J($$"""{"order":{{ReminderService.MaxOrder}}}"""));
+        Directory.Delete(Path.Combine(_root, "reminders"), recursive: true);
+        File.WriteAllText(Path.Combine(_root, "reminders"), "blocker");
+
+        var item = svc.CreateItem(J($$"""{"listId":"{{listId}}","title":"second"}"""));
+        var list = svc.CreateList(J("""{"name":"B","color":"#000000","icon":"list"}"""));
+
+        Assert.Equal("saveFailed", item.Error);
+        Assert.Equal("saveFailed", list.Error);
+        var all = svc.GetAll();
+        Assert.Equal(ReminderService.MaxOrder, Assert.Single(all.Items).Order);
+        Assert.Equal(ReminderService.MaxOrder, Assert.Single(all.Lists).Order);
+    }
+
+    [Fact]
+    public void Creating_a_list_past_the_order_cap_renumbers_the_lists()
+    {
+        var svc = new ReminderService(_root);
+        var first = svc.GetAll().Lists[0].Id;
+        svc.PatchList(first, J($$"""{"order":{{ReminderService.MaxOrder}}}"""));
+
+        var created = svc.CreateList(J("""{"name":"B","color":"#000000","icon":"list"}""")).Value!;
+
+        Assert.Equal(new[] { 0, 1 }, svc.GetAll().Lists.Select(l => l.Order));
+        Assert.Equal(first, svc.GetAll().Lists[0].Id);
+        Assert.Equal(1, created.Order);
     }
 
     [Fact]

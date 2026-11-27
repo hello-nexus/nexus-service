@@ -68,9 +68,9 @@ public static class ReminderErrors
     public const string NotFound = "notFound";
     public const string LimitReached = "limitReached";
     public const string LastList = "lastList";
-    /// <summary>The write did not reach disk; nothing changed.</summary>
     /// <summary>The store file exists but cannot be loaded right now; nothing is served or written until it can.</summary>
     public const string Unavailable = "unavailable";
+    /// <summary>The write did not reach disk; nothing changed.</summary>
     public const string SaveFailed = "saveFailed";
     /// <summary>A reorder did not list exactly the list's current items; refetch and retry.</summary>
     public const string Stale = "stale";

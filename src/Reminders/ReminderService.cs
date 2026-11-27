@@ -52,7 +52,7 @@ public sealed class ReminderService
     private List<ReminderDto> _items = new();
     /// <summary>True while the store file exists but could be neither read nor moved aside. Nothing is served or written until a later load succeeds, so the file is never overwritten.</summary>
     private bool _blocked;
-    private DateTimeOffset _lastLoadAttempt;
+    private long _lastLoadAttempt;
 
     /// <summary>A blocked store retries its load lazily, at most this often.</summary>
     public static readonly TimeSpan LoadRetryInterval = TimeSpan.FromSeconds(10);
@@ -82,6 +82,12 @@ public sealed class ReminderService
 
     private enum ReadOutcome { Missing, Ok, Corrupt, Unreadable }
 
+    /// <summary>
+    /// Ok means parsed into a usable store (at least one list with an id, no null entries). There is
+    /// deliberately no File.Exists pre-check: on an access-denied path it reports false, which would
+    /// read as Missing and let a seed overwrite real data. A read that throws FileNotFound or
+    /// DirectoryNotFound is the only Missing.
+    /// </summary>
     private ReadOutcome TryRead(string path, out ReminderStoreFile? file)
     {
         file = null;
@@ -89,16 +95,13 @@ public sealed class ReminderService
         {
             try
             {
-                if (!File.Exists(path))
+                var parsed = JsonSerializer.Deserialize(_readFile(path), PersistenceJsonContext.Default.ReminderStoreFile);
+                if (parsed is null || parsed.Lists is null || parsed.Items is null || parsed.Lists.Contains(null!) || parsed.Items.Contains(null!)
+                    || !parsed.Lists.Any(l => !string.IsNullOrEmpty(l.Id)))
                 {
-                    return ReadOutcome.Missing;
-                }
-                file = JsonSerializer.Deserialize(_readFile(path), PersistenceJsonContext.Default.ReminderStoreFile);
-                if (file is null || file.Lists is null || file.Items is null || file.Lists.Contains(null!) || file.Items.Contains(null!))
-                {
-                    file = null;
                     return ReadOutcome.Corrupt;
                 }
+                file = parsed;
                 return ReadOutcome.Ok;
             }
             catch (JsonException)
@@ -130,75 +133,75 @@ public sealed class ReminderService
     }
 
     /// <summary>
-    /// Loads the store under the lock. A missing or corrupt main file recovers from the newest usable
-    /// sibling: the staged <c>.tmp</c> (a crash between File.Replace's two renames leaves exactly that),
-    /// then the <c>.bak</c>. The seed is written only when no main, tmp or bak file exists. Anything
-    /// unreadable, or an unusable main file that cannot be moved aside, blocks the store instead.
+    /// Loads the store under the lock, under one invariant: a file that exists is never overwritten or
+    /// seeded over unless it parsed into a usable store or was moved aside first. Load writes only to
+    /// promote a recovered file (a move, never a re-serialize) or to create the seed when main, tmp and
+    /// bak are all genuinely absent. Anything unreadable, or unusable but not movable, blocks the store.
     /// </summary>
     private void Load()
     {
-        _lastLoadAttempt = _time.GetUtcNow();
+        _lastLoadAttempt = _time.GetTimestamp();
         _blocked = true;
         _lists = new List<ReminderListDto>();
         _items = new List<ReminderDto>();
+        var tmpPath = AtomicJsonFile.TempPathFor(_path);
+        var bakPath = AtomicJsonFile.BackupPathFor(_path);
         var main = TryRead(_path, out var mainFile);
-        if (main == ReadOutcome.Unreadable)
-        {
-            return;
-        }
         if (main == ReadOutcome.Ok)
         {
             Adopt(mainFile!);
             _blocked = false;
-            if (_lists.Count == 0)
-            {
-                _lists = new List<ReminderListDto> { Seed() };
-                Save();
-            }
+            return;
+        }
+        var tmp = TryRead(tmpPath, out var tmpFile);
+        var bak = TryRead(bakPath, out var bakFile);
+        if (main == ReadOutcome.Unreadable || tmp == ReadOutcome.Unreadable || bak == ReadOutcome.Unreadable)
+        {
             return;
         }
 
-        ReminderStoreFile? recovered = null;
-        foreach (var sibling in new[] { AtomicJsonFile.TempPathFor(_path), AtomicJsonFile.BackupPathFor(_path) })
+        // The newest usable file wins: a crash between File.Replace's renames leaves the staged tmp.
+        var (sourcePath, source) = tmp == ReadOutcome.Ok ? (tmpPath, tmpFile) : bak == ReadOutcome.Ok ? (bakPath, bakFile) : (null, null);
+        if ((main == ReadOutcome.Corrupt && !MoveAside(_path))
+            || (tmp == ReadOutcome.Corrupt && !MoveAside(tmpPath))
+            || (bak == ReadOutcome.Corrupt && !MoveAside(bakPath)))
         {
-            var outcome = TryRead(sibling, out var siblingFile);
-            if (outcome == ReadOutcome.Unreadable)
+            return;
+        }
+        if (source is not null)
+        {
+            try
             {
+                File.Move(sourcePath!, _path);
+            }
+            catch (Exception ex)
+            {
+                Nexus.Service.Platform.ServiceLog.Warn($"[reminders] could not promote the recovered store ({ex.GetType().Name})");
                 return;
             }
-            if (outcome == ReadOutcome.Ok)
-            {
-                recovered = siblingFile;
-                break;
-            }
-        }
-        if (main == ReadOutcome.Corrupt && !MoveCorruptAside())
-        {
-            return;
-        }
-        if (recovered is not null)
-        {
-            Adopt(recovered);
+            Adopt(source);
             Nexus.Service.Platform.ServiceLog.Warn("[reminders] main store was unusable; recovered from a sibling file");
         }
-        if (_lists.Count == 0)
+        else
         {
-            _lists = new List<ReminderListDto> { Seed() };
+            _lists = new List<ReminderListDto> { new() { Id = NewId(), Name = SeedName, Color = SeedColor, Icon = SeedIcon, Order = 0, CreatedAt = Now() } };
+            Save();
         }
         _blocked = false;
-        Save();
     }
 
-    private ReminderListDto Seed() => new() { Id = NewId(), Name = SeedName, Color = SeedColor, Icon = SeedIcon, Order = 0, CreatedAt = Now() };
-
-    /// <summary>An unusable store is kept for recovery rather than overwritten. False when it could not be moved.</summary>
-    private bool MoveCorruptAside()
+    /// <summary>Keeps an unusable file for recovery instead of overwriting it. False when it could not be moved. A missing file counts as moved.</summary>
+    private bool MoveAside(string path)
     {
         try
         {
             var stamp = _time.GetUtcNow().ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
             var n = Interlocked.Increment(ref _asideCounter).ToString(CultureInfo.InvariantCulture);
-            File.Move(_path, _path + ".corrupt-" + stamp + "-" + n, overwrite: false);
+            File.Move(path, path + ".corrupt-" + stamp + "-" + n, overwrite: false);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
             return true;
         }
         catch (Exception)
@@ -210,7 +213,7 @@ public sealed class ReminderService
     /// <summary>Retries a blocked load, at most once per <see cref="LoadRetryInterval"/>. Call under the lock.</summary>
     private void RetryLoadIfDue()
     {
-        if (_blocked && _time.GetUtcNow() - _lastLoadAttempt >= LoadRetryInterval)
+        if (_blocked && _time.GetElapsedTime(_lastLoadAttempt) >= LoadRetryInterval)
         {
             Load();
         }
@@ -228,11 +231,28 @@ public sealed class ReminderService
         catch (Exception ex)
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[reminders] could not write store ({ex.GetType().Name})");
+            DropStagedFile();
             return false;
         }
     }
 
     private static string NewId() => Guid.NewGuid().ToString("N");
+
+    /// <summary>A staged file left by a failed save would be recovered at the next load as a change the client was told failed. Only safe to drop while main exists.</summary>
+    private void DropStagedFile()
+    {
+        try
+        {
+            if (File.Exists(_path))
+            {
+                File.Delete(AtomicJsonFile.TempPathFor(_path));
+            }
+        }
+        catch (Exception)
+        {
+            // Best effort.
+        }
+    }
 
     /// <summary>
     /// Runs <paramref name="body"/> under the lock. The body swaps in new collections or returns an
@@ -295,8 +315,8 @@ public sealed class ReminderService
         }
     }
 
-    /// <summary>The whole store, empty while unavailable. Callers that must tell the two apart use <see cref="Read"/>.</summary>
-    public ReminderStoreResponse GetAll() => Read().Value ?? new ReminderStoreResponse();
+    /// <summary>Test convenience: the whole store, empty while unavailable. Routes use <see cref="Read"/>.</summary>
+    internal ReminderStoreResponse GetAll() => Read().Value ?? new ReminderStoreResponse();
 
     // ---- field parsing ----
 
@@ -411,14 +431,14 @@ public sealed class ReminderService
             {
                 return ReminderResult<ReminderListDto>.Fail(ReminderErrors.LimitReached);
             }
-            var next = _lists.Count == 0 ? 0 : _lists.Max(l => l.Order) + 1;
+            long next = _lists.Count == 0 ? 0 : (long)_lists.Max(l => l.Order) + 1;
             if (next > MaxOrder)
             {
                 // Renumber densely so the new list lands last without exceeding the cap.
                 _lists = _lists.OrderBy(l => l.Order).ThenBy(l => l.CreatedAt).Select((l, n) => { var c = Copy(l); c.Order = n; return c; }).ToList();
                 next = _lists.Count;
             }
-            var created = new ReminderListDto { Id = NewId(), Name = name, Color = color, Icon = icon, Order = next, CreatedAt = Now() };
+            var created = new ReminderListDto { Id = NewId(), Name = name, Color = color, Icon = icon, Order = (int)next, CreatedAt = Now() };
             _lists = new List<ReminderListDto>(_lists) { created };
             return ReminderResult<ReminderListDto>.Ok(Copy(created));
         });
@@ -571,7 +591,7 @@ public sealed class ReminderService
     /// </summary>
     private int NextItemOrder(string listId)
     {
-        var max = -1;
+        long max = -1;
         foreach (var i in _items)
         {
             if (i.ListId == listId && i.Order > max)
@@ -581,7 +601,7 @@ public sealed class ReminderService
         }
         if (max + 1 <= MaxOrder)
         {
-            return max + 1;
+            return (int)(max + 1);
         }
         var ordered = _items.Where(i => i.ListId == listId).OrderBy(i => i.Order).ThenBy(i => i.CreatedAt).Select(i => i.Id).ToList();
         var positions = new Dictionary<string, int>(StringComparer.Ordinal);
