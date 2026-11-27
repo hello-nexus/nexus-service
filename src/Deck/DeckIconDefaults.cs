@@ -133,6 +133,7 @@ public static class DeckIconDefaults
                     "lightingPreset" => "Lightbulb",
                     "fanProfile" => "Fan",
                     "coolingPreset" => "Fan",
+                    "displayPreset" => "Monitor",
                     "y70Power" => "Monitor",
                     "y70Brightness" => "Monitor",
                     "y70Rotation" => "Monitor",

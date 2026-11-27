@@ -202,4 +202,16 @@ public sealed class DeckDialConfigTests
         Assert.Equal(icon, DeckIconDefaults.AutoIconName(action));
         Assert.Equal(DeckCategory.Open, DeckIconDefaults.Category(action));
     }
+
+    [Fact]
+    public void DisplayPreset_RoundTripsItsDeviceIdAndGetsTheMonitorIcon()
+    {
+        var action = JsonSerializer.Deserialize(
+            "{\"type\":\"nexus\",\"action\":{\"op\":\"displayPreset\",\"deviceId\":\"rec-2\",\"presetId\":\"p1\"}}",
+            AppJsonContext.Default.DeckAction)!;
+
+        Assert.Equal("rec-2", action.NexusAction!.DeviceId);
+        Assert.Equal("p1", action.NexusAction.PresetId);
+        Assert.Equal("Monitor", DeckIconDefaults.AutoIconName(action));
+    }
 }
