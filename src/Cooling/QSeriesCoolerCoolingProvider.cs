@@ -322,6 +322,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         _backoffWarned = false;
         _redriveBackoffMs = RedriveMinIntervalMs;
         _softwareSinceMs = 0;
+        _rpmWatch.Clear();
         if (!_gates.Cooling) return;
         if (HasPersistedAssignments())
         {
@@ -371,7 +372,14 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         }
         _softwareSinceMs = 0;
         if (!HasDrivenChannels()) return;
-        if (now < _nextRedriveAtMs) return;
+        if (!TryBeginRedrive(now)) return;
+        Redrive($"control mode left software (raw 0x{observed:X2})");
+    }
+
+    // Gates a replay on the shared interval and doubles it while the device keeps needing replays.
+    private bool TryBeginRedrive(long now)
+    {
+        if (now < _nextRedriveAtMs) return false;
         if (_redriveArmed)
         {
             _redriveBackoffMs = Math.Min(_redriveBackoffMs * 2, RedriveMaxIntervalMs);
@@ -383,7 +391,102 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         }
         _redriveArmed = true;
         _nextRedriveAtMs = now + _redriveBackoffMs;
-        Redrive($"control mode left software (raw 0x{observed:X2})");
+        return true;
+    }
+
+    private const long RpmSettleMs = 10_000;
+    private const int RpmBaselineSamples = 3;
+    private const int RpmStrikesToReplay = 2;
+
+    private sealed class FanRpmWatch
+    {
+        public int Duty = -1;
+        public long ChangedAtMs;
+        public readonly List<int> Samples = new();
+        public int Baseline;
+        public int Strikes;
+    }
+
+    private readonly Dictionary<string, FanRpmWatch> _rpmWatch = new(StringComparer.Ordinal);
+    private bool _logRpmAfterReplay;
+
+    /// <summary>
+    /// Heartbeat hook: a driven fan whose RPM climbs well above what the same duty gave once settled
+    /// while the mode is still software has lost its duty without any mode change. After consecutive
+    /// polls it logs the raw status and replays the fan frames through the same gated, backed-off path.
+    /// No baseline yet (duty just changed, or too few settled polls) means no action.
+    /// </summary>
+    public void RedriveIfFanRpmAbnormal()
+    {
+        if (!_hub.IsConnected || !_gates.Cooling) { _rpmWatch.Clear(); return; }
+        var rpms = FanRpmsById();
+        if (_logRpmAfterReplay)
+        {
+            _logRpmAfterReplay = false;
+            ServiceLog.Info($"[qseries-cooler] rpm after re-drive: [{string.Join(", ", rpms.Select(kv => $"{kv.Key}={kv.Value}"))}]");
+        }
+        if (_hub.DesiredControlMode is byte pinned && pinned != QSeriesCoolerProtocol.ControlModeSoftware) return;
+        var now = _clock();
+        var softwareMode = _hub.State.ControlMode == QSeriesCoolerProtocol.ControlModeSoftware;
+        var abnormal = false;
+        lock (_ctrlLock)
+        {
+            foreach (var stale in _rpmWatch.Keys.Where(k => !_softwareControlled.Contains(k)).ToList()) _rpmWatch.Remove(stale);
+            foreach (var id in _softwareControlled)
+            {
+                if (!TryParseFanId(id, out _, out _, out _) || !rpms.TryGetValue(id, out var rpm)) continue;
+                var duty = _fanDuty.GetValueOrDefault(id, -1);
+                if (!_rpmWatch.TryGetValue(id, out var w)) _rpmWatch[id] = w = new FanRpmWatch();
+                if (w.Duty != duty)
+                {
+                    w.Duty = duty; w.ChangedAtMs = now; w.Samples.Clear(); w.Baseline = 0; w.Strikes = 0;
+                    continue;
+                }
+                if (w.Baseline == 0)
+                {
+                    if (now - w.ChangedAtMs < RpmSettleMs || rpm <= 0) continue;
+                    w.Samples.Add(rpm);
+                    if (w.Samples.Count >= RpmBaselineSamples)
+                    {
+                        var sorted = w.Samples.OrderBy(x => x).ToList();
+                        w.Baseline = sorted[sorted.Count / 2];
+                    }
+                    continue;
+                }
+                if (softwareMode && rpm > w.Baseline * 3 / 2 && rpm > w.Baseline + 400) w.Strikes++;
+                else w.Strikes = 0;
+                if (w.Strikes >= RpmStrikesToReplay) abnormal = true;
+            }
+        }
+        if (!abnormal || !TryBeginRedrive(now)) return;
+        string baselines;
+        lock (_ctrlLock)
+        {
+            baselines = string.Join(" ", _rpmWatch.Select(kv => $"{kv.Key}:base={kv.Value.Baseline},duty={kv.Value.Duty}"));
+            foreach (var w in _rpmWatch.Values) w.Strikes = 0;
+        }
+        ServiceLog.Info($"[qseries-cooler] fan rpm above baseline at unchanged duty: {baselines} rpm=[{string.Join(", ", rpms.Select(kv => $"{kv.Key}={kv.Value}"))}] "
+            + $"turbo={_hub.State.TurboOn} coolant={_hub.State.CoolantTempInC}/{_hub.State.CoolantTempOutC} "
+            + $"port0={Convert.ToHexString(_hub.LastPort0Raw)} ch2={Convert.ToHexString(_hub.LastFanChannelRaw)}");
+        _logRpmAfterReplay = true;
+        Redrive("fan rpm above baseline");
+    }
+
+    private Dictionary<string, int> FanRpmsById()
+    {
+        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        var serial = _hub.State.Serial;
+        void Add(int channel, IReadOnlyList<QSeriesLinkDevice> devices)
+        {
+            foreach (var dev in devices)
+            {
+                for (var i = 1; i <= dev.FanCount; i++)
+                    map[FanId(serial, channel, dev.Slot, dev.FanCount, i)] = i - 1 < dev.FanRpm.Length ? dev.FanRpm[i - 1] : 0;
+            }
+        }
+        Add(1, _hub.State.Channel1Devices);
+        Add(2, _hub.State.Channel2Devices);
+        return map;
     }
 
     private bool HasDrivenChannels()

@@ -101,6 +101,7 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
             _handBackPending = false;
         }
         _cooling?.RedriveIfControlDropped();
+        _cooling?.RedriveIfFanRpmAbnormal();
         _cooling?.RefreshStoredCurvePump();
         // Nudge the lighting provider so RgbBridge rebuilds its frame map on
         // (re)connect. Debounced inside the provider via a signature compare.

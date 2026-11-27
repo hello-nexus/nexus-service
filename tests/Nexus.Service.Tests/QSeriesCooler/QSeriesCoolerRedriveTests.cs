@@ -259,6 +259,142 @@ public class QSeriesCoolerRedriveTests
         Assert.Equal(1, Flip());   // a stale doubled interval would skip this one
     }
 
+    private static List<byte[]> LightFrames(ScriptedTransport t, int port) =>
+        t.Writes.Where(w => w.Length >= 4 && w[0] == 0xFF && w[1] == 0xEE && w[3] == port).ToList();
+
+    [Fact]
+    public void An_empty_fan_port_gets_one_blank_frame_and_nothing_per_tick()
+    {
+        var (hub, t, _, _) = New();
+        for (var i = 0; i < 10; i++) hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+
+        Assert.Single(LightFrames(t, QSeriesCoolerProtocol.FanChannel));
+    }
+
+    [Fact]
+    public void A_port_with_leds_is_written_every_tick()
+    {
+        var (hub, t, _, _) = New();
+        for (var i = 0; i < 5; i++) hub.WriteLinkLighting(QSeriesCoolerProtocol.LinkChannel1, new[] { new RgbColor(1, 2, 3) });
+
+        Assert.Equal(5, LightFrames(t, QSeriesCoolerProtocol.LinkChannel1).Count);
+    }
+
+    [Fact]
+    public void A_lit_chain_going_empty_sends_one_blank_then_stops()
+    {
+        var (hub, t, _, _) = New();
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, new[] { new RgbColor(1, 2, 3) });
+        for (var i = 0; i < 5; i++) hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+
+        Assert.Equal(2, LightFrames(t, QSeriesCoolerProtocol.FanChannel).Count);
+        // Lit again later: the blank state resets, so a later empty chain blanks once more.
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, new[] { new RgbColor(1, 2, 3) });
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+        Assert.Equal(4, LightFrames(t, QSeriesCoolerProtocol.FanChannel).Count);
+    }
+
+    [Fact]
+    public void A_reconnect_blanks_an_empty_port_again()
+    {
+        var (hub, t, _, _) = New();
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+        hub.Disconnect();
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+
+        Assert.Equal(2, LightFrames(t, QSeriesCoolerProtocol.FanChannel).Count);
+    }
+
+    private static void SetRpm(QSeriesCoolerHub hub, int rpm) =>
+        hub.State.Channel2Devices = new List<QSeriesLinkDevice>
+        {
+            new() { Slot = 1, Model = "FP12", FanCount = 1, FanRpm = new[] { rpm }, LedCount = 0 },
+        };
+
+    // Duty set, then three settled polls at the given rpm: the baseline is in place.
+    private static void SettleBaseline(QSeriesCoolerCoolingProvider p, QSeriesCoolerHub hub, Clock clock, int rpm)
+    {
+        SetRpm(hub, rpm);
+        p.RedriveIfFanRpmAbnormal();
+        for (var i = 0; i < 4; i++)
+        {
+            clock.Now += 10_500;
+            p.RedriveIfFanRpmAbnormal();
+        }
+    }
+
+    [Fact]
+    public void An_rpm_spike_at_unchanged_duty_replays_once_then_backs_off()
+    {
+        var (hub, t, p, clock) = New();
+        p.SetFanSpeed(FanId, 45);
+        SettleBaseline(p, hub, clock, 1200);
+        var before = FanFrames(t).Count;
+
+        SetRpm(hub, 2400);
+        clock.Now += 3_000; p.RedriveIfFanRpmAbnormal();
+        Assert.Equal(before, FanFrames(t).Count);       // one strike only
+        clock.Now += 3_000; p.RedriveIfFanRpmAbnormal();
+        Assert.Equal(before + 1, FanFrames(t).Count);   // second strike replays
+
+        clock.Now += 3_000; p.RedriveIfFanRpmAbnormal();
+        clock.Now += 3_000; p.RedriveIfFanRpmAbnormal();
+        Assert.Equal(before + 1, FanFrames(t).Count);   // still spiking, inside the interval
+    }
+
+    [Fact]
+    public void A_small_rpm_rise_does_not_replay()
+    {
+        var (hub, t, p, clock) = New();
+        p.SetFanSpeed(FanId, 45);
+        SettleBaseline(p, hub, clock, 1200);
+        var before = FanFrames(t).Count;
+
+        SetRpm(hub, 1700);   // above 1.5x is false, and below baseline plus 400 is false
+        for (var i = 0; i < 4; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
+
+        Assert.Equal(before, FanFrames(t).Count);
+    }
+
+    [Fact]
+    public void A_spike_with_no_baseline_does_nothing()
+    {
+        var (hub, t, p, clock) = New();
+        p.SetFanSpeed(FanId, 45);
+        var before = FanFrames(t).Count;
+
+        SetRpm(hub, 2400);
+        for (var i = 0; i < 4; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
+
+        Assert.Equal(before, FanFrames(t).Count);
+    }
+
+    [Fact]
+    public void A_duty_change_restarts_the_baseline()
+    {
+        var (hub, t, p, clock) = New();
+        p.SetFanSpeed(FanId, 45);
+        SettleBaseline(p, hub, clock, 1200);
+        p.SetFanSpeed(FanId, 80);
+        var before = FanFrames(t).Count;
+
+        SetRpm(hub, 2400);
+        for (var i = 0; i < 4; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
+
+        Assert.Equal(before, FanFrames(t).Count);
+    }
+
+    [Fact]
+    public void An_undriven_fan_is_never_replayed()
+    {
+        var (hub, t, p, clock) = New();
+        SetRpm(hub, 2400);
+        for (var i = 0; i < 12; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
+
+        Assert.Empty(FanFrames(t));
+    }
+
     private sealed class Clock { public long Now = 100_000; }
 
     private static (QSeriesCoolerHub hub, ScriptedTransport t, QSeriesCoolerCoolingProvider provider, Clock clock) New()

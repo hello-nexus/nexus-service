@@ -58,6 +58,8 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     // on process start, so a restored profile drives normally. Mirrors the NP50
     // hub's DesiredCoolingMode.
     private byte? _desiredControlMode;
+    // Per link port: the blank frame already went out for an empty chain. Cleared on disconnect.
+    private readonly bool[] _linkBlankSent = new bool[3];
 
     public QSeriesCoolerHub(IQSeriesCoolerPortDiscovery discovery, Func<Np50PortInfo, INp50Transport> transportFactory)
     {
@@ -66,6 +68,10 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     }
 
     public QSeriesCoolerState State { get; } = new();
+
+    /// <summary>Raw bytes of the last Port-0 and fan-channel (port 2) polls, for diagnostics.</summary>
+    public byte[] LastPort0Raw { get; private set; } = Array.Empty<byte>();
+    public byte[] LastFanChannelRaw { get; private set; } = Array.Empty<byte>();
     public bool IsConnected => _transport is { IsOpen: true };
 
     /// <summary>"q60" / "q80" once connected, else empty. Used as the firmware-catalog key.</summary>
@@ -171,8 +177,12 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             if (t is null) return;
             try
             {
+                // An empty chain (a fan with no LEDs) gets one blank frame, not one per tick: a
+                // stream of 0xEE frames to the fan port has no use once the port is dark.
+                if (leds.IsEmpty && _linkBlankSent[port]) return;
                 AssertSoftwareRgbControlLocked(t);
                 t.Write(QSeriesCoolerProtocol.BuildLightingStream(port, leds));
+                _linkBlankSent[port] = leds.IsEmpty;
             }
             catch (Exception ex)
             {
@@ -310,6 +320,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             _rgbInSwControl = false;
             _portName = "";
             _curvePumpWire = null;
+            Array.Clear(_linkBlankSent);
         }
     }
 
@@ -381,6 +392,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 if (!QSeriesCoolerProtocol.TryParsePort0PumpRpm(buf.AsSpan(0, n), out var pumpRpm))
                     return false;
                 State.PumpRpm = pumpRpm;
+                LastPort0Raw = buf.AsSpan(0, n).ToArray();
                 State.ControlMode = QSeriesCoolerProtocol.ControlModeOf(buf);
                 State.TurboOn = QSeriesCoolerProtocol.TurboOnOf(buf);
                 (State.CoolantTempInC, State.CoolantTempOutC) = QSeriesCoolerProtocol.CoolantTempsOf(buf);
@@ -413,6 +425,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
         var n = transport.Read(buf, FanReadTimeoutMs);
         if (!QSeriesCoolerProtocol.TryParseChannelDevices(buf.AsSpan(0, n), out var devices)) return;
         setDevices(devices);
+        if (channel == QSeriesCoolerProtocol.FanChannel) LastFanChannelRaw = buf.AsSpan(0, n).ToArray();
 
         if (lastLogged is not null && SameTopology(devices, lastLogged)) return;
         lastLogged = devices;
