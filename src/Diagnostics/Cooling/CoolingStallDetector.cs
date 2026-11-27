@@ -77,6 +77,15 @@ public sealed class CoolingStallDetector
     private readonly object _gate = new();
     private readonly Dictionary<string, ChannelState> _channels = new(StringComparer.Ordinal);
 
+    /// <summary>Drops a channel and any status it held, so it stops reporting at once instead of aging out.</summary>
+    public void Forget(string deviceId)
+    {
+        lock (_gate)
+        {
+            _channels.Remove(deviceId);
+        }
+    }
+
     /// <summary>Feed one observation for a channel. Safe to call at any cadence;
     /// the sustain windows above are measured from real elapsed time between calls
     /// (via <paramref name="nowUtc"/>), not call count.</summary>
@@ -320,7 +329,12 @@ public sealed class CoolingStallFeeder : BackgroundService
             // A port that cannot read its tach right now (MiniHub between
             // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
             // leave it unobserved so it ages out instead of reading as a stall.
-            if (ch.RpmUnavailable || excluded?.Contains(ch.Id) == true) continue;
+            if (excluded?.Contains(ch.Id) == true)
+            {
+                _detector.Forget(ch.Id);
+                continue;
+            }
+            if (ch.RpmUnavailable) continue;
             var type = string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal) ? "pump" : "fan";
             _detector.Observe(ch.Id, ch.Name, type, ch.Rpm, ch.DutyPercent, now);
         }

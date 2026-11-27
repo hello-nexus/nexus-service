@@ -996,6 +996,9 @@ public partial class SensorAlertEngineTests
         rig.Seconds(1);
 
         Assert.NotEqual(SensorAlertStates.Active, StateOf(rig, FanRule("fan1")).State);
+        rig.Seconds(10);
+
+        Assert.Equal(SensorAlertStates.Active, StateOf(rig, FanRule("fan1")).State);
     }
 
     [Fact]

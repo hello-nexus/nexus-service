@@ -52,6 +52,25 @@ public class CoolingStallFeederTests
     }
 
     [Fact]
+    public void A_stalled_fan_that_becomes_excluded_leaves_the_snapshot_on_the_next_tick()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.FeaturesOnboardingCompleted = true);
+        var fans = new ScriptedFans { Channel = new FanChannel { Id = "f1", Name = "Rear", Rpm = 0, DutyPercent = 60 } };
+        var detector = new CoolingStallDetector();
+        var start = DateTime.UtcNow - TimeSpan.FromSeconds(200);
+        detector.Observe("f1", "Rear", "fan", 900, 60, start);
+        detector.Observe("f1", "Rear", "fan", 0, 60, start + TimeSpan.FromSeconds(10));
+        detector.Observe("f1", "Rear", "fan", 0, 60, start + TimeSpan.FromSeconds(150));
+        Assert.Equal(CoolingStallStatuses.Stalled, detector.Snapshot().Devices.Single().Status);
+
+        store.Update(s => s.Cooling.UncontrolledFanChannels.Add("f1"));
+        new CoolingStallFeeder(fans, detector, store: store).Tick();
+
+        Assert.Empty(detector.Snapshot().Devices);
+    }
+
+    [Fact]
     public void Tick_observes_every_fan_while_the_cooling_feature_is_off()
     {
         var store = new InMemoryConfigStore();
