@@ -1643,8 +1643,13 @@ public sealed partial class Slv3Hub : IDisposable
                     intent.MismatchSinceMs = _nowMs();
                     intent.DifferingStreak = 0;
                 }
-                // A factory-reset record (no master, a bind slot, our channel) is unambiguous and skips the window.
-                var cleanReset = Slv3Protocol.MacIsZero(record.MasterMac) && ValidSlot(record.RxType) && record.Channel == _channel;
+                // The send uses this poll's record, so only a poll that reported the repeated record may send.
+                if (reported != intent.MismatchRecord)
+                {
+                    return;
+                }
+                // A factory-reset record (no master, no slot or a bind slot, our channel) is unambiguous and skips the window.
+                var cleanReset = Slv3Protocol.MacIsZero(record.MasterMac) && (record.RxType == 0 || ValidSlot(record.RxType)) && record.Channel == _channel;
                 if (intent.MismatchPolls < BindMismatchPollsBeforeSend || (!cleanReset && _nowMs() - intent.MismatchSinceMs < BindMismatchWindowMs))
                 {
                     return;

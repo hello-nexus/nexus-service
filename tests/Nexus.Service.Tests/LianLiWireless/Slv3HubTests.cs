@@ -2836,8 +2836,6 @@ public partial class Slv3HubTests
 
         net.Fans.Clear();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
-        Ticks(hub, 1);
-        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
         Ticks(hub, BindSaveTicks * 3);
         Assert.Single(SaveCfgFrames(tx));
 

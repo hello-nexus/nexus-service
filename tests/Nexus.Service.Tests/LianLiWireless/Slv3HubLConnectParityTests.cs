@@ -447,6 +447,31 @@ public partial class Slv3HubTests
         Assert.NotEmpty(AllBindFrames(tx));
     }
 
+    [Fact]
+    public void A_garbage_poll_after_the_window_does_not_bind_and_the_next_candidate_poll_binds_on_the_candidate_pipe()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 7;
+        Ticks(hub, 3);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+        fan.RxType = 89;
+        fan.Channel = 208;
+        Ticks(hub, 1);
+        Assert.Empty(AllBindFrames(tx));
+
+        fan.RxType = 7;
+        fan.Channel = Slv3Protocol.DefaultChannel;
+        Ticks(hub, 1);
+
+        var frames = AllBindFrames(tx);
+        Assert.NotEmpty(frames);
+        Assert.All(frames, f => { Assert.Equal(Slv3Protocol.DefaultChannel, f[2]); Assert.Equal(7, f[3]); });
+    }
+
     public static IEnumerable<object[]> CorruptedRecords() => new[]
     {
         new object[] { "slot 89 ch 208, foreign master", Convert.FromHexString("40C5A87BE1AF"), (byte)89, (byte)208 },
