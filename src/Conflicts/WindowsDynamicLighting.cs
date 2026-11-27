@@ -92,8 +92,8 @@ public static class WindowsDynamicLighting
 
     /// <summary>
     /// For the conflict watcher's poll: the registry value is read live, but the
-    /// HID walk behind the device count is repeated only on a USB bus change
-    /// and skipped entirely while the setting is off (DeviceCount stays 0).
+    /// HID walk behind the device count is repeated only after a USB bus change or a HID
+    /// interface event, at most once a minute, and skipped entirely while the setting is off (DeviceCount stays 0).
     /// </summary>
     [SupportedOSPlatform("windows")]
     public static WindowsDynamicLightingState ReadCached() => ReadState(cachedCount: true);
@@ -145,7 +145,14 @@ public static class WindowsDynamicLighting
 
     private static volatile bool _wasEnabled;
 
+    /// <summary>A setting change: re-count on the next read, ignoring the minimum interval.</summary>
     internal static void InvalidateDeviceCount()
+    {
+        LampArrayCount.InvalidateNow();
+    }
+
+    /// <summary>A HID interface event: re-count on the next read once the minimum interval since the last walk has passed.</summary>
+    internal static void InvalidateDeviceCountFromBus()
     {
         LampArrayCount.Invalidate();
     }

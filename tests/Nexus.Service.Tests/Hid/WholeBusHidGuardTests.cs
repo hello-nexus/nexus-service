@@ -55,7 +55,7 @@ public class WholeBusHidGuardTests
     [Fact]
     public void Count_walks_once_while_the_bus_signature_is_unchanged()
     {
-        var gate = new BusGatedCount();
+        var gate = new BusGatedCount(() => 0);
         var walks = 0;
         int Walk() { walks++; return 2; }
 
@@ -65,22 +65,51 @@ public class WholeBusHidGuardTests
     }
 
     [Fact]
-    public void Count_walks_again_on_a_bus_change_and_after_invalidate()
+    public void Bus_change_inside_the_window_is_deferred_then_honored()
     {
-        var gate = new BusGatedCount();
+        long now = 0;
+        var gate = new BusGatedCount(() => now);
         var walks = 0;
         int Walk() => ++walks;
 
         Assert.Equal(1, gate.Get("a", Walk));
-        Assert.Equal(2, gate.Get("b", Walk));
         gate.Invalidate();
-        Assert.Equal(3, gate.Get("b", Walk));
+        now = BusGatedCount.MinIntervalMs - 1;
+        Assert.Equal(1, gate.Get("a", Walk));
+        Assert.Equal(1, gate.Get("b", Walk));
+        now = BusGatedCount.MinIntervalMs;
+        Assert.Equal(2, gate.Get("b", Walk));
+        Assert.Equal(2, gate.Get("b", Walk));
+    }
+
+    [Fact]
+    public void InvalidateNow_ignores_the_window()
+    {
+        var gate = new BusGatedCount(() => 0);
+        var walks = 0;
+        int Walk() => ++walks;
+
+        gate.Get("a", Walk);
+        gate.InvalidateNow();
+        Assert.Equal(2, gate.Get("a", Walk));
+    }
+
+    [Fact]
+    public void Invalidate_during_a_walk_stays_pending()
+    {
+        long now = 0;
+        var gate = new BusGatedCount(() => now);
+        var walks = 0;
+        gate.Get("a", () => { gate.Invalidate(); return ++walks; });
+        now = BusGatedCount.MinIntervalMs;
+        gate.Get("a", () => ++walks);
+        Assert.Equal(2, walks);
     }
 
     [Fact]
     public void Count_with_no_bus_source_walks_once()
     {
-        var gate = new BusGatedCount();
+        var gate = new BusGatedCount(() => 0);
         var walks = 0;
         int Walk() => ++walks;
 

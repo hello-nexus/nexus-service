@@ -108,7 +108,7 @@ internal sealed unsafe class UsbDeviceChangeNotifier : IHostedService
         if (action is CfgMgr32.CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
                    or CfgMgr32.CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL)
         {
-            Nexus.Service.Conflicts.WindowsDynamicLighting.InvalidateDeviceCount();
+            Nexus.Service.Conflicts.WindowsDynamicLighting.InvalidateDeviceCountFromBus();
         }
         return 0;
     }

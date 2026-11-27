@@ -2353,7 +2353,11 @@ public static class NexusServiceCollectionExtensions
 #endif
         // Same instance as IHidEnumerator; every platform implementation carries the whole-bus interface.
         services.AddSingleton<Nexus.Service.Peripherals.Hid.IHidWholeBusEnumerator>(sp =>
-            (Nexus.Service.Peripherals.Hid.IHidWholeBusEnumerator)sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>());
+        {
+            var hid = sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>();
+            return hid as Nexus.Service.Peripherals.Hid.IHidWholeBusEnumerator
+                ?? throw new System.InvalidOperationException($"{hid.GetType().Name} must implement IHidWholeBusEnumerator");
+        });
         // Real HID-backed keeb provider. StubKeebProvider stays registered only
         // as the IInputterProvider fallback on platforms without a native inputter.
         services.AddSingleton<StubKeebProvider>();
