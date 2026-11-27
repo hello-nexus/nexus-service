@@ -25,12 +25,6 @@ public sealed class GoveeDriver : ILightDriver
     private const int ProbeTimeoutMs = 2000;
     private const int ScanTimeoutMs = 2500;
     private const int PingTimeoutMs = 1500;
-    // Devices drop out of razer mode after ~1 min without frames AND on any
-    // power cycle, with no feedback either way, and the enable is fire-and-forget
-    // UDP - a single re-arm lost while the strip wakes from a power-off strands it
-    // in its native scene. Re-arm every couple seconds so a dropped enable
-    // self-heals in ~2s instead of waiting out the revert window.
-    private const int RazerRearmMs = 2_000;
 
     // Bulb / single-zone models on the official LAN list (H60xx lamp class):
     // control-only, averaged to one color.
@@ -52,7 +46,11 @@ public sealed class GoveeDriver : ILightDriver
     private readonly GoveeLanClient _client;
     // Parsed Extra payloads, keyed by device id, invalidated on change.
     private readonly ConcurrentDictionary<string, (string Raw, GoveeExtra Parsed)> _extras = new();
-    // Devices in razer (realtime) mode → TickCount64 of the last enable send.
+    // Devices in razer (realtime) mode → TickCount64 of the enable send. The enable
+    // is sent once per entry, never on a timer: every enable resets the strip's
+    // frame buffer and shows as a black flash. Entry state is cleared by a static
+    // frame or by a failed reachability ping (power cycle, Wi-Fi drop), so the next
+    // zone frame re-enters with the full turn-on, brightness, enable sequence.
     private readonly ConcurrentDictionary<string, long> _razerArmedAt = new();
 
     private readonly int _scanTimeoutMs;
@@ -176,7 +174,7 @@ public sealed class GoveeDriver : ILightDriver
         if (frame.Zones is { } zones && frame.On && extra?.Razer == true)
         {
             var now = Environment.TickCount64;
-            if (!_razerArmedAt.TryGetValue(dev.Id, out var armedAt))
+            if (!_razerArmedAt.TryGetValue(dev.Id, out _))
             {
                 // Cold entry (first frame, or after a power-off turned the strip
                 // off). Firmware scales razer output by power+brightness, so set
@@ -188,14 +186,6 @@ public sealed class GoveeDriver : ILightDriver
                 await Task.Delay(300, ct).ConfigureAwait(false);
                 await _client.BrightnessAsync(dev.Host, 100, ct).ConfigureAwait(false);
                 await Task.Delay(300, ct).ConfigureAwait(false);
-                await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
-                _razerArmedAt[dev.Id] = now;
-            }
-            else if (now - armedAt > RazerRearmMs)
-            {
-                // Periodic re-assert so a dropped enable self-heals; enable only,
-                // no turn/brightness churn that would bounce the strip out of
-                // DreamView mid-stream.
                 await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
                 _razerArmedAt[dev.Id] = now;
             }
@@ -238,8 +228,12 @@ public sealed class GoveeDriver : ILightDriver
 
     public async Task<bool> PingAsync(SmartLight dev, CancellationToken ct)
     {
-        try { return await _client.StatusAsync(dev.Host, _pingTimeoutMs, ct).ConfigureAwait(false) is not null; }
-        catch { return false; }
+        bool reachable;
+        try { reachable = await _client.StatusAsync(dev.Host, _pingTimeoutMs, ct).ConfigureAwait(false) is not null; }
+        catch { reachable = false; }
+        if (!reachable)
+            _razerArmedAt.TryRemove(dev.Id, out _);
+        return reachable;
     }
 
     private GoveeExtra? GetExtra(SmartLight dev)

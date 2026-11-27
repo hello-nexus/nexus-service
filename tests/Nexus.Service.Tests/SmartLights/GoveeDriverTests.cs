@@ -291,6 +291,52 @@ public class GoveeDriverTests : IDisposable
         }
     }
 
+    private int EnableCount() =>
+        _device.RazerPackets.ToArray().Count(p => p.AsSpan().SequenceEqual(GoveePackets.BuildRazerMode(enable: true)));
+
+    [Fact]
+    public async Task Send_zones_neverResendsEnableOnATimerWhileStreaming()
+    {
+        var dev = PairedDevice("""{"sku":"H619A","segments":20,"razer":true}""");
+        var zones = new byte[20 * 3];
+        var frame = new LightFrame(On: true, 0, 0, 255, 1f, zones);
+
+        await _driver.SendAsync(dev, frame, CancellationToken.None);
+        // Stream past the old 2 s re-arm window.
+        for (var i = 0; i < 25; i++)
+        {
+            await _driver.SendAsync(dev, frame, CancellationToken.None);
+            await Task.Delay(100);
+        }
+        await TestWait.ForAsync(() => _device.RazerPackets.Count >= 26);
+        Assert.Equal(1, EnableCount());
+    }
+
+    [Fact]
+    public async Task Send_zones_resendsEnableAfterAFailedReachabilityPing()
+    {
+        var dev = PairedDevice("""{"sku":"H619A","segments":20,"razer":true}""");
+        var frame = new LightFrame(On: true, 0, 0, 255, 1f, new byte[20 * 3]);
+
+        await _driver.SendAsync(dev, frame, CancellationToken.None);
+        await _driver.SendAsync(dev, frame, CancellationToken.None);
+        await TestWait.ForAsync(() => _device.RazerPackets.Count >= 3);
+        Assert.Equal(1, EnableCount());
+
+        // A ping that succeeds leaves the entry alone.
+        Assert.True(await _driver.PingAsync(dev, CancellationToken.None));
+        await _driver.SendAsync(dev, frame, CancellationToken.None);
+        await TestWait.ForAsync(() => _device.RazerPackets.Count >= 4);
+        Assert.Equal(1, EnableCount());
+
+        // Power cycle: the device stops answering, then comes back.
+        _device.LanEnabled = false;
+        Assert.False(await _driver.PingAsync(dev, CancellationToken.None));
+        _device.LanEnabled = true;
+        await _driver.SendAsync(dev, frame, CancellationToken.None);
+        await TestWait.ForAsync(() => EnableCount() == 2);
+    }
+
     [Fact]
     public async Task Ping_reflectsDeviceReachability()
     {
