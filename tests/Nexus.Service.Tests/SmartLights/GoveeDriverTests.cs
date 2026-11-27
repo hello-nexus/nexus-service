@@ -348,7 +348,7 @@ public class GoveeDriverTests : IDisposable
         Assert.False(await driver.PingAsync(dev, CancellationToken.None));
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
         await TestWait.ForAsync(() => _device.RazerPackets.Count >= 3);
-        Assert.Equal(1, _device.Turns.Count);
+        Assert.Single(_device.Turns);
 
         Assert.False(await driver.PingAsync(dev, CancellationToken.None));
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
