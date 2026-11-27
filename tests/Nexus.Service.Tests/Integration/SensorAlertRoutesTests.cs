@@ -272,6 +272,54 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     }
 
     [Fact]
+    public async Task A_fan_released_before_the_gate_went_off_can_still_be_switched_back_on()
+    {
+        var client = Client();
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false });
+        Store().Update(s => s.Features.Cooling = false);
+        // The flag cannot be consulted while the feature is off, so the entry reads from the mute alone.
+        Assert.True((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+
+        var off = await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", FanBody(false));
+        Assert.False((await off.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("enabled").GetBoolean());
+        Assert.False((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+
+        var on = await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", FanBody(true));
+        Assert.True((await on.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("enabled").GetBoolean());
+        Assert.DoesNotContain("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+        Assert.True((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task A_no_op_controlled_true_does_not_unmute_an_already_controlled_fan_but_a_real_flip_or_the_watchlist_does()
+    {
+        var client = Client();
+        Store().Update(s => s.Diagnostics.IgnoredComponents.Add("cooling:" + FanChannel));
+
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true });
+        Assert.Contains("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false });
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true });
+        Assert.DoesNotContain("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+
+        Store().Update(s => s.Diagnostics.IgnoredComponents.Add("cooling:" + FanChannel));
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true, unmute = true });
+        Assert.DoesNotContain("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+    }
+
+    [Fact]
+    public async Task The_save_response_carries_the_computed_enabled_not_the_clients_echo()
+    {
+        var client = Client();
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false });
+
+        var res = await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", FanBody(true));
+
+        Assert.False((await res.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
     public async Task A_pump_entry_keeps_the_mute_only_switch_and_is_not_tied_to_control()
     {
         var client = Client();
@@ -302,7 +350,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
     }
 
     [Fact]
-    public async Task Switching_control_on_clears_a_legacy_mute_and_the_entry_reads_on()
+    public async Task The_watchlist_switch_on_clears_a_legacy_mute_and_the_entry_reads_on()
     {
         var client = Client();
         Store().Update(s => s.Diagnostics.IgnoredComponents.Add("cooling:" + FanChannel));
@@ -311,7 +359,7 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
             Assert.False((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
             Assert.DoesNotContain(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
 
-            await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true });
+            await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true, unmute = true });
 
             Assert.DoesNotContain("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
             Assert.True((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());

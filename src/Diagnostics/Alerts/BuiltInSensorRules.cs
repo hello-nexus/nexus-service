@@ -299,6 +299,13 @@ public static class BuiltInSensorRules
     public static bool FanEnabled(BuiltInDevice device, DiagnosticsSettings diagnostics, bool controlled) =>
         (controlled || device.Source?.ControlChannel is null) && diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
 
+    /// <summary>
+    /// The Controlled input to <see cref="FanEnabled"/>. While the Cooling feature is off nothing can change the flag
+    /// (the controlled route refuses), so it is not consulted and a fan released earlier is monitored by the ignore list alone.
+    /// </summary>
+    public static bool FanControlled(string channelId, NexusSettings settings) =>
+        !Nexus.Service.Lifecycle.FeatureGates.CoolingOf(settings) || Nexus.Service.Cooling.FanControlledState.IsControlled(channelId, settings);
+
     /// <summary>Writes a fan entry's on/off into the ignore list the Cooling page's stall toggle uses, so the two never disagree.</summary>
     public static void SetFanEnabled(DiagnosticsSettings diagnostics, BuiltInDevice device, bool enabled)
     {

@@ -291,14 +291,19 @@ public static class CoolingRoutes
             {
                 return Results.BadRequest(new ApiResponse { Error = true, Msg = "Unknown fan channel" });
             }
+            var wasControlled = FanControlledState.IsControlled(id, store.Load());
             FanControlledState.Apply(id, body.Controlled, f, store);
             if (!string.Equals(channel.Kind, FanKinds.Pump, StringComparison.Ordinal))
             {
                 if (body.Controlled)
                 {
-                    // Control on is monitoring on: the legacy per-fan mute would otherwise keep the watchlist entry off.
-                    var muted = Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.FanComponentPrefix + id;
-                    store.Update(s => s.Diagnostics.IgnoredComponents?.RemoveAll(x => x == muted));
+                    // Only a real off-to-on flip (or the watchlist's own switch) unmutes, so a no-op "controlled" from a
+                    // group action never unmutes fans that were already controlled. The legacy per-fan mute would otherwise keep the watchlist entry off.
+                    if (!wasControlled || body.Unmute)
+                    {
+                        var muted = Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.FanComponentPrefix + id;
+                        store.Update(s => s.Diagnostics.IgnoredComponents?.RemoveAll(x => x == muted));
+                    }
                 }
                 else
                 {

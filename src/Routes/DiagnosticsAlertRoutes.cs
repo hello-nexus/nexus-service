@@ -161,7 +161,13 @@ public static class DiagnosticsAlertRoutes
             }
             engine.Reconcile();
             // The stored copy has no source; the response carries the one feeding the rule now.
-            body.Source = engine.Rules().FirstOrDefault(r => r.Id == id)?.Source;
+            // A fan entry's on/off is computed (control and mute), so the response carries the engine's value, not the client's echo.
+            var live = engine.Rules().FirstOrDefault(r => r.Id == id);
+            body.Source = live?.Source;
+            if (live is not null && body.BuiltIn == BuiltInSensorRules.FanSpeed)
+            {
+                body.Enabled = live.Enabled;
+            }
             return Results.Ok(body);
         }).Produces<SensorAlertRule>().Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<ApiResponse>(StatusCodes.Status404NotFound).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 

@@ -555,7 +555,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         // A fan's on/off is its Nexus Control flag (stall monitoring follows it) unless the legacy ignore entry suppresses it, not the stored flag.
                         if (device.Kind == BuiltInSensorRules.FanSpeed)
                         {
-                            copy.Enabled = BuiltInSensorRules.FanEnabled(device, s.Diagnostics, Nexus.Service.Cooling.FanControlledState.IsControlled(BuiltInSensorRules.FanChannelId(device), s));
+                            copy.Enabled = BuiltInSensorRules.FanEnabled(device, s.Diagnostics, BuiltInSensorRules.FanControlled(BuiltInSensorRules.FanChannelId(device), s));
                         }
                         builtInRules.Add(copy);
                     }
@@ -890,7 +890,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     if (existing is null)
                     {
                         list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics,
-                            device.Kind != BuiltInSensorRules.FanSpeed || Nexus.Service.Cooling.FanControlledState.IsControlled(BuiltInSensorRules.FanChannelId(device), s)));
+                            device.Kind != BuiltInSensorRules.FanSpeed || BuiltInSensorRules.FanControlled(BuiltInSensorRules.FanChannelId(device), s)));
                     }
                     else if (BuiltInSensorRules.CpuDefaultStale(existing, device))
                     {

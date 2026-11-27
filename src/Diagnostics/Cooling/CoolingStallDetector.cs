@@ -327,7 +327,8 @@ public sealed class CoolingStallFeeder : BackgroundService
 
         // One settings read per pass. A fan the user took off Nexus Control is not monitored: it is neither observed
         // nor kept, so an empty header never raises a stall and a stall already held clears. A pump is not tied to the flag.
-        var settings = _store?.Load();
+        // With the Cooling feature off the flag cannot be changed, so it is not consulted.
+        var settings = _gates.Cooling ? _store?.Load() : null;
         foreach (var ch in channels)
         {
             if (settings is not null && !IsPump(ch) && !FanControlledState.IsControlled(ch.Id, settings))
