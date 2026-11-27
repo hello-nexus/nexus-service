@@ -44,6 +44,8 @@ internal sealed class FakeGoveeDevice : IDisposable
     public volatile bool ScanEnabled = true;
 
     public volatile bool OnOff = true;
+    private int _statusQueries;
+    public int StatusQueries => Volatile.Read(ref _statusQueries);
     public volatile int Brightness = 100;
 
     public ConcurrentQueue<bool> Turns { get; } = new();
@@ -90,6 +92,7 @@ internal sealed class FakeGoveeDevice : IDisposable
                 }
                 break;
             case "devStatus":
+                Interlocked.Increment(ref _statusQueries);
                 if (LanEnabled)
                 {
                     var statusData = $$"""{"onOff":{{(OnOff ? 1 : 0)}},"brightness":{{Brightness}},"color":{"r":255,"g":0,"b":0},"colorTemInKelvin":0}""";

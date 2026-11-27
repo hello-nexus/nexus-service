@@ -55,12 +55,11 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private readonly GoveeLanClient _client;
     // Parsed Extra payloads, keyed by device id, invalidated on change.
     private readonly ConcurrentDictionary<string, (string Raw, GoveeExtra Parsed)> _extras = new();
-    // Devices in razer (realtime) mode. The enable is sent on entry plus a short
-    // bounded confirm, never on a timer: every enable resets the strip's
-    // frame buffer and shows as a black flash. Entry state is cleared by a static
-    // frame, a frame gap, or repeated status misses / an off status (power cycle,
-    // Wi-Fi drop), so the next zone frame re-enters with the full turn-on,
-    // brightness, enable sequence.
+    // Devices in realtime (razer) mode. The enable is sent on entry plus a bounded
+    // confirm, never on a timer: each one resets the strip's frame buffer. An entry
+    // is cleared by a static frame, a frame gap, two status misses, or an on reply
+    // after a miss; the next zone frame then cold-enters. A suppressed entry (strip
+    // reported off) is cleared only by an on reply or a static frame.
     private readonly ConcurrentDictionary<string, RazerEntry> _razerEntries = new();
 
     // One instance per entry into realtime mode. Clears compare the instance, so a
@@ -208,6 +207,14 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
             if (entry is not null && Volatile.Read(ref entry.Suppressed))
             {
                 // The gap rule is skipped so a pause cannot end the suppression and turn the strip back on.
+                if (now - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
+                {
+                    // The idle probe has stopped; start a fresh one for this entry.
+                    Disarm(dev.Id, entry);
+                    entry = new RazerEntry { Suppressed = true, LastFrameAt = now };
+                    _razerEntries[dev.Id] = entry;
+                    _ = ProbeWhileArmedAsync(dev, entry);
+                }
                 Volatile.Write(ref entry.LastFrameAt, now);
                 return;
             }
@@ -231,7 +238,8 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
                 await _client.BrightnessAsync(dev.Host, 100, ct).ConfigureAwait(false);
                 await Task.Delay(300, ct).ConfigureAwait(false);
                 await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
-                entry = new RazerEntry { NextConfirmAt = Environment.TickCount64 + _confirmGapMs };
+                var entered = Environment.TickCount64;
+                entry = new RazerEntry { LastFrameAt = entered, NextConfirmAt = entered + _confirmGapMs };
                 _razerEntries[dev.Id] = entry;
                 _ = ProbeWhileArmedAsync(dev, entry);
             }
@@ -241,7 +249,7 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
                 entry.NextConfirmAt = now + _confirmGapMs;
                 await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
             }
-            Volatile.Write(ref entry.LastFrameAt, now);
+            Volatile.Write(ref entry.LastFrameAt, Math.Max(now, entry.LastFrameAt));
             var count = Math.Min(zones.Length / 3, Math.Max(1, extra.Segments));
             await _client.RazerAsync(dev.Host,
                 GoveePackets.RazerFrameBase64(zones, count, frame.Brightness01, gradient: true), ct).ConfigureAwait(false);
@@ -288,10 +296,11 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         return await ObserveStatusAsync(dev, entry, _pingTimeoutMs, ct).ConfigureAwait(false);
     }
 
-    // One status query against the entry it started with (never a newer one).
-    // Two consecutive misses, or an on reply after a miss (a reboot shorter than
-    // the probe spacing), or an on reply while suppressed disarm it. An off reply
-    // suppresses it: the strip was turned off outside Nexus and stays off.
+    // One status query against the entry it started with (never a newer one). An
+    // off reply suppresses it (the strip was turned off outside Nexus and stays
+    // off). Otherwise an on reply after a miss (a reboot shorter than the probe
+    // spacing), an on reply while suppressed, or two consecutive misses disarm it;
+    // misses never end a suppression.
     private async Task<bool> ObserveStatusAsync(SmartLight dev, RazerEntry? entry, int timeoutMs, CancellationToken ct)
     {
         GoveeReplyData? reply;
@@ -302,7 +311,7 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         {
             if (reply is null)
             {
-                if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm)
+                if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm && !Volatile.Read(ref entry.Suppressed))
                     Disarm(dev.Id, entry);
             }
             else
@@ -320,7 +329,10 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private void Disarm(string id, RazerEntry entry)
     {
         if (((ICollection<KeyValuePair<string, RazerEntry>>)_razerEntries).Remove(new(id, entry)))
+        {
             entry.Stop.Cancel();
+            entry.Stop.Dispose();
+        }
     }
 
     private bool IsCurrent(string id, RazerEntry entry)
@@ -335,10 +347,12 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
             {
                 await Task.Delay(_probeMs, ct).ConfigureAwait(false);
                 if (!IsCurrent(dev.Id, entry)) return;
-                // Frames stopped without a static frame: the gap rule owns re-entry.
-                if (!Volatile.Read(ref entry.Suppressed) && Environment.TickCount64 - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
+                // Frames stopped without a static frame. A suppressed entry stays (the next
+                // frame restarts its probe); an armed one is dropped so the gap rule owns re-entry.
+                if (Environment.TickCount64 - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
                 {
-                    Disarm(dev.Id, entry);
+                    if (!Volatile.Read(ref entry.Suppressed))
+                        Disarm(dev.Id, entry);
                     return;
                 }
                 await ObserveStatusAsync(dev, entry, _pingTimeoutMs, ct).ConfigureAwait(false);
