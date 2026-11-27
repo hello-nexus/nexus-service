@@ -22,7 +22,7 @@ public class WholeBusHidGuardTests
     }
 
     // Whole-bus enumeration opens every HID interface on the PC. Only the enumerator
-    // implementations, the one-shot startup dump and the change-gated LampArray count may name it.
+    // implementations, the DI registration, the one-shot startup dump and the change-gated LampArray count may name it.
     [Fact]
     public void Only_allowlisted_files_reference_whole_bus_hid_enumeration()
     {
@@ -33,6 +33,7 @@ public class WholeBusHidGuardTests
             "Peripherals/Hid/MacHidEnumerator.cs",
             "Peripherals/Hid/LinuxHidEnumerator.cs",
             "Peripherals/Hid/StubHidEnumerator.cs",
+            "DependencyInjection/NexusServiceCollectionExtensions.cs",
             "Diagnostics/StartupDiagnosticsDumpService.cs",
             "Conflicts/WindowsDynamicLighting.cs",
         };

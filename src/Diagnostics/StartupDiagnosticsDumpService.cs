@@ -34,6 +34,7 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
     private readonly ICoolingProvider _cooling;
     private readonly IMonitorEnumerator _monitors;
     private readonly IHidEnumerator _hid;
+    private readonly IHidWholeBusEnumerator _hidAll;
     private readonly IConflictDetector _conflicts;
     private readonly IConflictAppInstallProbe _conflictInstalls;
 
@@ -44,6 +45,7 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
         ICoolingProvider cooling,
         IMonitorEnumerator monitors,
         IHidEnumerator hid,
+        IHidWholeBusEnumerator hidAll,
         IConflictDetector conflicts,
         IConflictAppInstallProbe conflictInstalls)
     {
@@ -53,6 +55,7 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
         _cooling = cooling;
         _monitors = monitors;
         _hid = hid;
+        _hidAll = hidAll;
         _conflicts = conflicts;
         _conflictInstalls = conflictInstalls;
     }
@@ -165,7 +168,7 @@ public sealed class StartupDiagnosticsDumpService : BackgroundService
             // Every present HID collection, not just a recognized family - the
             // usage-page/usage/report-length detail an unsupported device's
             // OpenRGB driver needs, which the usb block above does not carry.
-            var hid = ((_hid as IHidWholeBusEnumerator)?.FindAllForDiagnostics() ?? Array.Empty<HidDeviceInfo>()).OrderBy(d => d.VendorId).ThenBy(d => d.ProductId).ToList();
+            var hid = _hidAll.FindAllForDiagnostics().OrderBy(d => d.VendorId).ThenBy(d => d.ProductId).ToList();
             Emit($"hid ({hid.Count} device(s)):");
             foreach (var d in hid)
             {

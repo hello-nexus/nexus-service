@@ -34,7 +34,7 @@ public sealed class WindowsHidEnumerator : IHidEnumerator, IHidWholeBusEnumerato
 
     public IReadOnlyList<HidDeviceInfo> FindAllForDiagnostics() => EnumerateDevices(null, null);
 
-    /// <summary><see cref="FindAll"/> without the per-device serial read, for callers that only need usages.</summary>
+    /// <summary><see cref="FindAllForDiagnostics"/> without the per-device serial read, for callers that only need usages.</summary>
     public IReadOnlyList<HidDeviceInfo> FindAllWithoutSerials() => EnumerateDevices(null, null, readSerial: false);
 
     private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true, List<string>? seenPaths = null, IReadOnlyCollection<string>? skipPaths = null)

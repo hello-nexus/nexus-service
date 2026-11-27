@@ -145,7 +145,7 @@ public static class WindowsDynamicLighting
 
     private static volatile bool _wasEnabled;
 
-    private static void InvalidateDeviceCount()
+    internal static void InvalidateDeviceCount()
     {
         LampArrayCount.Invalidate();
     }

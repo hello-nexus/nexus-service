@@ -27,6 +27,7 @@ internal sealed unsafe class UsbDeviceChangeNotifier : IHostedService
 
     private readonly CachingUsbEnumerator _cache;
     private IntPtr _registration;
+    private IntPtr _hidRegistration;
 
     public UsbDeviceChangeNotifier(CachingUsbEnumerator cache) { _cache = cache; }
 
@@ -52,6 +53,18 @@ internal sealed unsafe class UsbDeviceChangeNotifier : IHostedService
         {
             ServiceLog.Warn($"[usb-notify] CM_Register_Notification failed (CR=0x{ret:X}); keeping the polling TTL");
         }
+        // A LampArray is a HID collection: it appears after its USB devnode and over Bluetooth never
+        // touches the USB bus, so the Dynamic Lighting count is invalidated on HID interface events.
+        var hidFilter = filter;
+        hidFilter.ClassGuid = CfgMgr32.HidDeviceInterfaceClass;
+        var hidRet = CfgMgr32.CM_Register_Notification(
+            in hidFilter, IntPtr.Zero,
+            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int, IntPtr, uint, uint>)&OnHidNotification,
+            out _hidRegistration);
+        if (hidRet != CfgMgr32.CR_SUCCESS)
+        {
+            ServiceLog.Warn($"[usb-notify] HID interface notification failed (CR=0x{hidRet:X}); the Dynamic Lighting device count refreshes on USB changes only");
+        }
         return Task.CompletedTask;
     }
 
@@ -61,6 +74,11 @@ internal sealed unsafe class UsbDeviceChangeNotifier : IHostedService
         {
             CfgMgr32.CM_Unregister_Notification(_registration);
             _registration = IntPtr.Zero;
+        }
+        if (_hidRegistration != IntPtr.Zero)
+        {
+            CfgMgr32.CM_Unregister_Notification(_hidRegistration);
+            _hidRegistration = IntPtr.Zero;
         }
         s_instance = null;
         return Task.CompletedTask;
@@ -82,6 +100,17 @@ internal sealed unsafe class UsbDeviceChangeNotifier : IHostedService
                 : $"[usb-notify] usb device removal{device}; enumeration cache invalidated");
         }
         return 0; // ERROR_SUCCESS
+    }
+
+    [UnmanagedCallersOnly]
+    private static uint OnHidNotification(IntPtr hNotify, IntPtr context, int action, IntPtr eventData, uint eventDataSize)
+    {
+        if (action is CfgMgr32.CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
+                   or CfgMgr32.CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL)
+        {
+            Nexus.Service.Conflicts.WindowsDynamicLighting.InvalidateDeviceCount();
+        }
+        return 0;
     }
 
     /// <summary>

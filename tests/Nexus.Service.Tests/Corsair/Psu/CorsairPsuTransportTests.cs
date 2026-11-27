@@ -12,7 +12,6 @@ public class CorsairPsuTransportTests
 {
     private sealed class RecordingEnumerator : IHidEnumerator
     {
-        public int FindAllCalls;
         public int LoudOpens;
         public int QuietOpens;
         public List<(int Vid, int Pid)> FindCalls { get; } = new();
@@ -24,7 +23,6 @@ public class CorsairPsuTransportTests
             return Devices.FindAll(d => d.VendorId == vendorId && d.ProductId == productId);
         }
 
-        public IReadOnlyList<HidDeviceInfo> FindAll() { FindAllCalls++; return Devices; }
         public IHidDevice? Open(string path, bool forInput = false) { LoudOpens++; return null; }
         public IHidDevice? OpenQuiet(string path, bool forInput = false) { QuietOpens++; return null; }
     }
@@ -48,7 +46,6 @@ public class CorsairPsuTransportTests
 
         Assert.Null(found);
         Assert.Empty(hid.FindCalls);
-        Assert.Equal(0, hid.FindAllCalls);
     }
 
     [Fact]
@@ -63,7 +60,6 @@ public class CorsairPsuTransportTests
         var found = new HidCorsairPsuTransport(hid, new HardwarePresence(usb)).Find();
 
         Assert.Equal(new CorsairPsuInfo(0x1C1F, "psu", "S1"), found);
-        Assert.Equal(0, hid.FindAllCalls);
         Assert.Equal(new[] { (0x1B1C, 0x1C1F) }, hid.FindCalls);
     }
 
