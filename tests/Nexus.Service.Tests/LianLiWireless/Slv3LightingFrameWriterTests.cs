@@ -1236,25 +1236,18 @@ public class Slv3LightingFrameWriterTests
     }
 
     [Fact]
-    public void A_pause_refusal_gives_the_turn_back_so_the_window_is_retried()
+    public void A_landed_window_keeps_the_chain_covered_with_no_device_echo_consulted()
     {
-        var (_, _, _, _, _, writer, _) = CreateBoundSetup();
-        var st = new Slv3LightingFrameWriter.ChainRolling
-        {
-            UploadedWindowId = 7,
-            LastUploadStartMs = 900,
-            PrevUploadedWindowId = 3,
-            PrevLastUploadStartMs = 100,
-            UploadWindowId = 7,
-            UploadResult = Slv3Hub.WindowUploadResult.Paused,
-            Upload = Task.FromResult(false),
-            Failing = true,
-        };
+        // During an RX busy spell the dongle reports no echoes; the writer takes only the upload outcome, so a sent window rolls on.
+        var (hub, _, _, _, _, writer, _) = CreateBoundSetup();
+        var st = new Slv3LightingFrameWriter.ChainRolling { UploadFirstFrame = 500, UploadStretch = 1, UploadFrames = Slv3LightingFrameWriter.WindowFrames, UploadDivisor = 1, Failing = true };
+        st.Upload = Task.FromResult(true);
+        st.UploadResult = Slv3Hub.WindowUploadResult.Sent;
 
         writer.CollectUpload(Convert.ToHexString(FanMac), st);
 
-        Assert.Equal(3, st.UploadedWindowId);
-        Assert.Equal(100, st.LastUploadStartMs);
         Assert.False(st.Failing);
+        Assert.Equal(500, st.WindowFirstFrame);
+        Assert.False(hub.TxThrottled);
     }
 }

@@ -449,11 +449,6 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         public double ProbeStartedMs;
         // Set while the hub eases the TX and this chain's window has time left, so its turn goes to chains that need it more.
         public bool BusyDeferred;
-        // What the turn replaced, to restore it when the upload is refused for a pause before any radio traffic.
-        public long PrevUploadedWindowId;
-        public long PrevStartedWindowId;
-        public double PrevLastUploadStartMs;
-        public long UploadWindowId;
         // Compressed size of the last window this chain fit, to tell a hopeless probe before compressing for it.
         public int LastCompressedBytes;
         public int WindowDivisor = 1;
@@ -922,18 +917,6 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
         st.Upload = null;
         var ok = upload.IsCompletedSuccessfully && upload.Result;
         var result = !upload.IsCompletedSuccessfully ? Slv3Hub.WindowUploadResult.Failed : st.UploadResult;
-        if (result == Slv3Hub.WindowUploadResult.Paused)
-        {
-            // Refused before any radio traffic when a pause began after the turn was taken: not a failure, and the turn is given back so this window is retried after the pause.
-            st.Failing = false;
-            st.UploadedWindowId = st.PrevUploadedWindowId;
-            st.LastUploadStartMs = st.PrevLastUploadStartMs;
-            if (_windowStartedId == st.UploadWindowId)
-            {
-                _windowStartedId = st.PrevStartedWindowId;
-            }
-            return;
-        }
         if (result == Slv3Hub.WindowUploadResult.TooLarge)
         {
             // The firmware's size cap is a property of the content, not a link fault: live frames carry the chain.
@@ -1061,13 +1044,8 @@ public sealed class Slv3LightingFrameWriter : IHostedService, IDisposable
             && joinFrame < _windowFirstFrame + Frames / 2
             && nowMs >= st.RetryAtMs
             && !st.BusyDeferred
-            && !_hub.TxPaused
             && IsNextToUpload(st, nowMs))
         {
-            st.PrevUploadedWindowId = st.UploadedWindowId;
-            st.PrevStartedWindowId = _windowStartedId;
-            st.PrevLastUploadStartMs = st.LastUploadStartMs;
-            st.UploadWindowId = _windowId;
             st.UploadedWindowId = _windowId;
             _windowStartedId = _windowId;
             st.LastUploadStartMs = nowMs;
