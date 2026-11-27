@@ -362,7 +362,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         if (observed == QSeriesCoolerProtocol.ControlModeSoftware)
         {
             if (_softwareSinceMs == 0) _softwareSinceMs = now;
-            if (_redriveArmed && now - _softwareSinceMs >= RedriveStableMs)
+            if (_redriveArmed && now - _softwareSinceMs >= Math.Max(RedriveStableMs, _redriveBackoffMs * 2))
             {
                 _redriveArmed = false;
                 _backoffWarned = false;
@@ -391,6 +391,8 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         }
         _redriveArmed = true;
         _nextRedriveAtMs = now + _redriveBackoffMs;
+        // Stability is measured from the last replay, so a replay that fires in software mode still backs off.
+        _softwareSinceMs = now;
         return true;
     }
 
@@ -435,7 +437,8 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             foreach (var id in _softwareControlled)
             {
                 if (!TryParseFanId(id, out _, out _, out _) || !rpms.TryGetValue(id, out var rpm)) continue;
-                var duty = _fanDuty.GetValueOrDefault(id, -1);
+                // The wire duty, so a turbo toggle that changes the off-turbo cap restarts the baseline.
+                var duty = QSeriesCoolerProtocol.CapFanDutyForTurbo(_fanDuty.GetValueOrDefault(id, -1), _hub.State.TurboOn);
                 if (!_rpmWatch.TryGetValue(id, out var w)) _rpmWatch[id] = w = new FanRpmWatch();
                 if (w.Duty != duty)
                 {

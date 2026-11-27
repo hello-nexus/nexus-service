@@ -199,7 +199,7 @@ public class QSeriesCoolerRedriveTests
         // Software mode holding long enough resets the interval.
         hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeSoftware;
         p.RedriveIfControlDropped();
-        clock.Now += 61_000;
+        clock.Now += 81_000;
         p.RedriveIfControlDropped();
         Assert.Equal(1, Flip());
         clock.Now += 10_500;
@@ -393,6 +393,63 @@ public class QSeriesCoolerRedriveTests
         for (var i = 0; i < 12; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
 
         Assert.Empty(FanFrames(t));
+    }
+
+    [Fact]
+    public void A_persistent_rpm_excess_in_steady_software_mode_backs_off()
+    {
+        var (hub, t, p, clock) = New();
+        p.SetFanSpeed(FanId, 45);
+        SettleBaseline(p, hub, clock, 1200);
+        SetRpm(hub, 2400);
+
+        // Polls every 3 s for 20 minutes; replay count per window shows the doubling.
+        var fireTimes = new List<long>();
+        var last = FanFrames(t).Count;
+        var start = clock.Now;
+        for (var i = 0; i < 400; i++)
+        {
+            clock.Now += 3_000;
+            p.RedriveIfFanRpmAbnormal();
+            p.RedriveIfControlDropped();
+            var n = FanFrames(t).Count;
+            if (n != last) { fireTimes.Add(clock.Now - start); last = n; }
+        }
+
+        var gaps = fireTimes.Zip(fireTimes.Skip(1), (x, y) => y - x).ToList();
+        var msg = string.Join(",", fireTimes);
+        Assert.True(fireTimes.Count >= 5, msg);
+        for (var i = 1; i < gaps.Count; i++) Assert.True(gaps[i] >= gaps[i - 1] || gaps[i] >= 290_000, msg);
+        Assert.True(gaps.Max() >= 150_000, msg);
+    }
+
+    [Fact]
+    public void A_turbo_toggle_that_changes_the_wire_duty_does_not_replay()
+    {
+        var (hub, t, p, clock) = New();
+        hub.State.TurboOn = true;
+        p.SetFanSpeed(FanId, 90);
+        SettleBaseline(p, hub, clock, 1800);
+        var before = FanFrames(t).Count;
+
+        hub.State.TurboOn = false;   // wire duty drops to the off-turbo cap
+        SetRpm(hub, 1200);
+        for (var i = 0; i < 6; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
+        SetRpm(hub, 2700);           // a rise measured against a stale baseline must not count
+        for (var i = 0; i < 2; i++) { clock.Now += 3_000; p.RedriveIfFanRpmAbnormal(); }
+
+        Assert.Equal(before, FanFrames(t).Count);
+    }
+
+    [Fact]
+    public void Releasing_rgb_control_lets_an_empty_port_blank_again()
+    {
+        var (hub, t, _, _) = New();
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+        hub.ReleaseRgbControlToFirmware();
+        hub.WriteLinkLighting(QSeriesCoolerProtocol.FanChannel, ReadOnlySpan<RgbColor>.Empty);
+
+        Assert.Equal(2, LightFrames(t, QSeriesCoolerProtocol.FanChannel).Count);
     }
 
     private sealed class Clock { public long Now = 100_000; }

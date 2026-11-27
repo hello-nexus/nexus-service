@@ -246,6 +246,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
             {
                 t.Write(QSeriesCoolerProtocol.BuildSetRgbControlMode(QSeriesCoolerProtocol.RgbModeMotherboard));
                 _rgbInSwControl = false;
+                Array.Clear(_linkBlankSent);
                 return true;
             }
             catch (Exception ex)
