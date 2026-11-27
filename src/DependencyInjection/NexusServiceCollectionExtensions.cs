@@ -2666,6 +2666,8 @@ public static class NexusServiceCollectionExtensions
 #else
         services.AddSingleton<IPawnIoProvider, StubPawnIoProvider>();
 #endif
+        services.AddSingleton<IPawnIoSystem, WindowsPawnIoSystem>();
+        services.AddSingleton<PawnIoGate>();
 
         // Extracted body of SystemRoutes.cs so the Stream Deck executor can
         // drive the same OS-level actions headless (no loopback HTTP call).

@@ -422,7 +422,8 @@ rescan/identify routes, and supported-device modal routes on demand.
 |---|---:|---:|---|
 | `GET /start` | once when Settings General tab mounts | event | Start-on-login state. |
 | `POST /start` | user toggle | event | Persist start-on-login. |
-| `GET /pawnio` | once when Tools PawnIO card mounts | event | PawnIO install/open state. |
+| `GET /pawnio` | once when Tools PawnIO card mounts, and by the driver gate | event | PawnIO install/open state plus gate `state`, `errorCode`, `fixAction`, `fixing`. |
+| `POST /pawnio/fix`, `POST /pawnio/restart-pc` | driver gate buttons | event | Run install or repair; reboot the PC. Localhost only. |
 | Screen-time browse routes under `/api/screentime/...` | user navigation/actions | event | Historical screen-time data and deletes. |
 | Profile import/export routes | user action | event | Profile file transfer. |
 

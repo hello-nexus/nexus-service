@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Nexus.Service.Auth;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
 using Nexus.Service.Models.Lifecycle;
@@ -18,8 +19,34 @@ public static class LifecycleRoutes
             return new WillStartResponse { Enabled = enabled, Error = !ok || enabled != body.Enabled };
         });
 
-        app.MapGet("/pawnio", (IPawnIoProvider p) =>
-            new Models.Lifecycle.PawnIoStatus { Installed = p.IsInstalled, Open = p.IsOpen });
+        app.MapGet("/pawnio", (PawnIoGate gate) => gate.GetStatus());
+
+        app.MapPost("/pawnio/fix", async (PawnIoGate gate, IHostApplicationLifetime lifetime,
+            Nexus.Service.Devices.Firmware.FirmwareFlasher flasher, CancellationToken ct) =>
+        {
+            var status = await gate.FixAsync(ct).ConfigureAwait(false);
+            // LHM enumerates SuperIO and SPD once per process, so a fixed driver needs a service restart to surface those devices.
+            if (OperatingSystem.IsWindows() && gate.TakeRedetectRequest() && !flasher.IsFlashing
+                && Nexus.Service.Lifecycle.FactoryReset.Begin(wipe: false))
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1500);
+                    lifetime.StopApplication();
+                });
+            }
+            return status;
+        }).LocalhostOnly();
+
+        app.MapPost("/pawnio/restart-pc", (PawnIoGate gate) =>
+        {
+            if (!gate.RestartPc())
+            {
+                return Results.Json(new ApiResponse { Error = true, Msg = "Restart is only available on Windows." },
+                    Nexus.Service.Serialization.AppJsonContext.Default.ApiResponse, statusCode: 501);
+            }
+            return Results.Text("{}", "application/json", System.Text.Encoding.UTF8, 202);
+        }).LocalhostOnly();
     }
 
     private static string ResolveCurrentExecutablePath()

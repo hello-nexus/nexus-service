@@ -143,6 +143,14 @@ internal static class WindowsServiceInstaller
             // tokens, with the trailing-space form of the key. binPath value
             // needs internal quotes around the EXE path so the space in
             // "Program Files" doesn't split the launcher arg.
+            //
+            // No depend= on PawnIO: a PawnIO service that cannot start (marked
+            // for deletion, driver blocked) would keep Windows from starting
+            // Nexus at all. PawnIoGate starts the driver itself, before
+            // anything opens it, and the dashboard explains a failure. This
+            // create runs after StopAndDeleteServiceIfPresent, so an existing
+            // install loses the old dependency on its next --install (the OTA
+            // installer runs it).
             Log("creating Windows Service");
             bool created = false;
             for (int attempt = 1; attempt <= 4 && !created; attempt++)
@@ -151,8 +159,7 @@ internal static class WindowsServiceInstaller
                     "binPath=", $"\"{installedExe}\" --service",
                     "start=", "auto",
                     "obj=", "LocalSystem",
-                    "DisplayName=", ServiceDisplayName,
-                    "depend=", "PawnIO");
+                    "DisplayName=", ServiceDisplayName);
                 if (!created)
                 {
                     Log($"sc create failed (attempt {attempt}); waiting for prior service handle to release");
