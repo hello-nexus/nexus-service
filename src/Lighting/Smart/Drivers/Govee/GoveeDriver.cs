@@ -31,10 +31,9 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private const int RazerFrameGapMs = 30_000;
     // Driver-owned probe while armed; the provider's reachability poll runs only with a dashboard open.
     private const int RazerProbeMs = 10_000;
-    // Extra enables right after entry cover a lost or ignored one; each resets the strip's frame buffer, so never later.
-    private const int RazerConfirmCount = 2;
-    private const int RazerConfirmGapMs = 1_000;
     private const int RazerMissesToDisarm = 2;
+    // One stray off reply mid-stream must not suppress an on strip.
+    private const int RazerOffRepliesToSuppress = 2;
 
     // Bulb / single-zone models on the official LAN list (H60xx lamp class):
     // control-only, averaged to one color.
@@ -56,13 +55,13 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private readonly GoveeLanClient _client;
     // Parsed Extra payloads, keyed by device id, invalidated on change.
     private readonly ConcurrentDictionary<string, (string Raw, GoveeExtra Parsed)> _extras = new();
-    // Devices in realtime (razer) mode. The enable is sent on entry plus a bounded
-    // confirm, never on a timer: each one resets the strip's frame buffer. An entry
-    // is cleared by a static frame, a frame gap, two status misses, or an on reply
-    // after a miss; the next zone frame then cold-enters. A suppressed entry (strip
-    // reported off) is cleared only by an on reply or a static frame.
+    // Devices in realtime (razer) mode. The enable is sent once on entry and never
+    // again: each one resets the strip's frame buffer. An entry is cleared by a
+    // static frame, a frame gap, or two consecutive status misses after a reply; the
+    // next zone frame then cold-enters. A suppressed entry (strip reported off twice)
+    // is cleared only by an on reply or a static frame.
     private readonly ConcurrentDictionary<string, RazerEntry> _razerEntries = new();
-    // Why the next cold entry happens, and when each device last logged one.
+    // Why the next cold entry happens, and when each device and kind last logged.
     private readonly ConcurrentDictionary<string, string> _coldReason = new();
     private readonly ConcurrentDictionary<string, long> _coldLoggedAt = new();
     private const int ColdLogMinGapMs = 30_000;
@@ -77,8 +76,7 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         // Set by the first status reply while armed; a strip that never replied has a broken reply path, not a power cut.
         public bool EverReplied;
         public readonly CancellationTokenSource Stop = new();
-        public long NextConfirmAt;
-        public int ConfirmsLeft = RazerConfirmCount;
+        public int OffReplies;
         public int Misses;
     }
 
@@ -87,7 +85,6 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private readonly int _pingTimeoutMs;
     private readonly int _frameGapMs;
     private readonly int _probeMs;
-    private readonly int _confirmGapMs;
 
     public GoveeDriver(GoveeLanClient client)
         : this(client, ScanTimeoutMs, ProbeTimeoutMs, PingTimeoutMs) { }
@@ -96,11 +93,10 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     /// reply - "not reachable" is only ever a timeout - so the discovery and
     /// pair-failure paths cost the full window on every run.</summary>
     internal GoveeDriver(GoveeLanClient client, int scanTimeoutMs, int probeTimeoutMs, int pingTimeoutMs,
-        int frameGapMs = RazerFrameGapMs, int probeMs = RazerProbeMs, int confirmGapMs = RazerConfirmGapMs)
+        int frameGapMs = RazerFrameGapMs, int probeMs = RazerProbeMs)
     {
         _frameGapMs = frameGapMs;
         _probeMs = probeMs;
-        _confirmGapMs = confirmGapMs;
         _client = client;
         _scanTimeoutMs = scanTimeoutMs;
         _probeTimeoutMs = probeTimeoutMs;
@@ -247,15 +243,9 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
                 await Task.Delay(300, ct).ConfigureAwait(false);
                 await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
                 var entered = Environment.TickCount64;
-                entry = new RazerEntry { LastFrameAt = entered, NextConfirmAt = entered + _confirmGapMs };
+                entry = new RazerEntry { LastFrameAt = entered };
                 _razerEntries[dev.Id] = entry;
                 _ = ProbeWhileArmedAsync(dev, entry);
-            }
-            else if (entry.ConfirmsLeft > 0 && now >= entry.NextConfirmAt)
-            {
-                entry.ConfirmsLeft--;
-                entry.NextConfirmAt = now + _confirmGapMs;
-                await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: true), ct).ConfigureAwait(false);
             }
             Volatile.Write(ref entry.LastFrameAt, Math.Max(now, entry.LastFrameAt));
             var count = Math.Min(zones.Length / 3, Math.Max(1, extra.Segments));
@@ -329,27 +319,45 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
             else
             {
                 Volatile.Write(ref entry.EverReplied, true);
-                var hadMiss = Interlocked.Exchange(ref entry.Misses, 0) > 0;
+                Volatile.Write(ref entry.Misses, 0);
                 if (reply.OnOff == 0)
-                    Volatile.Write(ref entry.Suppressed, true);
-                else if (Volatile.Read(ref entry.Suppressed))
-                    Disarm(dev.Id, entry, "strip back on after off");
-                else if (hadMiss)
-                    Disarm(dev.Id, entry, "reboot (miss then reply)");
+                {
+                    if (Interlocked.Increment(ref entry.OffReplies) >= RazerOffRepliesToSuppress
+                        && !Volatile.Read(ref entry.Suppressed))
+                    {
+                        Volatile.Write(ref entry.Suppressed, true);
+                        LogLimited(dev.Id, "suppress", $"[govee] {dev.Id}: strip reported off, streaming suppressed");
+                    }
+                }
+                else
+                {
+                    Volatile.Write(ref entry.OffReplies, 0);
+                    if (Volatile.Read(ref entry.Suppressed))
+                    {
+                        LogLimited(dev.Id, "resume", $"[govee] {dev.Id}: strip reported on, suppression ended");
+                        Disarm(dev.Id, entry, "strip back on after off");
+                    }
+                }
             }
         }
         return reply is not null;
     }
 
-    // Logs one line per cold entry, at most one per device per interval, so the cadence is visible without flooding.
     private void LogColdEntry(string id)
     {
         _coldReason.TryRemove(id, out var reason);
+        LogLimited(id, "cold", $"[govee] {id}: cold entry ({reason ?? "first frame"})");
+    }
+
+    // At most one line per device and kind per interval, so the cadence is visible without flooding.
+    private void LogLimited(string id, string kind, string message)
+    {
+        var key = id + "|" + kind;
         var now = Environment.TickCount64;
-        if (_coldLoggedAt.TryGetValue(id, out var last) && now - last < ColdLogMinGapMs)
+        if (_coldLoggedAt.TryGetValue(key, out var last) && now - last < ColdLogMinGapMs)
             return;
-        _coldLoggedAt[id] = now;
-        ServiceLog.Info($"[govee] {id}: cold entry ({reason ?? "first frame"})");
+        _coldLoggedAt[key] = now;
+        ServiceLog.Info(message);
     }
 
     private void Disarm(string id, RazerEntry entry, string? reason = null)
