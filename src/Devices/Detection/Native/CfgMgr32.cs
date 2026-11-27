@@ -44,6 +44,9 @@ internal static partial class CfgMgr32
     /// <summary>usbiodef.h GUID_DEVINTERFACE_USB_DEVICE - hub-attached USB devices.</summary>
     internal static readonly Guid UsbDeviceInterfaceClass = new("A5DCBF10-6530-11D2-901F-00C04FB951ED");
 
+    /// <summary>hidclass.h GUID_DEVINTERFACE_HID - every HID collection, Bluetooth included.</summary>
+    internal static readonly Guid HidDeviceInterfaceClass = new("4D1E55B2-F16F-11CF-88CB-001111000030");
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct DEVPROPKEY
     {

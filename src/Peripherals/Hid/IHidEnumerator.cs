@@ -29,9 +29,6 @@ public interface IHidEnumerator
         return (paths, fresh);
     }
 
-    /// <summary>Returns metadata for every present HID interface, no VID/PID filter. Does not open.</summary>
-    IReadOnlyList<HidDeviceInfo> FindAll();
-
     /// <summary>
     /// Opens the device at the given path. Returns null if open fails. Set
     /// <paramref name="forInput"/> for a handle used with <see cref="IHidDevice.Read"/>:
@@ -42,6 +39,17 @@ public interface IHidEnumerator
 
     /// <summary><see cref="Open"/> without the per-open log line, for a caller that opens on every exchange.</summary>
     IHidDevice? OpenQuiet(string path, bool forInput = false) => Open(path, forInput);
+}
+
+/// <summary>
+/// Whole-bus HID enumeration, split off <see cref="IHidEnumerator"/> so a worker that polls cannot reach it by accident:
+/// on Windows it opens every HID interface on the PC, and a USB audio dongle on the same machine can glitch from it.
+/// Only the one-shot startup diagnostics dump may call it (enforced by a source-scan test).
+/// </summary>
+public interface IHidWholeBusEnumerator
+{
+    /// <summary>Metadata for every present HID interface, no VID/PID filter.</summary>
+    IReadOnlyList<HidDeviceInfo> FindAllForDiagnostics();
 }
 
 public sealed class HidDeviceInfo

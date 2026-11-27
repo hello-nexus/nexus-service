@@ -13,7 +13,7 @@ namespace Nexus.Service.Peripherals.Hid;
 /// (usage page + usage), and opens the matching <c>/dev/hidrawN</c> for vendor
 /// protocol I/O. AOT-safe (sysfs reads + a single libc <c>[LibraryImport]</c>).
 /// </summary>
-public sealed partial class LinuxHidEnumerator : IHidEnumerator
+public sealed partial class LinuxHidEnumerator : IHidEnumerator, IHidWholeBusEnumerator
 {
     private const string HidrawClass = "/sys/class/hidraw";
     private const int O_RDWR = 2;
@@ -30,7 +30,7 @@ public sealed partial class LinuxHidEnumerator : IHidEnumerator
         return result;
     }
 
-    public IReadOnlyList<HidDeviceInfo> FindAll() => new List<HidDeviceInfo>(EnumerateAll());
+    public IReadOnlyList<HidDeviceInfo> FindAllForDiagnostics() => new List<HidDeviceInfo>(EnumerateAll());
 
     private static IEnumerable<HidDeviceInfo> EnumerateAll()
     {
