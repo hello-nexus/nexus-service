@@ -343,6 +343,7 @@ public class GoveeDriverTests : IDisposable
         var driver = FastDriver(confirmGapMs: 60_000);
         var dev = PairedDevice(RazerExtra);
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        Assert.True(await driver.PingAsync(dev, CancellationToken.None));
 
         _device.LanEnabled = false;
         Assert.False(await driver.PingAsync(dev, CancellationToken.None));
@@ -353,6 +354,26 @@ public class GoveeDriverTests : IDisposable
         Assert.False(await driver.PingAsync(dev, CancellationToken.None));
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
         await TestWait.ForAsync(() => EnableCount() == 2 && _device.Turns.Count == 2);
+    }
+
+    [Fact]
+    public async Task NeverReplyingStrip_isNeverColdEnteredOnMisses()
+    {
+        var driver = FastDriver(probeMs: 100, confirmGapMs: 60_000);
+        var dev = PairedDevice(RazerExtra);
+        _device.LanEnabled = false;   // controls are still recorded, status never answers
+        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+
+        // Many probe cycles and ping misses.
+        var until = Environment.TickCount64 + 2_500;
+        while (Environment.TickCount64 < until)
+        {
+            await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+            Assert.False(await driver.PingAsync(dev, CancellationToken.None));
+        }
+        Assert.True(_device.StatusQueries >= 6);
+        Assert.Single(_device.Turns);
+        Assert.Equal(1, EnableCount());
     }
 
     [Fact]
@@ -518,6 +539,7 @@ public class GoveeDriverTests : IDisposable
         var driver = FastDriver(probeMs: 100, confirmGapMs: 60_000);
         var dev = PairedDevice(RazerExtra);
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        Assert.True(await driver.PingAsync(dev, CancellationToken.None));
 
         _device.LanEnabled = false;
         // Frames keep arriving; the probe misses disarm, and the next frame re-enters.

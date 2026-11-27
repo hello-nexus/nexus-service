@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Persistence;
+using Nexus.Service.Platform;
 
 namespace Nexus.Service.Lighting.Smart.Drivers.Govee;
 
@@ -61,6 +62,10 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     // after a miss; the next zone frame then cold-enters. A suppressed entry (strip
     // reported off) is cleared only by an on reply or a static frame.
     private readonly ConcurrentDictionary<string, RazerEntry> _razerEntries = new();
+    // Why the next cold entry happens, and when each device last logged one.
+    private readonly ConcurrentDictionary<string, string> _coldReason = new();
+    private readonly ConcurrentDictionary<string, long> _coldLoggedAt = new();
+    private const int ColdLogMinGapMs = 30_000;
 
     // One instance per entry into realtime mode. Clears compare the instance, so a
     // stale probe or ping result cannot remove an entry armed after it started.
@@ -69,6 +74,8 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         public long LastFrameAt;
         // The strip reported itself off; frames are dropped until a status reply says on.
         public bool Suppressed;
+        // Set by the first status reply while armed; a strip that never replied has a broken reply path, not a power cut.
+        public bool EverReplied;
         public readonly CancellationTokenSource Stop = new();
         public long NextConfirmAt;
         public int ConfirmsLeft = RazerConfirmCount;
@@ -222,11 +229,12 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
             {
                 // Paused, disabled or asleep long enough for the strip to have left
                 // realtime mode on its own.
-                Disarm(dev.Id, entry);
+                Disarm(dev.Id, entry, "frame gap");
                 entry = null;
             }
             if (entry is null)
             {
+                LogColdEntry(dev.Id);
                 // Cold entry (first frame, or after a power-off turned the strip
                 // off). Firmware scales razer output by power+brightness, so set
                 // those first. The strip ignores a razer enable that arrives while
@@ -259,6 +267,7 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         // Static path - leave realtime mode first so colorwc shows again.
         if (_razerEntries.TryRemove(dev.Id, out var left))
         {
+            _coldReason[dev.Id] = "static frame";
             left.Stop.Cancel();
             await _client.RazerAsync(dev.Host, GoveePackets.RazerModeBase64(enable: false), ct).ConfigureAwait(false);
         }
@@ -311,25 +320,44 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         {
             if (reply is null)
             {
-                if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm && !Volatile.Read(ref entry.Suppressed))
-                    Disarm(dev.Id, entry);
+                if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm
+                    && Volatile.Read(ref entry.EverReplied) && !Volatile.Read(ref entry.Suppressed))
+                {
+                    Disarm(dev.Id, entry, "status misses");
+                }
             }
             else
             {
+                Volatile.Write(ref entry.EverReplied, true);
                 var hadMiss = Interlocked.Exchange(ref entry.Misses, 0) > 0;
                 if (reply.OnOff == 0)
                     Volatile.Write(ref entry.Suppressed, true);
-                else if (hadMiss || Volatile.Read(ref entry.Suppressed))
-                    Disarm(dev.Id, entry);
+                else if (Volatile.Read(ref entry.Suppressed))
+                    Disarm(dev.Id, entry, "strip back on after off");
+                else if (hadMiss)
+                    Disarm(dev.Id, entry, "reboot (miss then reply)");
             }
         }
         return reply is not null;
     }
 
-    private void Disarm(string id, RazerEntry entry)
+    // Logs one line per cold entry, at most one per device per interval, so the cadence is visible without flooding.
+    private void LogColdEntry(string id)
+    {
+        _coldReason.TryRemove(id, out var reason);
+        var now = Environment.TickCount64;
+        if (_coldLoggedAt.TryGetValue(id, out var last) && now - last < ColdLogMinGapMs)
+            return;
+        _coldLoggedAt[id] = now;
+        ServiceLog.Info($"[govee] {id}: cold entry ({reason ?? "first frame"})");
+    }
+
+    private void Disarm(string id, RazerEntry entry, string? reason = null)
     {
         if (((ICollection<KeyValuePair<string, RazerEntry>>)_razerEntries).Remove(new(id, entry)))
         {
+            if (reason is not null)
+                _coldReason[id] = reason;
             entry.Stop.Cancel();
             entry.Stop.Dispose();
         }
@@ -352,14 +380,14 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
                 if (Environment.TickCount64 - Volatile.Read(ref entry.LastFrameAt) > _frameGapMs)
                 {
                     if (!Volatile.Read(ref entry.Suppressed))
-                        Disarm(dev.Id, entry);
+                        Disarm(dev.Id, entry, "frame gap");
                     return;
                 }
                 await ObserveStatusAsync(dev, entry, _pingTimeoutMs, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
-        catch { Disarm(dev.Id, entry); }
+        catch { Disarm(dev.Id, entry, "probe error"); }
     }
 
     public void Dispose()
