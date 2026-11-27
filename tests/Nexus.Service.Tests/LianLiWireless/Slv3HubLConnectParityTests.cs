@@ -370,7 +370,7 @@ public partial class Slv3HubTests
         Ticks(hub, 4);
         clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs - 1_000);
         fan.RxType = 1;
-        Ticks(hub, 2);
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend);
         fan.RxType = 7;
         clock.AdvanceMs(2_000);
         Ticks(hub, 5);
@@ -392,6 +392,57 @@ public partial class Slv3HubTests
             clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs / 4);
             Ticks(hub, 1);
         }
+
+        Assert.NotEmpty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_stranded_record_with_occasional_misreads_and_matching_polls_is_still_bound()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        for (var poll = 0; poll < 8; poll++)
+        {
+            fan.RxType = poll switch { 2 => 9, 4 => 1, _ => 7 };
+            clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs / 4);
+            Ticks(hub, 1);
+        }
+
+        Assert.NotEmpty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_record_that_changes_for_a_run_of_polls_restarts_the_window()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 7;
+        Ticks(hub, 4);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs - 1_000);
+        fan.RxType = 8;
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend + 1);
+        clock.AdvanceMs(2_000);
+        Ticks(hub, 3);
+
+        Assert.Empty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_factory_reset_record_is_bound_on_the_third_poll_without_the_window()
+    {
+        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.MasterMac = new byte[6];
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend);
 
         Assert.NotEmpty(AllBindFrames(tx));
     }

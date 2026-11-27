@@ -1582,13 +1582,23 @@ public sealed partial class Slv3Hub : IDisposable
     {
         if (!NeedsBind(intent, record))
         {
+            // One matching poll does not end an in-progress window; a run of them does.
+            if (_knownChains.TryGetValue(key, out var matched) && matched.Poll == _devicePolls && intent.MatchCountedPoll != _devicePolls)
+            {
+                intent.MatchCountedPoll = _devicePolls;
+                if (++intent.MatchStreak >= BindMismatchPollsBeforeSend)
+                {
+                    intent.MismatchPolls = 0;
+                    intent.MismatchSinceMs = 0;
+                    intent.MismatchRecord = null;
+                    intent.DifferingStreak = 0;
+                }
+            }
             if (intent.Sends > 0 && !intent.Manual)
             {
                 _bindSaveArmed = true;
             }
             intent.Sends = 0;
-            intent.MismatchPolls = 0;
-            intent.MismatchSinceMs = 0;
             intent.NextSendMs = 0;
             intent.Confirmed = true;
             intent.Manual = false;
@@ -1612,19 +1622,30 @@ public sealed partial class Slv3Hub : IDisposable
                     NoteImplausibleRecordLocked(key, record);
                 }
                 intent.CountedPoll = _devicePolls;
-                // A chain stuck on a garbled pipe reports the same record every poll, a misread differs each time, so only a record repeated across the window counts.
+                intent.MatchStreak = 0;
+                // A chain stuck on a garbled pipe repeats one record, a misread differs each poll. The earliest sighting of the repeated record keeps its start time, a lone odd poll does not restart it, and a different record only replaces it after it has differed for a run of polls.
                 var reported = $"{Convert.ToHexString(record.MasterMac)}/{record.RxType}/{record.Channel}";
-                if (intent.MismatchPolls == 0 || reported != intent.MismatchRecord)
+                if (intent.MismatchRecord is null)
                 {
-                    intent.MismatchPolls = 1;
                     intent.MismatchRecord = reported;
+                    intent.MismatchPolls = 1;
                     intent.MismatchSinceMs = _nowMs();
                 }
-                else
+                else if (reported == intent.MismatchRecord)
                 {
                     intent.MismatchPolls++;
+                    intent.DifferingStreak = 0;
                 }
-                if (intent.MismatchPolls < BindMismatchPollsBeforeSend || _nowMs() - intent.MismatchSinceMs < BindMismatchWindowMs)
+                else if (++intent.DifferingStreak >= BindMismatchPollsBeforeSend)
+                {
+                    intent.MismatchRecord = reported;
+                    intent.MismatchPolls = 1;
+                    intent.MismatchSinceMs = _nowMs();
+                    intent.DifferingStreak = 0;
+                }
+                // A factory-reset record (no master, a bind slot, our channel) is unambiguous and skips the window.
+                var cleanReset = Slv3Protocol.MacIsZero(record.MasterMac) && ValidSlot(record.RxType) && record.Channel == _channel;
+                if (intent.MismatchPolls < BindMismatchPollsBeforeSend || (!cleanReset && _nowMs() - intent.MismatchSinceMs < BindMismatchWindowMs))
                 {
                     return;
                 }
@@ -1658,6 +1679,9 @@ public sealed partial class Slv3Hub : IDisposable
         SendBindFrameLocked(record, intent.TargetRx, unbind: false);
         NoteSendLocked(key, intent, "bind", record);
         intent.Confirmed = false;
+        intent.MismatchPolls = 0;
+        intent.MismatchRecord = null;
+        intent.DifferingStreak = 0;
         if (!intent.Manual && intent.Sends >= BindBurstSends)
         {
             intent.NextSendMs = _nowMs() + Math.Min(BindResendBackoffMs << Math.Min(intent.Sends - BindBurstSends, 4), BindResendBackoffMaxMs);
@@ -1678,7 +1702,7 @@ public sealed partial class Slv3Hub : IDisposable
             return;
         }
         _nextImplausibleRecordLogMs = now + ImplausibleRecordLogIntervalMs;
-        ServiceLog.Info($"[lianli-wireless] implausible record for {key} not acted on until it repeats: master {Convert.ToHexString(record.MasterMac)} slot {record.RxType} ch {record.Channel}");
+        ServiceLog.Info($"[lianli-wireless] implausible record for {key}, bound only if it repeats for the whole window: master {Convert.ToHexString(record.MasterMac)} slot {record.RxType} ch {record.Channel}");
     }
 
     private bool NeedsBind(BindIntent intent, Slv3DeviceRecord record) =>
@@ -2748,6 +2772,9 @@ public sealed partial class Slv3Hub : IDisposable
         {
             intent.MismatchPolls = 0;
             intent.MismatchSinceMs = 0;
+            intent.MismatchRecord = null;
+            intent.DifferingStreak = 0;
+            intent.MatchStreak = 0;
         }
         _rxRecoveries++;
         _nextRxRecoveryMs = nowMs + RecoveryBackoffFor(_rxRecoveries);
@@ -3897,7 +3924,7 @@ public sealed partial class Slv3Hub : IDisposable
     /// <summary>Sets our operating channel; must be the default or an odd value (firmware rejects even). Every device bound to us is retargeted at once.</summary>
     public bool SetChannel(int channel)
     {
-        if (channel != Slv3Protocol.DefaultChannel && (channel < 1 || channel > 39 || channel % 2 == 0))
+        if (channel != Slv3Protocol.DefaultChannel && (channel < 1 || channel > Slv3Protocol.MaxChannel || channel % 2 == 0))
         {
             return false;
         }
@@ -4059,6 +4086,9 @@ public sealed partial class Slv3Hub : IDisposable
         public long CountedPoll = -1;
         public long MismatchSinceMs;
         public string? MismatchRecord;
+        public int DifferingStreak;
+        public int MatchStreak;
+        public long MatchCountedPoll = -1;
         public long NextSendMs;
     }
 

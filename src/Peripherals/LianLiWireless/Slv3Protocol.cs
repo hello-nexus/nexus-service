@@ -461,7 +461,7 @@ public static class Slv3Protocol
                 order.Add(ch);
             }
         }
-        for (byte ch = 1; ch <= 39; ch += 2)
+        for (byte ch = 1; ch <= MaxChannel; ch += 2)
         {
             order.Add(ch);
         }
