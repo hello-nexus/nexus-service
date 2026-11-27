@@ -19,6 +19,7 @@ public class PawnIoGateTests
         public int StartResult { get; set; }
         public int? Problem { get; set; }
         public PawnIoInstallResult InstallResult { get; set; } = PawnIoInstallResult.Repaired;
+        public Task? InstallBlock { get; set; }
         public int Starts { get; private set; }
         public int Installs { get; private set; }
         public int Restarts { get; private set; }
@@ -35,11 +36,12 @@ public class PawnIoGateTests
             return StartResult;
         }
 
-        public Task<PawnIoInstallResult> EnsureInstalledAsync(CancellationToken ct)
+        public async Task<PawnIoInstallResult> EnsureInstalledAsync(CancellationToken ct)
         {
             Installs++;
+            if (InstallBlock is not null) await InstallBlock;
             if (OpensAfterInstall) Open = true;
-            return Task.FromResult(InstallResult);
+            return InstallResult;
         }
 
         public Task DelayAsync(TimeSpan delay, CancellationToken ct) => Task.CompletedTask;
@@ -204,6 +206,23 @@ public class PawnIoGateTests
         Assert.Equal(PawnIoStates.InstallFailed, status.State);
         Assert.Equal("install", status.FixAction);
         Assert.False(gate.TakeRedetectRequest());
+    }
+
+    [Fact]
+    public async Task Second_fix_while_one_runs_returns_in_progress_without_a_second_install()
+    {
+        var release = new TaskCompletionSource();
+        var sys = new FakeSystem { Registered = false, OpensAfterInstall = true, InstallBlock = release.Task };
+        var gate = Make(sys);
+        await gate.ConfirmAfterBootAsync();
+
+        var first = gate.FixAsync();
+        var second = await gate.FixAsync();
+
+        Assert.True(second.Fixing);
+        Assert.Equal(1, sys.Installs);
+        release.SetResult();
+        Assert.Equal(PawnIoStates.Ok, (await first).State);
     }
 
     [Fact]

@@ -33,7 +33,7 @@ public interface IPawnIoSystem
 
     bool ServiceRegistered();
 
-    /// <summary>True when the PawnIO service is marked for deletion (DeleteFlag), the 1072 state a reboot clears.</summary>
+    /// <summary>True when the PawnIO service is marked for deletion, a state only a reboot clears.</summary>
     bool ServiceMarkedForDeletion();
 
     /// <summary>StartService on the PawnIO service. 0 for started or already running, else the Win32 error.</summary>
@@ -51,9 +51,8 @@ public interface IPawnIoSystem
 
 /// <summary>
 /// Owns the "PawnIO driver required" state. The service no longer depends on
-/// PawnIO in the SCM, so it can start when the driver cannot; this class
-/// starts the driver itself on a healthy boot and, only when the driver is
-/// still unusable after an explicit start, a bounded wait and a re-check,
+/// PawnIO in the SCM; this class starts the driver itself and, only when it
+/// is still unusable after an explicit start, a bounded wait and a re-check,
 /// classifies why so the dashboard can show a full-screen gate.
 ///
 /// Everything here is keyed off a not-ok state. A PC whose driver opens never
@@ -94,6 +93,8 @@ public sealed class PawnIoGate
 
     /// <summary>Raised once when the boot check confirms the driver is unusable.</summary>
     public event Action<PawnIoStatus>? NotOkConfirmed;
+
+    public bool IsSupported => _sys.IsSupported;
 
     public bool IsNotOkConfirmed
     {

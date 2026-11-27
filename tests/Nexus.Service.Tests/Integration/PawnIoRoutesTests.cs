@@ -57,6 +57,17 @@ public sealed class PawnIoRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
+    public async Task RestartPc_is_refused_when_no_restart_is_needed()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var res = await AuthedClient().PostAsync("/pawnio/restart-pc", Empty());
+        Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
+    }
+
+    [Fact]
     public async Task RestartPc_is_refused_off_windows()
     {
         if (OperatingSystem.IsWindows())

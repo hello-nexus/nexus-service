@@ -339,7 +339,7 @@ internal static class TrayBootstrap
             {
                 TrayCommands.NoticeAsync(
                     helperRegistry, "Nexus needs its hardware driver",
-                    "The PawnIO driver is not running, so Nexus cannot reach your hardware.",
+                    "Nexus can't reach its hardware driver. Open Nexus to fix it.",
                     null, windowPath: "/", buttonLabel: "Fix it").ObserveFaults();
             }
             catch (Exception ex) { Console.Error.WriteLine($"[pawnio-notify] show failed: {ex.Message}"); }
@@ -758,9 +758,7 @@ internal static class TrayBootstrap
         // LhmComputer's background Open waits on PawnIoBootGate so a driver
         // installed or repaired here is enumerable in the same boot - signal
         // it on every outcome or LHM waits out the full cap.
-        // The service has no SCM dependency on PawnIO, so a service run starts
-        // the driver itself first; the install check below then sees the same
-        // open device it saw when the dependency did this.
+        // Service runs start the driver before the install check so the check sees an open device.
         var pawnIoGate = app.Services.GetRequiredService<Nexus.Service.Lifecycle.PawnIoGate>();
         _ = Task.Run(async () =>
         {
