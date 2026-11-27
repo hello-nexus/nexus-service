@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Nexus.Service.Cooling;
 using Nexus.Service.Lifecycle;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 
 namespace Nexus.Service.Diagnostics.Cooling;
@@ -269,9 +270,11 @@ public sealed class CoolingStallFeeder : BackgroundService
     private readonly IFanControlProvider _fans;
     private readonly CoolingStallDetector _detector;
     private readonly FeatureGates _gates;
+    private readonly IConfigStore? _store;
 
-    public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null)
+    public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null, IConfigStore? store = null)
     {
+        _store = store;
         _fans = fans;
         _detector = detector;
         _gates = gates ?? FeatureGates.AllEnabled;
@@ -311,12 +314,13 @@ public sealed class CoolingStallFeeder : BackgroundService
             return;
         }
 
+        var excluded = _store is null ? null : CoolingFanExclusion.ExcludedIds(channels, _store.Load());
         foreach (var ch in channels)
         {
             // A port that cannot read its tach right now (MiniHub between
             // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
             // leave it unobserved so it ages out instead of reading as a stall.
-            if (ch.RpmUnavailable || CoolingFanExclusion.IsExcluded(ch)) continue;
+            if (ch.RpmUnavailable || excluded?.Contains(ch.Id) == true) continue;
             var type = string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal) ? "pump" : "fan";
             _detector.Observe(ch.Id, ch.Name, type, ch.Rpm, ch.DutyPercent, now);
         }

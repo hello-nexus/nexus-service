@@ -537,15 +537,16 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var rules = new List<SensorAlertRule>();
         var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
-        var excluded = Volatile.Read(ref _fanChannels)?
-            .Where(Nexus.Service.Diagnostics.Cooling.CoolingFanExclusion.IsExcluded)
-            .Select(ch => BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id)))
-            .ToHashSet(StringComparer.Ordinal);
+        HashSet<string>? excluded = null;
+        var fanChannels = Volatile.Read(ref _fanChannels);
         Dictionary<string, string> fanNames = new();
         _store.Read(s =>
         {
             fanNames = Nexus.Service.Cooling.CoolingSnapshots.FanNames(s.Cooling);
             var ignored = s.Diagnostics.IgnoredComponents;
+            excluded = fanChannels is null ? null : Nexus.Service.Diagnostics.Cooling.CoolingFanExclusion.ExcludedIds(fanChannels, s)
+                .Select(id => BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(id)))
+                .ToHashSet(StringComparer.Ordinal);
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
@@ -645,6 +646,15 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     // The switch controls alerting only: a disabled rule is read and recorded but never stepped.
                     if (!snap.On(rule))
                     {
+                        // An alert already running when its fan becomes excluded would otherwise stay open.
+                        if (rule.Enabled && st.Phase != SensorAlertStates.Ok)
+                        {
+                            EndEpisode(st, wall);
+                            st.ResetToOk();
+                            st.Episode = null;
+                            st.Reported = SensorAlertStates.Ok;
+                            changed = true;
+                        }
                         changed |= StepDisabled(sample, now, wall, st);
                         continue;
                     }
