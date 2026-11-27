@@ -253,9 +253,14 @@ support-bundle ZIP export.
   store lives in `<NexusRoot>/reminders/reminders.json` (not `NexusSettings`)
   and every mutation is written atomically under a single lock before it is
   acknowledged. A failed write rolls the change back and the route answers 500
-  `saveFailed`, with no topic ping. A store that fails to parse is moved aside
-  and the previous `.bak` is tried; one that can be neither read nor moved
-  aside is left untouched and refuses mutations. A fresh store seeds one list
+  `saveFailed`, with no topic ping. A missing or unparseable main file
+  recovers from the staged `.tmp`, then the `.bak` (an unparseable main is
+  moved aside as `.corrupt-*`); a fresh seed is written only when none of the
+  three exist. A store file that cannot be read, or an unusable one that cannot
+  be moved aside, is left untouched and the routes answer 503 `unavailable`
+  (reads and writes) until a later load succeeds; the load is retried lazily on
+  requests, at most once per 10 s, so a cleared lock recovers without a
+  restart. A fresh store seeds one list
   named Reminders. All routes are panel reachable so phones and panels can tick
   items off. Caps: 100 lists, 5000 items, 500 char titles, 10000 char notes,
   100 char list names, 2048 char URLs, `order` 0 to 1000000. URLs must be

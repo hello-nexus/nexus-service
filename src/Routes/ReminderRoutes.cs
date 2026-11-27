@@ -14,7 +14,9 @@ public static class ReminderRoutes
     public static void MapReminderEndpoints(this WebApplication app)
     {
         app.MapGet("/api/reminders", (ReminderService reminders) =>
-            Results.Json(reminders.GetAll(), AppJsonContext.Default.ReminderStoreResponse))
+            reminders.Read() is { Value: { } store }
+                ? Results.Json(store, AppJsonContext.Default.ReminderStoreResponse)
+                : Error(ReminderErrors.Unavailable))
             .AllowPanel();
 
         app.MapPost("/api/reminders/lists", async (HttpRequest req, ReminderService reminders, CancellationToken ct) =>
@@ -124,6 +126,7 @@ public static class ReminderRoutes
             ReminderErrors.NotFound => StatusCodes.Status404NotFound,
             ReminderErrors.LastList => StatusCodes.Status409Conflict,
             ReminderErrors.SaveFailed => StatusCodes.Status500InternalServerError,
+            ReminderErrors.Unavailable => StatusCodes.Status503ServiceUnavailable,
             _ => StatusCodes.Status400BadRequest,
         };
         return Results.Json(new ReminderErrorResponse { Code = code, Error = code, Msg = code }, AppJsonContext.Default.ReminderErrorResponse, statusCode: status);
