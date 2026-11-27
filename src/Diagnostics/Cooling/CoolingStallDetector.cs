@@ -147,15 +147,6 @@ public sealed class CoolingStallDetector
         }
     }
 
-    /// <summary>Drops a channel's state, so a stall already held for it leaves the snapshot at once.</summary>
-    public void Forget(string deviceId)
-    {
-        lock (_gate)
-        {
-            _channels.Remove(deviceId);
-        }
-    }
-
     // Caller holds _gate. Runs relative to the caller-supplied nowUtc (never
     // DateTime.UtcNow) so the detector stays fully driven by Observe()'s clock -
     // a device absent from the fan-control provider's channel list simply stops

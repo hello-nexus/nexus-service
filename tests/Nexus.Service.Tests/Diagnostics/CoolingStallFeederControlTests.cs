@@ -17,6 +17,7 @@ public class CoolingStallFeederControlTests
     public void An_uncontrolled_channel_is_never_observed()
     {
         var store = new MemoryStore();
+        store.Load().FeaturesOnboardingCompleted = true;
         FanControlledState.SetControlled("hdr6", false, store);
         var fans = new ScriptedFans();
         var detector = new CoolingStallDetector();
@@ -35,6 +36,7 @@ public class CoolingStallFeederControlTests
     public void A_channel_switched_off_control_leaves_the_snapshot_at_once()
     {
         var store = new MemoryStore();
+        store.Load().FeaturesOnboardingCompleted = true;
         var fans = new ScriptedFans { Channels = new[] { new FanChannel { Id = "hdr6", Name = "Fan #6", Rpm = 900, DutyPercent = 50 } } };
         var detector = new CoolingStallDetector();
         var feeder = new CoolingStallFeeder(fans, detector, store: store);
@@ -51,6 +53,7 @@ public class CoolingStallFeederControlTests
     public void A_controlled_channel_is_still_observed()
     {
         var store = new MemoryStore();
+        store.Load().FeaturesOnboardingCompleted = true;
         var fans = new ScriptedFans { Channels = new[] { new FanChannel { Id = "hdr1", Name = "Fan #1", Rpm = 900, DutyPercent = 50 } } };
         var detector = new CoolingStallDetector();
 
@@ -63,8 +66,8 @@ public class CoolingStallFeederControlTests
     public void While_the_cooling_feature_is_off_the_flag_is_not_consulted()
     {
         var store = new MemoryStore();
-        FanControlledState.SetControlled("hdr6", false, store);
         store.Load().FeaturesOnboardingCompleted = true;
+        FanControlledState.SetControlled("hdr6", false, store);
         store.Load().Features.Cooling = false;
         var fans = new ScriptedFans { Channels = new[] { new FanChannel { Id = "hdr6", Name = "Fan #6", Rpm = 900, DutyPercent = 50 } } };
         var detector = new CoolingStallDetector();
@@ -78,6 +81,7 @@ public class CoolingStallFeederControlTests
     public void A_pump_is_observed_whether_or_not_it_is_under_nexus_control()
     {
         var store = new MemoryStore();
+        store.Load().FeaturesOnboardingCompleted = true;
         FanControlledState.SetControlled("pump1", false, store);
         var fans = new ScriptedFans { Channels = new[] { new FanChannel { Id = "pump1", Name = "Pump", Kind = FanKinds.Pump, Rpm = 2000, DutyPercent = 60 } } };
         var detector = new CoolingStallDetector();

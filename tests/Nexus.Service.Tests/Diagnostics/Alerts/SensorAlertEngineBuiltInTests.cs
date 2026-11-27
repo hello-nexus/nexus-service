@@ -961,7 +961,7 @@ public partial class SensorAlertEngineTests
         Assert.Empty(rig.Notices);
         Assert.DoesNotContain(rig.Engine.HealthComponents(), x => x.Id == "alert:" + FanRule("fan1"));
         Assert.DoesNotContain("cooling:fan1", rig.Store.Load().Diagnostics.IgnoredComponents);
-        Assert.True(rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).Enabled);
+        Assert.Equal(control, rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).Enabled);
     }
 
     [Theory]
