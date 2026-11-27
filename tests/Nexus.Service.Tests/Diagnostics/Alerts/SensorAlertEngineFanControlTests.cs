@@ -2,6 +2,8 @@ using System.Linq;
 using Nexus.Service.Cooling;
 using Nexus.Service.Diagnostics.Alerts;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Models.Sensors;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.Diagnostics.Alerts;
@@ -51,13 +53,16 @@ public partial class SensorAlertEngineTests
     }
 
     [Theory]
-    [InlineData(true, true, true)]
-    [InlineData(true, false, false)]
-    [InlineData(false, true, false)]
-    [InlineData(false, false, false)]
-    public void Fan_entry_enabled_needs_control_and_no_ignore_entry(bool controlled, bool notIgnored, bool expected)
+    [InlineData(true, true, true, true)]
+    [InlineData(true, false, false, true)]
+    [InlineData(false, true, false, true)]
+    [InlineData(false, false, false, true)]
+    [InlineData(false, true, true, false)]
+    [InlineData(true, false, false, false)]
+    public void Fan_entry_enabled_needs_control_and_no_ignore_entry_and_a_pump_needs_only_the_latter(bool controlled, bool notIgnored, bool expected, bool linked)
     {
-        var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, "fan:x", "X", false, "cooling:x");
+        var source = new BuiltInSource { Kind = "channel", ControlChannel = linked ? "x" : null };
+        var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, "fan:x", "X", false, "cooling:x", source);
         var diagnostics = new Nexus.Service.Persistence.DiagnosticsSettings();
         if (!notIgnored)
         {
@@ -69,15 +74,23 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
-    public void Apply_off_sets_uncontrolled_and_on_clears_it()
+    public void A_pump_entry_stays_on_while_not_under_nexus_control_and_has_no_control_channel()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(new FanChannel { Id = "pump1", Name = "Pump", Kind = FanKinds.Pump, Rpm = 2000 }));
+        FanControlledState.SetControlled("pump1", false, rig.Store);
+
+        var entry = FanEntry(rig, "pump1");
+
+        Assert.True(entry.Enabled);
+        Assert.Null(entry.Source!.ControlChannel);
+    }
+
+    [Fact]
+    public void A_fan_entry_names_its_control_channel()
     {
         var rig = BuiltInRig(r => r.Fans.Channels.Add(new FanChannel { Id = "fan1", Name = "Rear", Rpm = 500 }));
 
-        FanControlledState.Apply("fan1", false, rig.Fans, rig.Store);
-        Assert.Contains("fan1", rig.Store.Load().Cooling.UncontrolledFanChannels);
-
-        FanControlledState.Apply("fan1", true, rig.Fans, rig.Store);
-        Assert.DoesNotContain("fan1", rig.Store.Load().Cooling.UncontrolledFanChannels);
+        Assert.Equal("fan1", FanEntry(rig, "fan1").Source!.ControlChannel);
     }
 
     [Fact]
@@ -103,5 +116,32 @@ public partial class SensorAlertEngineTests
 
         Assert.Equal("Fan #1", rule.Sensor.Name);
         Assert.Equal("TestMobo", rule.Source!.HardwareName);
+    }
+
+    [Fact]
+    public void A_tachless_board_header_reads_under_the_board_name_too()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(new FanChannel { Id = "board:hdr2", Name = "Fan #2", Rpm = 900 }));
+
+        Assert.Equal("TestMobo", FanEntry(rig, "board:hdr2").Source!.HardwareName);
+    }
+
+    [Fact]
+    public void A_hub_channel_keeps_its_device_name_and_a_gpu_fan_reads_under_the_gpu_name()
+    {
+        var gpuTach = new HardwareSensor
+        {
+            Id = "/gpu/fan/1", Name = "GPU Fan 1", Type = "Fan", Value = 1500, Units = "RPM",
+            Parent = new SensorParent { Id = "gpu0", Name = "RTX 5080" },
+        };
+        var rig = BuiltInRig(r =>
+        {
+            r.Fans.Channels.Add(HubFan());
+            r.Fans.Channels.Add(new FanChannel { Id = "gpu:fan1", Name = "GPU Fan 1", IsGpu = true, RpmSensorId = "/gpu/fan/1", Rpm = 1500 });
+            r.Sensors.Gpus.Add(new GpuReadout { Id = "gpu0", Name = "RTX 5080", Sensors = new List<HardwareSensor> { gpuTach } });
+        });
+
+        Assert.Equal("NP50 Hub", FanEntry(rig, HubFanId).Source!.HardwareName);
+        Assert.Equal("RTX 5080", FanEntry(rig, "gpu:fan1").Source!.HardwareName);
     }
 }

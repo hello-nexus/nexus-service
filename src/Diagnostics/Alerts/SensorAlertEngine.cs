@@ -995,9 +995,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             {
                 continue;
             }
-            BuiltInSource source;
-            var hardware = ch.DeviceName ?? ch.Name;
-            // The tach sensor behind a motherboard or graphics card channel when the picker lists it; a hub channel has none.
+            // The device the entry reads under. The Cooling page groups a board's headers (no device of their own) under
+            // the board name, not the SuperIO chip a tach sensor sits on, so tach or not they read under it; a graphics card keeps its own name.
             HardwareSensor? tach = null;
             if (!string.IsNullOrEmpty(ch.RpmSensorId))
             {
@@ -1006,48 +1005,42 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     : boardTachs ??= _sensors.GetMotherboardSensorsCached();
                 tach = list.FirstOrDefault(x => x.Id == ch.RpmSensorId);
             }
-            if (tach is null)
+            var hardware = ch.DeviceName;
+            if (hardware is null && !ch.IsGpu && ch.DeviceId is null && BoardName() is { Length: > 0 } board)
             {
-                source = new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware };
+                hardware = board;
             }
-            else
-            {
-                // The device the entry reads under: the Cooling page groups a board's headers (no device of their own)
-                // under the board name, not the SuperIO chip the tach sensor sits on; a graphics card keeps its own name.
-                if (ch.DeviceName is null)
-                {
-                    hardware = !ch.IsGpu && ch.DeviceId is null && BoardName() is { Length: > 0 } board ? board : tach.Parent.Name;
-                }
-                source = new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
-            }
+            hardware ??= tach?.Parent.Name ?? ch.Name;
+            // A pump keeps the plain ignore-list switch: only a fan entry is tied to Nexus Control.
+            var controlChannel = string.Equals(ch.Kind, Nexus.Service.Models.Cooling.FanKinds.Pump, StringComparison.Ordinal) ? null : ch.Id;
+            var source = tach is null
+                ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware, ControlChannel = controlChannel }
+                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware, ControlChannel = controlChannel };
             var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, ch.Name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
             // A channel with no readable tach has no value, as in the history.
             Add(devices, sensors, device, ch.RpmUnavailable ? float.NaN : ch.Rpm, ch.RpmUnavailable);
         }
     }
 
-    // Read once: the model never changes while the service runs, and the provider call can poll hardware.
+    // Read once, an empty result included: the model never changes while the service runs, and the provider call sweeps hardware.
     private string? _boardName;
 
     private string BoardName()
     {
-        if (_boardName is { Length: > 0 } cached)
+        if (_boardName is not null)
         {
-            return cached;
+            return _boardName;
         }
         try
         {
-            var model = _sensors.GetMotherboardModel();
-            if (!string.IsNullOrWhiteSpace(model))
-            {
-                _boardName = model.Trim();
-            }
+            _boardName = _sensors.GetMotherboardModel()?.Trim() ?? "";
         }
         catch (Exception ex)
         {
             Warn("board-name", $"[sensor-alerts] board name read failed: {ex.Message}", Mono());
+            _boardName = "";
         }
-        return _boardName ?? "";
+        return _boardName;
     }
 
     private static SensorRef Ref(string category, HardwareSensor s) => new()

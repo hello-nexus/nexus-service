@@ -59,6 +59,19 @@ public class CoolingStallFeederControlTests
         Assert.Equal("hdr1", detector.Snapshot().Devices.Single().Id);
     }
 
+    [Fact]
+    public void A_pump_is_observed_whether_or_not_it_is_under_nexus_control()
+    {
+        var store = new MemoryStore();
+        FanControlledState.SetControlled("pump1", false, store);
+        var fans = new ScriptedFans { Channels = new[] { new FanChannel { Id = "pump1", Name = "Pump", Kind = FanKinds.Pump, Rpm = 2000, DutyPercent = 60 } } };
+        var detector = new CoolingStallDetector();
+
+        new CoolingStallFeeder(fans, detector, store: store).Tick();
+
+        Assert.Equal("pump", detector.Snapshot().Devices.Single().Type);
+    }
+
     private sealed class MemoryStore : IConfigStore
     {
         private readonly NexusSettings _settings = new();

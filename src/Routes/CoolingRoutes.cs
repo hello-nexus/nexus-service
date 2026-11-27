@@ -277,7 +277,7 @@ public static class CoolingRoutes
             return Results.Ok(ApiResponse.Ok());
         });
 
-        app.MapPost("/cooling/fan/{id}/controlled", (string id, SetFanControlledBody body, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, FeatureGates gates, Nexus.Service.Diagnostics.Alerts.SensorAlertEngine? alerts = null) =>
+        app.MapPost("/cooling/fan/{id}/controlled", (string id, SetFanControlledBody body, IFanControlProvider f, Nexus.Service.Persistence.IConfigStore store, MultiplexHub hub, FeatureGates gates, Nexus.Service.Diagnostics.Alerts.SensorAlertEngine? alerts = null, Nexus.Service.Diagnostics.Cooling.CoolingStallDetector? stalls = null) =>
         {
             if (!gates.Cooling)
             {
@@ -286,11 +286,26 @@ public static class CoolingRoutes
             id = Uri.UnescapeDataString(id);
             // Same guard as /pin: nothing prunes this list, so an id that was
             // never a channel would sit in it with no UI affordance to clear it.
-            if (!f.GetFanChannels().Any(c => c.Id == id))
+            var channel = f.GetFanChannels().FirstOrDefault(c => c.Id == id);
+            if (channel is null)
             {
                 return Results.BadRequest(new ApiResponse { Error = true, Msg = "Unknown fan channel" });
             }
             FanControlledState.Apply(id, body.Controlled, f, store);
+            if (!string.Equals(channel.Kind, FanKinds.Pump, StringComparison.Ordinal))
+            {
+                if (body.Controlled)
+                {
+                    // Control on is monitoring on: the legacy per-fan mute would otherwise keep the watchlist entry off.
+                    var muted = Nexus.Service.Diagnostics.Alerts.BuiltInSensorRules.FanComponentPrefix + id;
+                    store.Update(s => s.Diagnostics.IgnoredComponents?.RemoveAll(x => x == muted));
+                }
+                else
+                {
+                    // Without waiting for the feeder's next pass, so a held stall leaves the health read at once.
+                    stalls?.Forget(id);
+                }
+            }
             // The watchlist's fan entry reads its on/off from this flag, so its topic refires.
             alerts?.Reconcile();
             PanelTopics.BroadcastCooling(hub);

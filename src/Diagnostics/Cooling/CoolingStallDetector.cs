@@ -308,6 +308,8 @@ public sealed class CoolingStallFeeder : BackgroundService
         catch (OperationCanceledException) { return false; }
     }
 
+    private static bool IsPump(FanChannel ch) => string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal);
+
     internal void Tick()
     {
         if (!_gates.Diagnostics)
@@ -323,12 +325,12 @@ public sealed class CoolingStallFeeder : BackgroundService
             return;
         }
 
-        // One settings snapshot per tick. A channel the user took off Nexus Control is not monitored: it is neither
-        // observed nor kept, so an empty header never raises a stall and a stall already held clears at once.
+        // One settings read per pass. A fan the user took off Nexus Control is not monitored: it is neither observed
+        // nor kept, so an empty header never raises a stall and a stall already held clears. A pump is not tied to the flag.
         var settings = _store?.Load();
         foreach (var ch in channels)
         {
-            if (settings is not null && !FanControlledState.IsControlled(ch.Id, settings))
+            if (settings is not null && !IsPump(ch) && !FanControlledState.IsControlled(ch.Id, settings))
             {
                 _detector.Forget(ch.Id);
                 continue;
@@ -337,7 +339,7 @@ public sealed class CoolingStallFeeder : BackgroundService
             // agreed polls, SLV3 chains) carries Rpm = 0 with no fan stopped;
             // leave it unobserved so it ages out instead of reading as a stall.
             if (ch.RpmUnavailable) continue;
-            var type = string.Equals(ch.Kind, FanKinds.Pump, StringComparison.Ordinal) ? "pump" : "fan";
+            var type = IsPump(ch) ? "pump" : "fan";
             _detector.Observe(ch.Id, ch.Name, type, ch.Rpm, ch.DutyPercent, now);
         }
     }

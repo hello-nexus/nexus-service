@@ -181,6 +181,23 @@ public class DiagnosticsHealthModelTests
     }
 
     [Fact]
+    public void BuildHealth_RecomputesWhenAFanLeavesNexusControl_WithinTheCacheTtl()
+    {
+        var store = new InMemoryConfigStore();
+        var model = new DiagnosticsHealthModel(
+            new UnsupportedSmartHealthSource(), new CoolingStallDetector(), new GpuHealthMonitor(), new EventLogMonitor(),
+            new MemoryDiagnosticOrchestrator(), new PnpProblemScanner(), new Mcp.McpTestHarness.StubSensorProvider(),
+            store);
+
+        var first = model.BuildHealth();
+        Assert.Same(first, model.BuildHealth());
+
+        store.Update(s => s.Cooling.UncontrolledFanChannels = new List<string> { "fan6" });
+
+        Assert.NotSame(first, model.BuildHealth());
+    }
+
+    [Fact]
     public void IgnoringEveryComponent_OffWindows_KeepsTheGridSupported()
     {
         var smart = new SmartSnapshot

@@ -20,7 +20,7 @@ public sealed class SensorAlertFactory : NexusAppFactory
         public IReadOnlyList<Nexus.Service.Models.Cooling.FanChannel> GetFanChannels() => new[]
         {
             new Nexus.Service.Models.Cooling.FanChannel { Id = "/lpc/ctl/1", Name = "CPU Fan", Rpm = 1100 },
-            new Nexus.Service.Models.Cooling.FanChannel { Id = "/lpc/ctl/2", Name = "Pump", Rpm = 2400, Kind = "pump" },
+            new Nexus.Service.Models.Cooling.FanChannel { Id = "/lpc/ctl/2", Name = "Pump", Rpm = 2400, Kind = Nexus.Service.Models.Cooling.FanKinds.Pump },
         };
         public IReadOnlyList<Nexus.Service.Models.Cooling.TemperatureSource> GetTemperatureSources() => Array.Empty<Nexus.Service.Models.Cooling.TemperatureSource>();
         public float? ReadTemperature(string sensorId) => null;
@@ -194,61 +194,156 @@ public sealed class SensorAlertRoutesTests : IClassFixture<SensorAlertFactory>
         Assert.Equal(5, list.GetProperty("rules").EnumerateArray().Count(r => r.GetProperty("builtIn").ValueKind != JsonValueKind.Null));
     }
 
+    private const string FanChannel = "/lpc/ctl/1";
+    private const string PumpChannel = "/lpc/ctl/2";
+
+    private static string ControlPath(string channel) => $"/cooling/fan/{Uri.EscapeDataString(channel)}/controlled";
+
+    private static object FanBody(bool enabled) => new
+    {
+        enabled, sensor = new { category = "builtin", id = "x", name = "x", type = "Fan", parentName = "" },
+        low = (double?)null, high = (double?)null, raiseAfterSeconds = 60, clearAfterSeconds = 5, severity = "watch", notifyDesktop = true, showInHealth = true, repeatMinutes = 0,
+        builtIn = "fanSpeed",
+    };
+
+    private async Task<JsonElement> EntryAsync(HttpClient client, string ruleId) =>
+        (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == ruleId);
+
+    private Nexus.Service.Persistence.IConfigStore Store() => _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
+
     [Fact]
-    public async Task A_fan_entry_switch_is_the_nexus_control_toggle_and_reset_turns_it_back_on()
+    public async Task A_fan_entry_follows_the_controlled_route_both_ways()
     {
         var client = Client();
-        var rules = (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().ToList();
-        var fan = rules.Single(r => r.GetProperty("id").GetString() == FanRule);
+        var fan = await EntryAsync(client, FanRule);
         Assert.True(fan.GetProperty("enabled").GetBoolean());
         Assert.Equal(JsonValueKind.Null, fan.GetProperty("high").ValueKind);
         Assert.Equal("Fan", fan.GetProperty("sensor").GetProperty("type").GetString());
+        Assert.Equal(FanChannel, fan.GetProperty("source").GetProperty("controlChannel").GetString());
 
-        var body = JsonSerializer.Deserialize<JsonElement>(fan.GetRawText());
-        var off = await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", new
-        {
-            enabled = false, sensor = new { category = "builtin", id = "x", name = "x", type = "Fan", parentName = "" },
-            low = (double?)null, high = (double?)null, raiseAfterSeconds = 60, clearAfterSeconds = 5, severity = "watch", notifyDesktop = true, showInHealth = true, repeatMinutes = 0,
-            builtIn = "fanSpeed",
-        });
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false })).StatusCode);
+        Assert.Contains(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+        Assert.False((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
 
-        Assert.Equal(HttpStatusCode.OK, off.StatusCode);
-        var settings = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load();
-        Assert.Contains("/lpc/ctl/1", settings.Cooling.UncontrolledFanChannels);
-        Assert.DoesNotContain("cooling:/lpc/ctl/1", settings.Diagnostics.IgnoredComponents);
-        var listed = (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == FanRule);
-        Assert.False(listed.GetProperty("enabled").GetBoolean());
-        Assert.Equal("fanSpeed", body.GetProperty("builtIn").GetString());
-
-        await client.PostAsync($"/diagnostics/alerts/builtins/reset?id={FanRule}", null);
-
-        var after = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>().Load();
-        Assert.DoesNotContain("cooling:/lpc/ctl/1", after.Diagnostics.IgnoredComponents);
-        Assert.DoesNotContain("/lpc/ctl/1", after.Cooling.UncontrolledFanChannels);
-        var back = (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == FanRule);
-        Assert.True(back.GetProperty("enabled").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true })).StatusCode);
+        Assert.DoesNotContain(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+        Assert.True((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
     }
 
     [Fact]
-    public async Task Switching_a_legacy_ignored_fan_entry_on_clears_the_ignore_entry_and_keeps_control()
+    public async Task The_full_rule_save_ignores_enabled_on_a_linked_fan_so_a_stale_save_cannot_retake_control()
     {
         var client = Client();
-        var store = _factory.Services.GetRequiredService<Nexus.Service.Persistence.IConfigStore>();
-        store.Update(s => s.Diagnostics.IgnoredComponents.Add("cooling:/lpc/ctl/1"));
-        var listed = (await client.GetFromJsonAsync<JsonElement>("/diagnostics/alerts")).GetProperty("rules").EnumerateArray().Single(r => r.GetProperty("id").GetString() == FanRule);
-        Assert.False(listed.GetProperty("enabled").GetBoolean());
-        Assert.DoesNotContain("/lpc/ctl/1", store.Load().Cooling.UncontrolledFanChannels);
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false });
 
-        var on = await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", new
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", FanBody(true))).StatusCode);
+        Assert.Contains(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true });
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", FanBody(false))).StatusCode);
+        Assert.DoesNotContain(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+        Assert.DoesNotContain("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+        Assert.True((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Controlled_route_refuses_an_unknown_channel_and_a_disabled_cooling_gate()
+    {
+        var client = Client();
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(ControlPath("/lpc/ctl/9"), new { controlled = false })).StatusCode);
+
+        Store().Update(s => s.Features.Cooling = false);
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false })).StatusCode);
+        Assert.DoesNotContain(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+    }
+
+    [Fact]
+    public async Task With_the_cooling_gate_off_a_fan_switch_is_the_ignore_list_mute_and_never_writes_control()
+    {
+        var client = Client();
+        Store().Update(s => s.Features.Cooling = false);
+
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/diagnostics/alerts/{FanRule}", FanBody(false))).StatusCode);
+
+        Assert.Contains("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+        Assert.DoesNotContain(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+        Assert.False((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task A_pump_entry_keeps_the_mute_only_switch_and_is_not_tied_to_control()
+    {
+        var client = Client();
+        var pump = await EntryAsync(client, PumpRule);
+        Assert.Equal(JsonValueKind.Null, pump.GetProperty("source").TryGetProperty("controlChannel", out var cc) ? cc.ValueKind : JsonValueKind.Null);
+
+        await client.PostAsJsonAsync(ControlPath(PumpChannel), new { controlled = false });
+        Assert.True((await EntryAsync(client, PumpRule)).GetProperty("enabled").GetBoolean());
+
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/diagnostics/alerts/{PumpRule}", FanBody(false))).StatusCode);
+        Assert.Contains("cooling:" + PumpChannel, Store().Load().Diagnostics.IgnoredComponents);
+        Assert.False((await EntryAsync(client, PumpRule)).GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Reset_clears_only_the_mute_and_never_takes_back_a_released_fan()
+    {
+        var client = Client();
+        await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false });
+        Store().Update(s => s.Diagnostics.IgnoredComponents.Add("cooling:" + PumpChannel));
+
+        await client.PostAsync($"/diagnostics/alerts/builtins/reset?id={FanRule}", null);
+        await client.PostAsync("/diagnostics/alerts/builtins/reset", null);
+
+        Assert.Contains(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
+        Assert.DoesNotContain("cooling:" + PumpChannel, Store().Load().Diagnostics.IgnoredComponents);
+        Assert.False((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Switching_control_on_clears_a_legacy_mute_and_the_entry_reads_on()
+    {
+        var client = Client();
+        Store().Update(s => s.Diagnostics.IgnoredComponents.Add("cooling:" + FanChannel));
+        try
         {
-            enabled = true, sensor = new { category = "builtin", id = "x", name = "x", type = "Fan", parentName = "" },
-            low = (double?)null, high = (double?)null, raiseAfterSeconds = 60, clearAfterSeconds = 5, severity = "watch", notifyDesktop = true, showInHealth = true, repeatMinutes = 0,
-            builtIn = "fanSpeed",
-        });
+            Assert.False((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+            Assert.DoesNotContain(FanChannel, Store().Load().Cooling.UncontrolledFanChannels);
 
-        Assert.Equal(HttpStatusCode.OK, on.StatusCode);
-        Assert.DoesNotContain("cooling:/lpc/ctl/1", store.Load().Diagnostics.IgnoredComponents);
-        Assert.DoesNotContain("/lpc/ctl/1", store.Load().Cooling.UncontrolledFanChannels);
+            await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = true });
+
+            Assert.DoesNotContain("cooling:" + FanChannel, Store().Load().Diagnostics.IgnoredComponents);
+            Assert.True((await EntryAsync(client, FanRule)).GetProperty("enabled").GetBoolean());
+        }
+        finally
+        {
+            Store().Update(s => s.Diagnostics.IgnoredComponents.Remove("cooling:" + FanChannel));
+        }
+    }
+
+    [Fact]
+    public async Task The_controlled_route_refires_the_alerts_topic_and_forgets_a_held_stall_at_once()
+    {
+        var client = Client();
+        var engine = _factory.Services.GetRequiredService<Nexus.Service.Diagnostics.Alerts.SensorAlertEngine>();
+        var detector = _factory.Services.GetRequiredService<Nexus.Service.Diagnostics.Cooling.CoolingStallDetector>();
+        detector.Observe(FanChannel, "CPU Fan", "fan", 900, 50, DateTime.UtcNow);
+        Assert.Contains(detector.Snapshot().Devices, d => d.Id == FanChannel);
+        var fired = 0;
+        void Count() => Interlocked.Increment(ref fired);
+        engine.Changed += Count;
+        try
+        {
+            await client.PostAsJsonAsync(ControlPath(FanChannel), new { controlled = false });
+        }
+        finally
+        {
+            engine.Changed -= Count;
+        }
+
+        Assert.True(fired > 0);
+        Assert.DoesNotContain(detector.Snapshot().Devices, d => d.Id == FanChannel);
     }
 
     [Theory]

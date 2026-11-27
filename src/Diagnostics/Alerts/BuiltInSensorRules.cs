@@ -293,10 +293,11 @@ public static class BuiltInSensorRules
 
     /// <summary>
     /// A fan entry reads on only while its channel is under Nexus Control and the legacy ignore entry (the old per-fan
-    /// off switch, still honored as a suppressor) is absent. One setting for control and monitoring.
+    /// off switch, still honored as a suppressor) is absent. One setting for control and monitoring. A pump entry
+    /// (no control channel on its source) is the ignore list alone.
     /// </summary>
     public static bool FanEnabled(BuiltInDevice device, DiagnosticsSettings diagnostics, bool controlled) =>
-        controlled && diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+        (controlled || device.Source?.ControlChannel is null) && diagnostics.IgnoredComponents?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
 
     /// <summary>Writes a fan entry's on/off into the ignore list the Cooling page's stall toggle uses, so the two never disagree.</summary>
     public static void SetFanEnabled(DiagnosticsSettings diagnostics, BuiltInDevice device, bool enabled)

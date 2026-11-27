@@ -5,12 +5,12 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Nexus.Service.Auth;
 using Nexus.Service.Diagnostics.Alerts;
+using Nexus.Service.Lifecycle;
 using Nexus.Service.Models;
 using Nexus.Service.Monitoring.History;
 using Nexus.Service.Persistence;
 using Nexus.Service.Platform;
 using Nexus.Service.Sensors;
-using Nexus.Service.Sockets;
 
 namespace Nexus.Service.Routes;
 
@@ -79,7 +79,7 @@ public static class DiagnosticsAlertRoutes
             return Results.Created($"/diagnostics/alerts/{body.Id}", body);
         }).Produces<SensorAlertRule>(StatusCodes.Status201Created).Produces<ApiResponse>(StatusCodes.Status400BadRequest).Produces<SensorAlreadyTrackedResponse>(StatusCodes.Status409Conflict);
 
-        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, Nexus.Service.Cooling.IFanControlProvider fans, MultiplexHub hub) =>
+        app.MapPut("/diagnostics/alerts/{id}", (string id, SensorAlertRule? body, IConfigStore store, SensorAlertEngine engine, IMetricsHistoryStore history, MetricsSampleBuffer buffer, FeatureGates gates) =>
         {
             if (body is null)
             {
@@ -116,7 +116,6 @@ public static class DiagnosticsAlertRoutes
             SensorAlertRule? tracker = null;
             var found = false;
             var sensorChanged = false;
-            string? controlChannel = null;
             store.Update(s =>
             {
                 var list = s.Diagnostics.SensorAlerts;
@@ -139,22 +138,15 @@ public static class DiagnosticsAlertRoutes
                 found = true;
                 if (body.BuiltIn == BuiltInSensorRules.FanSpeed && engine.BuiltInDevices().FirstOrDefault(d => BuiltInSensorRules.RuleId(d.SeriesId) == id) is { } fan)
                 {
-                    // A fan entry's on/off is its Nexus Control flag, so a real flip is handed to the Cooling toggle's path below.
-                    // The legacy ignore entry is cleared on any flip: control alone decides from here on.
-                    var channel = BuiltInSensorRules.FanChannelId(fan);
-                    var enabledNow = BuiltInSensorRules.FanEnabled(fan, s.Diagnostics, Nexus.Service.Cooling.FanControlledState.IsControlled(channel, s));
-                    if (body.Enabled != enabledNow)
+                    // A fan entry's on/off is its Nexus Control flag, written only through POST /cooling/fan/{id}/controlled
+                    // (gate, unknown-id guard, stall forget, refresh). This save leaves it alone, so a stale threshold edit cannot
+                    // take control back. A pump, or any fan while the Cooling gate is off, keeps the plain ignore-list switch.
+                    if (fan.Source?.ControlChannel is null || !gates.Cooling)
                     {
-                        BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, true);
-                        controlChannel = channel;
+                        BuiltInSensorRules.SetFanEnabled(s.Diagnostics, fan, body.Enabled);
                     }
                 }
             });
-            if (controlChannel is not null)
-            {
-                Nexus.Service.Cooling.FanControlledState.Apply(controlChannel, body.Enabled, fans, store);
-                PanelTopics.BroadcastCooling(hub);
-            }
             if (tracker is not null)
             {
                 return Results.Conflict(SensorAlertRules.AlreadyTracked(tracker));
@@ -208,9 +200,8 @@ public static class DiagnosticsAlertRoutes
                         list[index] = BuiltInSensorRules.Defaults(device);
                         if (device.Kind == BuiltInSensorRules.FanSpeed)
                         {
-                            // Factory state is on: monitored and under Nexus Control.
+                            // Only the legacy mute is cleared: a reset never changes Nexus Control, so it cannot take back a fan the user released.
                             BuiltInSensorRules.SetFanEnabled(s.Diagnostics, device, true);
-                            Nexus.Service.Cooling.FanControlledState.SetControlledIn(s, BuiltInSensorRules.FanChannelId(device), true);
                         }
                     }
                 }
