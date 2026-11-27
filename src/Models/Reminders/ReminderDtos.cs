@@ -49,7 +49,7 @@ public sealed class ReminderClearResponse
     public int Removed { get; set; }
 }
 
-/// <summary>Error body. <c>code</c> is the machine code, copied to <c>error</c> and <c>msg</c> for clients on the shared ApiResponse envelope.</summary>
+/// <summary>Error body. <c>code</c> is the machine code; <c>error</c> and <c>msg</c> repeat it, mirroring the calendar error body.</summary>
 public sealed class ReminderErrorResponse
 {
     public string Code { get; set; } = "";
@@ -68,4 +68,8 @@ public static class ReminderErrors
     public const string NotFound = "notFound";
     public const string LimitReached = "limitReached";
     public const string LastList = "lastList";
+    /// <summary>The write did not reach disk; nothing changed.</summary>
+    public const string SaveFailed = "saveFailed";
+    /// <summary>A reorder did not list exactly the list's current items; refetch and retry.</summary>
+    public const string Stale = "stale";
 }

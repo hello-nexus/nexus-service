@@ -211,29 +211,67 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
         Assert.Equal("limitReached", l.GetProperty("code").GetString());
     }
 
+    [Theory]
+    [InlineData("""{"order":-1}""")]
+    [InlineData("""{"order":1000001}""")]
+    [InlineData("""{"order":2147483647}""")]
+    public async Task Order_outside_the_allowed_range_is_400(string patch)
+    {
+        var listId = await ListIdAsync();
+        var id = (await AddItemAsync(listId)).GetProperty("id").GetString()!;
+
+        var item = await SendAsync(HttpMethod.Put, $"/api/reminders/items/{id}", patch, HttpStatusCode.BadRequest);
+        var list = await SendAsync(HttpMethod.Put, $"/api/reminders/lists/{listId}", patch, HttpStatusCode.BadRequest);
+
+        Assert.Equal("invalid", item.GetProperty("code").GetString());
+        Assert.Equal("invalid", list.GetProperty("code").GetString());
+    }
+
+    [Theory]
+    [InlineData("""{"color":"red"}""")]
+    [InlineData("""{"color":null}""")]
+    [InlineData("""{"icon":"has space"}""")]
+    [InlineData("""{"icon":null}""")]
+    [InlineData("""{"name":null}""")]
+    [InlineData("""{"name":"   "}""")]
+    public async Task List_patch_with_a_bad_field_is_400_and_changes_nothing(string patch)
+    {
+        var listId = await ListIdAsync();
+
+        var err = await SendAsync(HttpMethod.Put, $"/api/reminders/lists/{listId}", patch, HttpStatusCode.BadRequest);
+
+        Assert.Equal("invalid", err.GetProperty("code").GetString());
+        var all = await SendAsync(HttpMethod.Get, "/api/reminders", null, HttpStatusCode.OK);
+        Assert.Equal("Reminders", all.GetProperty("lists")[0].GetProperty("name").GetString());
+        Assert.Equal("#0A84FF", all.GetProperty("lists")[0].GetProperty("color").GetString());
+    }
+
     [Fact]
-    public async Task List_and_item_count_caps_report_limitReached()
+    public async Task A_failed_save_is_500_saveFailed_with_no_change_and_no_ping()
     {
         var svc = _factory.Services.GetRequiredService<ReminderService>();
         var listId = await ListIdAsync();
-        for (var i = 1; i < ReminderService.MaxLists; i++)
+        var dir = Path.Combine(_factory.ConfigDir, "reminders");
+        var backup = dir + ".moved";
+        var pings = 0;
+        void Ping() => Interlocked.Increment(ref pings);
+        svc.Changed += Ping;
+        Directory.Move(dir, backup);
+        File.WriteAllText(dir, "blocker");
+        try
         {
-            Assert.NotNull(svc.CreateList(JsonDocument.Parse("""{"name":"L","color":"#000000","icon":"list"}""").RootElement).Value);
+            var err = await SendAsync(HttpMethod.Post, "/api/reminders/items", $$"""{"listId":"{{listId}}","title":"x"}""", HttpStatusCode.InternalServerError);
+            Assert.Equal("saveFailed", err.GetProperty("code").GetString());
         }
-        var listCap = await SendAsync(HttpMethod.Post, "/api/reminders/lists", """{"name":"L","color":"#000000","icon":"list"}""", HttpStatusCode.BadRequest);
-        Assert.Equal("limitReached", listCap.GetProperty("code").GetString());
-        foreach (var l in svc.GetAll().Lists.Skip(1))
+        finally
         {
-            svc.DeleteList(l.Id);
+            File.Delete(dir);
+            Directory.Move(backup, dir);
+            svc.Changed -= Ping;
         }
 
-        var body = JsonDocument.Parse($$"""{"listId":"{{listId}}","title":"x"}""").RootElement;
-        for (var i = 0; i < ReminderService.MaxItems; i++)
-        {
-            Assert.NotNull(svc.CreateItem(body).Value);
-        }
-        var itemCap = await SendAsync(HttpMethod.Post, "/api/reminders/items", $$"""{"listId":"{{listId}}","title":"x"}""", HttpStatusCode.BadRequest);
-        Assert.Equal("limitReached", itemCap.GetProperty("code").GetString());
+        Assert.Equal(0, pings);
+        Assert.Empty(svc.GetAll().Items);
     }
 
     [Fact]
@@ -351,7 +389,7 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
     }
 
     [Fact]
-    public async Task Reorder_validates_and_changes_nothing_on_failure()
+    public async Task Reorder_must_name_exactly_the_lists_items_and_changes_nothing_otherwise()
     {
         var first = await ListIdAsync();
         var other = (await SendAsync(HttpMethod.Post, "/api/reminders/lists", """{"name":"B","color":"#000000","icon":"list"}""", HttpStatusCode.Created)).GetProperty("id").GetString()!;
@@ -360,17 +398,53 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
         var foreign = (await AddItemAsync(other)).GetProperty("id").GetString()!;
 
         var unknownList = await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"nope","itemIds":["{{a}}"]}""", HttpStatusCode.NotFound);
-        var unknownItem = await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"{{first}}","itemIds":["{{b}}","nope"]}""", HttpStatusCode.NotFound);
-        var wrongList = await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"{{first}}","itemIds":["{{b}}","{{foreign}}"]}""", HttpStatusCode.BadRequest);
-        var duplicate = await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"{{first}}","itemIds":["{{b}}","{{b}}"]}""", HttpStatusCode.BadRequest);
+        var cases = new[]
+        {
+            $$"""["{{b}}","nope"]""",
+            $$"""["{{b}}","{{foreign}}"]""",
+            $$"""["{{b}}","{{b}}"]""",
+            $$"""["{{b}}"]""",
+            "[]",
+        };
+        foreach (var ids in cases)
+        {
+            var err = await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"{{first}}","itemIds":{{ids}}}""", HttpStatusCode.BadRequest);
+            Assert.Equal("stale", err.GetProperty("code").GetString());
+        }
         await SendAsync(HttpMethod.Post, "/api/reminders/reorder", """{"listId":"x"}""", HttpStatusCode.BadRequest);
 
         Assert.Equal("notFound", unknownList.GetProperty("code").GetString());
-        Assert.Equal("notFound", unknownItem.GetProperty("code").GetString());
-        Assert.Equal("invalid", wrongList.GetProperty("code").GetString());
-        Assert.Equal("invalid", duplicate.GetProperty("code").GetString());
         var all = await SendAsync(HttpMethod.Get, "/api/reminders", null, HttpStatusCode.OK);
         Assert.Equal(a, all.GetProperty("items")[0].GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Reorder_of_an_empty_list_is_a_silent_no_op()
+    {
+        var svc = _factory.Services.GetRequiredService<ReminderService>();
+        var listId = await ListIdAsync();
+        var pings = 0;
+        void Ping() => Interlocked.Increment(ref pings);
+        svc.Changed += Ping;
+        try
+        {
+            await SendAsync(HttpMethod.Post, "/api/reminders/reorder", $$"""{"listId":"{{listId}}","itemIds":[]}""", HttpStatusCode.NoContent);
+        }
+        finally
+        {
+            svc.Changed -= Ping;
+        }
+
+        Assert.Equal(0, pings);
+    }
+
+    [Fact]
+    public async Task Clear_completed_accepts_an_empty_body()
+    {
+        var res = await _client.PostAsync("/api/reminders/items/clear-completed", new StringContent("", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("\"removed\":0", await res.Content.ReadAsStringAsync());
     }
 
     [Fact]

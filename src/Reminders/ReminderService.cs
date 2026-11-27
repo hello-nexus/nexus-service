@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using Nexus.Service.Models.Reminders;
 using Nexus.Service.Persistence;
 using Nexus.Service.Serialization;
@@ -20,9 +21,12 @@ public readonly struct ReminderResult<T>
 
 /// <summary>
 /// Local reminder lists and items, owned by the service. One lock guards the
-/// store and every mutation is written through atomically before it returns,
-/// so a shutdown can never lose an acknowledged write. Nothing here logs
-/// titles, notes or URLs.
+/// store. The stored lists and items are never edited in place: every mutation
+/// builds replacement collections (and replacement objects for a changed row)
+/// and swaps them in, so a failed validation or a failed write leaves the
+/// previous state untouched. A mutation is acknowledged only after the file
+/// write succeeded; a failed write rolls the swap back and reports
+/// <c>saveFailed</c>. Nothing here logs titles, notes or URLs.
 /// </summary>
 public sealed class ReminderService
 {
@@ -33,6 +37,7 @@ public sealed class ReminderService
     public const int MaxName = 100;
     public const int MaxIcon = 64;
     public const int MaxUrl = 2048;
+    public const int MaxOrder = 1_000_000;
     public const string SeedName = "Reminders";
     public const string SeedColor = "#0A84FF";
     public const string SeedIcon = "list";
@@ -40,85 +45,181 @@ public sealed class ReminderService
     private readonly object _gate = new();
     private readonly string _path;
     private readonly TimeProvider _time;
+    private readonly Func<string, string> _readFile;
     private List<ReminderListDto> _lists = new();
     private List<ReminderDto> _items = new();
+    /// <summary>Set when the store file exists but could be neither read nor moved aside; every mutation then fails so the file is never overwritten.</summary>
+    private bool _blocked;
 
-    /// <summary>Raised after any mutation. Carries no data; the web layer turns it into a topic ping.</summary>
+    /// <summary>Raised after a mutation reached disk. Carries no data; the web layer turns it into a topic ping.</summary>
     public event Action? Changed;
 
     public ReminderService(string root, TimeProvider? time = null)
+        : this(root, time, null)
+    {
+    }
+
+    /// <summary><paramref name="readFile"/> is a test seam for read failures.</summary>
+    internal ReminderService(string root, TimeProvider? time, Func<string, string>? readFile)
     {
         _path = Path.Combine(root, "reminders", "reminders.json");
         _time = time ?? TimeProvider.System;
+        _readFile = readFile ?? File.ReadAllText;
         Load();
     }
 
     private long Now() => _time.GetUtcNow().ToUnixTimeMilliseconds();
 
-    private void Load()
+    private enum ReadOutcome { Missing, Ok, Corrupt, Unreadable }
+
+    private ReadOutcome TryRead(string path, out ReminderStoreFile? file)
     {
-        try
+        file = null;
+        for (var attempt = 0; ; attempt++)
         {
-            if (File.Exists(_path))
+            try
             {
-                var file = JsonSerializer.Deserialize(File.ReadAllText(_path), PersistenceJsonContext.Default.ReminderStoreFile);
-                if (file is null)
+                if (!File.Exists(path))
                 {
-                    MoveCorruptAside();
+                    return ReadOutcome.Missing;
                 }
-                else
-                {
-                    _lists = file.Lists.Where(l => !string.IsNullOrEmpty(l.Id)).ToList();
-                    var known = new HashSet<string>(_lists.Select(l => l.Id), StringComparer.Ordinal);
-                    _items = file.Items.Where(i => !string.IsNullOrEmpty(i.Id) && known.Contains(i.ListId)).ToList();
-                }
+                file = JsonSerializer.Deserialize(_readFile(path), PersistenceJsonContext.Default.ReminderStoreFile);
+                return file is null ? ReadOutcome.Corrupt : ReadOutcome.Ok;
+            }
+            catch (JsonException)
+            {
+                return ReadOutcome.Corrupt;
+            }
+            catch (FileNotFoundException)
+            {
+                return ReadOutcome.Missing;
+            }
+            catch (IOException) when (attempt < 6)
+            {
+                // A scanner or indexer can hold the file for a moment; that is not corruption.
+                Thread.Sleep(25 * (attempt + 1));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Nexus.Service.Platform.ServiceLog.Warn($"[reminders] could not read store ({ex.GetType().Name})");
+                return ReadOutcome.Unreadable;
             }
         }
-        catch (Exception ex)
+    }
+
+    private void Adopt(ReminderStoreFile file)
+    {
+        _lists = file.Lists.Where(l => !string.IsNullOrEmpty(l.Id)).ToList();
+        var known = new HashSet<string>(_lists.Select(l => l.Id), StringComparer.Ordinal);
+        _items = file.Items.Where(i => !string.IsNullOrEmpty(i.Id) && known.Contains(i.ListId)).ToList();
+    }
+
+    private void Load()
+    {
+        var main = TryRead(_path, out var mainFile);
+        if (main == ReadOutcome.Ok)
         {
-            Nexus.Service.Platform.ServiceLog.Warn($"[reminders] could not read store ({ex.GetType().Name})");
-            MoveCorruptAside();
+            Adopt(mainFile!);
+        }
+        else if (main == ReadOutcome.Unreadable)
+        {
+            _blocked = true;
+        }
+        else if (main == ReadOutcome.Corrupt)
+        {
+            var backup = TryRead(AtomicJsonFile.BackupPathFor(_path), out var backupFile) == ReadOutcome.Ok ? backupFile : null;
+            if (!MoveCorruptAside())
+            {
+                // Leave the unreadable file alone: serve what is recoverable, refuse to write.
+                _blocked = true;
+                if (backup is not null)
+                {
+                    Adopt(backup);
+                }
+            }
+            else if (backup is not null)
+            {
+                Adopt(backup);
+                Nexus.Service.Platform.ServiceLog.Warn("[reminders] store was unusable; recovered from backup");
+            }
         }
         if (_lists.Count == 0)
         {
-            _lists.Add(new ReminderListDto { Id = NewId(), Name = SeedName, Color = SeedColor, Icon = SeedIcon, Order = 0, CreatedAt = Now() });
+            _lists = new List<ReminderListDto> { new() { Id = NewId(), Name = SeedName, Color = SeedColor, Icon = SeedIcon, Order = 0, CreatedAt = Now() } };
+            if (!_blocked)
+            {
+                Save();
+            }
+        }
+        else if (!_blocked && main == ReadOutcome.Corrupt)
+        {
             Save();
         }
     }
 
-    /// <summary>An unreadable store is kept for recovery rather than overwritten by the seed.</summary>
-    private void MoveCorruptAside()
+    /// <summary>An unreadable store is kept for recovery rather than overwritten. False when it could not be moved.</summary>
+    private bool MoveCorruptAside()
     {
         try
         {
             File.Move(_path, _path + ".corrupt-" + _time.GetUtcNow().ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), overwrite: true);
+            return true;
         }
         catch (Exception)
         {
-            // Best effort; the next write still keeps a backup of whatever is there.
+            return false;
         }
     }
 
-    private void Save()
+    private bool Save()
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             var file = new ReminderStoreFile { Lists = _lists, Items = _items };
             AtomicJsonFile.Write(_path, JsonSerializer.Serialize(file, PersistenceJsonContext.Default.ReminderStoreFile), keepBackup: true);
+            return true;
         }
         catch (Exception ex)
         {
             Nexus.Service.Platform.ServiceLog.Warn($"[reminders] could not write store ({ex.GetType().Name})");
+            return false;
         }
     }
 
     private static string NewId() => Guid.NewGuid().ToString("N");
 
-    private void Commit()
+    /// <summary>
+    /// Runs <paramref name="body"/> under the lock. The body swaps in new collections or returns an
+    /// error. A swap is written before it is acknowledged: a failed write restores the previous
+    /// collections and returns <c>saveFailed</c>. A body that changed nothing writes and broadcasts nothing.
+    /// </summary>
+    private ReminderResult<T> Mutate<T>(Func<ReminderResult<T>> body)
     {
-        Save();
-        Changed?.Invoke();
+        ReminderResult<T> result;
+        bool changed;
+        lock (_gate)
+        {
+            if (_blocked)
+            {
+                return ReminderResult<T>.Fail(ReminderErrors.SaveFailed);
+            }
+            var lists = _lists;
+            var items = _items;
+            result = body();
+            changed = result.Error is null && (!ReferenceEquals(lists, _lists) || !ReferenceEquals(items, _items));
+            if (changed && !Save())
+            {
+                _lists = lists;
+                _items = items;
+                return ReminderResult<T>.Fail(ReminderErrors.SaveFailed);
+            }
+        }
+        if (changed)
+        {
+            Changed?.Invoke();
+        }
+        return result;
     }
 
     private static ReminderListDto Copy(ReminderListDto l) => new() { Id = l.Id, Name = l.Name, Color = l.Color, Icon = l.Icon, Order = l.Order, CreatedAt = l.CreatedAt };
@@ -226,6 +327,8 @@ public sealed class ReminderService
         return t;
     }
 
+    private static bool IsOrder(int order) => order is >= 0 and <= MaxOrder;
+
     // ---- lists ----
 
     public ReminderResult<ReminderListDto> CreateList(JsonElement body)
@@ -246,23 +349,20 @@ public sealed class ReminderService
         {
             return ReminderResult<ReminderListDto>.Fail(ReminderErrors.Invalid);
         }
-        ReminderListDto created;
-        lock (_gate)
+        return Mutate(() =>
         {
             if (_lists.Count >= MaxLists)
             {
                 return ReminderResult<ReminderListDto>.Fail(ReminderErrors.LimitReached);
             }
-            created = new ReminderListDto
+            var created = new ReminderListDto
             {
                 Id = NewId(), Name = name, Color = color, Icon = icon,
                 Order = _lists.Count == 0 ? 0 : _lists.Max(l => l.Order) + 1, CreatedAt = Now(),
             };
-            _lists.Add(created);
-            Commit();
-            created = Copy(created);
-        }
-        return ReminderResult<ReminderListDto>.Ok(created);
+            _lists = new List<ReminderListDto>(_lists) { created };
+            return ReminderResult<ReminderListDto>.Ok(Copy(created));
+        });
     }
 
     public ReminderResult<ReminderListDto> PatchList(string id, JsonElement body)
@@ -284,19 +384,17 @@ public sealed class ReminderService
                 return ReminderResult<ReminderListDto>.Fail(nameError);
             }
         }
-        if ((hasColor && (color is null || !IsColor(color))) || (hasIcon && (icon is null || !IsIcon(icon))))
+        if ((hasColor && (color is null || !IsColor(color))) || (hasIcon && (icon is null || !IsIcon(icon))) || (hasOrder && !IsOrder(order)))
         {
             return ReminderResult<ReminderListDto>.Fail(ReminderErrors.Invalid);
         }
-        ReminderListDto result;
-        lock (_gate)
+        return Mutate(() =>
         {
             var list = _lists.FirstOrDefault(l => l.Id == id);
             if (list is null)
             {
                 return ReminderResult<ReminderListDto>.Fail(ReminderErrors.NotFound);
             }
-            // Swap a copy in so a concurrent GetAll never sees a half-patched list.
             var next = Copy(list);
             if (hasName)
             {
@@ -315,31 +413,25 @@ public sealed class ReminderService
                 next.Order = order;
             }
             _lists = _lists.Select(l => l.Id == id ? next : l).ToList();
-            Commit();
-            result = Copy(next);
-        }
-        return ReminderResult<ReminderListDto>.Ok(result);
+            return ReminderResult<ReminderListDto>.Ok(Copy(next));
+        });
     }
 
-    /// <summary>Null on success, otherwise <c>notFound</c> or <c>lastList</c>.</summary>
-    public string? DeleteList(string id)
+    /// <summary>Deletes a list and its items. Fails with <c>notFound</c>, or <c>lastList</c> for the only list.</summary>
+    public ReminderResult<bool> DeleteList(string id) => Mutate(() =>
     {
-        lock (_gate)
+        if (!_lists.Any(l => l.Id == id))
         {
-            if (!_lists.Any(l => l.Id == id))
-            {
-                return ReminderErrors.NotFound;
-            }
-            if (_lists.Count <= 1)
-            {
-                return ReminderErrors.LastList;
-            }
-            _lists = _lists.Where(l => l.Id != id).ToList();
-            _items = _items.Where(i => i.ListId != id).ToList();
-            Commit();
-            return null;
+            return ReminderResult<bool>.Fail(ReminderErrors.NotFound);
         }
-    }
+        if (_lists.Count <= 1)
+        {
+            return ReminderResult<bool>.Fail(ReminderErrors.LastList);
+        }
+        _lists = _lists.Where(l => l.Id != id).ToList();
+        _items = _items.Where(i => i.ListId != id).ToList();
+        return ReminderResult<bool>.Ok(true);
+    });
 
     // ---- items ----
 
@@ -362,38 +454,37 @@ public sealed class ReminderService
         {
             return ReminderResult<ReminderDto>.Fail(ReminderErrors.Invalid);
         }
-        var item = new ReminderDto { Title = title, ListId = listId };
+        var draft = new ReminderDto { Title = title, ListId = listId };
         if (hasNotes)
         {
-            item.Notes = notes;
+            draft.Notes = notes;
         }
         if (hasDate)
         {
-            item.DueDate = dueDate;
+            draft.DueDate = dueDate;
         }
         if (hasTime)
         {
-            item.DueTime = dueTime;
+            draft.DueTime = dueTime;
         }
         if (hasPriority)
         {
-            item.Priority = priority;
+            draft.Priority = priority;
         }
         if (hasFlagged)
         {
-            item.Flagged = flagged;
+            draft.Flagged = flagged;
         }
         if (hasUrl)
         {
-            item.Url = url;
+            draft.Url = url;
         }
-        var error = ValidateItem(item);
+        var error = ValidateItem(draft);
         if (error is not null)
         {
             return ReminderResult<ReminderDto>.Fail(error);
         }
-        ReminderDto result;
-        lock (_gate)
+        return Mutate(() =>
         {
             if (!_lists.Any(l => l.Id == listId))
             {
@@ -404,15 +495,14 @@ public sealed class ReminderService
                 return ReminderResult<ReminderDto>.Fail(ReminderErrors.LimitReached);
             }
             var now = Now();
-            item.Id = NewId();
-            item.Order = NextItemOrder(listId);
-            item.CreatedAt = now;
-            item.UpdatedAt = now;
-            _items = new List<ReminderDto>(_items) { item };
-            Commit();
-            result = Copy(item);
-        }
-        return ReminderResult<ReminderDto>.Ok(result);
+            var created = Copy(draft);
+            created.Id = NewId();
+            created.Order = NextItemOrder(listId);
+            created.CreatedAt = now;
+            created.UpdatedAt = now;
+            _items = new List<ReminderDto>(_items) { created };
+            return ReminderResult<ReminderDto>.Ok(Copy(created));
+        });
     }
 
     private int NextItemOrder(string listId)
@@ -443,7 +533,7 @@ public sealed class ReminderService
         {
             return ReminderErrors.Invalid;
         }
-        if (i.Priority is < 0 or > 3)
+        if (i.Priority is < 0 or > 3 || !IsOrder(i.Order))
         {
             return ReminderErrors.Invalid;
         }
@@ -472,19 +562,18 @@ public sealed class ReminderService
         }
         var title = rawTitle?.Trim();
         // Non-nullable fields cannot be cleared with an explicit null.
-        if ((hasList && string.IsNullOrEmpty(listId)) || (hasTitle && string.IsNullOrEmpty(title)))
+        if ((hasList && string.IsNullOrEmpty(listId)) || (hasTitle && string.IsNullOrEmpty(title)) || (hasOrder && !IsOrder(order)))
         {
             return ReminderResult<ReminderDto>.Fail(ReminderErrors.Invalid);
         }
-        ReminderDto result;
-        lock (_gate)
+        return Mutate(() =>
         {
             var current = _items.FirstOrDefault(i => i.Id == id);
             if (current is null)
             {
                 return ReminderResult<ReminderDto>.Fail(ReminderErrors.NotFound);
             }
-            // Patch a copy and swap it in, so readers never see a half-applied change.
+            // Patch a copy: a failed validation below must leave the stored item untouched.
             var next = Copy(current);
             if (hasTitle)
             {
@@ -544,86 +633,73 @@ public sealed class ReminderService
             }
             next.UpdatedAt = now;
             _items = _items.Select(i => i.Id == id ? next : i).ToList();
-            Commit();
-            result = Copy(next);
-        }
-        return ReminderResult<ReminderDto>.Ok(result);
+            return ReminderResult<ReminderDto>.Ok(Copy(next));
+        });
     }
 
-    public bool DeleteItem(string id)
+    public ReminderResult<bool> DeleteItem(string id) => Mutate(() =>
     {
-        lock (_gate)
+        if (!_items.Any(i => i.Id == id))
         {
-            if (!_items.Any(i => i.Id == id))
-            {
-                return false;
-            }
-            _items = _items.Where(i => i.Id != id).ToList();
-            Commit();
-            return true;
+            return ReminderResult<bool>.Fail(ReminderErrors.NotFound);
         }
-    }
+        _items = _items.Where(i => i.Id != id).ToList();
+        return ReminderResult<bool>.Ok(true);
+    });
 
-    public ReminderResult<int> ClearCompleted(string? listId)
+    public ReminderResult<int> ClearCompleted(string? listId) => Mutate(() =>
     {
-        lock (_gate)
+        if (listId is not null && !_lists.Any(l => l.Id == listId))
         {
-            if (listId is not null && !_lists.Any(l => l.Id == listId))
-            {
-                return ReminderResult<int>.Fail(ReminderErrors.NotFound);
-            }
-            var kept = _items.Where(i => !(i.Completed && (listId is null || i.ListId == listId))).ToList();
-            var removed = _items.Count - kept.Count;
-            if (removed > 0)
-            {
-                _items = kept;
-                Commit();
-            }
-            return ReminderResult<int>.Ok(removed);
+            return ReminderResult<int>.Fail(ReminderErrors.NotFound);
         }
-    }
+        var kept = _items.Where(i => !(i.Completed && (listId is null || i.ListId == listId))).ToList();
+        var removed = _items.Count - kept.Count;
+        if (removed > 0)
+        {
+            _items = kept;
+        }
+        return ReminderResult<int>.Ok(removed);
+    });
 
-    /// <summary>Sets <c>order</c> to each id's position. Every id must exist in <paramref name="listId"/>, or nothing changes.</summary>
-    public string? Reorder(string listId, IReadOnlyList<string> itemIds)
+    /// <summary>
+    /// Sets <c>order</c> to each id's position. <paramref name="itemIds"/> must be exactly the list's
+    /// current items, otherwise the client's view is stale and the call fails with <c>stale</c> and
+    /// changes nothing. An empty list is a no-op.
+    /// </summary>
+    public ReminderResult<bool> Reorder(string listId, IReadOnlyList<string> itemIds) => Mutate(() =>
     {
-        lock (_gate)
+        if (!_lists.Any(l => l.Id == listId))
         {
-            if (!_lists.Any(l => l.Id == listId))
-            {
-                return ReminderErrors.NotFound;
-            }
-            var byId = _items.ToDictionary(i => i.Id, StringComparer.Ordinal);
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var id in itemIds)
-            {
-                if (!byId.TryGetValue(id, out var item))
-                {
-                    return ReminderErrors.NotFound;
-                }
-                if (item.ListId != listId || !seen.Add(id))
-                {
-                    return ReminderErrors.Invalid;
-                }
-            }
-            var now = Now();
-            var positions = new Dictionary<string, int>(StringComparer.Ordinal);
-            for (var n = 0; n < itemIds.Count; n++)
-            {
-                positions[itemIds[n]] = n;
-            }
-            _items = _items.Select(i =>
-            {
-                if (!positions.TryGetValue(i.Id, out var pos))
-                {
-                    return i;
-                }
-                var next = Copy(i);
-                next.Order = pos;
-                next.UpdatedAt = now;
-                return next;
-            }).ToList();
-            Commit();
-            return null;
+            return ReminderResult<bool>.Fail(ReminderErrors.NotFound);
         }
-    }
+        var current = new HashSet<string>(_items.Where(i => i.ListId == listId).Select(i => i.Id), StringComparer.Ordinal);
+        var given = new HashSet<string>(itemIds, StringComparer.Ordinal);
+        if (given.Count != itemIds.Count || !given.SetEquals(current))
+        {
+            return ReminderResult<bool>.Fail(ReminderErrors.Stale);
+        }
+        if (itemIds.Count == 0)
+        {
+            return ReminderResult<bool>.Ok(true);
+        }
+        var positions = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var n = 0; n < itemIds.Count; n++)
+        {
+            positions[itemIds[n]] = n;
+        }
+        var now = Now();
+        _items = _items.Select(i =>
+        {
+            if (!positions.TryGetValue(i.Id, out var pos))
+            {
+                return i;
+            }
+            var next = Copy(i);
+            next.Order = pos;
+            next.UpdatedAt = now;
+            return next;
+        }).ToList();
+        return ReminderResult<bool>.Ok(true);
+    });
 }

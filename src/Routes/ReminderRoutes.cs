@@ -42,7 +42,7 @@ public static class ReminderRoutes
         }).AllowPanel();
 
         app.MapDelete("/api/reminders/lists/{id}", (string id, ReminderService reminders) =>
-            reminders.DeleteList(id) is { } error ? Error(error) : Results.NoContent())
+            reminders.DeleteList(id) is { Error: { } error } ? Error(error) : Results.NoContent())
             .AllowPanel();
 
         app.MapPost("/api/reminders/items", async (HttpRequest req, ReminderService reminders, CancellationToken ct) =>
@@ -70,27 +70,24 @@ public static class ReminderRoutes
         }).AllowPanel();
 
         app.MapDelete("/api/reminders/items/{id}", (string id, ReminderService reminders) =>
-            reminders.DeleteItem(id) ? Results.NoContent() : Error(ReminderErrors.NotFound))
+            reminders.DeleteItem(id) is { Error: { } error } ? Error(error) : Results.NoContent())
             .AllowPanel();
 
         app.MapPost("/api/reminders/items/clear-completed", async (HttpRequest req, ReminderService reminders, CancellationToken ct) =>
         {
             string? listId = null;
-            if (req.ContentLength is not 0)
+            var body = await ReadBody(req, ct, emptyIsObject: true);
+            if (body is not { } b || b.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null))
             {
-                var body = await ReadBody(req, ct, allowEmpty: true);
-                if (body is not { } b || b.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null))
+                return Error(ReminderErrors.Invalid);
+            }
+            if (b.ValueKind == JsonValueKind.Object && b.TryGetProperty("listId", out var el) && el.ValueKind != JsonValueKind.Null)
+            {
+                if (el.ValueKind != JsonValueKind.String)
                 {
                     return Error(ReminderErrors.Invalid);
                 }
-                if (b.ValueKind == JsonValueKind.Object && b.TryGetProperty("listId", out var el) && el.ValueKind != JsonValueKind.Null)
-                {
-                    if (el.ValueKind != JsonValueKind.String)
-                    {
-                        return Error(ReminderErrors.Invalid);
-                    }
-                    listId = el.GetString();
-                }
+                listId = el.GetString();
             }
             var r = reminders.ClearCompleted(listId);
             return r.Error is { } error
@@ -116,7 +113,7 @@ public static class ReminderRoutes
                 }
                 ids.Add(e.GetString()!);
             }
-            return reminders.Reorder(listEl.GetString()!, ids) is { } error ? Error(error) : Results.NoContent();
+            return reminders.Reorder(listEl.GetString()!, ids) is { Error: { } error } ? Error(error) : Results.NoContent();
         }).AllowPanel();
     }
 
@@ -126,24 +123,33 @@ public static class ReminderRoutes
         {
             ReminderErrors.NotFound => StatusCodes.Status404NotFound,
             ReminderErrors.LastList => StatusCodes.Status409Conflict,
+            ReminderErrors.SaveFailed => StatusCodes.Status500InternalServerError,
             _ => StatusCodes.Status400BadRequest,
         };
         return Results.Json(new ReminderErrorResponse { Code = code, Error = code, Msg = code }, AppJsonContext.Default.ReminderErrorResponse, statusCode: status);
     }
 
-    /// <summary>Parsed with JsonDocument so an absent field and an explicit null stay distinguishable.</summary>
-    private static async Task<JsonElement?> ReadBody(HttpRequest req, CancellationToken ct, bool allowEmpty = false)
+    private static readonly JsonElement EmptyObject = JsonDocument.Parse("{}").RootElement.Clone();
+
+    /// <summary>
+    /// Parsed with JsonDocument so an absent field and an explicit null stay distinguishable. An empty
+    /// body is <c>{}</c> when <paramref name="emptyIsObject"/>, otherwise invalid. Null means a 400.
+    /// </summary>
+    private static async Task<JsonElement?> ReadBody(HttpRequest req, CancellationToken ct, bool emptyIsObject = false)
     {
         try
         {
-            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+            using var ms = new MemoryStream();
+            await req.Body.CopyToAsync(ms, ct);
+            if (ms.Length == 0)
+            {
+                return emptyIsObject ? EmptyObject : null;
+            }
+            ms.Position = 0;
+            using var doc = await JsonDocument.ParseAsync(ms, cancellationToken: ct);
             return doc.RootElement.Clone();
         }
-        catch (JsonException)
-        {
-            return null;
-        }
-        catch (Exception ex) when (allowEmpty && ex is InvalidOperationException)
+        catch (Exception ex) when (ex is JsonException or BadHttpRequestException)
         {
             return null;
         }

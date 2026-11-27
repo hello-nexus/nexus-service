@@ -27,6 +27,7 @@ namespace Nexus.Service.Tests.Integration;
 public class NexusAppFactory : WebApplicationFactory<Program>
 {
     private readonly string _configDir;
+    public string ConfigDir => _configDir;
 
     /// <summary>Per-factory settings.json path (temp). Survives for the host's lifetime.</summary>
     public string SettingsPath { get; }
@@ -107,7 +108,7 @@ public class NexusAppFactory : WebApplicationFactory<Program>
 
             // Reminders persist under the data root.
             services.RemoveAll<Nexus.Service.Reminders.ReminderService>();
-            services.AddSingleton(_ => new Nexus.Service.Reminders.ReminderService(_configDir));
+            Nexus.Service.DependencyInjection.NexusServiceCollectionExtensions.AddNexusReminders(services, _configDir);
 
             // Isolate config (the auth token + all settings) to a per-factory
             // temp file so integration tests never read or mutate the

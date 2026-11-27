@@ -2328,11 +2328,12 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
-    public static IServiceCollection AddNexusReminders(this IServiceCollection services)
+    /// <param name="root">Data root override for tests; defaults to the machine's Nexus root.</param>
+    public static IServiceCollection AddNexusReminders(this IServiceCollection services, string? root = null)
     {
         services.AddSingleton(sp =>
         {
-            var reminders = new Nexus.Service.Reminders.ReminderService(Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
+            var reminders = new Nexus.Service.Reminders.ReminderService(root ?? Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
             var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
             reminders.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastReminders(hub);
             return reminders;
