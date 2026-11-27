@@ -283,7 +283,6 @@ public sealed class CoolingStallFeeder : BackgroundService
 
     public CoolingStallFeeder(IFanControlProvider fans, CoolingStallDetector detector, FeatureGates? gates = null, IConfigStore? store = null)
     {
-        _store = store;
         _fans = fans;
         _detector = detector;
         _gates = gates ?? FeatureGates.AllEnabled;

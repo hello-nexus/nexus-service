@@ -645,7 +645,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     // The switch controls alerting only: a disabled rule is read and recorded but never stepped.
                     if (!snap.On(rule))
                     {
-                        // An alert already running when its fan becomes excluded would otherwise stay open.
+                        // An alert already running when its fan is switched off or becomes excluded (switched on but unresponsive with no rpm) would otherwise stay open.
                         if (st.Phase != SensorAlertStates.Ok)
                         {
                             EndEpisode(st, wall);
@@ -1344,10 +1344,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     {
         var snap = Snapshot();
         var enabledById = snap.Rules.ToDictionary(r => r.Id, snap.On, StringComparer.Ordinal);
+        var excludedById = snap.Rules.Where(r => r.Enabled && snap.Excluded?.Contains(r.Id) == true).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
         var now = Mono();
         lock (_lock)
         {
-            return _states.Where(kv => enabledById.ContainsKey(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now, enabledById[kv.Key])).ToList();
+            return _states.Where(kv => enabledById.ContainsKey(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now, enabledById[kv.Key], excludedById.Contains(kv.Key))).ToList();
         }
     }
 
@@ -1384,7 +1385,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now, bool enabled)
+    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now, bool enabled, bool excluded)
     {
         var reported = enabled ? Reported(st, now) : DisabledReported(st, now);
         var since = reported switch
@@ -1408,6 +1409,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             EndedThreshold = st.Ended?.Threshold,
             EndedDirection = st.Ended?.Direction,
             Acknowledged = st.Acknowledged,
+            Excluded = excluded,
         };
     }
 

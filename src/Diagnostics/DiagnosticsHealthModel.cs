@@ -221,11 +221,11 @@ public sealed class DiagnosticsHealthModel
             var now = DateTime.UtcNow;
             // Single settings snapshot for this whole computation - thresholds
             // and the episode recency window both derive from it.
-            var diagnostics = _store.Load().Diagnostics;
+            var settingsNow = _store.Load();
+            var diagnostics = settingsNow.Diagnostics;
             // An explicit JSON null in settings.json survives the initializer.
             var ignoredNow = diagnostics.IgnoredComponents ?? new List<string>();
             // A fan taken off Nexus Control stops being monitored, so it keys the cache like an ignore entry does.
-            var settingsNow = _store.Load();
             var uncontrolledNow = settingsNow.Cooling.UncontrolledFanChannels;
             // The feeder only honors the flag while Cooling is on, so the gate flipping keys the cache too.
             var coolingOnNow = Nexus.Service.Lifecycle.FeatureGates.CoolingOf(settingsNow);

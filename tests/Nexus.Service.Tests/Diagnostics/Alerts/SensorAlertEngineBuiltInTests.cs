@@ -1013,6 +1013,40 @@ public partial class SensorAlertEngineTests
     }
 
     [Fact]
+    public void An_alert_on_an_unresponsive_fan_closes_when_it_drops_to_no_rpm_and_the_state_says_excluded()
+    {
+        var rig = CoolingFanRig("Unresponsive", 100, control: true);
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+        rig.Seconds(10);
+        Assert.Equal(SensorAlertStates.Active, StateOf(rig, FanRule("fan1")).State);
+        Assert.False(StateOf(rig, FanRule("fan1")).Excluded);
+
+        rig.Fans.Channels[0].Rpm = 0;
+        rig.Seconds(1);
+
+        var state = StateOf(rig, FanRule("fan1"));
+        Assert.Equal(SensorAlertStates.Off, state.State);
+        Assert.True(state.Excluded);
+        Assert.DoesNotContain(rig.Engine.HealthComponents(), x => x.Id == "alert:" + FanRule("fan1"));
+        Assert.All(rig.Engine.History(), e => Assert.NotNull(e.EndedUtc));
+    }
+
+    [Fact]
+    public void A_pump_calibrated_unresponsive_at_no_rpm_is_still_evaluated()
+    {
+        var rig = BuiltInRig(
+            r => r.Fans.Channels.Add(new Nexus.Service.Models.Cooling.FanChannel { Id = "fan1", Name = "Pump", Kind = Nexus.Service.Models.Cooling.FanKinds.Pump, Rpm = 0, Classification = "Unresponsive" }),
+            tweak: s => s.FeaturesOnboardingCompleted = true);
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+
+        rig.Seconds(10);
+
+        var state = StateOf(rig, FanRule("fan1"));
+        Assert.NotEqual(SensorAlertStates.Off, state.State);
+        Assert.False(state.Excluded);
+    }
+
+    [Fact]
     public void A_built_in_temperature_that_is_off_keeps_its_reading_and_is_never_a_problem()
     {
         var rig = BuiltInRig(r => CpuHot(r, 99));
