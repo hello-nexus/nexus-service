@@ -84,16 +84,18 @@ public sealed class WindowsPawnIoSystem : IPawnIoSystem
 
     public Task DelayAsync(TimeSpan delay, CancellationToken ct) => Task.Delay(delay, ct);
 
-    public void RestartPc()
+    public bool RestartPc()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows()) return false;
         try
         {
-            Process.Start(new ProcessStartInfo("shutdown.exe", "/r /t 5") { CreateNoWindow = true, UseShellExecute = false })?.Dispose();
+            using var proc = Process.Start(new ProcessStartInfo("shutdown.exe", "/r /t 5") { CreateNoWindow = true, UseShellExecute = false });
+            return proc is not null;
         }
         catch (Exception ex)
         {
             ServiceLog.Error($"[pawnio] restart request failed: {ex.Message}");
+            return false;
         }
     }
 

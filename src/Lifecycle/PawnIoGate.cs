@@ -46,7 +46,8 @@ public interface IPawnIoSystem
 
     Task DelayAsync(TimeSpan delay, CancellationToken ct);
 
-    void RestartPc();
+    /// <summary>False when the reboot could not be started.</summary>
+    bool RestartPc();
 }
 
 /// <summary>
@@ -80,6 +81,7 @@ public sealed class PawnIoGate
     private readonly object _lock = new();
 
     private bool _confirmedNotOk;
+    private bool _openedWithoutDriver;
     private bool _fixing;
     private bool _redetectRequested;
     private int _lastStartError;
@@ -182,7 +184,7 @@ public sealed class PawnIoGate
             return true;
         }
 
-        lock (_lock) { _confirmedNotOk = true; }
+        lock (_lock) { _confirmedNotOk = true; _openedWithoutDriver = true; }
         var status = GetStatus();
         ServiceLog.Warn($"[pawnio] driver unusable after start and wait: state {status.State}, code {status.ErrorCode?.ToString() ?? "none"}");
         NotOkConfirmed?.Invoke(status);
@@ -201,15 +203,22 @@ public sealed class PawnIoGate
             return GetStatus();
         }
 
-        var before = GetStatus();
-        if (before.FixAction is not (PawnIoStates.FixInstall or PawnIoStates.FixRepair))
-        {
-            return before;
-        }
-
         lock (_lock)
         {
+            var before = GetStatus();
             if (_fixing)
+            {
+                return before;
+            }
+
+            // The driver was fixed outside Nexus; sensors opened without it, so they need the same redetect.
+            if (_openedWithoutDriver && _provider.IsOpen)
+            {
+                _redetectRequested = true;
+                return before;
+            }
+
+            if (before.FixAction is not (PawnIoStates.FixInstall or PawnIoStates.FixRepair))
             {
                 return before;
             }
@@ -266,8 +275,15 @@ public sealed class PawnIoGate
         {
             var requested = _redetectRequested;
             _redetectRequested = false;
+            if (requested) _openedWithoutDriver = false;
             return requested;
         }
+    }
+
+    /// <summary>Puts a taken redetect request back when the restart it was for did not start.</summary>
+    public void RestoreRedetectRequest()
+    {
+        lock (_lock) { _redetectRequested = true; _openedWithoutDriver = true; }
     }
 
     public bool RestartPc()
@@ -277,8 +293,7 @@ public sealed class PawnIoGate
             return false;
         }
 
-        _sys.RestartPc();
-        return true;
+        return _sys.RestartPc();
     }
 
     private async Task<bool> WaitForDeviceAsync(TimeSpan wait, CancellationToken ct)

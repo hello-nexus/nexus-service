@@ -31,4 +31,7 @@ public class PawnIoStatus
 
     /// <summary>True while POST /pawnio/fix is running.</summary>
     public bool Fixing { get; set; }
+
+    /// <summary>True only in the POST /pawnio/fix response that scheduled the service restart for hardware redetect.</summary>
+    public bool Restarting { get; set; }
 }

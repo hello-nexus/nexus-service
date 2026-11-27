@@ -37,6 +37,7 @@ public sealed class PawnIoRoutesTests : IClassFixture<NexusAppFactory>
         Assert.Equal(JsonValueKind.Null, root.GetProperty("errorCode").ValueKind);
         Assert.Equal("none", root.GetProperty("fixAction").GetString());
         Assert.False(root.GetProperty("fixing").GetBoolean());
+        Assert.False(root.GetProperty("restarting").GetBoolean());
     }
 
     [Fact]

@@ -45,7 +45,8 @@ public class PawnIoGateTests
         }
 
         public Task DelayAsync(TimeSpan delay, CancellationToken ct) => Task.CompletedTask;
-        public void RestartPc() => Restarts++;
+        public bool RestartResult { get; set; } = true;
+        public bool RestartPc() { Restarts++; return RestartResult; }
     }
 
     private sealed class FakeProvider(FakeSystem sys) : IPawnIoProvider
@@ -268,6 +269,39 @@ public class PawnIoGateTests
         Assert.Equal(PawnIoStates.Ok, status.State);
         Assert.Equal(0, sys.Installs);
         Assert.Equal(0, sys.Starts);
+    }
+
+    [Fact]
+    public async Task Fix_after_driver_opens_outside_nexus_requests_redetect()
+    {
+        var sys = new FakeSystem();
+        var gate = Make(sys);
+        await gate.ConfirmAfterBootAsync();
+        sys.Open = true;
+
+        var status = await gate.FixAsync();
+
+        Assert.Equal(PawnIoStates.Ok, status.State);
+        Assert.Equal(0, sys.Installs);
+        Assert.True(gate.TakeRedetectRequest());
+        gate.RestoreRedetectRequest();
+        Assert.True(gate.TakeRedetectRequest());
+    }
+
+    [Fact]
+    public async Task Fix_on_a_process_that_never_latched_not_ok_requests_nothing()
+    {
+        var gate = Make(new FakeSystem { Open = true });
+        await gate.ConfirmAfterBootAsync();
+        await gate.FixAsync();
+        Assert.False(gate.TakeRedetectRequest());
+    }
+
+    [Fact]
+    public void RestartPc_reports_failure_to_start()
+    {
+        var sys = new FakeSystem { RestartResult = false };
+        Assert.False(Make(sys).RestartPc());
     }
 
     [Fact]
