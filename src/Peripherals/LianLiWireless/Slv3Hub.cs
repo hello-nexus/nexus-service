@@ -270,6 +270,10 @@ public sealed partial class Slv3Hub : IDisposable
     private const int RxBusyPollsBeforeReset = 60;
     // A chain that matched its target and then reports a mismatch must keep reporting it this many polls before a bind goes out, so a one-poll misread never steers it.
     internal const int BindMismatchPollsBeforeSend = 3;
+    // The polls must also span this long: poll cadence is a few per second, so the poll count alone is under a second and a flip that lasts a few polls after a stall still got bound.
+    internal const long BindMismatchWindowMs = 10_000;
+    private const long ImplausibleRecordLogIntervalMs = 60_000;
+    private long _nextImplausibleRecordLogMs;
     // Bind frames sent at poll cadence before resends back off, so a record the chain never corrects cannot be spammed.
     internal const int BindBurstSends = 5;
     private const long BindResendBackoffMs = 1_000;
@@ -1584,6 +1588,7 @@ public sealed partial class Slv3Hub : IDisposable
             }
             intent.Sends = 0;
             intent.MismatchPolls = 0;
+            intent.MismatchSinceMs = 0;
             intent.NextSendMs = 0;
             intent.Confirmed = true;
             intent.Manual = false;
@@ -1602,8 +1607,24 @@ public sealed partial class Slv3Hub : IDisposable
                 {
                     return;
                 }
+                if (!RecordPlausibleLocked(record))
+                {
+                    NoteImplausibleRecordLocked(key, record);
+                }
                 intent.CountedPoll = _devicePolls;
-                if (++intent.MismatchPolls < BindMismatchPollsBeforeSend)
+                // A chain stuck on a garbled pipe reports the same record every poll, a misread differs each time, so only a record repeated across the window counts.
+                var reported = $"{Convert.ToHexString(record.MasterMac)}/{record.RxType}/{record.Channel}";
+                if (intent.MismatchPolls == 0 || reported != intent.MismatchRecord)
+                {
+                    intent.MismatchPolls = 1;
+                    intent.MismatchRecord = reported;
+                    intent.MismatchSinceMs = _nowMs();
+                }
+                else
+                {
+                    intent.MismatchPolls++;
+                }
+                if (intent.MismatchPolls < BindMismatchPollsBeforeSend || _nowMs() - intent.MismatchSinceMs < BindMismatchWindowMs)
                 {
                     return;
                 }
@@ -1641,6 +1662,23 @@ public sealed partial class Slv3Hub : IDisposable
         {
             intent.NextSendMs = _nowMs() + Math.Min(BindResendBackoffMs << Math.Min(intent.Sends - BindBurstSends, 4), BindResendBackoffMaxMs);
         }
+    }
+
+    // A record field outside what the protocol can hold marks a likely misread, not a move: slot 0 or a bind slot, a channel the dongle can be set to, and our master, no master, or one heard live.
+    private bool RecordPlausibleLocked(Slv3DeviceRecord record) =>
+        (record.RxType == 0 || ValidSlot(record.RxType))
+        && record.Channel >= 1 && record.Channel <= Slv3Protocol.MaxChannel
+        && (Slv3Protocol.MacIsZero(record.MasterMac) || Slv3Protocol.MacEquals(record.MasterMac, _masterMac) || IsLiveMasterLocked(record.MasterMac));
+
+    private void NoteImplausibleRecordLocked(string key, Slv3DeviceRecord record)
+    {
+        var now = _nowMs();
+        if (now < _nextImplausibleRecordLogMs)
+        {
+            return;
+        }
+        _nextImplausibleRecordLogMs = now + ImplausibleRecordLogIntervalMs;
+        ServiceLog.Info($"[lianli-wireless] implausible record for {key} not acted on until it repeats: master {Convert.ToHexString(record.MasterMac)} slot {record.RxType} ch {record.Channel}");
     }
 
     private bool NeedsBind(BindIntent intent, Slv3DeviceRecord record) =>
@@ -2705,6 +2743,12 @@ public sealed partial class Slv3Hub : IDisposable
         }
         _rxFailStreak = 0;
         _rxBusyStreak = 0;
+        // A mismatch seen across a stall is not persistence, so every chain's window restarts after the reopen.
+        foreach (var intent in _intents.Values)
+        {
+            intent.MismatchPolls = 0;
+            intent.MismatchSinceMs = 0;
+        }
         _rxRecoveries++;
         _nextRxRecoveryMs = nowMs + RecoveryBackoffFor(_rxRecoveries);
         State.LinkStatus = Slv3LinkStatus.Recovering;
@@ -4013,6 +4057,8 @@ public sealed partial class Slv3Hub : IDisposable
         public int MismatchPolls;
         public bool Confirmed;
         public long CountedPoll = -1;
+        public long MismatchSinceMs;
+        public string? MismatchRecord;
         public long NextSendMs;
     }
 

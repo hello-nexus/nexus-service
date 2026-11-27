@@ -66,6 +66,9 @@ public static class Slv3Protocol
     /// <summary>Default RF channel; user channels are odd (firmware rejects even).</summary>
     public const byte DefaultChannel = 8;
 
+    /// <summary>Highest channel the dongle can run on: the top of <see cref="ChannelScanOrder"/> and the SetChannel range.</summary>
+    public const byte MaxChannel = 39;
+
     /// <summary>rx_type slot ids a master hands out to bound fans (L-Connect GetRxUnused allocates 1..13).</summary>
     public const int MinSlot = 1;
     public const int MaxSlot = 13;

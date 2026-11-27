@@ -321,15 +321,17 @@ public partial class Slv3HubTests
     }
 
     [Fact]
-    public void A_mismatch_of_a_bound_chain_gets_its_first_bind_on_the_third_consecutive_poll()
+    public void A_mismatch_of_a_bound_chain_gets_its_first_bind_on_the_third_consecutive_poll_once_the_window_has_passed()
     {
-        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
         fan.IgnoresBind = true;
         Ticks(hub, 3);
         tx.SentFrames.Clear();
 
         fan.RxType = 7;
-        for (var poll = 1; poll < Slv3Hub.BindMismatchPollsBeforeSend; poll++)
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+        for (var poll = 2; poll < Slv3Hub.BindMismatchPollsBeforeSend; poll++)
         {
             Ticks(hub, 1);
             Assert.Empty(AllBindFrames(tx));
@@ -337,6 +339,92 @@ public partial class Slv3HubTests
         Ticks(hub, 1);
 
         Assert.Single(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_flip_that_lasts_many_polls_but_less_than_the_window_is_not_bound()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 7;
+        for (var poll = 0; poll < 30; poll++)
+        {
+            clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs / 40);
+            Ticks(hub, 1);
+        }
+
+        Assert.Empty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_flip_that_clears_and_returns_restarts_the_window()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 7;
+        Ticks(hub, 4);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs - 1_000);
+        fan.RxType = 1;
+        Ticks(hub, 2);
+        fan.RxType = 7;
+        clock.AdvanceMs(2_000);
+        Ticks(hub, 5);
+
+        Assert.Empty(AllBindFrames(tx));
+    }
+
+    [Fact]
+    public void A_genuine_mismatch_that_persists_past_the_window_is_still_bound()
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        fan.RxType = 7;
+        for (var poll = 0; poll < 6; poll++)
+        {
+            clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs / 4);
+            Ticks(hub, 1);
+        }
+
+        Assert.NotEmpty(AllBindFrames(tx));
+    }
+
+    public static IEnumerable<object[]> CorruptedRecords() => new[]
+    {
+        new object[] { "slot 89 ch 208, foreign master", Convert.FromHexString("40C5A87BE1AF"), (byte)89, (byte)208 },
+        new object[] { "ch 203, bit-flipped master", Convert.FromHexString("AABBCCDDE1CE"), (byte)6, (byte)203 },
+        new object[] { "ours, slot 5, ch 59", Convert.FromHexString("AABBCCDDEEFF"), (byte)5, (byte)59 },
+        new object[] { "ours, slot 14", Convert.FromHexString("AABBCCDDEEFF"), (byte)14, (byte)8 },
+        new object[] { "bit-flipped master only", Convert.FromHexString("AABBCCDDEEFE"), (byte)1, (byte)8 },
+    };
+
+    [Theory]
+    [MemberData(nameof(CorruptedRecords))]
+    public void A_misread_that_differs_every_poll_never_sets_off_a_bind(string state, byte[] master, byte rx, byte channel)
+    {
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        fan.IgnoresBind = true;
+        Ticks(hub, 3);
+        tx.SentFrames.Clear();
+
+        for (var poll = 0; poll < 12; poll++)
+        {
+            fan.MasterMac = master.ToArray();
+            fan.MasterMac[5] ^= (byte)poll;
+            fan.RxType = (byte)(rx + poll);
+            fan.Channel = (byte)(channel + poll);
+            clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+            Ticks(hub, 1);
+        }
+
+        Assert.True(AllBindFrames(tx).Count == 0, state);
     }
 
     [Fact]
@@ -686,7 +774,7 @@ public partial class Slv3HubTests
     private static (Slv3Hub Hub, FakeTxTransport Tx, SimulatedFan Fan) StuckOnGarbledPipe(
         int ownedSlot, byte[]? garbledMaster, byte channel, byte rx)
     {
-        var (hub, net, tx, _, _) = CreateOwnershipHub(new() { [FanKey] = ownedSlot });
+        var (hub, net, tx, _, clock) = CreateOwnershipHub(new() { [FanKey] = ownedSlot });
         var fan = new SimulatedFan
         {
             Mac = FanMac, MasterMac = net.MasterMac, RxType = (byte)ownedSlot, ListensOnItsPipeOnly = true, Pwm = new byte[] { 6, 6, 6, 6 },
@@ -698,6 +786,8 @@ public partial class Slv3HubTests
         fan.Channel = channel;
         fan.RxType = rx;
         tx.SentFrames.Clear();
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
         return (hub, tx, fan);
     }
 
@@ -756,18 +846,22 @@ public partial class Slv3HubTests
     [Fact]
     public void A_chain_on_a_non_live_foreign_master_is_retaken_every_time_with_the_lock_on_and_never_given_up_on()
     {
-        var (hub, _, tx, fan, _, _) = Stranded(Convert.FromHexString("A27CD726C6D3"), 3, Slv3Protocol.DefaultChannel);
+        var (hub, _, tx, fan, _, clock) = Stranded(Convert.FromHexString("A27CD726C6D3"), 3, Slv3Protocol.DefaultChannel);
 
         for (var round = 0; round < 5; round++)
         {
-            Ticks(hub, 5);
+            Ticks(hub, 1);
+            clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+            Ticks(hub, 4);
             Assert.True(hub.State.Fans[0].BoundToUs);
             fan.MasterMac = Convert.FromHexString("A27CD726C6D3");
             fan.RxType = 3;
         }
         tx.SentFrames.Clear();
         fan.IgnoresBind = true;
-        Ticks(hub, 600);
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+        Ticks(hub, 599);
 
         Assert.Equal(Slv3Hub.BindBurstSends, AllBindFrames(tx).Count);
     }
@@ -868,13 +962,15 @@ public partial class Slv3HubTests
     [Fact]
     public void A_chain_on_its_pipe_mid_upload_is_not_held_back_from_a_bind()
     {
-        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
         Ticks(hub, 2);
         StreamWindow(hub);
         fan.RxType = 5;
         tx.SentFrames.Clear();
 
-        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend);
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend - 1);
 
         Assert.NotEmpty(AllBindFrames(tx));
     }
@@ -905,7 +1001,7 @@ public partial class Slv3HubTests
     [Fact]
     public void A_failed_bind_leaves_an_existing_takeback_intent_running()
     {
-        var (hub, net, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel, ownedFan: false);
+        var (hub, net, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel, ownedFan: false);
         Ticks(hub, 2);
         fan.IgnoresBind = true;
         fan.MasterMac = Convert.FromHexString("A27CD726C6D3");
@@ -913,7 +1009,9 @@ public partial class Slv3HubTests
         {
             net.Fans.Add(new SimulatedFan { Mac = ChainMac(i), MasterMac = net.MasterMac, RxType = (byte)(i + 2), Pwm = new byte[] { 6, 6, 6, 6 } });
         }
-        Ticks(hub, 2);
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+        Ticks(hub, 1);
         tx.SentFrames.Clear();
 
         Assert.False(ManualBind(hub, FanKey, out _));
@@ -1096,10 +1194,12 @@ public partial class Slv3HubTests
     [Fact]
     public void A_bind_due_mid_upload_goes_out_at_once()
     {
-        var (hub, _, tx, fan, _, _) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
+        var (hub, _, tx, fan, _, clock) = Stranded(Ours, 1, Slv3Protocol.DefaultChannel);
         Ticks(hub, 2);
         fan.RxType = 7;
-        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend - 1);
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
+        Ticks(hub, Slv3Hub.BindMismatchPollsBeforeSend - 2);
         var during = -1;
         tx.OnSend = f =>
         {

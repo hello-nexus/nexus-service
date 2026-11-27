@@ -2836,6 +2836,8 @@ public partial class Slv3HubTests
 
         net.Fans.Clear();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindMismatchWindowMs);
         Ticks(hub, BindSaveTicks * 3);
         Assert.Single(SaveCfgFrames(tx));
 
@@ -2955,17 +2957,19 @@ public partial class Slv3HubTests
         Ticks(hub, BindSaveTicks);
         for (var i = 1; i < Slv3Hub.BindSaveMaxPerWindow; i++)
         {
-            clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
             net.Fans.Clear();
             net.Fans.Add(new SimulatedFan { Mac = FanMac });
-            Ticks(hub, BindSaveTicks);
+            Ticks(hub, 1);
+            clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+            Ticks(hub, BindSaveTicks - 1);
         }
         Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
 
-        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
         net.Fans.Clear();
         net.Fans.Add(new SimulatedFan { Mac = FanMac });
-        Ticks(hub, BindSaveTicks * 2);
+        Ticks(hub, 1);
+        clock.AdvanceMs(Slv3Hub.BindSaveMinIntervalMs + 1);
+        Ticks(hub, BindSaveTicks * 2 - 1);
         Assert.Equal(Slv3Hub.BindSaveMaxPerWindow, SaveCfgFrames(tx).Count);
 
         // Exactly one window after the first save and not past the periodic save's first due time.
