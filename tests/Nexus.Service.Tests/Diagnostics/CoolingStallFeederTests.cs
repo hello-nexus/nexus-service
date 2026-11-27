@@ -31,6 +31,18 @@ public class CoolingStallFeederTests
         Assert.Equal(872, detector.Snapshot().Devices.Single().Rpm);
     }
 
+    [Theory]
+    [InlineData(false, null, 0)]
+    [InlineData(true, "Unresponsive", 0)]
+    public void Tick_skips_fans_the_cooling_page_keeps_out(bool controlled, string? classification, int rpm)
+    {
+        var fans = new ScriptedFans { Channel = new FanChannel { Id = "f1", Name = "Rear", Rpm = rpm, DutyPercent = 60, Controlled = controlled, Classification = classification } };
+        var detector = new CoolingStallDetector();
+        new CoolingStallFeeder(fans, detector).Tick();
+
+        Assert.Empty(detector.Snapshot().Devices);
+    }
+
     private sealed class ScriptedFans : IFanControlProvider
     {
         public FanChannel Channel = new();

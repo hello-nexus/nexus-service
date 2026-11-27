@@ -509,8 +509,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
-    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, Nexus.Service.Monitoring.FanNameOverlay? Overlay = null)
+    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, Nexus.Service.Monitoring.FanNameOverlay? Overlay = null, IReadOnlySet<string>? Excluded = null)
     {
+        /// <summary>Whether the rule is stepped: switched on and not a fan Cooling keeps out. The stored flag stays untouched so a rule echoed back by the route never writes the ignore list.</summary>
+        public bool On(SensorAlertRule rule) => rule.Enabled && Excluded?.Contains(rule.Id) != true;
+
         /// <summary>The rule as the user reads it in toasts, health and history: Cooling fan names applied to a copy.</summary>
         public SensorAlertRule Display(SensorAlertRule rule) => Overlay?.Project(rule) ?? rule;
 
@@ -534,6 +537,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var rules = new List<SensorAlertRule>();
         var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
+        var excluded = Volatile.Read(ref _fanChannels)?
+            .Where(Nexus.Service.Diagnostics.Cooling.CoolingFanExclusion.IsExcluded)
+            .Select(ch => BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(ch.Id)))
+            .ToHashSet(StringComparer.Ordinal);
         Dictionary<string, string> fanNames = new();
         _store.Read(s =>
         {
@@ -571,7 +578,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return byKind != 0 ? byKind : string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
         });
         builtInRules.AddRange(rules);
-        return new Snap(builtInRules, fahrenheit, _fans is null ? null : Nexus.Service.Monitoring.FanNameOverlay.Build(Volatile.Read(ref _fanChannels), fanNames));
+        return new Snap(builtInRules, fahrenheit, _fans is null ? null : Nexus.Service.Monitoring.FanNameOverlay.Build(Volatile.Read(ref _fanChannels), fanNames), excluded);
     }
 
     /// <summary>The configured rules, as copies: the built-ins of every device seen since startup (one missing now reads unavailable), then the user's.</summary>
@@ -636,7 +643,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         st.Source = sample.Source;
                     }
                     // The switch controls alerting only: a disabled rule is read and recorded but never stepped.
-                    if (!rule.Enabled)
+                    if (!snap.On(rule))
                     {
                         changed |= StepDisabled(sample, now, wall, st);
                         continue;
@@ -1297,7 +1304,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>States of every rule. A disabled rule reports its reading with the off state, or unavailable with no value.</summary>
     public List<SensorAlertState> States()
     {
-        var enabledById = Snapshot().Rules.ToDictionary(r => r.Id, r => r.Enabled, StringComparer.Ordinal);
+        var snap = Snapshot();
+        var enabledById = snap.Rules.ToDictionary(r => r.Id, snap.On, StringComparer.Ordinal);
         var now = Mono();
         lock (_lock)
         {
@@ -1380,7 +1388,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             foreach (var stored in rules)
             {
                 var rule = snap.Display(stored);
-                if (!rule.Enabled || !_states.TryGetValue(rule.Id, out var st)
+                if (!snap.On(rule) || !_states.TryGetValue(rule.Id, out var st)
                     || st.Config is not { } cfg || !cfg.SameConfig(stored))
                 {
                     continue;

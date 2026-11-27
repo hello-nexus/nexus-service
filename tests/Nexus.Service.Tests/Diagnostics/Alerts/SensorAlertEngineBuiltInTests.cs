@@ -933,6 +933,34 @@ public partial class SensorAlertEngineTests
         Assert.DoesNotContain(rig.Engine.HealthComponents(), x => x.Id == "alert:" + FanRule("fan1"));
     }
 
+    [Theory]
+    [InlineData(false, null, 100)]
+    [InlineData(true, "Unresponsive", 0)]
+    public void A_fan_the_cooling_page_keeps_out_raises_nothing_and_leaves_the_ignore_list_alone(bool controlled, string? classification, int rpm)
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(new Nexus.Service.Models.Cooling.FanChannel { Id = "fan1", Name = "Rear", Rpm = rpm, Controlled = controlled, Classification = classification }));
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+
+        rig.Seconds(10);
+
+        Assert.Equal(SensorAlertStates.Off, StateOf(rig, FanRule("fan1")).State);
+        Assert.Empty(rig.Notices);
+        Assert.DoesNotContain(rig.Engine.HealthComponents(), x => x.Id == "alert:" + FanRule("fan1"));
+        Assert.DoesNotContain("cooling:fan1", rig.Store.Load().Diagnostics.IgnoredComponents);
+        Assert.True(rig.Engine.Rules().Single(x => x.BuiltIn == BuiltInSensorRules.FanSpeed).Enabled);
+    }
+
+    [Fact]
+    public void An_unresponsive_fan_that_reports_rpm_again_is_alerted_on_like_any_other()
+    {
+        var rig = BuiltInRig(r => r.Fans.Channels.Add(new Nexus.Service.Models.Cooling.FanChannel { Id = "fan1", Name = "Rear", Rpm = 100, Classification = "Unresponsive" }));
+        EditStored(rig, FanRule("fan1"), x => x.Low = 800);
+
+        rig.Seconds(10);
+
+        Assert.NotEqual(SensorAlertStates.Off, StateOf(rig, FanRule("fan1")).State);
+    }
+
     [Fact]
     public void A_built_in_temperature_that_is_off_keeps_its_reading_and_is_never_a_problem()
     {
