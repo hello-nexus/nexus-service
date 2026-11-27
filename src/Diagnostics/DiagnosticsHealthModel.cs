@@ -102,6 +102,7 @@ public sealed class DiagnosticsHealthModel
     // list changes the answer.
     private IReadOnlyList<string> _cachedIgnored = Array.Empty<string>();
     private IReadOnlyList<string> _cachedUncontrolled = Array.Empty<string>();
+    private bool _cachedCoolingOn = true;
 
     public DiagnosticsHealthModel(
         ISmartHealthSource smart,
@@ -224,10 +225,14 @@ public sealed class DiagnosticsHealthModel
             // An explicit JSON null in settings.json survives the initializer.
             var ignoredNow = diagnostics.IgnoredComponents ?? new List<string>();
             // A fan taken off Nexus Control stops being monitored, so it keys the cache like an ignore entry does.
-            var uncontrolledNow = _store.Load().Cooling.UncontrolledFanChannels;
+            var settingsNow = _store.Load();
+            var uncontrolledNow = settingsNow.Cooling.UncontrolledFanChannels;
+            // The feeder only honors the flag while Cooling is on, so the gate flipping keys the cache too.
+            var coolingOnNow = Nexus.Service.Lifecycle.FeatureGates.CoolingOf(settingsNow);
             if (!forceRefresh && _cached is not null && now - _cachedAtUtc < CacheTtl
                 && _cachedIgnored.SequenceEqual(ignoredNow, StringComparer.Ordinal)
-                && _cachedUncontrolled.SequenceEqual(uncontrolledNow, StringComparer.Ordinal))
+                && _cachedUncontrolled.SequenceEqual(uncontrolledNow, StringComparer.Ordinal)
+                && _cachedCoolingOn == coolingOnNow)
             {
                 return _cached;
             }
@@ -249,6 +254,7 @@ public sealed class DiagnosticsHealthModel
             _cachedAtUtc = now;
             _cachedIgnored = ignoredNow.ToList();
             _cachedUncontrolled = uncontrolledNow.ToList();
+            _cachedCoolingOn = coolingOnNow;
             return result;
         }
     }
