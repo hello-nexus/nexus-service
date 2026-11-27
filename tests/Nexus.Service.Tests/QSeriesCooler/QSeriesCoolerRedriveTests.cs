@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Nexus.Service.Cooling;
 using Nexus.Service.Models.Cooling;
 using Nexus.Service.Peripherals.Hyte.Np50;
@@ -205,6 +206,57 @@ public class QSeriesCoolerRedriveTests
         Assert.Equal(1, Flip());
         clock.Now += 10_500;
         Assert.Equal(0, Flip());
+    }
+
+    [Fact]
+    public async Task Reconnect_replay_and_engine_duty_writes_do_not_deadlock()
+    {
+        var curve = Enumerable.Range(0, 5).Select(i => new QSeriesFirmwareCurvePoint { PumpTempC = 30 + i * 5, PumpDutyPercent = 50, FanTempC = 30 + i * 5, FanDutyPercent = 50 }).ToArray();
+        var (hub, t, _, _) = New();
+        t.Curve = curve;
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.ManualSpeeds[FanId] = 45);
+        var p = new QSeriesCoolerCoolingProvider(hub, store);
+        p.SetFanSpeed(FanId, 45);
+
+        var reconnects = Task.Run(() =>
+        {
+            for (var i = 0; i < 300; i++) p.OnHubConnected();
+        });
+        var engine = Task.Run(() =>
+        {
+            for (var i = 0; i < 300; i++) p.SetFanSpeed(FanId, 30 + i % 40);
+        });
+
+        await Task.WhenAll(reconnects, engine).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public void Reconnect_resets_the_backoff()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.Cooling.ManualSpeeds[FanId] = 45);
+        var (hub, t, _, clock) = New();
+        var p = new QSeriesCoolerCoolingProvider(hub, store, clock: () => clock.Now);
+        p.SetFanSpeed(FanId, 45);
+
+        int Flip()
+        {
+            var n = FanFrames(t).Count;
+            t.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+            hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+            p.RedriveIfControlDropped();
+            return FanFrames(t).Count - n;
+        }
+        Assert.Equal(1, Flip());
+        clock.Now += 10_500;
+        Assert.Equal(1, Flip());   // interval is now doubled
+
+        p.OnHubConnected();
+        clock.Now += 10_500;
+        Assert.Equal(1, Flip());
+        clock.Now += 10_500;
+        Assert.Equal(1, Flip());   // a stale doubled interval would skip this one
     }
 
     private sealed class Clock { public long Now = 100_000; }

@@ -318,6 +318,10 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             _storedCurve = null;
             _curveRetryAtMs = 0;
         }
+        _redriveArmed = false;
+        _backoffWarned = false;
+        _redriveBackoffMs = RedriveMinIntervalMs;
+        _softwareSinceMs = 0;
         if (!_gates.Cooling) return;
         if (HasPersistedAssignments())
         {
@@ -392,6 +396,8 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     // does, so the mode switch carries the right pump byte.
     private void Redrive(string reason)
     {
+        // Resolved before taking the hub lock: the curve read takes it too.
+        var curve = StoredCurve();
         _hub.RunLocked(() =>
         {
             if (_hub.DesiredControlMode is byte pinned && pinned != QSeriesCoolerProtocol.ControlModeSoftware) return;
@@ -416,7 +422,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 .SelectMany(d => d.FanRpm));
             ServiceLog.Info($"[qseries-cooler] re-drive ({reason}): pump={(pumpDriven ? pumpDuty + "%" : "curve")} fans=[{string.Join(" ", duties)}] rpm=[{rpms}]");
             if (pumpDriven) _hub.SetPumpSpeed(pumpDuty);
-            else HoldPumpOnStoredCurve();
+            else HoldPumpOnCurve(curve);
             foreach (var ch in channels) SendChannelFrame(ch);
         });
     }
@@ -620,9 +626,11 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     // Called before a fan frame (the first one switches the hub to software), on each heartbeat and
     // when a user pump duty is released. The hub decides under its lock whether to hold, and writes
     // only when the pump byte changes. An unreadable curve holds the pump at full.
-    private void HoldPumpOnStoredCurve()
+    private void HoldPumpOnStoredCurve() => HoldPumpOnCurve(StoredCurve());
+
+    private void HoldPumpOnCurve(QSeriesFirmwareCurvePoint[]? stored)
     {
-        var curve = StoredCurve() ?? Array.Empty<QSeriesFirmwareCurvePoint>();
+        var curve = stored ?? Array.Empty<QSeriesFirmwareCurvePoint>();
         var inC = _hub.State.CoolantTempInC;
         var outC = _hub.State.CoolantTempOutC;
         float? coolant = inC is { } a ? (outC is { } b ? Math.Max(a, b) : a) : outC;
@@ -631,11 +639,13 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
 
     // Read once per connect (OnHubConnected clears it) and again after the curve is rewritten.
     // Firmware without a stored curve uses the factory curve; a failed read retries after a pause.
+    // Never holds _curveLock across hub I/O: the hub lock and _curveLock must not nest in either order.
     private QSeriesFirmwareCurvePoint[]? StoredCurve()
     {
+        int version;
         lock (_curveLock)
         {
-            var version = _hub.FirmwareCurveVersion;
+            version = _hub.FirmwareCurveVersion;
             if (version != _storedCurveVersion)
             {
                 _storedCurveVersion = version;
@@ -651,10 +661,18 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 return factory;
             }
             if (Environment.TickCount64 < _curveRetryAtMs) return null;
-            if (_hub.TryReadFirmwareCurve(out var points) && points.Length > 0) return _storedCurve = points;
-            _curveRetryAtMs = Environment.TickCount64 + CurveRetryMs;
-            return null;
         }
+        var ok = _hub.TryReadFirmwareCurve(out var points) && points.Length > 0;
+        lock (_curveLock)
+        {
+            // A rewrite or reconnect during the read makes this result stale; use it once, cache nothing.
+            if (version == _storedCurveVersion)
+            {
+                if (ok) _storedCurve = points;
+                else _curveRetryAtMs = Environment.TickCount64 + CurveRetryMs;
+            }
+        }
+        return ok ? points : null;
     }
 
     private int DutyOf(string serial, int channel, QSeriesLinkDevice dev, int fanIdx)
