@@ -5,7 +5,7 @@ using System.Threading;
 namespace Nexus.Service.Sensors;
 
 /// <summary>
-/// Runs storage drive (and, in a second instance, power monitor) work off the hardware walk, one worker thread per drive object, so a drive stuck in I/O retries
+/// Runs storage drive work off the hardware walk, one worker thread per drive object, so a drive stuck in I/O retries
 /// delays neither the fan-curve engine nor the other drives. Workers are keyed by the hardware object, never its identifier:
 /// LibreHardwareMonitor can hand several drives the same identifier. A drive with an update still queued or running is not requested again.
 /// A drive whose update runs past <c>overdueAfter</c> is reported once through <c>onOverdue</c>, and through <c>onRecovered</c> when it returns;
@@ -142,6 +142,13 @@ internal sealed class LhmStorageUpdater : IDisposable
             foreach (var w in _workers.Values)
             {
                 if (w.Queue.Count > 0 || w.Running)
+                {
+                    return true;
+                }
+            }
+            foreach (var w in _retired)
+            {
+                if (w.Running)
                 {
                     return true;
                 }

@@ -341,4 +341,21 @@ public class LhmStorageUpdaterTests
         Assert.True(updater.Shutdown(Wait));
         Assert.False(updater.IsAnyBusy());
     }
+
+    [Fact]
+    public void A_retired_worker_still_running_counts_as_busy()
+    {
+        using var updater = New();
+        using var release = new ManualResetEventSlim();
+        using var started = new ManualResetEventSlim();
+        object monitor = new();
+        var job = updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, () => { started.Set(); release.Wait(Wait); });
+        Assert.True(started.Wait(Wait));
+
+        updater.Retain(new List<object>());
+
+        Assert.True(updater.IsAnyBusy());
+        release.Set();
+        Assert.True(job!.Wait(Wait));
+    }
 }

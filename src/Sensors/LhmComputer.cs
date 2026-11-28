@@ -260,11 +260,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
     }
 
-    private static readonly TimeSpan PowerMonitorRetry = TimeSpan.FromSeconds(5);
+    // Set while the setting is off but the group is still attached: the walk stops queuing monitor updates and removes the group once none is running. Guarded by _updateLock.
+    private bool _powerMonitorsDraining;
 
     /// <summary>
     /// Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.
-    /// Removal waits while a monitor update is running: closing the port blocks on the serial lock that update holds, and the walk would wait on this lock behind it.
+    /// Removal is left to the walk while a monitor update is running: closing the port blocks on the serial lock that update holds, and the walk would wait on this lock behind it.
     /// </summary>
     private void ApplyPowerMonitors()
     {
@@ -278,15 +279,16 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             lock (_updateLock)
             {
                 want = _config.Load().PowerMonitorsEnabled;
-                if (_disposed || _computer.IsPowerMonitorEnabled == want)
+                if (_disposed)
                 {
                     return;
                 }
-                if (!want && _powerMonitors.IsAnyBusy())
+                _powerMonitorsDraining = !want && _computer.IsPowerMonitorEnabled;
+                if (_computer.IsPowerMonitorEnabled == want || _powerMonitorsDraining && _powerMonitors.IsAnyBusy())
                 {
-                    _ = Task.Delay(PowerMonitorRetry).ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
                     return;
                 }
+                _powerMonitorsDraining = false;
                 _computer.IsPowerMonitorEnabled = want;
             }
             Console.WriteLine(_opened
@@ -524,6 +526,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 {
                     var presentStorage = new List<object>();
                     var presentPowerMonitors = new List<object>();
+                    if (_powerMonitorsDraining && !_powerMonitors.IsAnyBusy())
+                    {
+                        _powerMonitorsDraining = false;
+                        _computer.IsPowerMonitorEnabled = false;
+                    }
                     foreach (var hw in _computer.Hardware)
                     {
                         // StorageDevice keeps its skip counter per instance and reads the cycle static
@@ -567,7 +574,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                         if (LhmComponentIdentifiers.IsPowerMonitor(hw.Identifier.ToString()))
                         {
                             presentPowerMonitors.Add(hw);
-                            if (_powerMonitors.Request(hw, hw.Identifier.ToString(), hw.Name, static () => { }, () => UpdateOffWalk(hw)) is { } queued)
+                            if (!_powerMonitorsDraining && _powerMonitors.Request(hw, hw.Identifier.ToString(), hw.Name, static () => { }, () => UpdateOffWalk(hw)) is { } queued)
                             {
                                 queuedJobs.Add(queued);
                             }
