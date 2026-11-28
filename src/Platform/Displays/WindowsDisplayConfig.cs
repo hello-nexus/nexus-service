@@ -65,6 +65,41 @@ internal static class WindowsDisplayConfig
         return map;
     }
 
+    /// <summary>
+    /// gdi device name (\\.\DISPLAYn) -> target output technology of its active path. Empty when
+    /// QueryDisplayConfig fails, so callers treat the technology as unknown.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, uint> OutputTechnologyByGdiName()
+    {
+        var map = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, out var pathCount, out var modeCount) != 0 || pathCount == 0)
+            {
+                return map;
+            }
+            var paths = new DISPLAYCONFIG_PATH_INFO[pathCount];
+            var modes = new DISPLAYCONFIG_MODE_INFO[modeCount];
+            if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero) != 0)
+            {
+                return map;
+            }
+            for (var i = 0; i < pathCount; i++)
+            {
+                var name = GdiNameForSource(paths[i].sourceInfo.adapterId, paths[i].sourceInfo.id);
+                if (!string.IsNullOrEmpty(name))
+                {
+                    map[name] = paths[i].targetInfo.outputTechnology;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[displays-win] output technology lookup failed: {ex.Message}");
+        }
+        return map;
+    }
+
     private static string GdiNameForSource(LUID adapterId, uint sourceId)
     {
         var query = new DISPLAYCONFIG_SOURCE_DEVICE_NAME

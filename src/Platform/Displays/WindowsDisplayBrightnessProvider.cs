@@ -260,6 +260,18 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
                     continue;
                 }
 
+                // A USB or indirect display has no DDC wire; talking to its driver can make the
+                // device re-enumerate, so it is never probed.
+                if (!CanCarryDdc(entry.AdapterDevice))
+                {
+                    if (_enumerateLog.Check("probe:" + dto.Id, "no-ddc", out var skips, out var skipChanged))
+                    {
+                        Log($"skipped id={dto.Id} (indirect or USB display, no DDC){Nexus.Service.Platform.LogGate.Suffix(skips, skipChanged)}");
+                    }
+                    results.Add(dto);
+                    continue;
+                }
+
                 // Failed repeatedly already: report unsupported without another transaction.
                 if (_negativeProbes.ShouldSkip(dto.Id))
                 {
@@ -619,9 +631,16 @@ public sealed class WindowsDisplayBrightnessProvider : IDisplayBrightnessProvide
         {
             var (eid, _, _, _, _) = WindowsDisplayIdentity.ResolveIdentity(entry.AdapterDevice);
             if (!string.Equals(eid, id, StringComparison.Ordinal)) continue;
+            if (!CanCarryDdc(entry.AdapterDevice)) return false;
             return TryGetPhysicalMonitor(entry.HMonitor, out phys);
         }
         return false;
+    }
+
+    private static bool CanCarryDdc(string adapterDevice)
+    {
+        uint? technology = WindowsDisplayConfig.OutputTechnologyByGdiName().TryGetValue(adapterDevice, out var t) ? t : null;
+        return DdcEligibility.CanCarryDdc(technology, WindowsDisplayIdentity.ReadAdapterDeviceId(adapterDevice));
     }
 
     private static bool TryGetPhysicalMonitor(IntPtr hMonitor, out IntPtr phys)

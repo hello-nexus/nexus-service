@@ -110,6 +110,17 @@ internal static class WindowsDisplayIdentity
         }
     }
 
+    /// <summary>PnP DeviceID of the display adapter \\.\DISPLAYn (a PCI or USB path); empty when not found.</summary>
+    internal static string ReadAdapterDeviceId(string adapterDeviceName)
+    {
+        for (uint i = 0; ; i++)
+        {
+            var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+            if (!EnumDisplayDevicesW(null!, i, ref dd, 0)) return "";
+            if (string.Equals(dd.DeviceName, adapterDeviceName, StringComparison.OrdinalIgnoreCase)) return dd.DeviceID ?? "";
+        }
+    }
+
     /// <summary>
     /// Monitor device interface path (\\?\DISPLAY#...#{guid}) via
     /// EDD_GET_DEVICE_INTERFACE_NAME only, with no flags=0 fallback: callers
