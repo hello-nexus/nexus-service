@@ -14,7 +14,7 @@
 ;   - Extracts the AOT payload to %ProgramFiles%\Nexus\
 ;   - Calls Nexus.exe --install as one elevated step. That primitive
 ;     handles all the real work: stop+delete existing service, sc create
-;     NexusService (LocalSystem, Automatic, depend=PawnIO), grant
+;     NexusService (LocalSystem, Automatic), grant
 ;     SERVICE_START to Authenticated Users via DACL, install PawnIO,
 ;     write Add/Remove Programs reg, open the firewall, start the service.
 ;   - Drops a Start Menu .lnk to Nexus.exe so Windows search finds it. The

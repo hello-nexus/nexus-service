@@ -303,7 +303,7 @@ public static class NexusServiceCollectionExtensions
         {
             var lhm = sp.GetService<LhmComputer>();
             return new Nexus.Service.Cooling.CorsairPsuCoolingProvider(
-                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>()),
+                new Nexus.Service.Peripherals.Corsair.Psu.HidCorsairPsuTransport(sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>(), sp.GetRequiredService<Nexus.Service.Devices.Detection.HardwarePresence>()),
                 () => lhm is null || lhm.OpenTask.IsCompleted,
                 psuTemperatures: () => lhm?.PsuTemperatures() ?? System.Array.Empty<Nexus.Service.Cooling.PsuTemperature>());
         });
@@ -2129,8 +2129,14 @@ public static class NexusServiceCollectionExtensions
         // Registered as the concrete type too: UsbDeviceChangeNotifier drives
         // Invalidate/SetTtl on the cache when PnP notifications are available.
         services.AddSingleton<Nexus.Service.Devices.Detection.CachingUsbEnumerator>(sp =>
-            new Nexus.Service.Devices.Detection.CachingUsbEnumerator(
-                sp.GetRequiredService<Nexus.Service.Devices.Detection.WindowsUsbEnumerator>()));
+        {
+            var cache = new Nexus.Service.Devices.Detection.CachingUsbEnumerator(
+                sp.GetRequiredService<Nexus.Service.Devices.Detection.WindowsUsbEnumerator>());
+            // The Dynamic Lighting LampArray count re-walks HID only when this bus signature changes.
+            Nexus.Service.Conflicts.WindowsDynamicLighting.BusSignature =
+                () => Nexus.Service.Conflicts.WindowsDynamicLighting.UsbBusSignature(cache.Enumerate());
+            return cache;
+        });
         services.AddSingleton<Nexus.Service.Devices.Detection.IUsbEnumerator>(sp =>
             sp.GetRequiredService<Nexus.Service.Devices.Detection.CachingUsbEnumerator>());
         services.AddHostedService(sp =>
@@ -2328,6 +2334,19 @@ public static class NexusServiceCollectionExtensions
         return services;
     }
 
+    /// <param name="root">Data root override for tests; defaults to the machine's Nexus root.</param>
+    public static IServiceCollection AddNexusReminders(this IServiceCollection services, string? root = null)
+    {
+        services.AddSingleton(sp =>
+        {
+            var reminders = new Nexus.Service.Reminders.ReminderService(root ?? Nexus.Service.Persistence.NexusDataPaths.NexusRoot());
+            var hub = sp.GetRequiredService<Nexus.Service.Sockets.MultiplexHub>();
+            reminders.Changed += () => Nexus.Service.Sockets.PanelTopics.BroadcastReminders(hub);
+            return reminders;
+        });
+        return services;
+    }
+
     public static IServiceCollection AddNexusStocks(this IServiceCollection services)
     {
         services.AddSingleton<Nexus.Service.Platform.Stocks.IStockQuoteProvider, Nexus.Service.Platform.Stocks.YahooStockQuoteProvider>();
@@ -2345,6 +2364,13 @@ public static class NexusServiceCollectionExtensions
 #else
         services.AddSingleton<Nexus.Service.Peripherals.Hid.IHidEnumerator, Nexus.Service.Peripherals.Hid.StubHidEnumerator>();
 #endif
+        // Same instance as IHidEnumerator; every platform implementation carries the whole-bus interface.
+        services.AddSingleton<Nexus.Service.Peripherals.Hid.IHidWholeBusEnumerator>(sp =>
+        {
+            var hid = sp.GetRequiredService<Nexus.Service.Peripherals.Hid.IHidEnumerator>();
+            return hid as Nexus.Service.Peripherals.Hid.IHidWholeBusEnumerator
+                ?? throw new System.InvalidOperationException($"{hid.GetType().Name} must implement IHidWholeBusEnumerator");
+        });
         // Real HID-backed keeb provider. StubKeebProvider stays registered only
         // as the IInputterProvider fallback on platforms without a native inputter.
         services.AddSingleton<StubKeebProvider>();
@@ -2653,6 +2679,8 @@ public static class NexusServiceCollectionExtensions
 #else
         services.AddSingleton<IPawnIoProvider, StubPawnIoProvider>();
 #endif
+        services.AddSingleton<IPawnIoSystem, WindowsPawnIoSystem>();
+        services.AddSingleton<PawnIoGate>();
 
         // Extracted body of SystemRoutes.cs so the Stream Deck executor can
         // drive the same OS-level actions headless (no loopback HTTP call).

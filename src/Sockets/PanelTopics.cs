@@ -42,6 +42,8 @@ public static class PanelTopics
     /// subscribers refetch the calendar routes (no event data on the wire).
     /// </summary>
     public const string Calendar = "calendar";
+    /// <summary>Reminder lists or items changed. A revision ping only; subscribers refetch GET /api/reminders.</summary>
+    public const string Reminders = "reminders";
     public const string CoolingWarnings = "cooling/warnings";
     /// <summary>Restricted mode (active while Windows is in OOBE), payload <c>{ "restricted": bool }</c>; snapshot on subscribe, broadcast on change.</summary>
     public const string SystemSession = "system/session";
@@ -278,6 +280,15 @@ public static class PanelTopics
         var frame = new GalleryChangedFrame { Revision = Now() };
         var env = WsEnvelope.Build(Gallery, frame, AppJsonContext.Default.GalleryChangedFrame);
         _ = hub.BroadcastTopicAsync(Gallery, env);
+    }
+
+    public static void BroadcastReminders(MultiplexHub hub)
+    {
+        if (!hub.TopicHasSubscribers(Reminders))
+            return;
+        var frame = new Models.Reminders.ReminderChangedFrame { Revision = Now() };
+        var env = WsEnvelope.Build(Reminders, frame, AppJsonContext.Default.ReminderChangedFrame);
+        _ = hub.BroadcastTopicAsync(Reminders, env);
     }
 
     public static void BroadcastCalendar(MultiplexHub hub)

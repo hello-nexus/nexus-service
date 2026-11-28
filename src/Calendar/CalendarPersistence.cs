@@ -34,5 +34,7 @@ public sealed class CalendarFeedCache
 {
     public string? ETag { get; set; }
     public string? LastModified { get; set; }
+    /// <summary>SHA-256 of the last body fetched, so an add can refuse a feed that serves identical content.</summary>
+    public string? BodyHash { get; set; }
     public IcsFeed Feed { get; set; } = new();
 }

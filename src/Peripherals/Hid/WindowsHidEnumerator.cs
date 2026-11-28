@@ -12,7 +12,7 @@ namespace Nexus.Service.Peripherals.Hid;
 /// Windows HID enumeration and I/O via SetupAPI + hid.dll P/Invoke. Narrow
 /// surface tailored to the first-party device protocols' exchanges.
 /// </summary>
-public sealed class WindowsHidEnumerator : IHidEnumerator
+public sealed class WindowsHidEnumerator : IHidEnumerator, IHidWholeBusEnumerator
 {
     // The path check runs before CreateFile, so a lookup never opens another
     // vendor's device or sends it a string request.
@@ -32,9 +32,9 @@ public sealed class WindowsHidEnumerator : IHidEnumerator
         return (paths, fresh);
     }
 
-    public IReadOnlyList<HidDeviceInfo> FindAll() => EnumerateDevices(null, null);
+    public IReadOnlyList<HidDeviceInfo> FindAllForDiagnostics() => EnumerateDevices(null, null);
 
-    /// <summary><see cref="FindAll"/> without the per-device serial read, for callers that only need usages.</summary>
+    /// <summary><see cref="FindAllForDiagnostics"/> without the per-device serial read, for callers that only need usages.</summary>
     public IReadOnlyList<HidDeviceInfo> FindAllWithoutSerials() => EnumerateDevices(null, null, readSerial: false);
 
     private static List<HidDeviceInfo> EnumerateDevices(Func<string, bool>? pathFilter, Func<Native.HIDD_ATTRIBUTES, bool>? attrsFilter, bool readSerial = true, List<string>? seenPaths = null, IReadOnlyCollection<string>? skipPaths = null)

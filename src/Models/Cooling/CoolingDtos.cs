@@ -327,6 +327,8 @@ public sealed class SetFanPinBody
 public sealed class SetFanControlledBody
 {
     public bool Controlled { get; set; }
+    /// <summary>With Controlled true, also clears the fan's legacy monitoring mute even when control did not change. Sent by the watchlist switch.</summary>
+    public bool Unmute { get; set; }
 }
 
 /// <summary>Body for POST /cooling/fan/{id}/offset. 0 clears the offset.</summary>

@@ -509,8 +509,11 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     }
 
     /// <summary>Copies of the rules and the temperature unit, taken under the store's lock so a route mutation never races the walk.</summary>
-    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, Nexus.Service.Monitoring.FanNameOverlay? Overlay = null)
+    private sealed record Snap(List<SensorAlertRule> Rules, bool Fahrenheit, Nexus.Service.Monitoring.FanNameOverlay? Overlay = null, IReadOnlySet<string>? Excluded = null)
     {
+        /// <summary>Whether the rule is stepped: switched on and not a fan Cooling keeps out. The stored flag stays untouched so a rule echoed back by the route never writes the ignore list.</summary>
+        public bool On(SensorAlertRule rule) => rule.Enabled && Excluded?.Contains(rule.Id) != true;
+
         /// <summary>The rule as the user reads it in toasts, health and history: Cooling fan names applied to a copy.</summary>
         public SensorAlertRule Display(SensorAlertRule rule) => Overlay?.Project(rule) ?? rule;
 
@@ -534,11 +537,15 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         var rules = new List<SensorAlertRule>();
         var builtInRules = new List<SensorAlertRule>();
         var fahrenheit = false;
+        HashSet<string>? excluded = null;
+        var fanChannels = Volatile.Read(ref _fanChannels);
         Dictionary<string, string> fanNames = new();
         _store.Read(s =>
         {
             fanNames = Nexus.Service.Cooling.CoolingSnapshots.FanNames(s.Cooling);
-            var ignored = s.Diagnostics.IgnoredComponents;
+            excluded = fanChannels is null ? null : Nexus.Service.Diagnostics.Cooling.CoolingFanExclusion.ExcludedIds(fanChannels, s)
+                .Select(id => BuiltInSensorRules.RuleId(BuiltInSensorRules.FanSeriesPrefix + Nexus.Service.Monitoring.History.MetricsHistory.SanitizeId(id)))
+                .ToHashSet(StringComparer.Ordinal);
             if (s.Diagnostics.SensorAlerts is { } list)
             {
                 foreach (var rule in list)
@@ -553,10 +560,10 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         var copy = rule.Clone();
                         copy.Sensor.Name = device.Name;
                         copy.Source = device.Source;
-                        // A fan's on/off is the Cooling page's stall-monitoring toggle, so the ignore list decides, not the stored flag.
+                        // A fan's on/off is its Nexus Control flag (stall monitoring follows it) unless the legacy ignore entry suppresses it, not the stored flag.
                         if (device.Kind == BuiltInSensorRules.FanSpeed)
                         {
-                            copy.Enabled = ignored?.Contains(device.ComponentId, StringComparer.Ordinal) != true;
+                            copy.Enabled = BuiltInSensorRules.FanEnabled(device, s.Diagnostics, BuiltInSensorRules.FanControlled(BuiltInSensorRules.FanChannelId(device), s));
                         }
                         builtInRules.Add(copy);
                     }
@@ -571,7 +578,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             return byKind != 0 ? byKind : string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
         });
         builtInRules.AddRange(rules);
-        return new Snap(builtInRules, fahrenheit, _fans is null ? null : Nexus.Service.Monitoring.FanNameOverlay.Build(Volatile.Read(ref _fanChannels), fanNames));
+        return new Snap(builtInRules, fahrenheit, _fans is null ? null : Nexus.Service.Monitoring.FanNameOverlay.Build(Volatile.Read(ref _fanChannels), fanNames), excluded);
     }
 
     /// <summary>The configured rules, as copies: the built-ins of every device seen since startup (one missing now reads unavailable), then the user's.</summary>
@@ -636,8 +643,17 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                         st.Source = sample.Source;
                     }
                     // The switch controls alerting only: a disabled rule is read and recorded but never stepped.
-                    if (!rule.Enabled)
+                    if (!snap.On(rule))
                     {
+                        // An alert already running when its fan is switched off or becomes excluded (switched on but unresponsive with no rpm) would otherwise stay open.
+                        if (st.Phase != SensorAlertStates.Ok)
+                        {
+                            EndEpisode(st, wall);
+                            st.ResetToOk();
+                            st.Episode = null;
+                            st.Reported = SensorAlertStates.Ok;
+                            changed = true;
+                        }
                         changed |= StepDisabled(sample, now, wall, st);
                         continue;
                     }
@@ -890,7 +906,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     var existing = list.FirstOrDefault(r => r.Id == BuiltInSensorRules.RuleId(device.SeriesId));
                     if (existing is null)
                     {
-                        list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics));
+                        list.Add(BuiltInSensorRules.Seed(device, s.Diagnostics,
+                            device.Kind != BuiltInSensorRules.FanSpeed || BuiltInSensorRules.FanControlled(BuiltInSensorRules.FanChannelId(device), s)));
                     }
                     else if (BuiltInSensorRules.CpuDefaultStale(existing, device))
                     {
@@ -995,9 +1012,8 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             {
                 continue;
             }
-            BuiltInSource source;
-            var hardware = ch.DeviceName ?? ch.Name;
-            // The tach sensor behind a motherboard or graphics card channel when the picker lists it; a hub channel has none.
+            // The device the entry reads under. The Cooling page groups a board's headers (no device of their own) under
+            // the board name, not the SuperIO chip a tach sensor sits on, so tach or not they read under it; a graphics card keeps its own name.
             HardwareSensor? tach = null;
             if (!string.IsNullOrEmpty(ch.RpmSensorId))
             {
@@ -1006,13 +1022,42 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
                     : boardTachs ??= _sensors.GetMotherboardSensorsCached();
                 tach = list.FirstOrDefault(x => x.Id == ch.RpmSensorId);
             }
-            source = tach is null
-                ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware }
-                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware };
+            var hardware = ch.DeviceName;
+            if (hardware is null && !ch.IsGpu && ch.DeviceId is null && BoardName() is { Length: > 0 } board)
+            {
+                hardware = board;
+            }
+            hardware ??= tach?.Parent.Name ?? ch.Name;
+            // A pump keeps the plain ignore-list switch: only a fan entry is tied to Nexus Control.
+            var controlChannel = string.Equals(ch.Kind, Nexus.Service.Models.Cooling.FanKinds.Pump, StringComparison.Ordinal) ? null : ch.Id;
+            var source = tach is null
+                ? new BuiltInSource { Kind = "channel", Sensor = null, HardwareName = hardware, ControlChannel = controlChannel }
+                : new BuiltInSource { Kind = "sensor", Sensor = Ref(ch.IsGpu ? "gpu" : "motherboard", tach), HardwareName = hardware, ControlChannel = controlChannel };
             var device = new BuiltInDevice(BuiltInSensorRules.FanSpeed, seriesId, ch.Name, false, BuiltInSensorRules.FanComponentPrefix + ch.Id, source);
             // A channel with no readable tach has no value, as in the history.
             Add(devices, sensors, device, ch.RpmUnavailable ? float.NaN : ch.Rpm, ch.RpmUnavailable);
         }
+    }
+
+    // Read once, an empty result included: the model never changes while the service runs, and the provider call sweeps hardware.
+    private string? _boardName;
+
+    private string BoardName()
+    {
+        if (_boardName is not null)
+        {
+            return _boardName;
+        }
+        try
+        {
+            _boardName = _sensors.GetMotherboardModel()?.Trim() ?? "";
+        }
+        catch (Exception ex)
+        {
+            Warn("board-name", $"[sensor-alerts] board name read failed: {ex.Message}", Mono());
+            _boardName = "";
+        }
+        return _boardName;
     }
 
     private static SensorRef Ref(string category, HardwareSensor s) => new()
@@ -1297,11 +1342,13 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
     /// <summary>States of every rule. A disabled rule reports its reading with the off state, or unavailable with no value.</summary>
     public List<SensorAlertState> States()
     {
-        var enabledById = Snapshot().Rules.ToDictionary(r => r.Id, r => r.Enabled, StringComparer.Ordinal);
+        var snap = Snapshot();
+        var enabledById = snap.Rules.ToDictionary(r => r.Id, snap.On, StringComparer.Ordinal);
+        var excludedById = snap.Rules.Where(r => r.Enabled && snap.Excluded?.Contains(r.Id) == true).Select(r => r.Id).ToHashSet(StringComparer.Ordinal);
         var now = Mono();
         lock (_lock)
         {
-            return _states.Where(kv => enabledById.ContainsKey(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now, enabledById[kv.Key])).ToList();
+            return _states.Where(kv => enabledById.ContainsKey(kv.Key)).Select(kv => ToState(kv.Key, kv.Value, now, enabledById[kv.Key], excludedById.Contains(kv.Key))).ToList();
         }
     }
 
@@ -1338,7 +1385,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
         }
     }
 
-    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now, bool enabled)
+    private static SensorAlertState ToState(string id, SensorAlertRuntime st, DateTimeOffset now, bool enabled, bool excluded)
     {
         var reported = enabled ? Reported(st, now) : DisabledReported(st, now);
         var since = reported switch
@@ -1362,6 +1409,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             EndedThreshold = st.Ended?.Threshold,
             EndedDirection = st.Ended?.Direction,
             Acknowledged = st.Acknowledged,
+            Excluded = excluded,
         };
     }
 
@@ -1380,7 +1428,7 @@ public sealed class SensorAlertEngine : Nexus.Service.Monitoring.History.ISensor
             foreach (var stored in rules)
             {
                 var rule = snap.Display(stored);
-                if (!rule.Enabled || !_states.TryGetValue(rule.Id, out var st)
+                if (!snap.On(rule) || !_states.TryGetValue(rule.Id, out var st)
                     || st.Config is not { } cfg || !cfg.SameConfig(stored))
                 {
                     continue;

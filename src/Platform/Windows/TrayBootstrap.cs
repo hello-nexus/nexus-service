@@ -328,6 +328,25 @@ internal static class TrayBootstrap
             DrainConflictNotice();
         };
 
+        // One toast when the boot check confirms the driver is unusable; held until a helper connects.
+        var pawnIoGate = app.Services.GetRequiredService<Nexus.Service.Lifecycle.PawnIoGate>();
+        var pawnIoToastSent = 0;
+        void SendPawnIoToast()
+        {
+            if (!pawnIoGate.IsNotOkConfirmed || !helperRegistry.IsAnyConnected) return;
+            if (System.Threading.Interlocked.Exchange(ref pawnIoToastSent, 1) != 0) return;
+            try
+            {
+                TrayCommands.NoticeAsync(
+                    helperRegistry, "Nexus needs its hardware driver",
+                    "Nexus can't reach its hardware driver. Open Nexus to fix it.",
+                    null, windowPath: "/", buttonLabel: "Fix it").ObserveFaults();
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[pawnio-notify] show failed: {ex.Message}"); }
+        }
+        pawnIoGate.NotOkConfirmed += _ => SendPawnIoToast();
+        helperRegistry.Connected += _ => SendPawnIoToast();
+
         // Push current state on every fresh helper connect: first bootstrap,
         // service restart, helper crash-and-respawn.
         helperRegistry.Connected += conn =>
@@ -739,11 +758,18 @@ internal static class TrayBootstrap
         // LhmComputer's background Open waits on PawnIoBootGate so a driver
         // installed or repaired here is enumerable in the same boot - signal
         // it on every outcome or LHM waits out the full cap.
+        // Service runs start the driver before the install check so the check sees an open device.
+        var pawnIoGate = app.Services.GetRequiredService<Nexus.Service.Lifecycle.PawnIoGate>();
         _ = Task.Run(async () =>
         {
             try
             {
+                if (serviceMode)
+                {
+                    await pawnIoGate.EnsureRunningAsync(Nexus.Service.Lifecycle.PawnIoGate.StartWait);
+                }
                 var result = await Nexus.Service.Lifecycle.PawnIoInstaller.EnsureInstalledAsync();
+                pawnIoGate.RecordOutcome(result);
                 ServiceLog.Info($"[pawnio] driver state: {result}");
             }
             catch (Exception ex)
@@ -753,6 +779,15 @@ internal static class TrayBootstrap
             finally
             {
                 Nexus.Service.Lifecycle.PawnIoBootGate.Signal();
+            }
+
+            try
+            {
+                await pawnIoGate.ConfirmAfterBootAsync();
+            }
+            catch (Exception ex)
+            {
+                ServiceLog.Error($"[pawnio] driver confirm failed: {ex.Message}");
             }
         });
     }

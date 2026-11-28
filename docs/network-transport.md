@@ -266,6 +266,7 @@ Other slow / event-driven topics (e.g. `prefs`, `lighting`, `cooling`,
 | `diagnostics/alerts` | event-driven on a sensor alert state transition or rule change (`SensorAlertEngine`), never per evaluation tick | `{states: SensorAlertState[]}` carried inline | Diagnostics Settings sensor alerts | Subscribers may also refetch `GET /diagnostics/alerts` for rules and history. |
 | `panel/device` | event-driven on every panel device CRUD (`POST /panel/devices`, `POST /panel/devices/{id}`, `DELETE /panel/devices/{id}`) | `{revision: long, deviceId: string}` | `usePanelLayout` filters by `deviceId === mine` and refetches the device record | Cross-device layout sync; replaces the BroadcastChannel cross-tab path for cross-device updates. |
 | `calendar` | event-driven on calendar add/edit/remove, interval change and each sync | `{revision: long}` (no event data) | Calendar widget and page hooks | Push-driven refetch of `GET /api/calendar/calendars`, `/settings` and `/events`. |
+| `reminders` | event-driven on every reminder list or item mutation | `{revision: long}` (no reminder data) | Reminders widget and page hooks | Push-driven refetch of `GET /api/reminders`. |
 | `gallery` | event-driven on gallery source add/remove/upload and sort change | `{revision: long}` | `GalleryPage`, `useGallery()` | Push-driven refetch of `GET /gallery/items`. |
 | `cloud/accounts` | event-driven on account activation or logout (login, switch, or a recovery the service's own poll loop approved) | `{revision: long}` | `useCloudAccounts()` | Push-driven refetch of `GET /cloud/accounts`, so a sign-in that no page requested still shows without a reload. |
 | `displays` | event-driven on display topology or monitor-panel assignment change | `{revision: long}` | `useDisplayTopology()` | Push-driven refetch of `GET /displays/topology`. |
@@ -422,7 +423,8 @@ rescan/identify routes, and supported-device modal routes on demand.
 |---|---:|---:|---|
 | `GET /start` | once when Settings General tab mounts | event | Start-on-login state. |
 | `POST /start` | user toggle | event | Persist start-on-login. |
-| `GET /pawnio` | once when Tools PawnIO card mounts | event | PawnIO install/open state. |
+| `GET /pawnio` | once when Tools PawnIO card mounts, and by the driver gate | event | PawnIO install/open state plus gate `state`, `errorCode`, `fixAction`, `fixing`. |
+| `POST /pawnio/fix`, `POST /pawnio/restart-pc` | driver gate buttons | event | Run install or repair; reboot the PC. Localhost only. |
 | Screen-time browse routes under `/api/screentime/...` | user navigation/actions | event | Historical screen-time data and deletes. |
 | Profile import/export routes | user action | event | Profile file transfer. |
 

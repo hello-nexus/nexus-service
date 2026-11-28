@@ -159,6 +159,7 @@ internal sealed class FanNameOverlay
             {
                 Kind = source.Kind,
                 HardwareName = group ?? source.HardwareName,
+                ControlChannel = source.ControlChannel,
                 Sensors = source.Sensors,
                 Sensor = source.Sensor is { } tach && name is not null
                     ? new SensorRef { Category = tach.Category, Id = tach.Id, Name = name, Type = tach.Type, ParentName = group ?? tach.ParentName }

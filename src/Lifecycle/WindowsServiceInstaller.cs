@@ -19,7 +19,7 @@ namespace Nexus.Service.Lifecycle;
 /// <see cref="RunInstall"/> / <see cref="RunUninstall"/>.
 ///
 /// Service identity: <c>NexusService</c>, running as <c>LocalSystem</c>,
-/// start type <c>Automatic</c>, depends on the PawnIO kernel driver.
+/// start type <c>Automatic</c>, no SCM dependencies.
 ///
 /// AOT-friendly: shells out to sc.exe / netsh.exe / pnputil.exe rather than
 /// using <c>System.ServiceProcess</c> (which is reflection-heavy and not
@@ -143,6 +143,9 @@ internal static class WindowsServiceInstaller
             // tokens, with the trailing-space form of the key. binPath value
             // needs internal quotes around the EXE path so the space in
             // "Program Files" doesn't split the launcher arg.
+            //
+            // No depend= on PawnIO: a driver that cannot start must not keep Windows
+            // from starting Nexus; PawnIoGate starts it and the dashboard reports failure.
             Log("creating Windows Service");
             bool created = false;
             for (int attempt = 1; attempt <= 4 && !created; attempt++)
@@ -151,8 +154,7 @@ internal static class WindowsServiceInstaller
                     "binPath=", $"\"{installedExe}\" --service",
                     "start=", "auto",
                     "obj=", "LocalSystem",
-                    "DisplayName=", ServiceDisplayName,
-                    "depend=", "PawnIO");
+                    "DisplayName=", ServiceDisplayName);
                 if (!created)
                 {
                     Log($"sc create failed (attempt {attempt}); waiting for prior service handle to release");

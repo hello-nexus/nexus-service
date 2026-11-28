@@ -101,6 +101,8 @@ public sealed class DiagnosticsHealthModel
     // unrelated preference write (and not at all for Reload), while only this
     // list changes the answer.
     private IReadOnlyList<string> _cachedIgnored = Array.Empty<string>();
+    private IReadOnlyList<string> _cachedUncontrolled = Array.Empty<string>();
+    private bool _cachedCoolingOn = true;
 
     public DiagnosticsHealthModel(
         ISmartHealthSource smart,
@@ -219,11 +221,18 @@ public sealed class DiagnosticsHealthModel
             var now = DateTime.UtcNow;
             // Single settings snapshot for this whole computation - thresholds
             // and the episode recency window both derive from it.
-            var diagnostics = _store.Load().Diagnostics;
+            var settingsNow = _store.Load();
+            var diagnostics = settingsNow.Diagnostics;
             // An explicit JSON null in settings.json survives the initializer.
             var ignoredNow = diagnostics.IgnoredComponents ?? new List<string>();
+            // A fan taken off Nexus Control stops being monitored, so it keys the cache like an ignore entry does.
+            var uncontrolledNow = settingsNow.Cooling.UncontrolledFanChannels;
+            // The feeder only honors the flag while Cooling is on, so the gate flipping keys the cache too.
+            var coolingOnNow = Nexus.Service.Lifecycle.FeatureGates.CoolingOf(settingsNow);
             if (!forceRefresh && _cached is not null && now - _cachedAtUtc < CacheTtl
-                && _cachedIgnored.SequenceEqual(ignoredNow, StringComparer.Ordinal))
+                && _cachedIgnored.SequenceEqual(ignoredNow, StringComparer.Ordinal)
+                && _cachedUncontrolled.SequenceEqual(uncontrolledNow, StringComparer.Ordinal)
+                && _cachedCoolingOn == coolingOnNow)
             {
                 return _cached;
             }
@@ -244,6 +253,8 @@ public sealed class DiagnosticsHealthModel
             _cached = result;
             _cachedAtUtc = now;
             _cachedIgnored = ignoredNow.ToList();
+            _cachedUncontrolled = uncontrolledNow.ToList();
+            _cachedCoolingOn = coolingOnNow;
             return result;
         }
     }
