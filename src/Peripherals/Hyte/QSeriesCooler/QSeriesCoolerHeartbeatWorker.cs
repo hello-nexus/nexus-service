@@ -89,7 +89,7 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
             _hub.PollFirmwareVersion();
         }
         // Refresh pump RPM so the cooling page's fan card shows live telemetry.
-        _hub.PollTelemetry();
+        var polled = _hub.PollTelemetry();
         // Once the version is known: the hand-back mode depends on whether this
         // firmware has an onboard curve, and the poll is retried each tick. The
         // flag clears after the call, so a throw here retries next tick. Runs
@@ -100,7 +100,7 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
             _cooling?.OnHubConnected();
             _handBackPending = false;
         }
-        _cooling?.RefreshDrivenFans();
+        _cooling?.RefreshDrivenFans(polled);
         _cooling?.RedriveIfControlDropped();
         _cooling?.RedriveIfFanRpmAbnormal();
         _cooling?.RefreshStoredCurvePump();

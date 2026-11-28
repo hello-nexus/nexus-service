@@ -572,10 +572,11 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
     /// Drive every fan on one Nexus Link channel (1 or 2) at the given per-slot duties
     /// under software control. Ensures the hub is in software mode first (preserving the
     /// pump's last duty), caps each duty for turbo the same way the pump does, then writes
-    /// the full per-slot frame - callers resend all slots on every call since the wire
+    /// the full per-slot frame (or, with <paramref name="allowModeSwitch"/> false, writes nothing
+    /// when the live mode is not software) - callers resend all slots on every call since the wire
     /// frame has no "leave unchanged" option.
     /// </summary>
-    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties)
+    public bool SetChannelFanSpeeds(byte channel, IReadOnlyList<QSeriesCoolerProtocol.QSeriesFanSlotDuty> slotDuties, bool allowModeSwitch = true)
     {
         lock (_lock)
         {
@@ -601,6 +602,7 @@ public sealed class QSeriesCoolerHub : IDisposable, IDfuFlashTarget
                 // stall it while bringing the fan channel under control.
                 if (QSeriesCoolerProtocol.ControlModeOf(port0) != QSeriesCoolerProtocol.ControlModeSoftware)
                 {
+                    if (!allowModeSwitch) return false;
                     var pumpWire = PumpWireFor(turboOn);
                     var turboByte = turboOn ? QSeriesCoolerProtocol.TurboOnByte : QSeriesCoolerProtocol.TurboOffByte;
                     LogModeWrite(port0, QSeriesCoolerProtocol.ControlModeSoftware);

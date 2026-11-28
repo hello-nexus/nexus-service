@@ -323,6 +323,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         _redriveBackoffMs = RedriveMinIntervalMs;
         _softwareSinceMs = 0;
         _rpmWatch.Clear();
+        ResetRpmBackoff();
         if (!_gates.Cooling) return;
         if (HasPersistedAssignments())
         {
@@ -391,7 +392,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         }
         _redriveArmed = true;
         _nextRedriveAtMs = now + _redriveBackoffMs;
-        // Stability is measured from the last replay, so a replay that fires in software mode still backs off.
+        // Stability is measured from the last replay, so software mode must hold a full stable window after it.
         _softwareSinceMs = now;
         return true;
     }
@@ -413,11 +414,22 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     private bool _logRpmAfterReplay;
     private const long RpmLogIntervalMs = 60_000;
     private long _rpmLogAtMs;
+    // The RPM replay path backs off on its own state, apart from the mode-flip backoff above.
+    private long _rpmNextReplayAtMs;
+    private long _rpmBackoffMs = RedriveMinIntervalMs;
+    private bool _rpmEpisodeArmed;
+
+    private void ResetRpmBackoff()
+    {
+        _rpmEpisodeArmed = false;
+        _rpmBackoffMs = RedriveMinIntervalMs;
+        _rpmNextReplayAtMs = 0;
+    }
 
     /// <summary>
     /// Heartbeat hook: a driven fan whose RPM climbs well above what the same duty gave once settled
     /// while the mode is still software has lost its duty without any mode change. After consecutive
-    /// polls it logs the raw status (rate-limited) and replays the fan frames without a backoff.
+    /// polls it logs the raw status (rate-limited) and replays the fan frames on a doubling interval.
     /// No baseline yet (duty just changed, or too few settled polls) means no action.
     /// </summary>
     public void RedriveIfFanRpmAbnormal()
@@ -433,6 +445,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
         var now = _clock();
         var softwareMode = _hub.State.ControlMode == QSeriesCoolerProtocol.ControlModeSoftware;
         var abnormal = false;
+        var anyExcess = false;
         lock (_ctrlLock)
         {
             foreach (var stale in _rpmWatch.Keys.Where(k => !_softwareControlled.Contains(k)).ToList()) _rpmWatch.Remove(stale);
@@ -458,41 +471,52 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                     }
                     continue;
                 }
-                if (softwareMode && rpm > w.Baseline * 3 / 2 && rpm > w.Baseline + 400) w.Strikes++;
-                else w.Strikes = 0;
+                if (softwareMode && rpm > w.Baseline * 3 / 2 && rpm > w.Baseline + 400)
+                {
+                    w.Strikes++;
+                    anyExcess = true;
+                }
+                else
+                {
+                    w.Strikes = 0;
+                }
                 if (w.Strikes >= RpmStrikesToReplay) abnormal = true;
             }
         }
+        // Back near baseline in software mode: the episode is over, the next excess replays at once.
+        if (!anyExcess && softwareMode) ResetRpmBackoff();
         if (!abnormal) return;
-        // No backoff: the periodic refresh already resends the duty, so a replay here is one more
-        // identical frame. Only the raw diagnostic log is rate-limited.
         string baselines;
         lock (_ctrlLock)
         {
             baselines = string.Join(" ", _rpmWatch.Select(kv => $"{kv.Key}:base={kv.Value.Baseline},duty={kv.Value.Duty}"));
             foreach (var w in _rpmWatch.Values) w.Strikes = 0;
         }
-        if (_rpmLogAtMs == 0 || now - _rpmLogAtMs >= RpmLogIntervalMs)
+        // The replay also rewrites the pump, so a persistent excess is capped: the first replay of an
+        // episode fires at once, later ones on a doubling interval.
+        if (_rpmEpisodeArmed)
+        {
+            if (now < _rpmNextReplayAtMs) return;
+            _rpmBackoffMs = Math.Min(_rpmBackoffMs * 2, RedriveMaxIntervalMs);
+        }
+        _rpmEpisodeArmed = true;
+        _rpmNextReplayAtMs = now + _rpmBackoffMs;
+        var logNow = _rpmLogAtMs == 0 || now - _rpmLogAtMs >= RpmLogIntervalMs;
+        if (logNow)
         {
             _rpmLogAtMs = now;
             ServiceLog.Info($"[qseries-cooler] fan rpm above baseline at unchanged duty: {baselines} rpm=[{string.Join(", ", rpms.Select(kv => $"{kv.Key}={kv.Value}"))}] "
                 + $"turbo={_hub.State.TurboOn} coolant={_hub.State.CoolantTempInC}/{_hub.State.CoolantTempOutC} "
                 + $"port0={Convert.ToHexString(_hub.LastPort0Raw)} ch2={Convert.ToHexString(_hub.LastFanChannelRaw)}");
         }
-        _logRpmAfterReplay = true;
-        Redrive("fan rpm above baseline");
+        _logRpmAfterReplay = logNow;
+        Redrive("fan rpm above baseline", logNow);
     }
 
-    /// <summary>
-    /// Heartbeat hook, every poll: resends the stored duty frame of each driven fan channel. The
-    /// firmware can drop a fan duty on its own while the mode stays software, and the engine skips
-    /// unchanged duties, so only a periodic identical frame restores it. Skipped unless the polled
-    /// mode is software (the mode-flip replay owns that case), when the user pinned another mode,
-    /// or when nothing is driven. The pump is not resent here.
-    /// </summary>
-    public void RefreshDrivenFans()
+    /// <summary>Heartbeat hook: resends the driven fan frames when this tick's poll succeeded in software mode; never switches mode.</summary>
+    public void RefreshDrivenFans(bool pollSucceeded)
     {
-        if (!_hub.IsConnected || !_gates.Cooling) return;
+        if (!pollSucceeded || !_hub.IsConnected || !_gates.Cooling) return;
         if (_hub.State.ControlMode != QSeriesCoolerProtocol.ControlModeSoftware) return;
         if (!HasDrivenChannels()) return;
         // Same lock order as Redrive: hub lock, then _ctrlLock, and never _curveLock.
@@ -507,7 +531,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                     if (TryParseFanId(id, out var ch, out _, out _)) channels.Add(ch);
                 }
             }
-            foreach (var ch in channels) SendChannelFrame(ch);
+            foreach (var ch in channels) SendChannelFrame(ch, allowModeSwitch: false);
         });
     }
 
@@ -536,7 +560,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     // Runs under the hub lock, so the pin and driven checks, the duty snapshot and every write are one
     // step: a release, pin or engine write cannot land between them. Pump first, as a normal fan write
     // does, so the mode switch carries the right pump byte.
-    private void Redrive(string reason)
+    private void Redrive(string reason, bool log = true)
     {
         // Resolved before taking the hub lock: the curve read takes it too.
         var curve = StoredCurve();
@@ -562,7 +586,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
             }
             var rpms = string.Join(",", _hub.State.Channel1Devices.Concat(_hub.State.Channel2Devices)
                 .SelectMany(d => d.FanRpm));
-            ServiceLog.Info($"[qseries-cooler] re-drive ({reason}): pump={(pumpDriven ? pumpDuty + "%" : "curve")} fans=[{string.Join(" ", duties)}] rpm=[{rpms}]");
+            if (log) ServiceLog.Info($"[qseries-cooler] re-drive ({reason}): pump={(pumpDriven ? pumpDuty + "%" : "curve")} fans=[{string.Join(" ", duties)}] rpm=[{rpms}]");
             if (pumpDriven) _hub.SetPumpSpeed(pumpDuty);
             else HoldPumpOnCurve(curve);
             foreach (var ch in channels) SendChannelFrame(ch);
@@ -737,7 +761,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
     }
 
     // Builds and sends one channel's full per-slot duty frame from the stored duties.
-    private bool SendChannelFrame(int channel)
+    private bool SendChannelFrame(int channel, bool allowModeSwitch = true)
     {
         // Snapshot once: reading the property twice in this method could observe two
         // different published lists if PollTelemetry runs concurrently.
@@ -762,7 +786,7 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 dev.FanCount >= 2 ? DutyOf(serial, channel, dev, 2) : 0,
                 dev.FanCount >= 3 ? DutyOf(serial, channel, dev, 3) : 0);
         }
-        return _hub.SetChannelFanSpeeds((byte)channel, slots);
+        return _hub.SetChannelFanSpeeds((byte)channel, slots, allowModeSwitch);
     }
 
     // Called before a fan frame (the first one switches the hub to software), on each heartbeat and
