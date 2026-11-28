@@ -514,6 +514,32 @@ public class RgbBridgeWatchdogTests : IDisposable
         Assert.Equal(0, _controller.Count("disconnect"));
     }
 
+    [Theory]
+    [InlineData("/gpu-powermonitor/COM4", false)]
+    [InlineData("/nvme/0", false)]
+    [InlineData("/memory/dimm/0", true)]
+    [InlineData("spd-gate", true)]
+    public async Task A_stalled_LHM_walk_restarts_the_daemon_only_when_inside_an_smbus_item(string item, bool restarts)
+    {
+        UseFakeClock();
+        await ActivateAndSettleAsync();
+        _bridge.SmbusMutexProbe = () => "held";
+        _bridge.WalkWatch = new LhmWalkWatch(() => 10_000, _deadlines.Create);
+        _bridge.WalkWatch.SetItem(item);
+
+        _bridge.OnLhmWalkStalled(TimeSpan.FromSeconds(60));
+
+        if (restarts)
+        {
+            Assert.True(await WaitUntilAsync(() => _controller.Count("disconnect") == 1 && _controller.IsConnected, TimeSpan.FromSeconds(5)));
+        }
+        else
+        {
+            Assert.Equal(0, _bridge.BounceCount);
+            Assert.Equal(0, _controller.Count("disconnect"));
+        }
+    }
+
     [Fact]
     public async Task LHM_stall_restarts_share_the_bounded_watchdog_budget()
     {

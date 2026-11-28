@@ -283,4 +283,63 @@ public class LhmStorageUpdaterTests
         release.Set();
         Assert.True(updater.Shutdown(Wait));
     }
+
+    [Fact]
+    public void A_stuck_power_monitor_is_overdue_without_blocking_and_recovers_when_it_returns()
+    {
+        var overdue = new ManualResetEventSlim();
+        var recovered = new ManualResetEventSlim();
+        using var updater = new LhmStorageUpdater(
+            Grace,
+            TimeSpan.FromMilliseconds(50),
+            (_, _, _) => overdue.Set(),
+            (_, _) => recovered.Set(),
+            "lhm-powermonitor");
+        using var release = new ManualResetEventSlim();
+        using var started = new ManualResetEventSlim();
+        object monitor = new(), other = new();
+        var otherRan = 0;
+
+        var stuck = updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, () => { started.Set(); release.Wait(Wait); });
+        Assert.NotNull(stuck);
+        Assert.True(started.Wait(Wait));
+        Assert.True(overdue.Wait(Wait));
+        // Every later walk asks again; none queues behind the stuck one.
+        for (var i = 0; i < 20; i++)
+        {
+            Assert.Null(updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, Nothing));
+        }
+        var healthy = updater.Request(other, "/gpu-powermonitor/COM5", "Other", Nothing, () => Interlocked.Increment(ref otherRan));
+        Assert.NotNull(healthy);
+        Assert.True(healthy.Wait(Wait));
+        Assert.Equal(1, otherRan);
+
+        release.Set();
+        Assert.True(stuck.Wait(Wait));
+        Assert.True(recovered.Wait(Wait));
+        var again = updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, Nothing);
+        Assert.NotNull(again);
+        Assert.True(again.Wait(Wait));
+    }
+
+    [Fact]
+    public void Requests_against_a_stuck_device_never_add_threads()
+    {
+        using var updater = New();
+        using var release = new ManualResetEventSlim();
+        using var started = new ManualResetEventSlim();
+        object monitor = new();
+        var job = updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, () => { started.Set(); release.Wait(Wait); });
+        Assert.True(started.Wait(Wait));
+        var before = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
+
+        for (var i = 0; i < 200; i++)
+        {
+            updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, Nothing);
+        }
+
+        Assert.True(System.Diagnostics.Process.GetCurrentProcess().Threads.Count <= before + 2);
+        release.Set();
+        Assert.True(job!.Wait(Wait));
+    }
 }

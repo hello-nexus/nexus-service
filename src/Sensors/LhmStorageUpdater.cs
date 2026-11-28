@@ -14,6 +14,7 @@ namespace Nexus.Service.Sensors;
 /// LibreHardwareMonitor reads the process-wide SMART cycle static only at the top of <c>StorageDevice.Update</c>, before any drive I/O,
 /// so the static is set under a start gate that an update gives up when it returns or after <c>startGrace</c>, whichever is first.
 /// The gate cannot be held through the whole update: that would serialize every drive behind a stuck one.
+/// A second instance serves the USB-serial power monitors the same way, with its own start gate.
 /// Free of LibreHardwareMonitor types so it tests on every platform.
 /// </summary>
 internal sealed class LhmStorageUpdater : IDisposable
@@ -66,14 +67,17 @@ internal sealed class LhmStorageUpdater : IDisposable
     private readonly TimeSpan _overdueAfter;
     private readonly Action<string, string, TimeSpan>? _onOverdue;
     private readonly Action<string, string>? _onRecovered;
+    private readonly string _threadName;
     private bool _disposed;
 
     internal LhmStorageUpdater(
         TimeSpan startGrace,
         TimeSpan overdueAfter,
         Action<string, string, TimeSpan>? onOverdue = null,
-        Action<string, string>? onRecovered = null)
+        Action<string, string>? onRecovered = null,
+        string threadName = "lhm-storage")
     {
+        _threadName = threadName;
         _startGrace = startGrace;
         _overdueAfter = overdueAfter;
         _onOverdue = onOverdue;
@@ -114,7 +118,7 @@ internal sealed class LhmStorageUpdater : IDisposable
             worker.Queue.Enqueue(item);
             if (worker.Thread is null)
             {
-                worker.Thread = new Thread(() => Run(worker)) { IsBackground = true, Name = "lhm-storage" };
+                worker.Thread = new Thread(() => Run(worker)) { IsBackground = true, Name = _threadName };
                 worker.Thread.Start();
             }
             Monitor.PulseAll(_gate);

@@ -141,7 +141,7 @@ internal sealed class LhmWalkWatch
         }
     }
 
-    private static bool IsSmbusItem(string? item) => item is not null && (item.StartsWith("/memory", StringComparison.Ordinal) || item == "spd-gate");
+    internal static bool IsSmbusItem(string? item) => item is not null && (item.StartsWith("/memory", StringComparison.Ordinal) || item == "spd-gate");
 
     /// <summary>Blocks until the walk is outside every memory item and the SPD gate rebuild, or <paramref name="timeout"/> passes. True means outside.</summary>
     internal bool WaitUntilOutsideSmbusItem(TimeSpan timeout) => _outsideSmbus.Wait(timeout);

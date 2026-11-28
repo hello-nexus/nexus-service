@@ -1378,6 +1378,12 @@ public sealed class RgbBridge : IDisposable
         {
             return;
         }
+        // A walk stuck on hardware off the SMBus path (a serial power monitor, a drive) cannot hold the mutex, so the daemon is innocent.
+        if (WalkWatch.CurrentItem is { } stuckAt && !LhmWalkWatch.IsSmbusItem(stuckAt.Item))
+        {
+            ServiceLog.Info($"[resume] LHM walk stalled {age.TotalSeconds:F0}s inside {stuckAt.Item}, not an SMBus item; daemon left running");
+            return;
+        }
         var mutex = SmbusMutexProbe();
         if (mutex != "held")
         {

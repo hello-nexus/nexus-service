@@ -74,6 +74,27 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
             }
             ServiceLog.Info($"[lhm] storage update for {name} ({id}) returned; its readings resumed");
         });
+    // A USB-serial power monitor can block in a serial read for minutes. Same isolation as drives: its update runs on its own worker, and its readings read as missing while it is overdue.
+    private readonly LhmStorageUpdater _powerMonitors = new(
+        StorageStartGrace,
+        StorageOverdue,
+        (id, name, limit) =>
+        {
+            if (!LhmWalkWatch.IsUnidentifiable(id))
+            {
+                LhmWalkWatch.Shared.MarkHardwareStale(id, true);
+            }
+            ServiceLog.Warn($"[lhm] power monitor update for {name} ({id}) running > {limit.TotalSeconds:F0}s; its readings are paused until it returns");
+        },
+        (id, name) =>
+        {
+            if (!LhmWalkWatch.IsUnidentifiable(id))
+            {
+                LhmWalkWatch.Shared.MarkHardwareStale(id, false);
+            }
+            ServiceLog.Info($"[lhm] power monitor update for {name} ({id}) returned; its readings resumed");
+        },
+        "lhm-powermonitor");
     private static readonly TimeSpan StorageStartGrace = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan StorageOverdue = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StorageShutdownWait = TimeSpan.FromSeconds(2);
@@ -492,6 +513,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 using (WindowsTimerResolution.Elevate())
                 {
                     var presentStorage = new List<object>();
+                    var presentPowerMonitors = new List<object>();
                     foreach (var hw in _computer.Hardware)
                     {
                         // StorageDevice keeps its skip counter per instance and reads the cycle static
@@ -525,7 +547,17 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                                 hw.Identifier.ToString(),
                                 hw.Name,
                                 () => StorageDevice.SmartUpdateCycleCount = storageCycles,
-                                () => UpdateStorage(hw)) is { } queued)
+                                () => UpdateOffWalk(hw)) is { } queued)
+                            {
+                                queuedJobs.Add(queued);
+                            }
+                            continue;
+                        }
+
+                        if (LhmComponentIdentifiers.IsPowerMonitor(hw.Identifier.ToString()))
+                        {
+                            presentPowerMonitors.Add(hw);
+                            if (_powerMonitors.Request(hw, hw.Identifier.ToString(), hw.Name, static () => { }, () => UpdateOffWalk(hw)) is { } queued)
                             {
                                 queuedJobs.Add(queued);
                             }
@@ -537,6 +569,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                             TryUpdate(sub);
                     }
                     _storage.Retain(presentStorage);
+                    _powerMonitors.Retain(presentPowerMonitors);
                 }
             }
             finally
@@ -585,7 +618,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
     /// </summary>
     internal LhmStorageUpdater.Job? RequestStorageRead(IHardware drive, Action read) => _storage.RequestRead(drive, read);
 
-    private void UpdateStorage(IHardware hw)
+    private void UpdateOffWalk(IHardware hw)
     {
         TryUpdate(hw, onWalk: false);
         foreach (var sub in hw.SubHardware)
@@ -613,7 +646,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 _walkWatch.SetItem(null);
                 return;
             }
-            // The walk's item marker and slow-walk report belong to the walk thread; the storage worker has neither.
+            // The walk's item marker and slow-walk report belong to the walk thread; the off-walk workers have neither.
             if (onWalk)
             {
                 _walkWatch.SetItem(item);
@@ -787,6 +820,7 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         ResetSpdPages(SpdDisposeBudget);
         // Close must not race a drive update still inside LHM; a drive that never returns only costs this bounded wait.
         _storage.Shutdown(StorageShutdownWait);
+        _powerMonitors.Shutdown(StorageShutdownWait);
         // Close can block on the driver a wedged walk is stuck in, and a service that never stops stays down.
         if (!LhmWalkWatch.TryRunWhenIdle(_updateLock, CloseWalkWait, _computer.Close))
         {
