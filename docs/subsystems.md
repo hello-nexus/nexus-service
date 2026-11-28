@@ -248,6 +248,34 @@ support-bundle ZIP export.
   written parser (`Calendar/Ics/`) resolves TZIDs through the host database,
   a Windows/IANA name map, then the feed's own VTIMEZONE, because invariant
   globalization drops the ICU id conversion on Windows.
+- Reminders (`Reminders/`, `/api/reminders/*`, live on the `reminders` topic, a
+  revision ping with no data): local lists and items, no external sync. The
+  store lives in `<NexusRoot>/reminders/reminders.json` (not `NexusSettings`)
+  and every mutation is written atomically under a single lock before it is
+  acknowledged. A failed write rolls the change back and the route answers 500
+  `saveFailed`, with no topic ping (a staged `.tmp` left by the failed write is
+  deleted). One invariant governs loading: a file that exists is never
+  overwritten or seeded over unless it parsed into a usable store (at least one
+  list) or was moved aside as `.corrupt-*` first. A missing or unusable main
+  file is replaced by promoting, with a move, the `.bak` (the last acknowledged
+  state), else the staged `.tmp` (an unacknowledged attempt, used only when no
+  usable `.bak` exists; a failed File.Replace can leave one after the client got
+  `saveFailed`). The other sibling stays in place. Unusable
+  siblings are moved aside too. The seed is written only when main, `.tmp` and
+  `.bak` are all absent. A file that cannot be read (a lock,
+  access denied) or cannot be moved aside is left untouched and the routes
+  answer 503 `unavailable` for reads and writes until a later load succeeds; the
+  load is retried lazily on requests, at most once per 10 s by monotonic time,
+  so a cleared lock recovers without a restart. A fresh store seeds one list
+  named Reminders. All routes are panel reachable so phones and panels can tick
+  items off. Caps: 100 lists, 5000 items, 500 char titles, 10000 char notes,
+  100 char list names, 2048 char URLs, `order` 0 to 1000000. URLs must be
+  http or https; a list icon is a Lucide-style name (letters, digits, `-`, `_`) or
+  `emoji:<glyph>` (glyph capped at 32 UTF-16 code units, ZWJ, variation selectors and tag
+  characters allowed inside a sequence but not alone; no control, whitespace,
+  invisible formatting, unassigned or private-use characters), 64 characters in all; the last
+  list cannot be deleted. A reorder must name exactly the list's current items
+  or it fails `stale`. Titles, notes and URLs are never logged.
 - Volume mixer (`Audio/AudioMixerService.cs`, `/system/audio/mixer/*`, live on
   `audio/mixer`): per-application levels on the default output, one strip per
   process. Windows only: the Core Audio session walk runs in the user-session

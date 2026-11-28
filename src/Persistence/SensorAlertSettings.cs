@@ -27,6 +27,8 @@ public sealed class BuiltInSource
     public List<SensorRef> Sensors { get; set; } = new();
     /// <summary>The device the reading belongs to: CPU model, GPU name, drive name, or the memory label.</summary>
     public string HardwareName { get; set; } = "";
+    /// <summary>The cooling channel whose Nexus Control flag is this fan entry's on/off. Null for a pump or any non-fan entry, which keep the plain ignore-list switch.</summary>
+    public string? ControlChannel { get; set; }
 }
 
 /// <summary>One user threshold rule. Low and High are in the sensor's native unit (temperature is always Celsius); a null bound is not checked, and a rule with neither bound only tracks the sensor's history.</summary>

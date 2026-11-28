@@ -10,6 +10,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(NexusSettings))]
 [JsonSerializable(typeof(Nexus.Service.Calendar.CalendarSourcesFile))]
 [JsonSerializable(typeof(Nexus.Service.Calendar.CalendarFeedCache))]
+[JsonSerializable(typeof(Nexus.Service.Reminders.ReminderStoreFile))]
 [JsonSerializable(typeof(CoolingSettings))]
 [JsonSerializable(typeof(TryxSettings))]
 [JsonSerializable(typeof(TryxOverlaySensorItemSettings))]

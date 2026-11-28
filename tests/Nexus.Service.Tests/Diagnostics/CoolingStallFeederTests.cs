@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Nexus.Service.Cooling;
 using Nexus.Service.Diagnostics.Cooling;
 using Nexus.Service.Models.Cooling;
+using Nexus.Service.Persistence;
 using Xunit;
 
 namespace Nexus.Service.Tests.Diagnostics;
@@ -29,6 +30,18 @@ public class CoolingStallFeederTests
         feeder.Tick();
         // Not observed: the last reading the detector holds is still the agreed one.
         Assert.Equal(872, detector.Snapshot().Devices.Single().Rpm);
+    }
+
+    [Fact]
+    public void Tick_skips_a_fan_calibration_found_unresponsive_while_it_reports_no_rpm()
+    {
+        var store = new InMemoryConfigStore();
+        store.Update(s => s.FeaturesOnboardingCompleted = true);
+        var fans = new ScriptedFans { Channel = new FanChannel { Id = "f1", Name = "Rear", Rpm = 0, DutyPercent = 60, Classification = "Unresponsive" } };
+        var detector = new CoolingStallDetector();
+        new CoolingStallFeeder(fans, detector, store: store).Tick();
+
+        Assert.Empty(detector.Snapshot().Devices);
     }
 
     private sealed class ScriptedFans : IFanControlProvider

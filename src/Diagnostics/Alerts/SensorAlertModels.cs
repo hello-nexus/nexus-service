@@ -41,6 +41,8 @@ public sealed class SensorAlertState
     public string? EndedDirection { get; set; }
     /// <summary>Active: the user dismissed the banner and health entry. Not set for an ended alert; dismissing that one clears the Ended* fields.</summary>
     public bool Acknowledged { get; set; }
+    /// <summary>The rule is switched on but its fan is calibrated unresponsive and reports no rpm, so it is not evaluated; State is off.</summary>
+    public bool Excluded { get; set; }
 }
 
 public sealed class SensorAlertHistoryEntry

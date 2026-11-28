@@ -132,6 +132,7 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxCloudInstallRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxEnableRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxBrightnessRequest))]
+[JsonSerializable(typeof(Nexus.Service.Routes.TryxRotationRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxPresetRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxMediaSelectRequest))]
 [JsonSerializable(typeof(Nexus.Service.Routes.TryxMediaDeleteRequest))]
@@ -404,6 +405,14 @@ namespace Nexus.Service.Serialization;
 [JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarProbeRequest))]
 [JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarProbeResponse))]
 [JsonSerializable(typeof(Nexus.Service.Models.Calendar.CalendarChangedFrame))]
+
+// Reminders
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderListDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderDto))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderStoreResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderClearResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderErrorResponse))]
+[JsonSerializable(typeof(Nexus.Service.Models.Reminders.ReminderChangedFrame))]
 // Weather
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherSnapshot))]
 [JsonSerializable(typeof(Nexus.Service.Models.Weather.WeatherHourlyForecast))]
