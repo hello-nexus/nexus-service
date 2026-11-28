@@ -411,11 +411,13 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
 
     private readonly Dictionary<string, FanRpmWatch> _rpmWatch = new(StringComparer.Ordinal);
     private bool _logRpmAfterReplay;
+    private const long RpmLogIntervalMs = 60_000;
+    private long _rpmLogAtMs;
 
     /// <summary>
     /// Heartbeat hook: a driven fan whose RPM climbs well above what the same duty gave once settled
     /// while the mode is still software has lost its duty without any mode change. After consecutive
-    /// polls it logs the raw status and replays the fan frames through the same gated, backed-off path.
+    /// polls it logs the raw status (rate-limited) and replays the fan frames without a backoff.
     /// No baseline yet (duty just changed, or too few settled polls) means no action.
     /// </summary>
     public void RedriveIfFanRpmAbnormal()
@@ -461,18 +463,52 @@ public sealed class QSeriesCoolerCoolingProvider : IFanControlProvider, ICooling
                 if (w.Strikes >= RpmStrikesToReplay) abnormal = true;
             }
         }
-        if (!abnormal || !TryBeginRedrive(now)) return;
+        if (!abnormal) return;
+        // No backoff: the periodic refresh already resends the duty, so a replay here is one more
+        // identical frame. Only the raw diagnostic log is rate-limited.
         string baselines;
         lock (_ctrlLock)
         {
             baselines = string.Join(" ", _rpmWatch.Select(kv => $"{kv.Key}:base={kv.Value.Baseline},duty={kv.Value.Duty}"));
             foreach (var w in _rpmWatch.Values) w.Strikes = 0;
         }
-        ServiceLog.Info($"[qseries-cooler] fan rpm above baseline at unchanged duty: {baselines} rpm=[{string.Join(", ", rpms.Select(kv => $"{kv.Key}={kv.Value}"))}] "
-            + $"turbo={_hub.State.TurboOn} coolant={_hub.State.CoolantTempInC}/{_hub.State.CoolantTempOutC} "
-            + $"port0={Convert.ToHexString(_hub.LastPort0Raw)} ch2={Convert.ToHexString(_hub.LastFanChannelRaw)}");
+        if (_rpmLogAtMs == 0 || now - _rpmLogAtMs >= RpmLogIntervalMs)
+        {
+            _rpmLogAtMs = now;
+            ServiceLog.Info($"[qseries-cooler] fan rpm above baseline at unchanged duty: {baselines} rpm=[{string.Join(", ", rpms.Select(kv => $"{kv.Key}={kv.Value}"))}] "
+                + $"turbo={_hub.State.TurboOn} coolant={_hub.State.CoolantTempInC}/{_hub.State.CoolantTempOutC} "
+                + $"port0={Convert.ToHexString(_hub.LastPort0Raw)} ch2={Convert.ToHexString(_hub.LastFanChannelRaw)}");
+        }
         _logRpmAfterReplay = true;
         Redrive("fan rpm above baseline");
+    }
+
+    /// <summary>
+    /// Heartbeat hook, every poll: resends the stored duty frame of each driven fan channel. The
+    /// firmware can drop a fan duty on its own while the mode stays software, and the engine skips
+    /// unchanged duties, so only a periodic identical frame restores it. Skipped unless the polled
+    /// mode is software (the mode-flip replay owns that case), when the user pinned another mode,
+    /// or when nothing is driven. The pump is not resent here.
+    /// </summary>
+    public void RefreshDrivenFans()
+    {
+        if (!_hub.IsConnected || !_gates.Cooling) return;
+        if (_hub.State.ControlMode != QSeriesCoolerProtocol.ControlModeSoftware) return;
+        if (!HasDrivenChannels()) return;
+        // Same lock order as Redrive: hub lock, then _ctrlLock, and never _curveLock.
+        _hub.RunLocked(() =>
+        {
+            if (_hub.DesiredControlMode is byte pinned && pinned != QSeriesCoolerProtocol.ControlModeSoftware) return;
+            var channels = new SortedSet<int>();
+            lock (_ctrlLock)
+            {
+                foreach (var id in _softwareControlled)
+                {
+                    if (TryParseFanId(id, out var ch, out _, out _)) channels.Add(ch);
+                }
+            }
+            foreach (var ch in channels) SendChannelFrame(ch);
+        });
     }
 
     private Dictionary<string, int> FanRpmsById()

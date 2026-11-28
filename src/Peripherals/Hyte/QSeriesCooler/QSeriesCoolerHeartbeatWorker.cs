@@ -100,6 +100,7 @@ public sealed class QSeriesCoolerHeartbeatWorker : BackgroundService
             _cooling?.OnHubConnected();
             _handBackPending = false;
         }
+        _cooling?.RefreshDrivenFans();
         _cooling?.RedriveIfControlDropped();
         _cooling?.RedriveIfFanRpmAbnormal();
         _cooling?.RefreshStoredCurvePump();

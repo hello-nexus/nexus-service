@@ -325,7 +325,7 @@ public class QSeriesCoolerRedriveTests
     }
 
     [Fact]
-    public void An_rpm_spike_at_unchanged_duty_replays_once_then_backs_off()
+    public void An_rpm_spike_at_unchanged_duty_replays_without_a_backoff()
     {
         var (hub, t, p, clock) = New();
         p.SetFanSpeed(FanId, 45);
@@ -340,7 +340,7 @@ public class QSeriesCoolerRedriveTests
 
         clock.Now += 3_000; p.RedriveIfFanRpmAbnormal();
         clock.Now += 3_000; p.RedriveIfFanRpmAbnormal();
-        Assert.Equal(before + 1, FanFrames(t).Count);   // still spiking, inside the interval
+        Assert.Equal(before + 2, FanFrames(t).Count);   // still spiking: two more strikes replay again, no backoff
     }
 
     [Fact]
@@ -396,31 +396,111 @@ public class QSeriesCoolerRedriveTests
     }
 
     [Fact]
-    public void A_persistent_rpm_excess_in_steady_software_mode_backs_off()
+    public void A_persistent_rpm_excess_replays_every_second_poll_without_backing_off()
     {
         var (hub, t, p, clock) = New();
         p.SetFanSpeed(FanId, 45);
         SettleBaseline(p, hub, clock, 1200);
         SetRpm(hub, 2400);
+        var before = FanFrames(t).Count;
 
-        // Polls every 3 s for 20 minutes; replay count per window shows the doubling.
-        var fireTimes = new List<long>();
-        var last = FanFrames(t).Count;
-        var start = clock.Now;
-        for (var i = 0; i < 400; i++)
+        for (var i = 0; i < 20; i++)
         {
             clock.Now += 3_000;
             p.RedriveIfFanRpmAbnormal();
-            p.RedriveIfControlDropped();
-            var n = FanFrames(t).Count;
-            if (n != last) { fireTimes.Add(clock.Now - start); last = n; }
         }
 
-        var gaps = fireTimes.Zip(fireTimes.Skip(1), (x, y) => y - x).ToList();
-        var msg = string.Join(",", fireTimes);
-        Assert.True(fireTimes.Count >= 5, msg);
-        for (var i = 1; i < gaps.Count; i++) Assert.True(gaps[i] >= gaps[i - 1] || gaps[i] >= 290_000, msg);
-        Assert.True(gaps.Max() >= 150_000, msg);
+        Assert.Equal(before + 10, FanFrames(t).Count);
+    }
+
+    [Fact]
+    public void Refresh_resends_the_same_duty_every_poll()
+    {
+        var (_, t, p, _) = New();
+        p.SetFanSpeed(FanId, 45);
+        var first = FanFrames(t).Last();
+        var before = FanFrames(t).Count;
+
+        for (var i = 0; i < 3; i++) p.RefreshDrivenFans();
+
+        var frames = FanFrames(t);
+        Assert.Equal(before + 3, frames.Count);
+        Assert.All(frames.Skip(before), f => Assert.Equal(first, f));
+    }
+
+    [Fact]
+    public void Refresh_sends_nothing_when_no_channel_is_driven()
+    {
+        var (_, t, p, _) = New();
+        p.RefreshDrivenFans();
+        Assert.Empty(FanFrames(t));
+    }
+
+    [Fact]
+    public void Refresh_sends_nothing_after_every_channel_was_released()
+    {
+        var (_, t, p, _) = New();
+        p.SetFanSpeed(FanId, 45);
+        p.ReleaseAll();
+        var before = t.Writes.Count;
+
+        p.RefreshDrivenFans();
+
+        Assert.Equal(before, t.Writes.Count);
+    }
+
+    [Fact]
+    public void Refresh_sends_nothing_when_disconnected()
+    {
+        var (hub, t, p, _) = New();
+        p.SetFanSpeed(FanId, 45);
+        hub.Disconnect();
+        var before = t.Writes.Count;
+
+        p.RefreshDrivenFans();
+
+        Assert.Equal(before, t.Writes.Count);
+    }
+
+    [Fact]
+    public void Refresh_honors_a_user_pinned_mode()
+    {
+        var (hub, t, p, _) = New();
+        p.SetFanSpeed(FanId, 45);
+        hub.SetControlMode(QSeriesCoolerProtocol.ControlModeMotherboard);
+        t.ControlMode = QSeriesCoolerProtocol.ControlModeMotherboard;
+        var before = t.Writes.Count;
+
+        p.RefreshDrivenFans();
+
+        Assert.Equal(before, t.Writes.Count);
+    }
+
+    [Fact]
+    public void Refresh_leaves_a_mode_flip_to_the_replay_path()
+    {
+        var (hub, t, p, _) = New();
+        p.SetFanSpeed(FanId, 45);
+        hub.State.ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
+        t.ControlMode = QSeriesCoolerProtocol.ControlModeFirmware;
+        var before = t.Writes.Count;
+
+        p.RefreshDrivenFans();
+
+        Assert.Equal(before, t.Writes.Count);
+    }
+
+    [Fact]
+    public void Refresh_does_not_resend_the_pump()
+    {
+        var (_, t, p, _) = New();
+        p.SetFanSpeed(PumpId, 100);
+        p.SetFanSpeed(FanId, 45);
+        var before = t.Writes.Count;
+
+        p.RefreshDrivenFans();
+
+        Assert.DoesNotContain(t.Writes.Skip(before), w => w.Length >= 6 && w[1] == 0xCC && w[2] == 0x02 && w[3] == 0);
     }
 
     [Fact]
