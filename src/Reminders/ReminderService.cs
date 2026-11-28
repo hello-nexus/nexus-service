@@ -327,8 +327,8 @@ public sealed class ReminderService
     private static bool IsColor(string s) =>
         s.Length == 7 && s[0] == '#' && s.Skip(1).All(Uri.IsHexDigit);
 
-    /// <summary>A Lucide-style name, or <c>emoji:&lt;glyph&gt;</c> with a glyph of 1 to 32 UTF-16 code units. ZWJ and variation selectors are fine inside a glyph; control characters, whitespace and unpaired surrogates are not.</summary>
-    private static bool IsIcon(string s)
+    /// <summary>A Lucide-style name, or <c>emoji:&lt;glyph&gt;</c> capped at <see cref="MaxEmojiGlyph"/> UTF-16 units. A glyph must hold a visible code point; joiners, variation selectors and tags alone do not count, and invisible formatting, unassigned, private-use and unpaired surrogate code points are rejected.</summary>
+    internal static bool IsIcon(string s)
     {
         if (s.Length is 0 or > MaxIcon)
         {
@@ -343,15 +343,31 @@ public sealed class ReminderService
         {
             return false;
         }
+        var hasBase = false;
         for (var i = EmojiPrefix.Length; i < s.Length;)
         {
             if (!System.Text.Rune.TryGetRuneAt(s, i, out var rune) || System.Text.Rune.IsControl(rune) || System.Text.Rune.IsWhiteSpace(rune))
             {
                 return false;
             }
+            var v = rune.Value;
+            var isJoiner = v is 0x200D;
+            var isModifier = v is >= 0xFE00 and <= 0xFE0F or >= 0xE0020 and <= 0xE007F;
+            if (!isJoiner && !isModifier)
+            {
+                var category = System.Text.Rune.GetUnicodeCategory(rune);
+                if (category is System.Globalization.UnicodeCategory.Format
+                    or System.Globalization.UnicodeCategory.OtherNotAssigned
+                    or System.Globalization.UnicodeCategory.PrivateUse
+                    or System.Globalization.UnicodeCategory.Surrogate)
+                {
+                    return false;
+                }
+                hasBase = true;
+            }
             i += rune.Utf16SequenceLength;
         }
-        return true;
+        return hasBase;
     }
 
     private static bool IsDate(string s) =>

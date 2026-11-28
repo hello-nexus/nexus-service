@@ -142,6 +142,8 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
     [InlineData("emoji:\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66")] // family, ZWJ sequence
     [InlineData("emoji:\ud83c\uddfa\ud83c\uddf8")] // flag, regional indicators
     [InlineData("emoji:\u2764\ufe0f")] // heart with variation selector
+    [InlineData("emoji:1\ufe0f\u20e3")] // keycap
+    [InlineData("emoji:\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f")] // England flag, tag sequence
     [InlineData("cart-shopping_2")]
     public async Task List_icon_accepts_emoji_and_names_and_round_trips_byte_exact(string icon)
     {
@@ -153,10 +155,8 @@ public sealed class ReminderRoutesTests : IClassFixture<NexusAppFactory>
         Assert.Contains(all.GetProperty("lists").EnumerateArray(), l => l.GetProperty("icon").GetString() == decoded);
 
         // A restart reads the persisted file back to the same glyph.
-        var svc = _factory.Services.GetRequiredService<ReminderService>();
-        var reloaded = new ReminderService(Path.Combine(_factory.ConfigDir), null);
+        var reloaded = new ReminderService(_factory.ConfigDir, null);
         Assert.Contains(reloaded.GetAll().Lists, l => l.Icon == decoded);
-        Assert.Contains(svc.GetAll().Lists, l => l.Icon == decoded);
     }
 
     [Fact]

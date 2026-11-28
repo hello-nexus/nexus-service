@@ -418,4 +418,45 @@ public sealed class ReminderServiceTests : IDisposable
         Assert.Equal("limitReached", svc.CreateItem(J("""{"listId":"l0","title":"x"}""")).Error);
         Assert.Equal("limitReached", svc.CreateList(J("""{"name":"x","color":"#000000","icon":"list"}""")).Error);
     }
+
+    [Fact]
+    public void IsIcon_rejects_an_unpaired_surrogate()
+    {
+        // Built in code: xunit data rows would transcode a lone surrogate to U+FFFD.
+        Assert.False(ReminderService.IsIcon("emoji:" + '\ud83d'));
+        Assert.False(ReminderService.IsIcon("emoji:" + '\ude00'));
+        Assert.False(ReminderService.IsIcon("emoji:a" + '\ud83d'));
+        Assert.False(ReminderService.IsIcon("emoji:" + '\ud83d' + "a"));
+    }
+
+    [Fact]
+    public void IsIcon_caps_the_glyph_in_utf16_units_not_code_points()
+    {
+        var max = ReminderService.MaxEmojiGlyph / 2;
+
+        Assert.True(ReminderService.IsIcon("emoji:" + string.Concat(Enumerable.Repeat("\ud83d\ude00", max))));
+        Assert.False(ReminderService.IsIcon("emoji:" + string.Concat(Enumerable.Repeat("\ud83d\ude00", max + 1))));
+    }
+
+    [Theory]
+    [InlineData("emoji:\u202e")] // right-to-left override
+    [InlineData("emoji:\u200b")] // zero width space
+    [InlineData("emoji:\ufeff")]
+    [InlineData("emoji:\u00ad")]
+    [InlineData("emoji:a\u202eb")]
+    [InlineData("emoji:\u200d")] // joiner only
+    [InlineData("emoji:\u200d\u200d")]
+    [InlineData("emoji:\ufe0f")] // variation selector only
+    [InlineData("emoji:\ufe0e\ufe0f")]
+    [InlineData("emoji:\udb40\udc67")] // tag only
+    [InlineData("emoji:\ue000")] // private use
+    public void IsIcon_rejects_invisible_or_baseless_glyphs(string icon) => Assert.False(ReminderService.IsIcon(icon));
+
+    [Theory]
+    [InlineData("emoji:\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67")] // family
+    [InlineData("emoji:\ud83c\uddfa\ud83c\uddf8")] // flag
+    [InlineData("emoji:1\ufe0f\u20e3")] // keycap
+    [InlineData("emoji:\ud83d\udc4d\ud83c\udffd")] // skin tone
+    [InlineData("emoji:\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f")] // England flag
+    public void IsIcon_accepts_emoji_sequences(string icon) => Assert.True(ReminderService.IsIcon(icon));
 }

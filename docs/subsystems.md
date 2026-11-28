@@ -271,8 +271,9 @@ support-bundle ZIP export.
   items off. Caps: 100 lists, 5000 items, 500 char titles, 10000 char notes,
   100 char list names, 2048 char URLs, `order` 0 to 1000000. URLs must be
   http or https; a list icon is a Lucide-style name (letters, digits, `-`, `_`) or
-  `emoji:<glyph>` (glyph 1 to 32 UTF-16 code units, ZWJ and variation selectors
-  allowed, no control characters or whitespace), 64 characters in all; the last
+  `emoji:<glyph>` (glyph capped at 32 UTF-16 code units, ZWJ, variation selectors and tag
+  characters allowed inside a sequence but not alone; no control, whitespace,
+  invisible formatting, unassigned or private-use characters), 64 characters in all; the last
   list cannot be deleted. A reorder must name exactly the list's current items
   or it fails `stale`. Titles, notes and URLs are never logged.
 - Volume mixer (`Audio/AudioMixerService.cs`, `/system/audio/mixer/*`, live on
