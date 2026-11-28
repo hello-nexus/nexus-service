@@ -323,23 +323,22 @@ public class LhmStorageUpdaterTests
     }
 
     [Fact]
-    public void Requests_against_a_stuck_device_never_add_threads()
+    public void A_stuck_device_makes_the_updater_busy_and_shutdown_reports_it()
     {
-        using var updater = New();
+        var updater = New();
         using var release = new ManualResetEventSlim();
         using var started = new ManualResetEventSlim();
         object monitor = new();
+        Assert.False(updater.IsAnyBusy());
         var job = updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, () => { started.Set(); release.Wait(Wait); });
         Assert.True(started.Wait(Wait));
-        var before = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
 
-        for (var i = 0; i < 200; i++)
-        {
-            updater.Request(monitor, "/gpu-powermonitor/COM4", "WireView", Nothing, Nothing);
-        }
+        Assert.True(updater.IsAnyBusy());
+        Assert.False(updater.Shutdown(TimeSpan.FromMilliseconds(50)));
 
-        Assert.True(System.Diagnostics.Process.GetCurrentProcess().Threads.Count <= before + 2);
         release.Set();
         Assert.True(job!.Wait(Wait));
+        Assert.True(updater.Shutdown(Wait));
+        Assert.False(updater.IsAnyBusy());
     }
 }

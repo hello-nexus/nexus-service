@@ -260,7 +260,12 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         _ = _openTask.ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
     }
 
-    /// <summary>Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.</summary>
+    private static readonly TimeSpan PowerMonitorRetry = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Adds or removes LHM's power monitor group; the update lock keeps RemoveType from closing the port mid-walk.
+    /// Removal waits while a monitor update is running: closing the port blocks on the serial lock that update holds, and the walk would wait on this lock behind it.
+    /// </summary>
     private void ApplyPowerMonitors()
     {
         if (_testHost)
@@ -275,6 +280,11 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
                 want = _config.Load().PowerMonitorsEnabled;
                 if (_disposed || _computer.IsPowerMonitorEnabled == want)
                 {
+                    return;
+                }
+                if (!want && _powerMonitors.IsAnyBusy())
+                {
+                    _ = Task.Delay(PowerMonitorRetry).ContinueWith(_ => ApplyPowerMonitors(), TaskScheduler.Default);
                     return;
                 }
                 _computer.IsPowerMonitorEnabled = want;
@@ -820,9 +830,14 @@ public sealed class LhmComputer : IDisposable, ISpdPageReset
         ResetSpdPages(SpdDisposeBudget);
         // Close must not race a drive update still inside LHM; a drive that never returns only costs this bounded wait.
         _storage.Shutdown(StorageShutdownWait);
-        _powerMonitors.Shutdown(StorageShutdownWait);
+        // A stuck monitor update holds the serial lock Close waits on, so Close is skipped then too.
+        var monitorsIdle = _powerMonitors.Shutdown(StorageShutdownWait);
+        if (!monitorsIdle)
+        {
+            ServiceLog.Warn("[lhm] power monitor update still running at shutdown; skipping Computer.Close so shutdown completes");
+        }
         // Close can block on the driver a wedged walk is stuck in, and a service that never stops stays down.
-        if (!LhmWalkWatch.TryRunWhenIdle(_updateLock, CloseWalkWait, _computer.Close))
+        else if (!LhmWalkWatch.TryRunWhenIdle(_updateLock, CloseWalkWait, _computer.Close))
         {
             ServiceLog.Warn("[resume] LHM walk still running at shutdown; skipping Computer.Close so shutdown completes");
         }

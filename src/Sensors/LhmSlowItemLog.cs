@@ -5,8 +5,8 @@ using System.Globalization;
 namespace Nexus.Service.Sensors;
 
 /// <summary>
-/// Names a hardware item whose single Update ran long, at most once per item per interval, so a persistently slow drive cannot flood the log.
-/// Called from the walk thread and the storage worker, hence the lock.
+/// Names a hardware item whose single Update ran long, at most once per item per interval, so a persistently slow drive or power monitor cannot flood the log.
+/// Called from the walk thread and the off-walk workers, hence the lock.
 /// </summary>
 internal sealed class LhmSlowItemLog
 {
