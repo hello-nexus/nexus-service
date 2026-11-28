@@ -661,7 +661,92 @@ public sealed class RgbBridge : IDisposable
     internal Task<BlackoutReport> BlackoutSettledAsync(DateTime? settleUntilUtc, CancellationToken ct = default)
         => BlackoutCoreAsync(settleUntilUtc, ct);
 
+    private volatile bool _shutdownBlankStarted;
+    private readonly HashSet<string> _shutdownSkipLogged = new();
+    private (IReadOnlyList<RgbDevice> List, IReadOnlySet<int> Addresses) _shutdownSkipCache = (Array.Empty<RgbDevice>(), new HashSet<int>());
+
+    /// <summary>
+    /// Called when the OS-shutdown blank begins. From here to process exit no push, mode set or
+    /// resize reaches the controllers <see cref="SkipsBlackoutOnOsShutdown"/> matches: a write
+    /// racing the power-off leaves some boards failing POST. Matching is by device identity and
+    /// re-evaluated against the current list, so a re-detect that reorders addresses is followed.
+    /// </summary>
+    internal void BeginShutdownBlank()
+    {
+        _shutdownBlankStarted = true;
+        _ = ShutdownSkipAddresses();
+    }
+
+    private IReadOnlySet<int> ShutdownSkipAddresses()
+    {
+        if (!_shutdownBlankStarted)
+        {
+            return EmptyAddresses;
+        }
+        var devices = Devices;
+        lock (_shutdownSkipLogged)
+        {
+            if (ReferenceEquals(_shutdownSkipCache.List, devices))
+            {
+                return _shutdownSkipCache.Addresses;
+            }
+            var next = new HashSet<int>();
+            var added = new List<string>();
+            foreach (var d in devices)
+            {
+                if (SkipsBlackoutOnOsShutdown(d))
+                {
+                    next.Add(d.Address);
+                    if (_shutdownSkipLogged.Add(d.Location))
+                    {
+                        added.Add(d.Name);
+                    }
+                }
+            }
+            _shutdownSkipCache = (devices, next);
+            if (added.Count > 0)
+            {
+                ServiceLog.Info($"[rgb-bridge] shutdown blank skips {string.Join(", ", added)}");
+            }
+            return next;
+        }
+    }
+
+    private static readonly IReadOnlySet<int> EmptyAddresses = new HashSet<int>();
+
+    private bool SkipsWriteDuringShutdown(RgbDevice d) => _shutdownBlankStarted && SkipsBlackoutOnOsShutdown(d);
+
+    private bool SkipsWriteDuringShutdown(IReadOnlyList<RgbDevice> devices, int address)
+    {
+        if (!_shutdownBlankStarted)
+        {
+            return false;
+        }
+        foreach (var d in devices)
+        {
+            if (d.Address == address && SkipsBlackoutOnOsShutdown(d))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Controllers whose last-moment write races the power-off: the Fusion 2 USB motherboard controller and the Fusion 2 Blackwell GPU controller.</summary>
+    internal static bool SkipsBlackoutOnOsShutdown(RgbDevice d)
+    {
+        if (!string.Equals(d.Vendor, "Gigabyte", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        return d.Location.Contains("VID_048D&PID_5711", StringComparison.OrdinalIgnoreCase)
+            || (d.Location.StartsWith("I2C:", StringComparison.Ordinal)
+                && d.Location.EndsWith(", address 0x75", StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>True while a detection pass or the refresh that commits its device list is outstanding; a rescan with no COMPLETE past the stall limit no longer counts.</summary>
+    internal bool DeviceListIsSettling => DeviceListSettling();
+
     private bool DeviceListSettling()
     {
         var requested = Interlocked.Read(ref _redetectRequestedTicks);
@@ -709,7 +794,8 @@ public sealed class RgbBridge : IDisposable
             return new BlackoutReport(0, _physBuffers.Count, BlackoutSkip.Disconnected);
         }
         var pushed = 0;
-        var known = _physBuffers.Count;
+        var shutdownSkips = ShutdownSkipAddresses();
+        var known = _physBuffers.Count - _physBuffers.Keys.Count(shutdownSkips.Contains);
         // Local scratch, not the _physFullyUncontrolled field OnFrame owns:
         // this runs on the power-event thread while the engine may still tick.
         var fullyUncontrolled = new Dictionary<int, bool>();
@@ -727,6 +813,10 @@ public sealed class RgbBridge : IDisposable
                 return new BlackoutReport(pushed, known, BlackoutSkip.Disconnected);
             }
             if (fullyUncontrolled.TryGetValue(kv.Key, out var skip) && skip)
+            {
+                continue;
+            }
+            if (shutdownSkips.Contains(kv.Key))
             {
                 continue;
             }
@@ -1893,7 +1983,7 @@ public sealed class RgbBridge : IDisposable
                     continue;
                 }
 
-                if (OpenRgbZoneSupport.IsFullyUncontrolled(dev, settingsSnapshot))
+                if (OpenRgbZoneSupport.IsFullyUncontrolled(dev, settingsSnapshot) || SkipsWriteDuringShutdown(dev))
                 {
                     continue;
                 }
@@ -2652,6 +2742,10 @@ public sealed class RgbBridge : IDisposable
 
         while (_pendingZoneResizes.TryDequeue(out var req))
         {
+            if (SkipsWriteDuringShutdown(devices, req.physIdx))
+            {
+                continue;
+            }
             var queued = DescribeZone(devices, req.physIdx, req.zoneIdx);
             try
             {
@@ -2669,7 +2763,7 @@ public sealed class RgbBridge : IDisposable
         // Apply user-configured counts.
         foreach (var d in devices)
         {
-            if (!OpenRgbZoneSupport.IsSplitMotherboard(d))
+            if (!OpenRgbZoneSupport.IsSplitMotherboard(d) || SkipsWriteDuringShutdown(d))
                 continue;
             for (int z = 0; z < d.Zones.Count; z++)
             {
@@ -2731,6 +2825,10 @@ public sealed class RgbBridge : IDisposable
             });
             foreach (var t in toDefault)
             {
+                if (SkipsWriteDuringShutdown(devices, t.physIdx))
+                {
+                    continue;
+                }
                 try
                 {
                     await _controller.ResizeZoneAsync(t.physIdx, t.zoneIdx, DefaultArgbZoneLedCount).ConfigureAwait(false);
@@ -3334,8 +3432,13 @@ public sealed class RgbBridge : IDisposable
             pos += rgbSize;
         }
 
+        var shutdownSkips = ShutdownSkipAddresses();
         foreach (var physIdx in _touchedPhysicals)
         {
+            if (shutdownSkips.Contains(physIdx))
+            {
+                continue;
+            }
             _pushDroppedByCap = false;
             if (_physBuffers.TryGetValue(physIdx, out var buf)
                 && ShouldPush(physIdx, buf, _physCapsHz.GetValueOrDefault(physIdx), saveOnly: _physSaveOnly.Contains(physIdx)))

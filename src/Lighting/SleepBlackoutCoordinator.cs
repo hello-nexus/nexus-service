@@ -178,7 +178,11 @@ public sealed class SleepBlackoutCoordinator
     /// stop (tray quit, /service/stop, an OTA install, a GPU-change restart)
     /// leaves lighting alone - the service comes back and repaints.
     /// </summary>
-    public void OnHostShutdown() => BlankOut(ShutdownBudget, "shutdown", settleFirst: true);
+    public void OnHostShutdown()
+    {
+        _bridge?.BeginShutdownBlank();
+        BlankOut(ShutdownBudget, "shutdown", settleFirst: true);
+    }
 
     /// <summary>
     /// Call when the session locks. Unlike every other path here nothing is
