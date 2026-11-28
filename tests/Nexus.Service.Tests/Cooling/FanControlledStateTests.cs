@@ -180,6 +180,41 @@ public class FanControlledStateTests
         Assert.Equal(40, store.Load().Cooling.ManualSpeeds["fan-b"]);
     }
 
+    [Fact]
+    public void Apply_off_releases_the_fan_leaves_its_curves_drops_its_manual_duty_and_rederives_the_preset()
+    {
+        var store = new InMemoryConfigStore();
+        var fans = new PresenceFans();
+        store.Update(s =>
+        {
+            s.Cooling.ActivePreset = "silent";
+            s.Cooling.ManualSpeeds["fan-a"] = 50;
+            s.Cooling.Curves.Add(new CurveDocument { Id = "c1", Outputs = new List<CurveOutputDocument> { new() { Id = "fan-a" } } });
+        });
+
+        FanControlledState.Apply("fan-a", false, fans, store);
+
+        Assert.Equal(new[] { "fan-a" }, fans.Released);
+        Assert.DoesNotContain(store.Load().Cooling.Curves.SelectMany(c => c.Outputs), o => o.Id == "fan-a");
+        Assert.False(store.Load().Cooling.ManualSpeeds.ContainsKey("fan-a"));
+        Assert.False(FanControlledState.IsControlled("fan-a", store.Load()));
+        // The only fan left the preset, so nothing is on it any more.
+        Assert.Equal("custom", store.Load().Cooling.ActivePreset);
+    }
+
+    [Fact]
+    public void Apply_on_clears_the_marker_without_releasing()
+    {
+        var store = new InMemoryConfigStore();
+        var fans = new PresenceFans();
+        FanControlledState.SetControlled("fan-a", false, store);
+
+        FanControlledState.Apply("fan-a", true, fans, store);
+
+        Assert.True(FanControlledState.IsControlled("fan-a", store.Load()));
+        Assert.Empty(fans.Released);
+    }
+
     private sealed class PresenceFans : IFanControlProvider
     {
         public bool Present { get; set; } = true;

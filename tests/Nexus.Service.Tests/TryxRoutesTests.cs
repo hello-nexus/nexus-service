@@ -328,4 +328,28 @@ public class TryxRoutesTests
         Assert.Equal("default_07", presets[1].Id);
         Assert.Equal("default_07", presets[1].Name);
     }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(90, true)]
+    [InlineData(180, true)]
+    [InlineData(270, true)]
+    [InlineData(45, false)]
+    [InlineData(360, false)]
+    [InlineData(-90, false)]
+    public void IsValidRotation_accepts_only_quarter_turns(int degrees, bool expected)
+        => Assert.Equal(expected, TryxRoutes.IsValidRotation(degrees));
+
+    [Fact]
+    public void Rotation_request_and_status_state_round_trip_through_the_source_gen_context()
+    {
+        var req = JsonSerializer.Deserialize("""{"degrees":270}""", AppJsonContext.Default.TryxRotationRequest)!;
+        Assert.Equal(270, req.Degrees);
+
+        var json = JsonSerializer.Serialize(
+            new TryxStatusResponse { State = new TryxPanoramaState { Rotation = 90 } },
+            AppJsonContext.Default.TryxStatusResponse);
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(90, doc.RootElement.GetProperty("state").GetProperty("rotation").GetInt32());
+    }
 }
