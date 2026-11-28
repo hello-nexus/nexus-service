@@ -335,22 +335,24 @@ public class GoveeDriverTests : IDisposable
     }
 
     [Fact]
-    public async Task Ping_twoConsecutiveMisses_reArm_oneMissDoesNot()
+    public async Task MissesWhileArmed_neverReEnable()
     {
-        var driver = FastDriver();
+        var driver = FastDriver(probeMs: 100);
         var dev = PairedDevice(RazerExtra);
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
         Assert.True(await driver.PingAsync(dev, CancellationToken.None));
 
         _device.LanEnabled = false;
-        Assert.False(await driver.PingAsync(dev, CancellationToken.None));
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.False(await driver.PingAsync(dev, CancellationToken.None));
+            await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
+        }
+        await PassTimeAsync(600);   // driver probes miss too
         await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
-        await TestWait.ForAsync(() => _device.RazerPackets.Count >= 3);
-        Assert.Single(_device.Turns);
 
-        Assert.False(await driver.PingAsync(dev, CancellationToken.None));
-        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
-        await TestWait.ForAsync(() => EnableCount() == 2 && _device.Turns.Count == 2);
+        Assert.Single(_device.Turns);
+        Assert.Equal(1, EnableCount());
     }
 
     [Fact]
@@ -535,25 +537,6 @@ public class GoveeDriverTests : IDisposable
         Assert.Single(_device.Turns);
 
         _device.OnOff = true;
-        var deadline = Environment.TickCount64 + 5_000;
-        while (_device.Turns.Count < 2 && Environment.TickCount64 < deadline)
-        {
-            await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
-            await PassTimeAsync(20);
-        }
-        await TestWait.ForAsync(() => _device.Turns.Count == 2 && EnableCount() == 2);
-    }
-
-    [Fact]
-    public async Task DriverProbe_reArmsWithoutAnyExternalPing()
-    {
-        var driver = FastDriver(probeMs: 100);
-        var dev = PairedDevice(RazerExtra);
-        await driver.SendAsync(dev, ZoneFrame, CancellationToken.None);
-        Assert.True(await driver.PingAsync(dev, CancellationToken.None));
-
-        _device.LanEnabled = false;
-        // Frames keep arriving; the probe misses disarm, and the next frame re-enters.
         var deadline = Environment.TickCount64 + 5_000;
         while (_device.Turns.Count < 2 && Environment.TickCount64 < deadline)
         {

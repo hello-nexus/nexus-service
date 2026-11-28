@@ -31,7 +31,6 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private const int RazerFrameGapMs = 30_000;
     // Driver-owned probe while armed; the provider's reachability poll runs only with a dashboard open.
     private const int RazerProbeMs = 10_000;
-    private const int RazerMissesToDisarm = 2;
     // One stray off reply mid-stream must not suppress an on strip.
     private const int RazerOffRepliesToSuppress = 2;
 
@@ -57,8 +56,8 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
     private readonly ConcurrentDictionary<string, (string Raw, GoveeExtra Parsed)> _extras = new();
     // Devices in realtime (razer) mode. The enable is sent once on entry and never
     // again: each one resets the strip's frame buffer. An entry is cleared by a
-    // static frame, a frame gap, or two consecutive status misses after a reply; the
-    // next zone frame then cold-enters. A suppressed entry (strip reported off twice)
+    // static frame or a frame gap; the next zone frame then cold-enters. Missed
+    // status replies never clear it: the strip drops replies under streaming load. A suppressed entry (strip reported off twice)
     // is cleared only by an on reply or a static frame.
     private readonly ConcurrentDictionary<string, RazerEntry> _razerEntries = new();
     // Why the next cold entry happens, and when each device and kind last logged.
@@ -73,11 +72,8 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         public long LastFrameAt;
         // The strip reported itself off; frames are dropped until a status reply says on.
         public bool Suppressed;
-        // Set by the first status reply while armed; a strip that never replied has a broken reply path, not a power cut.
-        public bool EverReplied;
         public readonly CancellationTokenSource Stop = new();
         public int OffReplies;
-        public int Misses;
     }
 
     private readonly int _scanTimeoutMs;
@@ -297,9 +293,7 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
 
     // One status query against the entry it started with (never a newer one). An
     // off reply suppresses it (the strip was turned off outside Nexus and stays
-    // off). Otherwise an on reply after a miss (a reboot shorter than the probe
-    // spacing), an on reply while suppressed, or two consecutive misses disarm it;
-    // misses never end a suppression.
+    // off). An on reply while suppressed disarms it. Misses never change an entry.
     private async Task<bool> ObserveStatusAsync(SmartLight dev, RazerEntry? entry, int timeoutMs, CancellationToken ct)
     {
         GoveeReplyData? reply;
@@ -308,18 +302,8 @@ public sealed class GoveeDriver : ILightDriver, IDisposable
         catch { reply = null; }
         if (entry is not null)
         {
-            if (reply is null)
+            if (reply is not null)
             {
-                if (Interlocked.Increment(ref entry.Misses) >= RazerMissesToDisarm
-                    && Volatile.Read(ref entry.EverReplied) && !Volatile.Read(ref entry.Suppressed))
-                {
-                    Disarm(dev.Id, entry, "status misses");
-                }
-            }
-            else
-            {
-                Volatile.Write(ref entry.EverReplied, true);
-                Volatile.Write(ref entry.Misses, 0);
                 if (reply.OnOff == 0)
                 {
                     if (Interlocked.Increment(ref entry.OffReplies) >= RazerOffRepliesToSuppress
