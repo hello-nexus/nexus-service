@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Nexus.Service.Peripherals.Hid;
 using Nexus.Service.Platform;
 
@@ -269,6 +270,11 @@ public sealed class CorsairLinkLcd
             var offset = 0;
             var total = jpeg.Length;
             var chunkIndex = 0;
+            var slowChunk = -1;
+            var slowTicks = 0L;
+            var slowStartTs = 0L;
+            var slowCount = 0;
+            var slowThread = 0;
 
             while (offset < total)
             {
@@ -280,8 +286,23 @@ public sealed class CorsairLinkLcd
                 FillChunkHeader(lcdSlice, chunkIndex, chunkSize, isLast);
                 jpeg.Slice(offset, chunkSize).CopyTo(lcdSlice.Slice(LcdHeaderSize));
 
-                if (!_device.Write(_writeBuffer))
+                var writeStart = Stopwatch.GetTimestamp();
+                var wrote = _device.Write(_writeBuffer);
+                var writeTicks = Stopwatch.GetTimestamp() - writeStart;
+                if (writeTicks >= StallLogTicks)
                 {
+                    slowCount++;
+                    if (writeTicks > slowTicks)
+                    {
+                        slowTicks = writeTicks;
+                        slowChunk = chunkIndex;
+                        slowStartTs = writeStart;
+                        slowThread = Environment.CurrentManagedThreadId;
+                    }
+                }
+                if (!wrote)
+                {
+                    if (slowCount > 0) ReportStall(slowStartTs, slowTicks, total, slowChunk, slowCount, slowThread, ok: false, _device.LastWriteError);
                     if (++_failedWrites >= FailedWritesBeforeDrop) DropDevice();
                     return false;
                 }
@@ -290,8 +311,35 @@ public sealed class CorsairLinkLcd
                 offset += chunkSize;
                 chunkIndex++;
             }
+            if (slowCount > 0) ReportStall(slowStartTs, slowTicks, total, slowChunk, slowCount, slowThread, ok: true, 0);
             return true;
         }
+    }
+
+    private static readonly long StallLogTicks = Stopwatch.Frequency / 4;
+    private const long StallLineIntervalMs = 1000;
+    private long _lastStallLineMs = long.MinValue;
+    private int _stallLinesSuppressed;
+
+    // The chunk count is recomputed here, off the hot path, so the write loop only times each write.
+    private void ReportStall(long startTs, long durTicks, int totalBytes, int chunk, int slowChunks, int thread, bool ok, int lastError)
+    {
+        var endTs = startTs + durTicks;
+        var nowMs = Environment.TickCount64;
+        if (_lastStallLineMs == long.MinValue || nowMs - _lastStallLineMs >= StallLineIntervalMs)
+        {
+            var chunks = 0;
+            for (var o = 0; o < totalBytes; chunks++) o += ComputeChunkSize(o, totalBytes, totalBytes - o <= MaxPayloadPerChunk);
+            var startUtc = DateTime.UtcNow - Stopwatch.GetElapsedTime(startTs);
+            ServiceLog.Warn($"[corsair-lcd] write stall start={startUtc:HH:mm:ss.fff}Z dur={(long)Stopwatch.GetElapsedTime(0, durTicks).TotalMilliseconds}ms bytes={totalBytes} chunk={chunk}/{chunks} slowChunks={slowChunks} thread={thread} ok={ok} lastError={lastError} suppressed={_stallLinesSuppressed}");
+            _lastStallLineMs = nowMs;
+            _stallLinesSuppressed = 0;
+        }
+        else
+        {
+            _stallLinesSuppressed++;
+        }
+        CorsairUsbWriteRing.Shared.DumpIfDue(startTs, endTs, nowMs);
     }
 
     public bool SetBrightness(byte value)

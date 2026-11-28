@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Nexus.Service.Peripherals.Hid;
@@ -62,12 +63,17 @@ public sealed class CorsairLinkHub : IDisposable
     public CorsairLinkHub(string idPrefix = "corsair:", int number = 1, int modeCycleWaitMs = CorsairLinkProtocol.ModeCycleWaitMs)
     {
         IdPrefix = idPrefix;
+        _ringName = idPrefix.TrimEnd(':');
         Number = number;
         ModeCycleWaitMs = modeCycleWaitMs;
     }
 
     /// <summary>The Nexus Control / device-row id every hub shares.</summary>
     public string DeviceId => "corsair";
+
+    private readonly string _ringName;
+    // Label of the entry point holding _lock; the diagnostic ring tags each transfer with it.
+    private string _activity = "hub";
 
     public string IdPrefix { get; }
     public int Number { get; }
@@ -239,6 +245,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            _activity = "detach";
             if (_device != null && _softwareMode && handBack && !ForeignHostSeen)
             {
                 HandBackLocked();
@@ -304,6 +311,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            _activity = "init";
             if (_retired) return false;
             _trace = new System.Text.StringBuilder();
             _initializing = true;
@@ -488,6 +496,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            _activity = "poll";
             if (_device == null || _redetecting || _initializing) return false;
             return RefreshLocked();
         }
@@ -502,6 +511,7 @@ public sealed class CorsairLinkHub : IDisposable
         lock (_lock)
         {
             _redetectRequested = false;
+            _activity = "redetect";
             if (_device == null || _redetecting || _initializing) return false;
             _redetecting = true;
             var n = Transfer(CorsairLinkProtocol.CmdStartDetection);
@@ -522,6 +532,7 @@ public sealed class CorsairLinkHub : IDisposable
                 await Task.Delay(DetectionPollMs, ct).ConfigureAwait(false);
                 lock (_lock)
                 {
+                    _activity = "redetect";
                     if (_device == null) return false;
                     var n = Transfer(CorsairLinkProtocol.CmdPing);
                     finished = n > CorsairLinkProtocol.ResponseStatusOffset
@@ -531,6 +542,7 @@ public sealed class CorsairLinkHub : IDisposable
             }
             lock (_lock)
             {
+                _activity = "redetect";
                 if (_device == null) return false;
                 // The chain re-powered under the colour handle; reopen it on the next frame.
                 _colorReopenDue = true;
@@ -549,6 +561,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            _activity = "duties";
             if (_device == null || _redetecting || _initializing || items.Count == 0) return false;
             var count = Math.Min(items.Count, CorsairLinkProtocol.MaxChannels);
             Span<byte> payload = stackalloc byte[1 + CorsairLinkProtocol.MaxChannels * 4];
@@ -576,6 +589,7 @@ public sealed class CorsairLinkHub : IDisposable
     {
         lock (_lock)
         {
+            _activity = "colors";
             if (_device == null || !_colorPrimed || _redetecting || _initializing) return false;
 
             if (_colorReopenDue)
@@ -923,12 +937,19 @@ public sealed class CorsairLinkHub : IDisposable
         off += command.Length;
         if (!payload.IsEmpty) payload.CopyTo(_write.AsSpan(off));
         if (_trace != null) TraceNote($"out {Hex(_write.AsSpan(CorsairLinkProtocol.HeaderSize), command.Length + payload.Length > 8 ? 8 : command.Length + payload.Length)}");
-        if (!_device.Write(_write))
+        var ring = CorsairUsbWriteRing.Shared;
+        var token = ring.Begin(_ringName, _activity, command[0]);
+        var writeStart = Stopwatch.GetTimestamp();
+        var wrote = _device.Write(_write);
+        var writeTicks = Stopwatch.GetTimestamp() - writeStart;
+        if (!wrote)
         {
+            ring.End(token, writeTicks);
             if (_trace != null) TraceNote("write failed");
             return -1;
         }
         var n = _device.Read(_readRaw, ReadTimeoutMs);
+        ring.End(token, writeTicks);
         if (n <= 0)
         {
             if (_trace != null) TraceNote($"read n={n}");
